@@ -1,101 +1,44 @@
-from fastapi import FastAPI
-import pandas as pd
-import numpy as np
-import requests
-from io import StringIO
+from fastapi import FastAPI, Request
+from datetime import datetime, timezone
 
 app = FastAPI()
 
-def to_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = -delta.clip(upper=0).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def get_stooq_data(ticker):
-    symbol = f"{ticker.lower()}.us"
-    url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    response = requests.get(url, headers=headers, timeout=10)
-    response.raise_for_status()
-
-    if "No data" in response.text or len(response.text.strip()) < 20:
-        return pd.DataFrame()
-
-    data = pd.read_csv(StringIO(response.text))
-    return data
+trade_store = {}
 
 @app.get("/")
 def read_root():
-    return {"message": "Trading Engine activo con datos reales"}
+    return {"message": "Trading Engine activo - TradingView webhook mode"}
+
+@app.post("/webhook/tradingview")
+async def tradingview_webhook(request: Request):
+    data = await request.json()
+
+    ticker = str(data.get("ticker", "")).upper().strip()
+
+    if not ticker:
+        return {"status": "error", "message": "ticker is required"}
+
+    data["ticker"] = ticker
+    data["received_at"] = datetime.now(timezone.utc).isoformat()
+    data["source"] = "tradingview"
+
+    trade_store[ticker] = data
+
+    return {
+        "status": "ok",
+        "message": f"Data received for {ticker}",
+        "data": data
+    }
 
 @app.get("/get_trade_context")
 def get_trade_context(ticker: str):
-    try:
-        ticker = ticker.upper().strip()
-        data = get_stooq_data(ticker)
+    ticker = ticker.upper().strip()
 
-        if data.empty:
-            return {"ticker": ticker, "error": "No data returned from Stooq"}
-
-        data = data.sort_values("Date")
-
-        close = data["Close"].dropna()
-        volume = data["Volume"].dropna()
-
-        if close.empty:
-            return {"ticker": ticker, "error": "No valid close price data"}
-
-        price = to_float(close.iloc[-1])
-        ema20 = to_float(close.ewm(span=20).mean().iloc[-1])
-        ema50 = to_float(close.ewm(span=50).mean().iloc[-1])
-        ema200 = to_float(close.ewm(span=200).mean().iloc[-1])
-
-        rsi_series = rsi(close)
-        rsi14 = to_float(rsi_series.dropna().iloc[-1]) if not rsi_series.dropna().empty else None
-
-        vol_rel = None
-        if len(volume) > 20:
-            avg_vol = to_float(volume.rolling(20).mean().iloc[-1])
-            last_vol = to_float(volume.iloc[-1])
-            if avg_vol and last_vol:
-                vol_rel = last_vol / avg_vol
-
-        returns = close.pct_change()
-        hv_series = returns.rolling(30).std()
-        hv_30 = to_float(hv_series.dropna().iloc[-1] * np.sqrt(252) * 100) if not hv_series.dropna().empty else None
-
-        if price and ema20 and ema50 and price > ema20 > ema50:
-            trend = "bullish"
-        elif price and ema20 and ema50 and price < ema20 < ema50:
-            trend = "bearish"
-        else:
-            trend = "neutral"
-
+    if ticker not in trade_store:
         return {
             "ticker": ticker,
-            "price": round(price, 2) if price else None,
-            "rsi14": round(rsi14, 2) if rsi14 else None,
-            "ema20": round(ema20, 2) if ema20 else None,
-            "ema50": round(ema50, 2) if ema50 else None,
-            "ema200": round(ema200, 2) if ema200 else None,
-            "trend": trend,
-            "volume_relative": round(vol_rel, 2) if vol_rel else None,
-            "historical_volatility_30d": round(hv_30, 2) if hv_30 else None,
-            "flow": "pending_unusual_whales",
-            "gamma": "pending_unusual_whales",
-            "put_wall": None,
-            "call_wall": None,
-            "iv_rank": None
+            "status": "missing_data",
+            "message": "No TradingView data received yet for this ticker"
         }
 
-    except Exception as e:
-        return {"ticker": ticker if "ticker" in locals() else None, "error": str(e)}
+    return trade_store[ticker]
