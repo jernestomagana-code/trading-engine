@@ -4,6 +4,13 @@ import numpy as np
 
 app = FastAPI()
 
+def to_float(value):
+    try:
+        if hasattr(value, "iloc"):
+            value = value.iloc[-1]
+        return float(value)
+    except Exception:
+        return None
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -12,80 +19,64 @@ def rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-
 @app.get("/")
 def read_root():
     return {"message": "Trading Engine activo con datos reales"}
-
 
 @app.get("/get_trade_context")
 def get_trade_context(ticker: str):
     try:
         ticker = ticker.upper().strip()
 
-        data = yf.download(
-            ticker,
-            period="1y",
-            interval="1d",
-            progress=False,
-            auto_adjust=True
-        )
-
-        vix_data = yf.download(
-            "^VIX",
-            period="5d",
-            interval="1d",
-            progress=False,
-            auto_adjust=True
-        )
+        data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+        vix_data = yf.download("^VIX", period="5d", interval="1d", progress=False, auto_adjust=True)
 
         if data.empty:
-            return {
-                "ticker": ticker,
-                "error": f"No data returned for {ticker}"
-            }
+            return {"ticker": ticker, "error": f"No data returned for {ticker}"}
 
-        close = data["Close"]
-        volume = data["Volume"]
+        close = data["Close"].dropna()
+        volume = data["Volume"].dropna()
 
-        price = float(close.iloc[-1])
-        ema20 = float(close.ewm(span=20).mean().iloc[-1])
-        ema50 = float(close.ewm(span=50).mean().iloc[-1])
-        ema200 = float(close.ewm(span=200).mean().iloc[-1])
+        if close.empty:
+            return {"ticker": ticker, "error": "No valid price data"}
+
+        price = to_float(close.iloc[-1])
+        ema20 = to_float(close.ewm(span=20).mean().iloc[-1])
+        ema50 = to_float(close.ewm(span=50).mean().iloc[-1])
+        ema200 = to_float(close.ewm(span=200).mean().iloc[-1])
 
         rsi_series = rsi(close)
-        rsi14 = float(rsi_series.dropna().iloc[-1]) if not rsi_series.dropna().empty else None
+        rsi14 = to_float(rsi_series.dropna().iloc[-1]) if not rsi_series.dropna().empty else None
 
         vol_rel = None
         if len(volume) > 20:
-            avg_volume_20 = volume.rolling(20).mean().iloc[-1]
-            if avg_volume_20 and float(avg_volume_20) != 0:
-                vol_rel = float(volume.iloc[-1] / avg_volume_20)
+            avg_volume_20 = to_float(volume.rolling(20).mean().iloc[-1])
+            last_volume = to_float(volume.iloc[-1])
+            if avg_volume_20 and last_volume:
+                vol_rel = last_volume / avg_volume_20
 
         vix = None
         if not vix_data.empty:
-            vix = float(vix_data["Close"].iloc[-1])
+            vix = to_float(vix_data["Close"].dropna().iloc[-1])
 
         returns = close.pct_change()
         hv_series = returns.rolling(30).std()
-        hv_30 = None
-        if not hv_series.dropna().empty:
-            hv_30 = float(hv_series.dropna().iloc[-1] * np.sqrt(252) * 100)
+        hv_30 = to_float(hv_series.dropna().iloc[-1] * np.sqrt(252) * 100) if not hv_series.dropna().empty else None
 
-        if price > ema20 > ema50:
+        if price and ema20 and ema50 and price > ema20 > ema50:
             trend = "bullish"
-        elif price < ema20 < ema50:
+        elif price and ema20 and ema50 and price < ema20 < ema50:
             trend = "bearish"
         else:
             trend = "neutral"
 
         return {
             "ticker": ticker,
-            "price": round(price, 2),
+            "price": round(price, 2) if price is not None else None,
             "rsi14": round(rsi14, 2) if rsi14 is not None else None,
-            "ema20": round(ema20, 2),
-            "ema50": round(ema50, 2),
-            "ema200": round(ema200, 2),
+            "ema20": round(ema20, 2) if ema20 is not None else None,
+            "ema50": round(ema50, 2) if ema50 is not None else None,
+            "ema200": round(ema200, 2) if ema200 is not None else None,
             "trend": trend,
             "volume_relative": round(vol_rel, 2) if vol_rel is not None else None,
             "vix": round(vix, 2) if vix is not None else None,
@@ -98,7 +89,4 @@ def get_trade_context(ticker: str):
         }
 
     except Exception as e:
-        return {
-            "ticker": ticker if "ticker" in locals() else None,
-            "error": str(e)
-        }
+        return {"ticker": ticker if "ticker" in locals() else None, "error": str(e)}
