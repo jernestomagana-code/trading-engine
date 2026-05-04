@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-import yfinance as yf
+import pandas as pd
 import numpy as np
 
 app = FastAPI()
@@ -9,7 +9,7 @@ def to_float(value):
         if hasattr(value, "iloc"):
             value = value.iloc[-1]
         return float(value)
-    except Exception:
+    except:
         return None
 
 def rsi(series, period=14):
@@ -28,11 +28,16 @@ def get_trade_context(ticker: str):
     try:
         ticker = ticker.upper().strip()
 
-        data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        vix_data = yf.download("^VIX", period="5d", interval="1d", progress=False, auto_adjust=True)
+        # 🔥 NUEVA FUENTE DE DATOS (STOOQ)
+        symbol = f"{ticker.lower()}.us"
+        url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
+
+        data = pd.read_csv(url)
 
         if data.empty:
-            return {"ticker": ticker, "error": f"No data returned for {ticker}"}
+            return {"ticker": ticker, "error": "No data returned"}
+
+        data = data.sort_values("Date")
 
         close = data["Close"].dropna()
         volume = data["Volume"].dropna()
@@ -50,14 +55,10 @@ def get_trade_context(ticker: str):
 
         vol_rel = None
         if len(volume) > 20:
-            avg_volume_20 = to_float(volume.rolling(20).mean().iloc[-1])
-            last_volume = to_float(volume.iloc[-1])
-            if avg_volume_20 and last_volume:
-                vol_rel = last_volume / avg_volume_20
-
-        vix = None
-        if not vix_data.empty:
-            vix = to_float(vix_data["Close"].dropna().iloc[-1])
+            avg_vol = to_float(volume.rolling(20).mean().iloc[-1])
+            last_vol = to_float(volume.iloc[-1])
+            if avg_vol and last_vol:
+                vol_rel = last_vol / avg_vol
 
         returns = close.pct_change()
         hv_series = returns.rolling(30).std()
@@ -72,15 +73,14 @@ def get_trade_context(ticker: str):
 
         return {
             "ticker": ticker,
-            "price": round(price, 2) if price is not None else None,
-            "rsi14": round(rsi14, 2) if rsi14 is not None else None,
-            "ema20": round(ema20, 2) if ema20 is not None else None,
-            "ema50": round(ema50, 2) if ema50 is not None else None,
-            "ema200": round(ema200, 2) if ema200 is not None else None,
+            "price": round(price, 2) if price else None,
+            "rsi14": round(rsi14, 2) if rsi14 else None,
+            "ema20": round(ema20, 2) if ema20 else None,
+            "ema50": round(ema50, 2) if ema50 else None,
+            "ema200": round(ema200, 2) if ema200 else None,
             "trend": trend,
-            "volume_relative": round(vol_rel, 2) if vol_rel is not None else None,
-            "vix": round(vix, 2) if vix is not None else None,
-            "historical_volatility_30d": round(hv_30, 2) if hv_30 is not None else None,
+            "volume_relative": round(vol_rel, 2) if vol_rel else None,
+            "historical_volatility_30d": round(hv_30, 2) if hv_30 else None,
             "flow": "pending_unusual_whales",
             "gamma": "pending_unusual_whales",
             "put_wall": None,
