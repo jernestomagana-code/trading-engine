@@ -37,7 +37,6 @@ def save_signal(signal):
 
     signals.append(signal)
 
-    # mantener últimas 5000 señales
     signals = signals[-5000:]
 
     with open(SIGNALS_FILE, "w") as f:
@@ -71,6 +70,7 @@ def extract_json_from_text(text: str):
 
 
 def normalize_timeframe(tf):
+
     tf = str(tf).lower().replace("min", "").replace("m", "").strip()
 
     if tf == "5":
@@ -113,7 +113,7 @@ def find_ticker(data, raw_text):
 
 
 # =========================================================
-# SIGNAL AGE / EXPIRATION
+# TIME / EXPIRATION
 # =========================================================
 
 def signal_age_minutes(signal):
@@ -189,7 +189,7 @@ def active_timeframes(timeframes):
 
 
 # =========================================================
-# CENTRAL SCORING ENGINE
+# CLASSIFICATION ENGINE
 # =========================================================
 
 def classify_asset(timeframes):
@@ -214,21 +214,18 @@ def classify_asset(timeframes):
     fresh_15 = float(tf_15.get("freshness_score", 0) or 0)
     fresh_1h = float(tf_1h.get("freshness_score", 0) or 0)
 
-    technical_weighted = (
-        (score_5 * 0.45) +
-        (score_15 * 0.30) +
-        (score_1h * 0.25)
-    )
-
-    freshness_weighted = (
-        (fresh_5 * 0.45) +
-        (fresh_15 * 0.30) +
-        (fresh_1h * 0.25)
-    )
-
     weighted_score = round(
-        (technical_weighted * 0.75) +
-        (freshness_weighted * 0.25),
+        (
+            (score_5 * 0.45) +
+            (score_15 * 0.30) +
+            (score_1h * 0.25)
+        ) * 0.75
+        +
+        (
+            (fresh_5 * 0.45) +
+            (fresh_15 * 0.30) +
+            (fresh_1h * 0.25)
+        ) * 0.25,
         2
     )
 
@@ -248,27 +245,39 @@ def classify_asset(timeframes):
 
     grade = "C"
 
-    reason = "No hay suficiente confluencia activa entre 1h, 15m y 5m."
+    status = "NO_SETUP"
 
-    if not tf_5:
+    reason = "No hay suficiente confluencia."
 
-        reason = "No hay gatillo fresco de 5m."
+    if trend_1h == "bullish":
 
-    elif not tf_15:
+        status = "BULLISH_CONTEXT"
 
-        reason = "Falta confirmación fresca de 15m."
+    elif trend_1h == "bearish":
 
-    elif not tf_1h:
+        status = "BEARISH_CONTEXT"
 
-        reason = "Falta contexto fresco de 1h."
+    if trend_1h == "bullish" and trend_15 == "bullish":
 
-    elif trend_1h == "bullish" and trend_15 == "bullish" and bullish_5:
+        status = "PRE_LONG"
+
+        reason = "1h y 15m bullish. Esperando gatillo 5m."
+
+    if trend_1h == "bearish" and trend_15 == "bearish":
+
+        status = "PRE_SHORT"
+
+        reason = "1h y 15m bearish. Esperando gatillo 5m."
+
+    if trend_1h == "bullish" and trend_15 == "bullish" and bullish_5:
 
         alignment = "bullish"
 
         action = setup_5
 
-        reason = "Confluencia alcista fresca: 1h bullish, 15m bullish y gatillo 5m alineado."
+        status = "LONG_READY"
+
+        reason = "Confluencia alcista multi-timeframe."
 
     elif trend_1h == "bearish" and trend_15 == "bearish" and bearish_5:
 
@@ -276,51 +285,35 @@ def classify_asset(timeframes):
 
         action = setup_5
 
-        reason = "Confluencia bajista fresca: 1h bearish, 15m bearish y gatillo 5m alineado."
+        status = "SHORT_READY"
 
-    elif (
-        (trend_1h == "bullish" and bullish_5) or
-        (trend_1h == "bearish" and bearish_5)
-    ):
+        reason = "Confluencia bajista multi-timeframe."
 
-        alignment = "partial"
+    if weighted_score >= 88 and action != "WAIT":
 
-        action = setup_5
+        grade = "A+"
 
-        reason = "Alineación parcial fresca con 1h, pero falta confirmación completa de 15m."
+    elif weighted_score >= 80 and action != "WAIT":
 
-    if action != "WAIT":
+        grade = "A"
 
-        if weighted_score >= 88 and alignment in ["bullish", "bearish"]:
+    elif weighted_score >= 70:
 
-            grade = "A+"
-
-        elif weighted_score >= 80:
-
-            grade = "A"
-
-        elif weighted_score >= 70:
-
-            grade = "B"
-
-        else:
-
-            grade = "C"
+        grade = "B"
 
     return {
         "grade": grade,
+        "status": status,
         "action": action,
         "alignment": alignment,
         "weighted_score": weighted_score,
-        "freshness_weighted": round(freshness_weighted, 2),
         "reason": reason,
         "active_timeframes": active,
-        "all_timeframes": timeframes,
     }
 
 
 # =========================================================
-# DASHBOARD BUILDER
+# DASHBOARD
 # =========================================================
 
 def build_dashboard():
@@ -333,12 +326,7 @@ def build_dashboard():
 
         dashboard.append({
             "ticker": ticker,
-            "grade": classification["grade"],
-            "action": classification["action"],
-            "alignment": classification["alignment"],
-            "weighted_score": classification["weighted_score"],
-            "freshness_weighted": classification["freshness_weighted"],
-            "reason": classification["reason"],
+            **classification
         })
 
     grade_order = {
@@ -363,11 +351,11 @@ def build_dashboard():
 # =========================================================
 
 @app.get("/")
-def read_root():
+def root():
 
     return {
-        "message": "Trading Engine activo - persistent institutional mode",
-        "expiration_minutes": EXPIRATION_MINUTES,
+        "status": "alive",
+        "engine": "Super Engine Bolsa"
     }
 
 
@@ -391,7 +379,7 @@ async def tradingview_webhook(request: Request):
 
         parsed = {
             "raw_message": raw_text,
-            "parse_warning": "TradingView payload was not valid JSON"
+            "parse_warning": "payload not valid json"
         }
 
     ticker = find_ticker(parsed, raw_text)
@@ -406,11 +394,9 @@ async def tradingview_webhook(request: Request):
 
     parsed["received_at"] = now_utc().isoformat()
 
-    parsed["source"] = "tradingview"
-
-    parsed["raw_payload_preview"] = raw_text[:500]
-
     parsed["saved_at"] = now_utc().isoformat()
+
+    parsed["source"] = "tradingview"
 
     if ticker not in trade_store:
         trade_store[ticker] = {}
@@ -421,13 +407,13 @@ async def tradingview_webhook(request: Request):
 
     return {
         "status": "ok",
-        "message": f"Webhook received for {ticker} {timeframe}",
-        "data": parsed
+        "ticker": ticker,
+        "timeframe": timeframe
     }
 
 
 # =========================================================
-# GET TRADE CONTEXT
+# TRADE CONTEXT
 # =========================================================
 
 @app.get("/get_trade_context")
@@ -439,8 +425,7 @@ def get_trade_context(ticker: str):
 
         return {
             "ticker": ticker,
-            "status": "missing_data",
-            "message": "No TradingView data received yet for this ticker"
+            "message": "No hay datos todavía"
         }
 
     return {
@@ -460,7 +445,6 @@ def get_dashboard():
 
     return {
         "generated_at": now_utc().isoformat(),
-        "expiration_minutes": EXPIRATION_MINUTES,
         "dashboard": build_dashboard()
     }
 
@@ -474,114 +458,110 @@ def get_report():
 
     dashboard = build_dashboard()
 
+    report = []
+
+    report.append("SUPER ENGINE BOLSA — REPORTE INSTITUCIONAL")
+    report.append("")
+
     if not dashboard:
 
+        report.append("Todavía no hay señales suficientes.")
+
         return {
-            "generated_at": now_utc().isoformat(),
-            "report": "Super Engine Bolsa: todavía no hay señales frescas suficientes para generar un reporte.",
-            "summary": {
-                "top_opportunities": [],
-                "watchlist": [],
-                "avoid": []
-            }
+            "report": "\n".join(report)
         }
 
-    top = [
-        x for x in dashboard
-        if x["grade"] in ["A+", "A"]
-    ]
+    long_ready = []
+    short_ready = []
+    radar = []
+    weak = []
 
-    watch = [
-        x for x in dashboard
-        if x["grade"] == "B"
-    ]
+    for item in dashboard:
 
-    avoid = [
-        x for x in dashboard
-        if x["grade"] == "C"
-    ]
+        if item["status"] == "LONG_READY":
+            long_ready.append(item)
 
-    lines = []
+        elif item["status"] == "SHORT_READY":
+            short_ready.append(item)
 
-    lines.append("SUPER ENGINE BOLSA — REPORTE CENTRAL")
+        elif item["status"] in ["PRE_LONG", "PRE_SHORT"]:
+            radar.append(item)
 
-    lines.append(
-        f"Generado UTC: {now_utc().isoformat()}"
-    )
+        else:
+            weak.append(item)
 
-    lines.append("")
+    report.append("RESUMEN EJECUTIVO")
+    report.append("")
 
-    lines.append("Resumen:")
+    report.append(f"LONG listos: {len(long_ready)}")
+    report.append(f"SHORT listos: {len(short_ready)}")
+    report.append(f"En radar: {len(radar)}")
+    report.append(f"Débiles: {len(weak)}")
+    report.append("")
 
-    lines.append(
-        f"- Oportunidades fuertes: {len(top)}"
-    )
+    if long_ready:
 
-    lines.append(
-        f"- En radar / esperar: {len(watch)}"
-    )
+        report.append("🔥 LONG READY")
+        report.append("")
 
-    lines.append(
-        f"- Ignorar por ahora: {len(avoid)}"
-    )
+        for x in long_ready:
 
-    lines.append("")
-
-    if top:
-
-        lines.append("1) Mejores oportunidades")
-
-        for item in top:
-
-            lines.append(
-                f"- {item['ticker']} | "
-                f"{item['grade']} | "
-                f"{item['action']} | "
-                f"Score: {item['weighted_score']} | "
-                f"Freshness: {item['freshness_weighted']} | "
-                f"{item['reason']}"
+            report.append(
+                f"{x['ticker']} | "
+                f"{x['grade']} | "
+                f"Score {x['weighted_score']} | "
+                f"{x['reason']}"
             )
 
-        lines.append("")
+        report.append("")
 
-    if watch:
+    if short_ready:
 
-        lines.append("2) Radar / esperar confirmación")
+        report.append("🔻 SHORT READY")
+        report.append("")
 
-        for item in watch:
+        for x in short_ready:
 
-            lines.append(
-                f"- {item['ticker']} | "
-                f"{item['grade']} | "
-                f"{item['action']} | "
-                f"Score: {item['weighted_score']} | "
-                f"{item['reason']}"
+            report.append(
+                f"{x['ticker']} | "
+                f"{x['grade']} | "
+                f"Score {x['weighted_score']} | "
+                f"{x['reason']}"
             )
 
-        lines.append("")
+        report.append("")
 
-    if avoid:
+    if radar:
 
-        lines.append("3) Evitar por ahora")
+        report.append("👀 EN RADAR")
+        report.append("")
 
-        for item in avoid:
+        for x in radar:
 
-            lines.append(
-                f"- {item['ticker']} | "
-                f"{item['grade']} | "
-                f"{item['action']} | "
-                f"Score: {item['weighted_score']} | "
-                f"{item['reason']}"
+            report.append(
+                f"{x['ticker']} | "
+                f"{x['status']} | "
+                f"{x['reason']}"
+            )
+
+        report.append("")
+
+    if weak:
+
+        report.append("⚠️ SIN SETUP")
+        report.append("")
+
+        for x in weak:
+
+            report.append(
+                f"{x['ticker']} | "
+                f"{x['reason']}"
             )
 
     return {
         "generated_at": now_utc().isoformat(),
-        "report": "\n".join(lines),
-        "summary": {
-            "top_opportunities": top,
-            "watchlist": watch,
-            "avoid": avoid
-        }
+        "report": "\n".join(report),
+        "dashboard": dashboard
     }
 
 
@@ -606,6 +586,5 @@ def history(limit: int = 100):
 
     return {
         "total_signals": len(signals),
-        "showing": min(limit, len(signals)),
         "signals": signals[-limit:]
     }
