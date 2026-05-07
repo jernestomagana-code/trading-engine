@@ -4,7 +4,6 @@ import json
 import re
 
 app = FastAPI()
-
 trade_store = {}
 
 EXPIRATION_MINUTES = {
@@ -195,10 +194,35 @@ def classify_asset(timeframes):
     }
 
 
+def build_dashboard():
+    dashboard = []
+
+    for ticker, timeframes in trade_store.items():
+        classification = classify_asset(timeframes)
+
+        dashboard.append({
+            "ticker": ticker,
+            "grade": classification["grade"],
+            "action": classification["action"],
+            "alignment": classification["alignment"],
+            "weighted_score": classification["weighted_score"],
+            "freshness_weighted": classification["freshness_weighted"],
+            "reason": classification["reason"],
+        })
+
+    grade_order = {"A+": 4, "A": 3, "B": 2, "C": 1}
+
+    return sorted(
+        dashboard,
+        key=lambda x: (grade_order.get(x["grade"], 0), x["weighted_score"]),
+        reverse=True
+    )
+
+
 @app.get("/")
 def read_root():
     return {
-        "message": "Trading Engine activo - central scoring with signal expiration",
+        "message": "Trading Engine activo - central scoring with report",
         "expiration_minutes": EXPIRATION_MINUTES,
     }
 
@@ -256,33 +280,77 @@ def get_trade_context(ticker: str):
 
 @app.get("/get_dashboard")
 def get_dashboard():
-    dashboard = []
-
-    for ticker, timeframes in trade_store.items():
-        classification = classify_asset(timeframes)
-
-        dashboard.append({
-            "ticker": ticker,
-            "grade": classification["grade"],
-            "action": classification["action"],
-            "alignment": classification["alignment"],
-            "weighted_score": classification["weighted_score"],
-            "freshness_weighted": classification["freshness_weighted"],
-            "reason": classification["reason"],
-        })
-
-    grade_order = {"A+": 4, "A": 3, "B": 2, "C": 1}
-
-    dashboard = sorted(
-        dashboard,
-        key=lambda x: (grade_order.get(x["grade"], 0), x["weighted_score"]),
-        reverse=True
-    )
-
     return {
         "generated_at": now_utc().isoformat(),
         "expiration_minutes": EXPIRATION_MINUTES,
-        "dashboard": dashboard
+        "dashboard": build_dashboard()
+    }
+
+
+@app.get("/get_report")
+def get_report():
+    dashboard = build_dashboard()
+
+    if not dashboard:
+        return {
+            "generated_at": now_utc().isoformat(),
+            "report": "Super Engine Bolsa: todavía no hay señales frescas suficientes para generar un reporte.",
+            "summary": {
+                "top_opportunities": [],
+                "watchlist": [],
+                "avoid": []
+            }
+        }
+
+    top = [x for x in dashboard if x["grade"] in ["A+", "A"]]
+    watch = [x for x in dashboard if x["grade"] == "B"]
+    avoid = [x for x in dashboard if x["grade"] == "C"]
+
+    lines = []
+    lines.append("SUPER ENGINE BOLSA — REPORTE CENTRAL")
+    lines.append(f"Generado UTC: {now_utc().isoformat()}")
+    lines.append("")
+    lines.append("Resumen:")
+    lines.append(f"- Oportunidades fuertes: {len(top)}")
+    lines.append(f"- En radar / esperar: {len(watch)}")
+    lines.append(f"- Ignorar por ahora: {len(avoid)}")
+    lines.append("")
+
+    if top:
+        lines.append("1) Mejores oportunidades")
+        for item in top:
+            lines.append(
+                f"- {item['ticker']} | {item['grade']} | {item['action']} | "
+                f"Score: {item['weighted_score']} | Freshness: {item['freshness_weighted']} | "
+                f"{item['reason']}"
+            )
+        lines.append("")
+
+    if watch:
+        lines.append("2) Radar / esperar confirmación")
+        for item in watch:
+            lines.append(
+                f"- {item['ticker']} | {item['grade']} | {item['action']} | "
+                f"Score: {item['weighted_score']} | {item['reason']}"
+            )
+        lines.append("")
+
+    if avoid:
+        lines.append("3) Evitar por ahora")
+        for item in avoid:
+            lines.append(
+                f"- {item['ticker']} | {item['grade']} | {item['action']} | "
+                f"Score: {item['weighted_score']} | {item['reason']}"
+            )
+
+    return {
+        "generated_at": now_utc().isoformat(),
+        "report": "\n".join(lines),
+        "summary": {
+            "top_opportunities": top,
+            "watchlist": watch,
+            "avoid": avoid
+        }
     }
 
 
