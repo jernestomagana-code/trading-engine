@@ -16,9 +16,6 @@ EXPIRATION_MINUTES = {
     "1d": 1440,
 }
 
-WATCHLIST = ["SPY", "QQQ", "MSFT", "TLT", "GOOG", "AMZN"]
-
-
 trade_store = {}
 
 
@@ -49,7 +46,6 @@ def save_signal(signal):
     signals = load_signals()
     signals.append(signal)
     signals = signals[-10000:]
-
     with open(SIGNALS_FILE, "w") as f:
         json.dump(signals, f, indent=2)
 
@@ -62,7 +58,6 @@ def extract_json_from_text(text: str):
 
     start = text.find("{")
     end = text.rfind("}")
-
     if start != -1 and end != -1 and end > start:
         try:
             return json.loads(text[start:end + 1])
@@ -74,7 +69,6 @@ def extract_json_from_text(text: str):
 
 def normalize_timeframe(tf):
     tf = str(tf).lower().replace("min", "").replace("m", "").strip()
-
     if tf == "5":
         return "5m"
     if tf == "15":
@@ -83,7 +77,6 @@ def normalize_timeframe(tf):
         return "1h"
     if tf in ["d", "1d", "day"]:
         return "1d"
-
     return tf or "unknown"
 
 
@@ -101,7 +94,6 @@ def find_ticker(data, raw_text):
         r'\b(SPY|QQQ|TLT|MSFT|GOOG|AMZN|AAPL|NVDA|META|TSLA|NFLX|USTEC\.F|MNQ|NQ|ES|SPX)\b',
         raw_text
     )
-
     if match:
         return match.group(1).upper().strip()
 
@@ -110,10 +102,8 @@ def find_ticker(data, raw_text):
 
 def signal_age_minutes(signal):
     received_at = signal.get("received_at")
-
     if not received_at:
         return None
-
     try:
         received_dt = datetime.fromisoformat(received_at)
         return round((now_utc() - received_dt).total_seconds() / 60, 2)
@@ -123,29 +113,23 @@ def signal_age_minutes(signal):
 
 def is_expired(signal, timeframe):
     age = signal_age_minutes(signal)
-
     if age is None:
         return True
-
     limit = EXPIRATION_MINUTES.get(timeframe, 60)
     return age > limit
 
 
 def freshness_score(signal, timeframe):
     age = signal_age_minutes(signal)
-
     if age is None:
         return 0
-
     limit = EXPIRATION_MINUTES.get(timeframe, 60)
-
     if age <= limit * 0.25:
         return 100
     if age <= limit * 0.50:
         return 75
     if age <= limit:
         return 50
-
     return 0
 
 
@@ -160,13 +144,10 @@ def enrich_signal(signal, timeframe):
 
 def active_timeframes(timeframes):
     active = {}
-
     for tf, signal in timeframes.items():
         enriched = enrich_signal(signal, tf)
-
         if not enriched["expired"]:
             active[tf] = enriched
-
     return active
 
 
@@ -185,16 +166,12 @@ def get_score(signal):
 def rebuild_store_from_history():
     signals = load_signals()
     store = {}
-
-    for signal in signals[-2000:]:
+    for signal in signals[-3000:]:
         ticker = str(signal.get("ticker", "UNKNOWN")).upper().strip()
         tf = normalize_timeframe(signal.get("timeframe", "unknown"))
-
         if ticker not in store:
             store[ticker] = {}
-
         store[ticker][tf] = signal
-
     return store
 
 
@@ -224,30 +201,16 @@ def classify_asset(timeframes):
     fresh_1h = safe_float(tf_1h.get("freshness_score"), 0)
     fresh_1d = safe_float(tf_1d.get("freshness_score"), 0)
 
-    technical_score = (
-        score_5 * 0.30 +
-        score_15 * 0.30 +
-        score_1h * 0.30 +
-        score_1d * 0.10
-    )
-
-    freshness_weighted = (
-        fresh_5 * 0.30 +
-        fresh_15 * 0.30 +
-        fresh_1h * 0.30 +
-        fresh_1d * 0.10
-    )
-
+    technical_score = (score_5 * 0.30) + (score_15 * 0.30) + (score_1h * 0.30) + (score_1d * 0.10)
+    freshness_weighted = (fresh_5 * 0.30) + (fresh_15 * 0.30) + (fresh_1h * 0.30) + (fresh_1d * 0.10)
     weighted_score = round((technical_score * 0.80) + (freshness_weighted * 0.20), 2)
 
     bullish_5 = "LONG" in setup_5 or "SELL PUT" in setup_5
     bearish_5 = "SHORT" in setup_5 or "SELL CALL" in setup_5
-
-    bullish_context = trend_1h == "bullish"
-    bearish_context = trend_1h == "bearish"
-
-    bullish_confirm = trend_15 == "bullish"
-    bearish_confirm = trend_15 == "bearish"
+    bullish_15 = trend_15 == "bullish" or "LONG" in setup_15 or "SELL PUT" in setup_15
+    bearish_15 = trend_15 == "bearish" or "SHORT" in setup_15 or "SELL CALL" in setup_15
+    bullish_1h = trend_1h == "bullish"
+    bearish_1h = trend_1h == "bearish"
 
     has_5 = bool(tf_5)
     has_15 = bool(tf_15)
@@ -256,76 +219,108 @@ def classify_asset(timeframes):
     state = "NO_DATA"
     action = "WAIT"
     grade = "C"
+    conviction = "LOW"
     strategy_type = "none"
     alignment = "mixed"
     recommendation = "Esperar."
-    reason = "No hay señales suficientes."
+    reason = "No hay señales frescas suficientes."
 
-    if has_1h and not has_15:
-        if bullish_context:
-            state = "BULLISH_CONTEXT"
-            strategy_type = "radar"
-            reason = "1h bullish, falta confirmación 15m."
-        elif bearish_context:
-            state = "BEARISH_CONTEXT"
-            strategy_type = "radar"
-            reason = "1h bearish, falta confirmación 15m."
+    if has_1h and not has_15 and not has_5:
+        if bullish_1h:
+            state = "PRE_LONG"
+            strategy_type = "swing_theta_radar"
+            alignment = "bullish_context"
+            reason = "1h bullish fresco, falta confirmación 15m y gatillo 5m."
+            recommendation = "Radar alcista temprano. No ejecutar todavía."
+        elif bearish_1h:
+            state = "PRE_SHORT"
+            strategy_type = "short_or_covered_call_radar"
+            alignment = "bearish_context"
+            reason = "1h bearish fresco, falta confirmación 15m y gatillo 5m."
+            recommendation = "Radar bajista temprano. No ejecutar todavía."
         else:
-            state = "MIXED_CONTEXT"
-            reason = "1h sin dirección clara."
+            state = "MIXED"
+            reason = "1h fresco pero sin dirección clara."
 
     elif has_1h and has_15 and not has_5:
-        if bullish_context and bullish_confirm:
+        if bullish_1h and bullish_15:
             state = "PRE_LONG"
             strategy_type = "swing_theta_radar"
             alignment = "bullish"
             reason = "1h y 15m bullish. Falta gatillo fresco de 5m."
-            recommendation = "Radar alcista: esperar gatillo 5m para swing long o naked put."
-        elif bearish_context and bearish_confirm:
+            recommendation = "Preparar swing long o naked put; esperar gatillo 5m."
+        elif bearish_1h and bearish_15:
             state = "PRE_SHORT"
             strategy_type = "short_or_covered_call_radar"
             alignment = "bearish"
             reason = "1h y 15m bearish. Falta gatillo fresco de 5m."
-            recommendation = "Radar bajista: esperar gatillo 5m para short o covered call/sell call."
+            recommendation = "Preparar short táctico o covered call; esperar gatillo 5m."
         else:
-            state = "WAIT"
+            state = "MIXED"
             reason = "1h y 15m no están alineados."
 
     elif has_1h and has_15 and has_5:
-        if bullish_context and bullish_confirm and bullish_5:
-            state = "LONG_READY"
+        if bullish_1h and bullish_15 and bullish_5:
             action = setup_5
-            strategy_type = "intraday_a_plus_or_swing_long"
             alignment = "bullish"
-            reason = "Confluencia alcista: 1h bullish, 15m bullish y gatillo 5m alineado."
-            recommendation = "Evaluar entrada long o timing para naked put, siempre validando precio, riesgo e invalidación."
-        elif bearish_context and bearish_confirm and bearish_5:
-            state = "SHORT_READY"
+            strategy_type = "swing_long_theta_or_intraday_a"
+            if score_5 >= 90 and fresh_5 >= 75:
+                state = "LONG_ACTIVE"
+                reason = "Momentum alcista activo con 1h, 15m y 5m alineados."
+            elif score_5 >= 80:
+                state = "LONG_READY"
+                reason = "Confluencia alcista multi-timeframe con gatillo 5m."
+            else:
+                state = "PARTIAL_LONG"
+                reason = "Alineación alcista, pero el gatillo 5m no tiene suficiente fuerza."
+            recommendation = "Evaluar long táctico o timing para naked put; validar riesgo e invalidación."
+
+        elif bearish_1h and bearish_15 and bearish_5:
             action = setup_5
-            strategy_type = "intraday_a_plus_or_sell_call"
             alignment = "bearish"
-            reason = "Confluencia bajista: 1h bearish, 15m bearish y gatillo 5m alineado."
-            recommendation = "Evaluar short táctico o covered call/sell call si existe posición base."
-        elif bullish_context and bullish_5:
+            strategy_type = "short_tactical_or_sell_call"
+            if score_5 >= 90 and fresh_5 >= 75:
+                state = "SHORT_ACTIVE"
+                reason = "Momentum bajista activo con 1h, 15m y 5m alineados."
+            elif score_5 >= 80:
+                state = "SHORT_READY"
+                reason = "Confluencia bajista multi-timeframe con gatillo 5m."
+            else:
+                state = "PARTIAL_SHORT"
+                reason = "Alineación bajista, pero el gatillo 5m no tiene suficiente fuerza."
+            recommendation = "Evaluar short táctico o covered call/sell call; validar riesgo e invalidación."
+
+        elif bullish_1h and bullish_5 and not bullish_15:
             state = "PARTIAL_LONG"
             action = setup_5
-            strategy_type = "partial_radar"
             alignment = "partial_bullish"
-            reason = "5m y 1h alcistas, pero falta confirmación fuerte de 15m."
-            recommendation = "No entrar agresivo. Esperar confirmación 15m."
-        elif bearish_context and bearish_5:
+            strategy_type = "partial_radar"
+            reason = "1h y 5m alcistas, pero falta confirmación 15m."
+            recommendation = "No ejecutar agresivo; esperar confirmación 15m."
+
+        elif bearish_1h and bearish_5 and not bearish_15:
             state = "PARTIAL_SHORT"
             action = setup_5
-            strategy_type = "partial_radar"
             alignment = "partial_bearish"
-            reason = "5m y 1h bajistas, pero falta confirmación fuerte de 15m."
-            recommendation = "No entrar agresivo. Esperar confirmación 15m."
+            strategy_type = "partial_radar"
+            reason = "1h y 5m bajistas, pero falta confirmación 15m."
+            recommendation = "No ejecutar agresivo; esperar confirmación 15m."
+
         else:
             state = "WAIT"
-            reason = "Hay datos frescos, pero no existe confluencia operable."
+            reason = "Hay señales frescas, pero no existe confluencia operable."
+
+    if state in ["LONG_ACTIVE", "SHORT_ACTIVE"]:
+        conviction = "VERY_HIGH" if weighted_score >= 88 else "HIGH"
+    elif state in ["LONG_READY", "SHORT_READY"]:
+        conviction = "HIGH" if weighted_score >= 80 else "MEDIUM"
+    elif state in ["PRE_LONG", "PRE_SHORT", "PARTIAL_LONG", "PARTIAL_SHORT"]:
+        conviction = "MEDIUM" if weighted_score >= 70 else "LOW"
+    else:
+        conviction = "LOW"
 
     if action != "WAIT":
-        if weighted_score >= 88 and alignment in ["bullish", "bearish"]:
+        if weighted_score >= 88 and conviction in ["VERY_HIGH", "HIGH"]:
             grade = "A+"
         elif weighted_score >= 80:
             grade = "A"
@@ -336,10 +331,18 @@ def classify_asset(timeframes):
     else:
         if state in ["PRE_LONG", "PRE_SHORT"] and weighted_score >= 70:
             grade = "B"
-        elif state in ["BULLISH_CONTEXT", "BEARISH_CONTEXT"]:
-            grade = "C"
         else:
             grade = "C"
+
+    if state in ["LONG_ACTIVE"] and score_5 >= 95:
+        state = "EXTENDED_LONG"
+        recommendation = "No perseguir. Esperar pullback o nueva base."
+        reason = "Momentum alcista fuerte pero potencialmente extendido."
+
+    if state in ["SHORT_ACTIVE"] and score_5 >= 95:
+        state = "EXTENDED_SHORT"
+        recommendation = "No perseguir. Esperar rebote o nueva base."
+        reason = "Momentum bajista fuerte pero potencialmente extendido."
 
     entry = tf_5.get("entry") or tf_5.get("price") or tf_15.get("price") or tf_1h.get("price")
     stop = tf_5.get("stop")
@@ -356,6 +359,7 @@ def classify_asset(timeframes):
     return {
         "state": state,
         "grade": grade,
+        "conviction": conviction,
         "action": action,
         "strategy_type": strategy_type,
         "alignment": alignment,
@@ -378,11 +382,11 @@ def build_dashboard():
 
     for ticker, timeframes in trade_store.items():
         c = classify_asset(timeframes)
-
         dashboard.append({
             "ticker": ticker,
             "state": c["state"],
             "grade": c["grade"],
+            "conviction": c["conviction"],
             "action": c["action"],
             "strategy_type": c["strategy_type"],
             "alignment": c["alignment"],
@@ -394,10 +398,15 @@ def build_dashboard():
         })
 
     grade_order = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
+    conviction_order = {"VERY_HIGH": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 
     return sorted(
         dashboard,
-        key=lambda x: (grade_order.get(x["grade"], 0), x["weighted_score"]),
+        key=lambda x: (
+            grade_order.get(x["grade"], 0),
+            conviction_order.get(x["conviction"], 0),
+            x["weighted_score"]
+        ),
         reverse=True
     )
 
@@ -407,23 +416,24 @@ def market_regime():
     qqq = classify_asset(trade_store.get("QQQ", {})) if "QQQ" in trade_store else None
     tlt = classify_asset(trade_store.get("TLT", {})) if "TLT" in trade_store else None
 
-    signals = []
+    bullish = 0
+    bearish = 0
 
     for item in [spy, qqq]:
         if item:
-            if item["alignment"] == "bullish":
-                signals.append("bullish")
-            elif item["alignment"] == "bearish":
-                signals.append("bearish")
+            if item["alignment"] in ["bullish", "bullish_context", "partial_bullish"]:
+                bullish += 1
+            if item["alignment"] in ["bearish", "bearish_context", "partial_bearish"]:
+                bearish += 1
 
-    if signals.count("bullish") >= 2:
-        regime = "risk_on"
-        summary = "SPY y QQQ muestran sesgo alcista alineado."
-    elif signals.count("bearish") >= 2:
-        regime = "risk_off"
-        summary = "SPY y QQQ muestran sesgo bajista alineado."
+    if bullish >= 2:
+        regime = "RISK_ON"
+        summary = "SPY y QQQ muestran sesgo alcista."
+    elif bearish >= 2:
+        regime = "RISK_OFF"
+        summary = "SPY y QQQ muestran sesgo bajista."
     else:
-        regime = "mixed_or_chop"
+        regime = "MIXED_OR_CHOP"
         summary = "No hay alineación clara entre índices principales."
 
     return {
@@ -445,22 +455,20 @@ def startup():
 def root():
     return {
         "status": "alive",
-        "engine": "Super Engine Bolsa v1.0",
-        "mode": "hybrid institutional: swing + theta core, intraday only A/A+",
+        "engine": "Super Engine Bolsa v1.1",
+        "mode": "Institutional State Machine",
     }
 
 
 @app.get("/health")
 def health():
     signals = load_signals()
-    last_signal = signals[-1] if signals else None
-
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v1.0",
+        "engine": "Super Engine Bolsa v1.1",
         "total_signals": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
-        "last_signal": last_signal,
+        "last_signal": signals[-1] if signals else None,
         "expiration_minutes": EXPIRATION_MINUTES,
     }
 
@@ -492,7 +500,6 @@ async def tradingview_webhook(request: Request):
         trade_store[ticker] = {}
 
     trade_store[ticker][timeframe] = parsed
-
     save_signal(parsed)
 
     return {
@@ -536,7 +543,7 @@ def get_report():
     regime = market_regime()
 
     lines = []
-    lines.append("SUPER ENGINE BOLSA v1.0 — REPORTE INSTITUCIONAL")
+    lines.append("SUPER ENGINE BOLSA v1.1 — INSTITUTIONAL STATE MACHINE")
     lines.append(f"Generado UTC: {now_utc().isoformat()}")
     lines.append("")
     lines.append("RÉGIMEN DE MERCADO")
@@ -546,63 +553,45 @@ def get_report():
 
     if not dashboard:
         lines.append("No hay señales suficientes todavía.")
-        return {
-            "generated_at": now_utc().isoformat(),
-            "report": "\n".join(lines),
-            "dashboard": [],
-        }
+        return {"generated_at": now_utc().isoformat(), "report": "\n".join(lines), "dashboard": []}
 
-    ready = [x for x in dashboard if x["state"] in ["LONG_READY", "SHORT_READY"]]
+    ready = [x for x in dashboard if x["state"] in ["LONG_READY", "SHORT_READY", "LONG_ACTIVE", "SHORT_ACTIVE"]]
+    extended = [x for x in dashboard if x["state"] in ["EXTENDED_LONG", "EXTENDED_SHORT"]]
     radar = [x for x in dashboard if x["state"] in ["PRE_LONG", "PRE_SHORT", "PARTIAL_LONG", "PARTIAL_SHORT"]]
-    context = [x for x in dashboard if x["state"] in ["BULLISH_CONTEXT", "BEARISH_CONTEXT"]]
-    avoid = [x for x in dashboard if x["state"] in ["WAIT", "NO_DATA", "MIXED_CONTEXT"]]
+    avoid = [x for x in dashboard if x["state"] in ["WAIT", "NO_DATA", "MIXED", "MIXED_OR_CHOP"]]
 
     lines.append("RESUMEN EJECUTIVO")
-    lines.append(f"- Listos para evaluación: {len(ready)}")
-    lines.append(f"- Radar / casi listos: {len(radar)}")
-    lines.append(f"- Contexto sin gatillo: {len(context)}")
-    lines.append(f"- Evitar / sin setup: {len(avoid)}")
+    lines.append(f"- Setups listos/activos: {len(ready)}")
+    lines.append(f"- Extendidos/no perseguir: {len(extended)}")
+    lines.append(f"- Radar: {len(radar)}")
+    lines.append(f"- Evitar/sin edge: {len(avoid)}")
     lines.append("")
 
     if ready:
-        lines.append("🔥 SETUPS LISTOS")
+        lines.append("🔥 SETUPS LISTOS / ACTIVOS")
         for x in ready:
-            lines.append(
-                f"- {x['ticker']} | {x['grade']} | {x['state']} | "
-                f"Score {x['weighted_score']} | {x['recommendation']} | {x['reason']}"
-            )
+            lines.append(f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | Score {x['weighted_score']} | {x['recommendation']} | {x['reason']}")
+        lines.append("")
+
+    if extended:
+        lines.append("⚠️ EXTENDIDOS — NO PERSEGUIR")
+        for x in extended:
+            lines.append(f"- {x['ticker']} | {x['state']} | Score {x['weighted_score']} | {x['reason']}")
         lines.append("")
 
     if radar:
-        lines.append("👀 RADAR")
+        lines.append("👀 RADAR / EN FORMACIÓN")
         for x in radar:
-            lines.append(
-                f"- {x['ticker']} | {x['grade']} | {x['state']} | "
-                f"Score {x['weighted_score']} | Falta: {', '.join(x['missing_timeframes']) if x['missing_timeframes'] else 'confirmación'} | "
-                f"{x['reason']}"
-            )
-        lines.append("")
-
-    if context:
-        lines.append("📌 CONTEXTO")
-        for x in context:
-            lines.append(
-                f"- {x['ticker']} | {x['state']} | {x['reason']}"
-            )
+            missing = ", ".join(x["missing_timeframes"]) if x["missing_timeframes"] else "confirmación"
+            lines.append(f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | Falta: {missing} | {x['reason']}")
         lines.append("")
 
     if avoid:
-        lines.append("⚠️ EVITAR POR AHORA")
+        lines.append("⚪ EVITAR / SIN EDGE")
         for x in avoid:
-            lines.append(
-                f"- {x['ticker']} | {x['state']} | {x['reason']}"
-            )
+            lines.append(f"- {x['ticker']} | {x['state']} | {x['reason']}")
 
-    return {
-        "generated_at": now_utc().isoformat(),
-        "report": "\n".join(lines),
-        "dashboard": dashboard,
-    }
+    return {"generated_at": now_utc().isoformat(), "report": "\n".join(lines), "dashboard": dashboard}
 
 
 @app.get("/latest")
@@ -613,7 +602,6 @@ def latest():
 @app.get("/history")
 def history(limit: int = 100):
     signals = load_signals()
-
     return {
         "total_signals": len(signals),
         "showing": min(limit, len(signals)),
@@ -627,7 +615,6 @@ def dashboard_html():
     regime = market_regime()
 
     rows = ""
-
     color_map = {
         "A+": "#0B6E4F",
         "A": "#1A936F",
@@ -637,11 +624,11 @@ def dashboard_html():
 
     for item in dashboard:
         color = color_map.get(item["grade"], "#999")
-
         rows += f"""
         <tr>
             <td>{item['ticker']}</td>
             <td style="background:{color}; color:white; font-weight:bold;">{item['grade']}</td>
+            <td>{item['conviction']}</td>
             <td>{item['state']}</td>
             <td>{item['action']}</td>
             <td>{item['weighted_score']}</td>
@@ -664,7 +651,7 @@ def dashboard_html():
         </style>
     </head>
     <body>
-        <h1>Super Engine Bolsa v1.0</h1>
+        <h1>Super Engine Bolsa v1.1</h1>
         <div class="regime">
             <b>Market Regime:</b> {regime['regime']}<br>
             <b>Lectura:</b> {regime['summary']}
@@ -673,6 +660,7 @@ def dashboard_html():
             <tr>
                 <th>Ticker</th>
                 <th>Grade</th>
+                <th>Conviction</th>
                 <th>State</th>
                 <th>Action</th>
                 <th>Score</th>
@@ -684,5 +672,4 @@ def dashboard_html():
     </body>
     </html>
     """
-
     return html
