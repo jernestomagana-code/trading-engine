@@ -58,6 +58,7 @@ def extract_json_from_text(text: str):
 
     start = text.find("{")
     end = text.rfind("}")
+
     if start != -1 and end != -1 and end > start:
         try:
             return json.loads(text[start:end + 1])
@@ -69,6 +70,7 @@ def extract_json_from_text(text: str):
 
 def normalize_timeframe(tf):
     tf = str(tf).lower().replace("min", "").replace("m", "").strip()
+
     if tf == "5":
         return "5m"
     if tf == "15":
@@ -77,6 +79,7 @@ def normalize_timeframe(tf):
         return "1h"
     if tf in ["d", "1d", "day"]:
         return "1d"
+
     return tf or "unknown"
 
 
@@ -104,6 +107,7 @@ def signal_age_minutes(signal):
     received_at = signal.get("received_at")
     if not received_at:
         return None
+
     try:
         received_dt = datetime.fromisoformat(received_at)
         return round((now_utc() - received_dt).total_seconds() / 60, 2)
@@ -115,21 +119,24 @@ def is_expired(signal, timeframe):
     age = signal_age_minutes(signal)
     if age is None:
         return True
-    limit = EXPIRATION_MINUTES.get(timeframe, 60)
-    return age > limit
+
+    return age > EXPIRATION_MINUTES.get(timeframe, 60)
 
 
 def freshness_score(signal, timeframe):
     age = signal_age_minutes(signal)
     if age is None:
         return 0
+
     limit = EXPIRATION_MINUTES.get(timeframe, 60)
+
     if age <= limit * 0.25:
         return 100
     if age <= limit * 0.50:
         return 75
     if age <= limit:
         return 50
+
     return 0
 
 
@@ -166,12 +173,16 @@ def get_score(signal):
 def rebuild_store_from_history():
     signals = load_signals()
     store = {}
+
     for signal in signals[-3000:]:
         ticker = str(signal.get("ticker", "UNKNOWN")).upper().strip()
         tf = normalize_timeframe(signal.get("timeframe", "unknown"))
+
         if ticker not in store:
             store[ticker] = {}
+
         store[ticker][tf] = signal
+
     return store
 
 
@@ -186,7 +197,6 @@ def classify_asset(timeframes):
     setup_5 = get_setup(tf_5)
     setup_15 = get_setup(tf_15)
 
-    trend_5 = get_trend(tf_5)
     trend_15 = get_trend(tf_15)
     trend_1h = get_trend(tf_1h)
     trend_1d = get_trend(tf_1d)
@@ -273,7 +283,7 @@ def classify_asset(timeframes):
             else:
                 state = "PARTIAL_LONG"
                 reason = "Alineación alcista, pero el gatillo 5m no tiene suficiente fuerza."
-            recommendation = "Evaluar long táctico o timing para naked put; validar riesgo e invalidación."
+            recommendation = "Evaluar swing long, intradía A/A+ o timing para naked put; validar riesgo e invalidación."
 
         elif bearish_1h and bearish_15 and bearish_5:
             action = setup_5
@@ -305,7 +315,6 @@ def classify_asset(timeframes):
             strategy_type = "partial_radar"
             reason = "1h y 5m bajistas, pero falta confirmación 15m."
             recommendation = "No ejecutar agresivo; esperar confirmación 15m."
-
         else:
             state = "WAIT"
             reason = "Hay señales frescas, pero no existe confluencia operable."
@@ -334,12 +343,12 @@ def classify_asset(timeframes):
         else:
             grade = "C"
 
-    if state in ["LONG_ACTIVE"] and score_5 >= 95:
+    if state == "LONG_ACTIVE" and score_5 >= 95:
         state = "EXTENDED_LONG"
         recommendation = "No perseguir. Esperar pullback o nueva base."
         reason = "Momentum alcista fuerte pero potencialmente extendido."
 
-    if state in ["SHORT_ACTIVE"] and score_5 >= 95:
+    if state == "SHORT_ACTIVE" and score_5 >= 95:
         state = "EXTENDED_SHORT"
         recommendation = "No perseguir. Esperar rebote o nueva base."
         reason = "Momentum bajista fuerte pero potencialmente extendido."
@@ -356,6 +365,8 @@ def classify_asset(timeframes):
     if not has_5:
         missing.append("5m")
 
+    priority_score = calculate_priority_score(state, grade, conviction, weighted_score, freshness_weighted, alignment)
+
     return {
         "state": state,
         "grade": grade,
@@ -366,6 +377,7 @@ def classify_asset(timeframes):
         "weighted_score": weighted_score,
         "technical_score": round(technical_score, 2),
         "freshness_weighted": round(freshness_weighted, 2),
+        "priority_score": priority_score,
         "recommendation": recommendation,
         "reason": reason,
         "entry": entry,
@@ -377,11 +389,100 @@ def classify_asset(timeframes):
     }
 
 
+def calculate_priority_score(state, grade, conviction, weighted_score, freshness_weighted, alignment):
+    score = weighted_score
+
+    if grade == "A+":
+        score += 10
+    elif grade == "A":
+        score += 6
+    elif grade == "B":
+        score += 2
+
+    if conviction == "VERY_HIGH":
+        score += 10
+    elif conviction == "HIGH":
+        score += 6
+    elif conviction == "MEDIUM":
+        score += 2
+
+    if state in ["LONG_READY", "SHORT_READY"]:
+        score += 8
+    elif state in ["LONG_ACTIVE", "SHORT_ACTIVE"]:
+        score += 6
+    elif state in ["PRE_LONG", "PRE_SHORT"]:
+        score += 3
+    elif state in ["EXTENDED_LONG", "EXTENDED_SHORT"]:
+        score -= 12
+    elif state in ["WAIT", "MIXED", "NO_DATA"]:
+        score -= 15
+
+    if alignment in ["bullish", "bearish"]:
+        score += 5
+    elif "partial" in alignment:
+        score -= 3
+
+    if freshness_weighted < 50:
+        score -= 10
+
+    return round(max(0, min(score, 100)), 2)
+
+
+def strategy_selection(classification):
+    state = classification["state"]
+    alignment = classification["alignment"]
+    grade = classification["grade"]
+    conviction = classification["conviction"]
+
+    if state in ["LONG_READY", "LONG_ACTIVE"] and grade in ["A+", "A"]:
+        return {
+            "primary_strategy": "Swing Long / Tactical Long",
+            "secondary_strategy": "Naked Put if IV is attractive",
+            "avoid": "No perseguir si está extendido",
+        }
+
+    if state in ["PRE_LONG", "PARTIAL_LONG"]:
+        return {
+            "primary_strategy": "Radar Swing Long",
+            "secondary_strategy": "Preparar Naked Put si confirma 5m/15m",
+            "avoid": "Entrada anticipada sin gatillo fresco",
+        }
+
+    if state in ["SHORT_READY", "SHORT_ACTIVE"] and grade in ["A+", "A"]:
+        return {
+            "primary_strategy": "Tactical Short",
+            "secondary_strategy": "Covered Call / Sell Call if holding shares",
+            "avoid": "Short si está sobreextendido",
+        }
+
+    if state in ["PRE_SHORT", "PARTIAL_SHORT"]:
+        return {
+            "primary_strategy": "Radar Bearish",
+            "secondary_strategy": "Covered Call si existe posición",
+            "avoid": "Short agresivo sin confirmación",
+        }
+
+    if state in ["EXTENDED_LONG", "EXTENDED_SHORT"]:
+        return {
+            "primary_strategy": "Defense / Wait",
+            "secondary_strategy": "Esperar pullback o nueva base",
+            "avoid": "Perseguir movimiento",
+        }
+
+    return {
+        "primary_strategy": "Wait / No Trade",
+        "secondary_strategy": "Capital preservation",
+        "avoid": "Forzar operación sin edge",
+    }
+
+
 def build_dashboard():
     dashboard = []
 
     for ticker, timeframes in trade_store.items():
         c = classify_asset(timeframes)
+        strategy = strategy_selection(c)
+
         dashboard.append({
             "ticker": ticker,
             "state": c["state"],
@@ -389,24 +490,21 @@ def build_dashboard():
             "conviction": c["conviction"],
             "action": c["action"],
             "strategy_type": c["strategy_type"],
+            "primary_strategy": strategy["primary_strategy"],
+            "secondary_strategy": strategy["secondary_strategy"],
+            "avoid": strategy["avoid"],
             "alignment": c["alignment"],
             "weighted_score": c["weighted_score"],
+            "priority_score": c["priority_score"],
             "freshness_weighted": c["freshness_weighted"],
             "recommendation": c["recommendation"],
             "reason": c["reason"],
             "missing_timeframes": c["missing_timeframes"],
         })
 
-    grade_order = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
-    conviction_order = {"VERY_HIGH": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
-
     return sorted(
         dashboard,
-        key=lambda x: (
-            grade_order.get(x["grade"], 0),
-            conviction_order.get(x["conviction"], 0),
-            x["weighted_score"]
-        ),
+        key=lambda x: (x["priority_score"], x["weighted_score"]),
         reverse=True
     )
 
@@ -455,8 +553,8 @@ def startup():
 def root():
     return {
         "status": "alive",
-        "engine": "Super Engine Bolsa v1.1",
-        "mode": "Institutional State Machine",
+        "engine": "Super Engine Bolsa v2.0",
+        "mode": "Full Institutional Engine",
     }
 
 
@@ -465,7 +563,7 @@ def health():
     signals = load_signals()
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v1.1",
+        "engine": "Super Engine Bolsa v2.0",
         "total_signals": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
         "last_signal": signals[-1] if signals else None,
@@ -522,18 +620,27 @@ def get_trade_context(ticker: str):
             "message": "No hay datos todavía para este ticker."
         }
 
+    c = classify_asset(trade_store[ticker])
+    c["strategy_selection"] = strategy_selection(c)
+
     return {
         "ticker": ticker,
-        "classification": classify_asset(trade_store[ticker])
+        "classification": c
     }
 
 
 @app.get("/get_dashboard")
 def get_dashboard():
+    dashboard = build_dashboard()
+
+    for i, item in enumerate(dashboard, start=1):
+        item["priority_rank"] = i
+
     return {
         "generated_at": now_utc().isoformat(),
         "market_regime": market_regime(),
-        "dashboard": build_dashboard()
+        "dashboard": dashboard,
+        "best_setups": dashboard[:5],
     }
 
 
@@ -542,8 +649,11 @@ def get_report():
     dashboard = build_dashboard()
     regime = market_regime()
 
+    for i, item in enumerate(dashboard, start=1):
+        item["priority_rank"] = i
+
     lines = []
-    lines.append("SUPER ENGINE BOLSA v1.1 — INSTITUTIONAL STATE MACHINE")
+    lines.append("SUPER ENGINE BOLSA v2.0 — FULL INSTITUTIONAL ENGINE")
     lines.append(f"Generado UTC: {now_utc().isoformat()}")
     lines.append("")
     lines.append("RÉGIMEN DE MERCADO")
@@ -567,23 +677,37 @@ def get_report():
     lines.append(f"- Evitar/sin edge: {len(avoid)}")
     lines.append("")
 
+    lines.append("🏆 TOP PRIORITY SETUPS")
+    for x in dashboard[:5]:
+        lines.append(
+            f"{x['priority_rank']}. {x['ticker']} | {x['grade']} | {x['conviction']} | "
+            f"{x['state']} | Priority {x['priority_score']} | {x['primary_strategy']}"
+        )
+    lines.append("")
+
     if ready:
         lines.append("🔥 SETUPS LISTOS / ACTIVOS")
         for x in ready:
-            lines.append(f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | Score {x['weighted_score']} | {x['recommendation']} | {x['reason']}")
+            lines.append(
+                f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | "
+                f"Priority {x['priority_score']} | {x['recommendation']} | {x['reason']}"
+            )
         lines.append("")
 
     if extended:
         lines.append("⚠️ EXTENDIDOS — NO PERSEGUIR")
         for x in extended:
-            lines.append(f"- {x['ticker']} | {x['state']} | Score {x['weighted_score']} | {x['reason']}")
+            lines.append(f"- {x['ticker']} | {x['state']} | Priority {x['priority_score']} | {x['reason']}")
         lines.append("")
 
     if radar:
         lines.append("👀 RADAR / EN FORMACIÓN")
         for x in radar:
             missing = ", ".join(x["missing_timeframes"]) if x["missing_timeframes"] else "confirmación"
-            lines.append(f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | Falta: {missing} | {x['reason']}")
+            lines.append(
+                f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | "
+                f"Priority {x['priority_score']} | Falta: {missing} | {x['reason']}"
+            )
         lines.append("")
 
     if avoid:
@@ -591,7 +715,12 @@ def get_report():
         for x in avoid:
             lines.append(f"- {x['ticker']} | {x['state']} | {x['reason']}")
 
-    return {"generated_at": now_utc().isoformat(), "report": "\n".join(lines), "dashboard": dashboard}
+    return {
+        "generated_at": now_utc().isoformat(),
+        "report": "\n".join(lines),
+        "dashboard": dashboard,
+        "best_setups": dashboard[:5],
+    }
 
 
 @app.get("/latest")
@@ -622,15 +751,17 @@ def dashboard_html():
         "C": "#E76F51",
     }
 
-    for item in dashboard:
+    for i, item in enumerate(dashboard, start=1):
         color = color_map.get(item["grade"], "#999")
         rows += f"""
         <tr>
+            <td>{i}</td>
             <td>{item['ticker']}</td>
             <td style="background:{color}; color:white; font-weight:bold;">{item['grade']}</td>
             <td>{item['conviction']}</td>
             <td>{item['state']}</td>
-            <td>{item['action']}</td>
+            <td>{item['primary_strategy']}</td>
+            <td>{item['priority_score']}</td>
             <td>{item['weighted_score']}</td>
             <td>{item['alignment']}</td>
             <td>{item['reason']}</td>
@@ -651,18 +782,20 @@ def dashboard_html():
         </style>
     </head>
     <body>
-        <h1>Super Engine Bolsa v1.1</h1>
+        <h1>Super Engine Bolsa v2.0</h1>
         <div class="regime">
             <b>Market Regime:</b> {regime['regime']}<br>
             <b>Lectura:</b> {regime['summary']}
         </div>
         <table>
             <tr>
+                <th>Rank</th>
                 <th>Ticker</th>
                 <th>Grade</th>
                 <th>Conviction</th>
                 <th>State</th>
-                <th>Action</th>
+                <th>Strategy</th>
+                <th>Priority</th>
                 <th>Score</th>
                 <th>Alignment</th>
                 <th>Reason</th>
@@ -672,4 +805,5 @@ def dashboard_html():
     </body>
     </html>
     """
+
     return html
