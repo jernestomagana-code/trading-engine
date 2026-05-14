@@ -4,10 +4,14 @@ from datetime import datetime, timezone
 import json
 import re
 import os
+import requests
 
 app = FastAPI()
 
 SIGNALS_FILE = "signals_history.json"
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -32,7 +36,79 @@ def safe_float(value, default=0.0):
         return default
 
 
-def load_signals():
+def supabase_enabled():
+    return bool(SUPABASE_URL and SUPABASE_KEY)
+
+
+def supabase_headers(prefer="return=minimal"):
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": prefer,
+    }
+
+
+def supabase_insert_signal(signal):
+    if not supabase_enabled():
+        return {"enabled": False, "saved": False, "error": "Supabase env vars missing"}
+
+    url = f"{SUPABASE_URL}/rest/v1/trading_signals"
+
+    payload = {
+        "ticker": signal.get("ticker", "UNKNOWN"),
+        "timeframe": signal.get("timeframe", "unknown"),
+        "setup": signal.get("setup"),
+        "trend": signal.get("trend"),
+        "score": safe_float(signal.get("score", signal.get("technical_score", 0)), None),
+        "price": safe_float(signal.get("price", signal.get("close", 0)), None),
+        "state": signal.get("state"),
+        "grade": signal.get("grade"),
+        "conviction": signal.get("conviction"),
+        "priority_score": safe_float(signal.get("priority_score", 0), None),
+        "received_at": signal.get("received_at"),
+        "payload": signal,
+    }
+
+    try:
+        response = requests.post(url, headers=supabase_headers(), json=payload, timeout=10)
+        if response.status_code in [200, 201, 204]:
+            return {"enabled": True, "saved": True, "status_code": response.status_code}
+        return {
+            "enabled": True,
+            "saved": False,
+            "status_code": response.status_code,
+            "error": response.text[:500],
+        }
+    except Exception as e:
+        return {"enabled": True, "saved": False, "error": str(e)}
+
+
+def supabase_fetch_signals(limit=3000):
+    if not supabase_enabled():
+        return []
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/trading_signals"
+        f"?select=payload&order=received_at.desc&limit={limit}"
+    )
+
+    try:
+        response = requests.get(url, headers=supabase_headers(""), timeout=10)
+        if response.status_code != 200:
+            return []
+        rows = response.json()
+        signals = []
+        for row in rows:
+            payload = row.get("payload")
+            if isinstance(payload, dict):
+                signals.append(payload)
+        return list(reversed(signals))
+    except Exception:
+        return []
+
+
+def load_signals_from_file():
     if os.path.exists(SIGNALS_FILE):
         try:
             with open(SIGNALS_FILE, "r") as f:
@@ -42,12 +118,25 @@ def load_signals():
     return []
 
 
-def save_signal(signal):
-    signals = load_signals()
+def load_signals(limit=3000):
+    supabase_signals = supabase_fetch_signals(limit=limit)
+    if supabase_signals:
+        return supabase_signals
+
+    return load_signals_from_file()[-limit:]
+
+
+def save_signal_file(signal):
+    signals = load_signals_from_file()
     signals.append(signal)
     signals = signals[-10000:]
     with open(SIGNALS_FILE, "w") as f:
         json.dump(signals, f, indent=2)
+
+
+def save_signal(signal):
+    save_signal_file(signal)
+    return supabase_insert_signal(signal)
 
 
 def extract_json_from_text(text: str):
@@ -171,10 +260,10 @@ def get_score(signal):
 
 
 def rebuild_store_from_history():
-    signals = load_signals()
+    signals = load_signals(limit=3000)
     store = {}
 
-    for signal in signals[-3000:]:
+    for signal in signals:
         ticker = str(signal.get("ticker", "UNKNOWN")).upper().strip()
         tf = normalize_timeframe(signal.get("timeframe", "unknown"))
 
@@ -184,6 +273,45 @@ def rebuild_store_from_history():
         store[ticker][tf] = signal
 
     return store
+
+
+def calculate_priority_score(state, grade, conviction, weighted_score, freshness_weighted, alignment):
+    score = weighted_score
+
+    if grade == "A+":
+        score += 10
+    elif grade == "A":
+        score += 6
+    elif grade == "B":
+        score += 2
+
+    if conviction == "VERY_HIGH":
+        score += 10
+    elif conviction == "HIGH":
+        score += 6
+    elif conviction == "MEDIUM":
+        score += 2
+
+    if state in ["LONG_READY", "SHORT_READY"]:
+        score += 8
+    elif state in ["LONG_ACTIVE", "SHORT_ACTIVE"]:
+        score += 6
+    elif state in ["PRE_LONG", "PRE_SHORT"]:
+        score += 3
+    elif state in ["EXTENDED_LONG", "EXTENDED_SHORT"]:
+        score -= 12
+    elif state in ["WAIT", "MIXED", "NO_DATA"]:
+        score -= 15
+
+    if alignment in ["bullish", "bearish"]:
+        score += 5
+    elif "partial" in alignment:
+        score -= 3
+
+    if freshness_weighted < 50:
+        score -= 10
+
+    return round(max(0, min(score, 100)), 2)
 
 
 def classify_asset(timeframes):
@@ -199,7 +327,6 @@ def classify_asset(timeframes):
 
     trend_15 = get_trend(tf_15)
     trend_1h = get_trend(tf_1h)
-    trend_1d = get_trend(tf_1d)
 
     score_5 = get_score(tf_5)
     score_15 = get_score(tf_15)
@@ -389,50 +516,9 @@ def classify_asset(timeframes):
     }
 
 
-def calculate_priority_score(state, grade, conviction, weighted_score, freshness_weighted, alignment):
-    score = weighted_score
-
-    if grade == "A+":
-        score += 10
-    elif grade == "A":
-        score += 6
-    elif grade == "B":
-        score += 2
-
-    if conviction == "VERY_HIGH":
-        score += 10
-    elif conviction == "HIGH":
-        score += 6
-    elif conviction == "MEDIUM":
-        score += 2
-
-    if state in ["LONG_READY", "SHORT_READY"]:
-        score += 8
-    elif state in ["LONG_ACTIVE", "SHORT_ACTIVE"]:
-        score += 6
-    elif state in ["PRE_LONG", "PRE_SHORT"]:
-        score += 3
-    elif state in ["EXTENDED_LONG", "EXTENDED_SHORT"]:
-        score -= 12
-    elif state in ["WAIT", "MIXED", "NO_DATA"]:
-        score -= 15
-
-    if alignment in ["bullish", "bearish"]:
-        score += 5
-    elif "partial" in alignment:
-        score -= 3
-
-    if freshness_weighted < 50:
-        score -= 10
-
-    return round(max(0, min(score, 100)), 2)
-
-
 def strategy_selection(classification):
     state = classification["state"]
-    alignment = classification["alignment"]
     grade = classification["grade"]
-    conviction = classification["conviction"]
 
     if state in ["LONG_READY", "LONG_ACTIVE"] and grade in ["A+", "A"]:
         return {
@@ -553,18 +639,19 @@ def startup():
 def root():
     return {
         "status": "alive",
-        "engine": "Super Engine Bolsa v2.0",
-        "mode": "Full Institutional Engine",
+        "engine": "Super Engine Bolsa v2.1",
+        "mode": "Full Institutional Engine + Supabase Persistence",
     }
 
 
 @app.get("/health")
 def health():
-    signals = load_signals()
+    signals = load_signals(limit=100)
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v2.0",
-        "total_signals": len(signals),
+        "engine": "Super Engine Bolsa v2.1",
+        "supabase_enabled": supabase_enabled(),
+        "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
         "last_signal": signals[-1] if signals else None,
         "expiration_minutes": EXPIRATION_MINUTES,
@@ -598,13 +685,25 @@ async def tradingview_webhook(request: Request):
         trade_store[ticker] = {}
 
     trade_store[ticker][timeframe] = parsed
-    save_signal(parsed)
+
+    classification = classify_asset(trade_store[ticker])
+    parsed["state"] = classification["state"]
+    parsed["grade"] = classification["grade"]
+    parsed["conviction"] = classification["conviction"]
+    parsed["priority_score"] = classification["priority_score"]
+
+    trade_store[ticker][timeframe] = parsed
+
+    storage_result = save_signal(parsed)
 
     return {
         "status": "ok",
+        "engine": "v2.1",
         "message": f"Webhook received for {ticker} {timeframe}",
         "ticker": ticker,
         "timeframe": timeframe,
+        "storage": storage_result,
+        "classification": classification,
         "data": parsed,
     }
 
@@ -638,6 +737,8 @@ def get_dashboard():
 
     return {
         "generated_at": now_utc().isoformat(),
+        "engine": "v2.1",
+        "supabase_enabled": supabase_enabled(),
         "market_regime": market_regime(),
         "dashboard": dashboard,
         "best_setups": dashboard[:5],
@@ -653,7 +754,7 @@ def get_report():
         item["priority_rank"] = i
 
     lines = []
-    lines.append("SUPER ENGINE BOLSA v2.0 — FULL INSTITUTIONAL ENGINE")
+    lines.append("SUPER ENGINE BOLSA v2.1 — FULL INSTITUTIONAL ENGINE + SUPABASE")
     lines.append(f"Generado UTC: {now_utc().isoformat()}")
     lines.append("")
     lines.append("RÉGIMEN DE MERCADO")
@@ -717,6 +818,8 @@ def get_report():
 
     return {
         "generated_at": now_utc().isoformat(),
+        "engine": "v2.1",
+        "supabase_enabled": supabase_enabled(),
         "report": "\n".join(lines),
         "dashboard": dashboard,
         "best_setups": dashboard[:5],
@@ -730,9 +833,10 @@ def latest():
 
 @app.get("/history")
 def history(limit: int = 100):
-    signals = load_signals()
+    signals = load_signals(limit=limit)
     return {
-        "total_signals": len(signals),
+        "engine": "v2.1",
+        "supabase_enabled": supabase_enabled(),
         "showing": min(limit, len(signals)),
         "signals": signals[-limit:]
     }
@@ -779,10 +883,12 @@ def dashboard_html():
             th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
             th {{ background: #111; color: white; }}
             .regime {{ padding: 15px; background: white; margin-bottom: 20px; border-left: 5px solid #111; }}
+            .meta {{ font-size: 13px; color: #555; margin-bottom: 20px; }}
         </style>
     </head>
     <body>
-        <h1>Super Engine Bolsa v2.0</h1>
+        <h1>Super Engine Bolsa v2.1</h1>
+        <div class="meta">Supabase enabled: {supabase_enabled()}</div>
         <div class="regime">
             <b>Market Regime:</b> {regime['regime']}<br>
             <b>Lectura:</b> {regime['summary']}
