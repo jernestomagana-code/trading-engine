@@ -3,4 +3,4 @@ uvicorn
 pandas
 bumpy
 requests
-supabase
+supabase==2.15.3
