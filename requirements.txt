@@ -1,6 +1,5 @@
 fastapi
 uvicorn
 pandas
-bumpy
+numpy
 requests
-supabase==2.15.3
