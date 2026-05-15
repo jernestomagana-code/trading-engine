@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 import json
 import re
 import os
 import requests
 
-app = FastAPI()
+app = FastAPI(title="Super Engine Bolsa", version="3.0.0")
 
 SIGNALS_FILE = "signals_history.json"
 
@@ -21,6 +23,20 @@ EXPIRATION_MINUTES = {
 }
 
 trade_store = {}
+
+
+class TradingSignal(BaseModel):
+    ticker: Optional[str] = Field(default="UNKNOWN")
+    timeframe: Optional[str] = Field(default="unknown")
+    setup: Optional[str] = Field(default="WAIT")
+    trend: Optional[str] = Field(default="")
+    score: Optional[float] = Field(default=0)
+    price: Optional[float] = Field(default=None)
+    state: Optional[str] = Field(default=None)
+    grade: Optional[str] = Field(default=None)
+    conviction: Optional[str] = Field(default=None)
+    priority_score: Optional[float] = Field(default=None)
+    extra: Optional[Dict[str, Any]] = Field(default=None)
 
 
 def now_utc():
@@ -78,7 +94,7 @@ def supabase_insert_signal(signal):
             "enabled": True,
             "saved": False,
             "status_code": response.status_code,
-            "error": response.text[:500],
+            "error": response.text[:800],
         }
     except Exception as e:
         return {"enabled": True, "saved": False, "error": str(e)}
@@ -108,6 +124,27 @@ def supabase_fetch_signals(limit=3000):
         return []
 
 
+def supabase_count_signals():
+    if not supabase_enabled():
+        return {"enabled": False, "count": 0}
+
+    url = f"{SUPABASE_URL}/rest/v1/trading_signals?select=id"
+
+    try:
+        headers = supabase_headers("")
+        headers["Prefer"] = "count=exact"
+        response = requests.get(url, headers=headers, timeout=10)
+        count_header = response.headers.get("content-range", "")
+        return {
+            "enabled": True,
+            "status_code": response.status_code,
+            "content_range": count_header,
+            "ok": response.status_code in [200, 206],
+        }
+    except Exception as e:
+        return {"enabled": True, "ok": False, "error": str(e)}
+
+
 def load_signals_from_file():
     if os.path.exists(SIGNALS_FILE):
         try:
@@ -122,7 +159,6 @@ def load_signals(limit=3000):
     supabase_signals = supabase_fetch_signals(limit=limit)
     if supabase_signals:
         return supabase_signals
-
     return load_signals_from_file()[-limit:]
 
 
@@ -147,7 +183,6 @@ def extract_json_from_text(text: str):
 
     start = text.find("{")
     end = text.rfind("}")
-
     if start != -1 and end != -1 and end > start:
         try:
             return json.loads(text[start:end + 1])
@@ -208,7 +243,6 @@ def is_expired(signal, timeframe):
     age = signal_age_minutes(signal)
     if age is None:
         return True
-
     return age > EXPIRATION_MINUTES.get(timeframe, 60)
 
 
@@ -629,6 +663,32 @@ def market_regime():
     }
 
 
+def stats_from_signals(signals):
+    by_ticker = {}
+    by_timeframe = {}
+    by_setup = {}
+    by_state = {}
+
+    for s in signals:
+        ticker = str(s.get("ticker", "UNKNOWN")).upper()
+        timeframe = str(s.get("timeframe", "unknown"))
+        setup = str(s.get("setup", "WAIT"))
+        state = str(s.get("state", "NO_DATA"))
+
+        by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
+        by_timeframe[timeframe] = by_timeframe.get(timeframe, 0) + 1
+        by_setup[setup] = by_setup.get(setup, 0) + 1
+        by_state[state] = by_state.get(state, 0) + 1
+
+    return {
+        "total_signals": len(signals),
+        "by_ticker": by_ticker,
+        "by_timeframe": by_timeframe,
+        "by_setup": by_setup,
+        "by_state": by_state,
+    }
+
+
 @app.on_event("startup")
 def startup():
     global trade_store
@@ -639,8 +699,8 @@ def startup():
 def root():
     return {
         "status": "alive",
-        "engine": "Super Engine Bolsa v2.1",
-        "mode": "Full Institutional Engine + Supabase Persistence",
+        "engine": "Super Engine Bolsa v3.0",
+        "mode": "Stable Institutional Core",
     }
 
 
@@ -649,7 +709,7 @@ def health():
     signals = load_signals(limit=100)
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v2.1",
+        "engine": "Super Engine Bolsa v3.0",
         "supabase_enabled": supabase_enabled(),
         "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
@@ -698,10 +758,51 @@ async def tradingview_webhook(request: Request):
 
     return {
         "status": "ok",
-        "engine": "v2.1",
+        "engine": "v3.0",
         "message": f"Webhook received for {ticker} {timeframe}",
         "ticker": ticker,
         "timeframe": timeframe,
+        "storage": storage_result,
+        "classification": classification,
+        "data": parsed,
+    }
+
+
+@app.post("/test_signal")
+def test_signal(signal: TradingSignal):
+    parsed = signal.dict(exclude_none=True)
+
+    if parsed.get("extra"):
+        parsed.update(parsed.pop("extra"))
+
+    ticker = find_ticker(parsed, json.dumps(parsed))
+    timeframe = normalize_timeframe(parsed.get("timeframe", "unknown"))
+
+    parsed["ticker"] = ticker
+    parsed["timeframe"] = timeframe
+    parsed["received_at"] = now_utc().isoformat()
+    parsed["saved_at"] = now_utc().isoformat()
+    parsed["source"] = "manual_test"
+
+    if ticker not in trade_store:
+        trade_store[ticker] = {}
+
+    trade_store[ticker][timeframe] = parsed
+
+    classification = classify_asset(trade_store[ticker])
+    parsed["state"] = classification["state"]
+    parsed["grade"] = classification["grade"]
+    parsed["conviction"] = classification["conviction"]
+    parsed["priority_score"] = classification["priority_score"]
+
+    trade_store[ticker][timeframe] = parsed
+
+    storage_result = save_signal(parsed)
+
+    return {
+        "status": "ok",
+        "engine": "v3.0",
+        "message": f"Test signal saved for {ticker} {timeframe}",
         "storage": storage_result,
         "classification": classification,
         "data": parsed,
@@ -737,7 +838,7 @@ def get_dashboard():
 
     return {
         "generated_at": now_utc().isoformat(),
-        "engine": "v2.1",
+        "engine": "v3.0",
         "supabase_enabled": supabase_enabled(),
         "market_regime": market_regime(),
         "dashboard": dashboard,
@@ -754,7 +855,7 @@ def get_report():
         item["priority_rank"] = i
 
     lines = []
-    lines.append("SUPER ENGINE BOLSA v2.1 — FULL INSTITUTIONAL ENGINE + SUPABASE")
+    lines.append("SUPER ENGINE BOLSA v3.0 — STABLE INSTITUTIONAL CORE")
     lines.append(f"Generado UTC: {now_utc().isoformat()}")
     lines.append("")
     lines.append("RÉGIMEN DE MERCADO")
@@ -818,7 +919,7 @@ def get_report():
 
     return {
         "generated_at": now_utc().isoformat(),
-        "engine": "v2.1",
+        "engine": "v3.0",
         "supabase_enabled": supabase_enabled(),
         "report": "\n".join(lines),
         "dashboard": dashboard,
@@ -835,10 +936,67 @@ def latest():
 def history(limit: int = 100):
     signals = load_signals(limit=limit)
     return {
-        "engine": "v2.1",
+        "engine": "v3.0",
         "supabase_enabled": supabase_enabled(),
         "showing": min(limit, len(signals)),
         "signals": signals[-limit:]
+    }
+
+
+@app.get("/stats")
+def stats(limit: int = 1000):
+    signals = load_signals(limit=limit)
+    return {
+        "engine": "v3.0",
+        "generated_at": now_utc().isoformat(),
+        "stats": stats_from_signals(signals),
+    }
+
+
+@app.get("/stats/ticker/{ticker}")
+def stats_ticker(ticker: str, limit: int = 1000):
+    ticker = ticker.upper().strip()
+    signals = [s for s in load_signals(limit=limit) if str(s.get("ticker", "")).upper() == ticker]
+    return {
+        "engine": "v3.0",
+        "ticker": ticker,
+        "generated_at": now_utc().isoformat(),
+        "stats": stats_from_signals(signals),
+        "signals": signals[-50:],
+    }
+
+
+@app.get("/debug/supabase")
+def debug_supabase():
+    return {
+        "engine": "v3.0",
+        "supabase_enabled": supabase_enabled(),
+        "supabase_url_present": bool(SUPABASE_URL),
+        "supabase_key_present": bool(SUPABASE_KEY),
+        "count_test": supabase_count_signals(),
+    }
+
+
+@app.get("/debug/routes")
+def debug_routes():
+    return {
+        "engine": "v3.0",
+        "routes": [
+            "/",
+            "/health",
+            "/webhook/tradingview",
+            "/test_signal",
+            "/get_trade_context",
+            "/get_dashboard",
+            "/get_report",
+            "/latest",
+            "/history",
+            "/stats",
+            "/stats/ticker/{ticker}",
+            "/debug/supabase",
+            "/debug/routes",
+            "/dashboard_html",
+        ]
     }
 
 
@@ -887,7 +1045,7 @@ def dashboard_html():
         </style>
     </head>
     <body>
-        <h1>Super Engine Bolsa v2.1</h1>
+        <h1>Super Engine Bolsa v3.0</h1>
         <div class="meta">Supabase enabled: {supabase_enabled()}</div>
         <div class="regime">
             <b>Market Regime:</b> {regime['regime']}<br>
