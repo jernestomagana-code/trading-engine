@@ -306,6 +306,198 @@ def debug_scoring(ticker: str = "QQQ"):
     c = classify_asset(trade_store[ticker])
     return {"engine": "v4.0", "ticker": ticker, "classification": c, "strategy": strategy_selection_v4(c, regime), "probability": probability_engine(c, regime), "risk": risk_engine(c, regime), "theta": theta_engine(c, regime), "expected_pl": expected_pl_engine(c)}
 
+
+
+# ==============================
+# V4 COMPLETION PATCH
+# Adds v4 report/html/routes without touching v3 endpoints.
+# ==============================
+
+@app.get("/get_report_v4")
+def get_report_v4():
+    dashboard = build_dashboard_v4()
+    regime = v4_market_regime()
+
+    for i, item in enumerate(dashboard, start=1):
+        item["priority_rank"] = i
+
+    lines = []
+    lines.append("SUPER ENGINE BOLSA v4.0 — DECISION INTELLIGENCE CORE")
+    lines.append(f"Generado UTC: {now_utc().isoformat()}")
+    lines.append("")
+    lines.append("RÉGIMEN DE MERCADO")
+    lines.append(f"- Estado: {regime['regime']}")
+    lines.append(f"- Lectura: {regime['summary']}")
+    lines.append("")
+
+    if not dashboard:
+        lines.append("No hay señales suficientes todavía.")
+        return {
+            "generated_at": now_utc().isoformat(),
+            "engine": "v4.0",
+            "report": "\n".join(lines),
+            "dashboard": []
+        }
+
+    ready = [x for x in dashboard if x["state"] in ["LONG_READY", "SHORT_READY", "LONG_ACTIVE", "SHORT_ACTIVE"]]
+    extended = [x for x in dashboard if x["state"] in ["EXTENDED_LONG", "EXTENDED_SHORT"]]
+    radar = [x for x in dashboard if x["state"] in ["PRE_LONG", "PRE_SHORT", "PARTIAL_LONG", "PARTIAL_SHORT"]]
+    avoid = [x for x in dashboard if not x["risk"]["trade_allowed"]]
+
+    lines.append("RESUMEN EJECUTIVO")
+    lines.append(f"- Setups listos/activos: {len(ready)}")
+    lines.append(f"- Extendidos/no perseguir: {len(extended)}")
+    lines.append(f"- Radar: {len(radar)}")
+    lines.append(f"- Evitar/sin edge/riesgo alto: {len(avoid)}")
+    lines.append("")
+
+    lines.append("TOP PRIORITY SETUPS")
+    for x in dashboard[:5]:
+        lines.append(
+            f"{x['priority_rank']}. {x['ticker']} | {x['grade']} | {x['conviction']} | "
+            f"{x['state']} | Priority {x['priority_score']} | Prob {x['probability']['probability_estimate']}% | "
+            f"Risk {x['risk']['risk_level']} | {x['primary_strategy']}"
+        )
+
+    if ready:
+        lines.append("")
+        lines.append("SETUPS LISTOS / ACTIVOS")
+        for x in ready:
+            lines.append(
+                f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | "
+                f"Priority {x['priority_score']} | Prob {x['probability']['probability_estimate']}% | "
+                f"{x['recommendation']} | {x['reason']}"
+            )
+
+    if radar:
+        lines.append("")
+        lines.append("RADAR / EN FORMACIÓN")
+        for x in radar:
+            missing = ", ".join(x["missing_timeframes"]) if x["missing_timeframes"] else "confirmación"
+            lines.append(
+                f"- {x['ticker']} | {x['grade']} | {x['state']} | "
+                f"Priority {x['priority_score']} | Falta: {missing} | {x['reason']}"
+            )
+
+    if extended:
+        lines.append("")
+        lines.append("EXTENDIDOS — NO PERSEGUIR")
+        for x in extended:
+            lines.append(f"- {x['ticker']} | {x['state']} | {x['reason']}")
+
+    return {
+        "generated_at": now_utc().isoformat(),
+        "engine": "v4.0",
+        "supabase_enabled": supabase_enabled(),
+        "report": "\n".join(lines),
+        "dashboard": dashboard,
+        "best_setups": dashboard[:5],
+    }
+
+
+@app.get("/dashboard_html_v4", response_class=HTMLResponse)
+def dashboard_html_v4():
+    dashboard = build_dashboard_v4()
+    regime = v4_market_regime()
+
+    rows = ""
+    color_map = {
+        "A+": "#0B6E4F",
+        "A": "#1A936F",
+        "B": "#F4A261",
+        "C": "#E76F51",
+    }
+
+    for i, item in enumerate(dashboard, start=1):
+        color = color_map.get(item["grade"], "#999")
+        prob = item.get("probability", {}).get("probability_estimate", "")
+        risk = item.get("risk", {}).get("risk_level", "")
+        theta = item.get("theta", {}).get("naked_put_bias", "")
+        allowed = item.get("risk", {}).get("trade_allowed", False)
+
+        rows += (
+            "<tr>"
+            f"<td>{i}</td>"
+            f"<td>{item['ticker']}</td>"
+            f"<td style='background:{color}; color:white; font-weight:bold;'>{item['grade']}</td>"
+            f"<td>{item['conviction']}</td>"
+            f"<td>{item['state']}</td>"
+            f"<td>{item['primary_strategy']}</td>"
+            f"<td>{theta}</td>"
+            f"<td>{prob}%</td>"
+            f"<td>{risk}</td>"
+            f"<td>{allowed}</td>"
+            f"<td>{item['priority_score']}</td>"
+            f"<td>{item['weighted_score']}</td>"
+            f"<td>{item['alignment']}</td>"
+            f"<td>{item['reason']}</td>"
+            "</tr>"
+        )
+
+    html = (
+        "<html><head><title>Super Engine Bolsa v4 Dashboard</title>"
+        "<style>"
+        "body{font-family:Arial;margin:30px;background:#f7f7f7}"
+        "h1{color:#111}"
+        "table{border-collapse:collapse;width:100%;background:white}"
+        "th,td{border:1px solid #ddd;padding:10px;text-align:left;font-size:13px}"
+        "th{background:#111;color:white}"
+        ".regime{padding:15px;background:white;margin-bottom:20px;border-left:5px solid #111}"
+        ".meta{font-size:13px;color:#555;margin-bottom:20px}"
+        "</style></head><body>"
+        "<h1>Super Engine Bolsa v4.0</h1>"
+        f"<div class='meta'>Supabase enabled: {supabase_enabled()}</div>"
+        f"<div class='regime'><b>Market Regime:</b> {regime['regime']}<br><b>Lectura:</b> {regime['summary']}</div>"
+        "<table><tr>"
+        "<th>Rank</th><th>Ticker</th><th>Grade</th><th>Conviction</th><th>State</th>"
+        "<th>Strategy</th><th>Theta</th><th>Prob</th><th>Risk</th><th>Allowed</th>"
+        "<th>Priority</th><th>Score</th><th>Alignment</th><th>Reason</th>"
+        "</tr>"
+        f"{rows}"
+        "</table></body></html>"
+    )
+
+    return html
+
+
+@app.get("/debug/routes_v4")
+def debug_routes_v4():
+    return {
+        "engine": "v4.0",
+        "preserved_v3_routes": [
+            "/",
+            "/health",
+            "/webhook/tradingview",
+            "/test_signal",
+            "/get_trade_context",
+            "/get_dashboard",
+            "/get_report",
+            "/latest",
+            "/history",
+            "/stats",
+            "/stats/ticker/{ticker}",
+            "/debug/supabase",
+            "/debug/routes",
+            "/dashboard_html",
+        ],
+        "added_v4_routes": [
+            "/gpt_report",
+            "/get_dashboard_v4",
+            "/get_report_v4",
+            "/get_trade_context_v4",
+            "/dashboard_html_v4",
+            "/position_sizing",
+            "/evaluate_option",
+            "/debug/regime",
+            "/debug/scoring",
+            "/debug/routes_v4",
+        ],
+    }
+
+# ==============================
+# END V4 COMPLETION PATCH
+# ==============================
+
 # ==============================
 # END V4 ADDITIVE LAYER
 # ==============================
