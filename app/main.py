@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
@@ -10,12 +10,14 @@ import os
 import math
 import requests
 
-app = FastAPI(title="Super Engine Bolsa", version="4.0.0")
+app = FastAPI(title="Super Engine Bolsa", version="5.0.0")
 
 SIGNALS_FILE = "signals_history.json"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -30,8 +32,9 @@ MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 0
 INITIAL_WINDOW_MINUTES = 150
+MIN_PRICE_FOR_THETA = 100
 
-trade_store = {}
+trade_store: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 class TradingSignal(BaseModel):
@@ -45,6 +48,16 @@ class TradingSignal(BaseModel):
     stop: Optional[float] = Field(default=None)
     target: Optional[float] = Field(default=None)
     iv_rank: Optional[float] = Field(default=None)
+    iv_percentile: Optional[float] = Field(default=None)
+    historical_volatility: Optional[float] = Field(default=None)
+    implied_volatility: Optional[float] = Field(default=None)
+    gamma_bias: Optional[str] = Field(default=None)
+    options_flow_bias: Optional[str] = Field(default=None)
+    support_near: Optional[bool] = Field(default=None)
+    resistance_near: Optional[bool] = Field(default=None)
+    earnings_soon: Optional[bool] = Field(default=None)
+    event_risk: Optional[bool] = Field(default=None)
+    asset_class: Optional[str] = Field(default="EQUITY")
     volume_relative: Optional[float] = Field(default=None)
     rsi: Optional[float] = Field(default=None)
     macd_state: Optional[str] = Field(default=None)
@@ -54,6 +67,8 @@ class TradingSignal(BaseModel):
     grade: Optional[str] = Field(default=None)
     conviction: Optional[str] = Field(default=None)
     priority_score: Optional[float] = Field(default=None)
+    strategy_hint: Optional[str] = Field(default=None)
+    final_decision: Optional[str] = Field(default=None)
     extra: Optional[Dict[str, Any]] = Field(default=None)
 
 
@@ -73,6 +88,10 @@ class OptionEvalRequest(BaseModel):
     account_size: Optional[float] = None
     margin_required: Optional[float] = None
     iv_rank: Optional[float] = None
+    price: Optional[float] = None
+    support_near: Optional[bool] = None
+    resistance_near: Optional[bool] = None
+    earnings_soon: Optional[bool] = None
 
 
 def now_utc():
@@ -140,6 +159,16 @@ def safe_float(value, default=0.0):
         return float(value)
     except Exception:
         return default
+
+
+def safe_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ["true", "1", "yes", "y", "si", "sí"]
+    return bool(value)
 
 
 def supabase_enabled():
@@ -412,6 +441,13 @@ def get_score(signal):
     return safe_float(signal.get("score", signal.get("technical_score", 0)), 0)
 
 
+def get_latest_field(timeframes, field, default=None):
+    for tf in ["5m", "15m", "1h", "1d"]:
+        if tf in timeframes and timeframes[tf].get(field) is not None:
+            return timeframes[tf].get(field)
+    return default
+
+
 def rebuild_store_from_history():
     signals = load_signals(limit=3000)
     store = {}
@@ -480,6 +516,7 @@ def classify_asset(timeframes):
 
     trend_15 = get_trend(tf_15)
     trend_1h = get_trend(tf_1h)
+    trend_1d = get_trend(tf_1d)
 
     score_5 = get_score(tf_5)
     score_15 = get_score(tf_15)
@@ -515,10 +552,13 @@ def classify_asset(timeframes):
 
     bullish_1h = trend_1h == "bullish"
     bearish_1h = trend_1h == "bearish"
+    bullish_1d = trend_1d == "bullish"
+    bearish_1d = trend_1d == "bearish"
 
     has_5 = bool(tf_5)
     has_15 = bool(tf_15)
     has_1h = bool(tf_1h)
+    has_1d = bool(tf_1d)
 
     execution_window = inside_execution_window()
     session_state = market_session_state()
@@ -666,8 +706,8 @@ def classify_asset(timeframes):
         "PRE_SHORT",
     ]:
         state = "EXPIRED_SETUP"
-        recommendation = "Ventana operativa cerrada."
-        reason = "La oportunidad operativa quedó fuera de las primeras 2.5 horas posteriores a la apertura del mercado."
+        recommendation = "Ventana operativa cerrada para estrategias intradía."
+        reason = "La oportunidad intradía quedó fuera de las primeras 2.5 horas posteriores a la apertura del mercado. Estrategias swing/theta se evalúan por separado en V5."
         grade = "C"
         conviction = "LOW"
         action = "WAIT"
@@ -685,6 +725,7 @@ def classify_asset(timeframes):
     entry = tf_5.get("entry") or tf_5.get("price") or tf_15.get("price") or tf_1h.get("price")
     stop = tf_5.get("stop")
     target = tf_5.get("target")
+    price = tf_5.get("price") or tf_15.get("price") or tf_1h.get("price") or tf_1d.get("price")
 
     missing = []
     if not has_1h:
@@ -702,6 +743,22 @@ def classify_asset(timeframes):
         freshness_weighted,
         alignment,
     )
+
+    latest_data = {
+        "price": price,
+        "iv_rank": get_latest_field(active, "iv_rank"),
+        "iv_percentile": get_latest_field(active, "iv_percentile"),
+        "implied_volatility": get_latest_field(active, "implied_volatility"),
+        "historical_volatility": get_latest_field(active, "historical_volatility"),
+        "gamma_bias": get_latest_field(active, "gamma_bias"),
+        "options_flow_bias": get_latest_field(active, "options_flow_bias"),
+        "support_near": get_latest_field(active, "support_near"),
+        "resistance_near": get_latest_field(active, "resistance_near"),
+        "earnings_soon": get_latest_field(active, "earnings_soon"),
+        "event_risk": get_latest_field(active, "event_risk"),
+        "asset_class": get_latest_field(active, "asset_class", "EQUITY"),
+        "strategy_hint": get_latest_field(active, "strategy_hint"),
+    }
 
     return {
         "execution_window": execution_window,
@@ -722,9 +779,25 @@ def classify_asset(timeframes):
         "entry": entry,
         "stop": stop,
         "target": target,
+        "price": price,
         "missing_timeframes": missing,
         "active_timeframes": active,
         "all_timeframes": timeframes,
+        "tf_flags": {
+            "has_5m": has_5,
+            "has_15m": has_15,
+            "has_1h": has_1h,
+            "has_1d": has_1d,
+            "bullish_5m": bullish_5,
+            "bearish_5m": bearish_5,
+            "bullish_15m": bullish_15,
+            "bearish_15m": bearish_15,
+            "bullish_1h": bullish_1h,
+            "bearish_1h": bearish_1h,
+            "bullish_1d": bullish_1d,
+            "bearish_1d": bearish_1d,
+        },
+        "latest_data": latest_data,
     }
 
 
@@ -769,9 +842,9 @@ def strategy_selection(classification):
 
     if state == "EXPIRED_SETUP":
         return {
-            "primary_strategy": "Wait / Expired",
-            "secondary_strategy": "Esperar nueva señal fresca dentro de la ventana operativa",
-            "avoid": "Operar fuera de ventana",
+            "primary_strategy": "Wait / Expired Intraday",
+            "secondary_strategy": "Evaluar swing/theta por matriz V5 si el contexto aplica",
+            "avoid": "Operar intradía fuera de ventana",
         }
 
     return {
@@ -781,7 +854,7 @@ def strategy_selection(classification):
     }
 
 
-def v4_alignment_score(classification):
+def v5_alignment_score(classification):
     alignment = classification.get("alignment", "mixed")
     missing = classification.get("missing_timeframes", [])
 
@@ -801,7 +874,7 @@ def probability_engine(classification, regime="MIXED_OR_CHOP"):
     state = classification.get("state", "NO_DATA")
     priority = safe_float(classification.get("priority_score"), 0)
     freshness = safe_float(classification.get("freshness_weighted"), 0)
-    alignment_score = v4_alignment_score(classification)
+    alignment_score = v5_alignment_score(classification)
 
     base = 45
     base += (priority - 50) * 0.28
@@ -850,11 +923,11 @@ def probability_engine(classification, regime="MIXED_OR_CHOP"):
         "confidence": confidence,
         "risk": risk,
         "alignment_score": alignment_score,
-        "note": "Heurístico interno v4 basado en score, alineación, frescura y régimen. Aún no usa IV/flow/gamma reales.",
+        "note": "Heurístico interno V5 basado en score, alineación, frescura, régimen y matriz por estrategia. Aún no usa APIs reales de IV/flow/gamma.",
     }
 
 
-def risk_engine(classification, regime="MIXED_OR_CHOP"):
+def risk_engine(classification, regime="MIXED_OR_CHOP", strategy_name="NO_TRADE", window_required=False):
     state = classification.get("state", "NO_DATA")
     missing = classification.get("missing_timeframes", [])
     priority = safe_float(classification.get("priority_score"), 0)
@@ -870,22 +943,23 @@ def risk_engine(classification, regime="MIXED_OR_CHOP"):
         warnings.append("Movimiento extendido: no perseguir.")
         allowed = False
 
-    if state == "EXPIRED_SETUP":
-        warnings.append("Ventana operativa cerrada.")
+    if state == "EXPIRED_SETUP" and window_required:
+        warnings.append("Ventana operativa intradía cerrada.")
         allowed = False
 
-    if not classification.get("execution_window", False):
-        warnings.append("Fuera de la ventana inicial de 2.5 horas.")
+    if window_required and not classification.get("execution_window", False):
+        warnings.append("Estrategia requiere ventana inicial de 2.5 horas.")
         allowed = False
 
-    if "5m" in missing and state not in ["PRE_LONG", "PRE_SHORT"]:
-        warnings.append("Falta gatillo 5m.")
-
-    if regime in ["CHOP", "RANGE"] and priority < 85:
-        warnings.append("Régimen de mercado reduce edge.")
+    if "5m" in missing and strategy_name in ["INTRADAY_BREAKOUT", "FUTURES"]:
+        warnings.append("Falta gatillo 5m para estrategia intradía/futuros.")
         allowed = False
 
-    if priority < 65:
+    if regime in ["CHOP", "RANGE"] and priority < 85 and strategy_name in ["INTRADAY_BREAKOUT", "FUTURES"]:
+        warnings.append("Régimen de mercado reduce edge para intradía/futuros.")
+        allowed = False
+
+    if priority < 60 and strategy_name not in ["COVERED_CALL", "EARNINGS"]:
         warnings.append("Priority score insuficiente.")
         allowed = False
 
@@ -918,44 +992,43 @@ def expected_pl_engine(classification, account_size=None):
         "adverse_case_pl": round(-risk_budget, 2),
         "risk_budget_assumption": risk_budget,
         "suggested_units_if_entry_stop_available": units,
-        "note": "P/L conceptual v4. Requiere contrato/opción/cartera para cálculo monetario real.",
+        "note": "P/L conceptual V5. Requiere contrato/opción/cartera para cálculo monetario real.",
     }
 
 
 def theta_engine(classification, regime="MIXED_OR_CHOP"):
     state = classification.get("state")
     priority = classification.get("priority_score", 0)
+    data = classification.get("latest_data", {})
+    iv_rank = safe_float(data.get("iv_rank"), None)
+    support_near = safe_bool(data.get("support_near"), False)
+    resistance_near = safe_bool(data.get("resistance_near"), False)
+    price = safe_float(data.get("price"), 0)
 
-    if state in ["PRE_LONG", "LONG_READY", "LONG_ACTIVE", "PARTIAL_LONG"] and regime in [
+    naked_put_bias = "NEUTRAL"
+    covered_call_bias = "NEUTRAL"
+
+    if state in ["PRE_LONG", "LONG_READY", "LONG_ACTIVE", "PARTIAL_LONG", "EXPIRED_SETUP"] and regime in [
         "STRONG_BULL",
         "BULL",
         "MIXED_OR_CHOP",
         "RISK_ON",
     ]:
-        return {
-            "naked_put_bias": "FAVORABLE" if priority >= 70 else "WATCH",
-            "covered_call_bias": "LOW",
-            "preferred_condition": "Vender put solo si soporte es claro, IV es suficiente y no hay evento binario cercano.",
-        }
+        if priority >= 70 and (iv_rank is None or iv_rank >= 30) and (not price or price >= MIN_PRICE_FOR_THETA):
+            naked_put_bias = "FAVORABLE" if support_near or iv_rank is None or iv_rank >= 50 else "WATCH"
+        else:
+            naked_put_bias = "WATCH"
 
-    if state in ["EXTENDED_LONG"]:
-        return {
-            "naked_put_bias": "WAIT",
-            "covered_call_bias": "FAVORABLE_IF_HOLDING_SHARES",
-            "preferred_condition": "Covered call solo si hay posición, resistencia clara e IV suficiente.",
-        }
+    if state in ["EXTENDED_LONG", "PRE_SHORT", "SHORT_READY", "SHORT_ACTIVE", "PARTIAL_SHORT"]:
+        covered_call_bias = "FAVORABLE_IF_HOLDING_SHARES" if resistance_near or state == "EXTENDED_LONG" else "WATCH"
 
     if state in ["PRE_SHORT", "SHORT_READY", "SHORT_ACTIVE", "PARTIAL_SHORT"]:
-        return {
-            "naked_put_bias": "AVOID",
-            "covered_call_bias": "FAVORABLE_IF_HOLDING_SHARES",
-            "preferred_condition": "Priorizar defensa; no vender puts en deterioro técnico.",
-        }
+        naked_put_bias = "AVOID"
 
     return {
-        "naked_put_bias": "NEUTRAL",
-        "covered_call_bias": "NEUTRAL",
-        "preferred_condition": "No theta trade sin edge técnico/volatilidad.",
+        "naked_put_bias": naked_put_bias,
+        "covered_call_bias": covered_call_bias,
+        "preferred_condition": "Naked put requiere tendencia no bajista, soporte, precio >100 ideal e IV suficiente. Covered call requiere posición, extensión o resistencia.",
     }
 
 
@@ -1013,20 +1086,139 @@ def market_regime():
     }
 
 
-def strategy_selection_v4(classification, regime="MIXED_OR_CHOP"):
+def strategy_matrix_v5(classification, regime="MIXED_OR_CHOP"):
+    state = classification.get("state", "NO_DATA")
+    score = safe_float(classification.get("weighted_score"), 0)
+    priority = safe_float(classification.get("priority_score"), 0)
+    flags = classification.get("tf_flags", {})
+    data = classification.get("latest_data", {})
+
+    has_5 = flags.get("has_5m", False)
+    has_15 = flags.get("has_15m", False)
+    has_1h = flags.get("has_1h", False)
+    has_1d = flags.get("has_1d", False)
+
+    bullish_5 = flags.get("bullish_5m", False)
+    bullish_15 = flags.get("bullish_15m", False)
+    bullish_1h = flags.get("bullish_1h", False)
+    bullish_1d = flags.get("bullish_1d", False)
+    bearish_5 = flags.get("bearish_5m", False)
+    bearish_15 = flags.get("bearish_15m", False)
+    bearish_1h = flags.get("bearish_1h", False)
+    bearish_1d = flags.get("bearish_1d", False)
+
+    price = safe_float(data.get("price"), 0)
+    iv_rank = safe_float(data.get("iv_rank"), None)
+    support_near = safe_bool(data.get("support_near"), False)
+    resistance_near = safe_bool(data.get("resistance_near"), False)
+    earnings_soon = safe_bool(data.get("earnings_soon"), False)
+    event_risk = safe_bool(data.get("event_risk"), False)
+    asset_class = str(data.get("asset_class", "EQUITY")).upper()
+    strategy_hint = str(data.get("strategy_hint") or "").upper()
+
+    candidates = []
+
+    def add_candidate(name, decision, reason, score_boost=0, window_required=False):
+        probability = probability_engine(classification, regime)
+        risk = risk_engine(classification, regime, name, window_required)
+        candidates.append({
+            "strategy": name,
+            "decision": decision,
+            "reason": reason,
+            "score": round(priority + score_boost, 2),
+            "requires_window": window_required,
+            "probability": probability,
+            "risk": risk,
+        })
+
+    if has_1h and has_15 and has_5 and ((bullish_1h and bullish_15 and bullish_5) or (bearish_1h and bearish_15 and bearish_5)):
+        if classification.get("execution_window") and score >= 80:
+            add_candidate("INTRADAY_BREAKOUT", "OPERAR", "1h + 15m + 5m alineados dentro de la ventana inicial.", 12, True)
+        elif score >= 75:
+            add_candidate("INTRADAY_BREAKOUT", "EXPIRADO", "Setup intradía válido, pero fuera de la ventana inicial de 2.5 horas.", -10, True)
+        else:
+            add_candidate("INTRADAY_BREAKOUT", "RADAR", "Alineación intradía incompleta o score insuficiente.", 0, True)
+
+    if bullish_1h and (bullish_1d or not has_1d) and score >= 70:
+        decision = "OPERAR" if score >= 78 and state not in ["EXTENDED_LONG"] else "RADAR"
+        add_candidate("SWING_LONG", decision, "Contexto 1h alcista y 1d alcista/neutro. No requiere ventana de apertura.", 8, False)
+
+    if bearish_1h and bearish_1d and score >= 70:
+        decision = "OPERAR" if score >= 78 and regime in ["BEAR", "PANIC", "MIXED_OR_CHOP"] else "RADAR"
+        add_candidate("SWING_SHORT", decision, "Contexto 1h y 1d bajista. No requiere ventana de apertura.", 8, False)
+
+    theta = theta_engine(classification, regime)
+    if theta["naked_put_bias"] in ["FAVORABLE", "WATCH"]:
+        naked_put_ok = (
+            not bearish_1h
+            and not bearish_1d
+            and priority >= 60
+            and (not price or price >= MIN_PRICE_FOR_THETA)
+            and (iv_rank is None or iv_rank >= 30)
+            and not event_risk
+        )
+        if naked_put_ok and (support_near or iv_rank is None or iv_rank >= 50):
+            add_candidate("NAKED_PUT", "OPERAR", "Tendencia no bajista, score aceptable, precio/IV adecuados y soporte favorable.", 9, False)
+        elif naked_put_ok:
+            add_candidate("NAKED_PUT", "ESPERAR", "Contexto posible para naked put, pero falta soporte claro o IV más atractiva.", 2, False)
+        else:
+            add_candidate("NAKED_PUT", "EVITAR", "No cumple condiciones mínimas de tendencia, precio, IV o riesgo de evento.", -15, False)
+
+    if theta["covered_call_bias"] in ["FAVORABLE_IF_HOLDING_SHARES", "WATCH"]:
+        if state in ["EXTENDED_LONG"] or resistance_near:
+            add_candidate("COVERED_CALL", "OPERAR", "Activo extendido o resistencia cercana; candidato para covered call si ya tienes acciones.", 6, False)
+        else:
+            add_candidate("COVERED_CALL", "RADAR", "Posible covered call, pero falta resistencia/extensión clara.", 0, False)
+
+    if earnings_soon:
+        if iv_rank is not None and iv_rank >= 50 and not event_risk:
+            add_candidate("EARNINGS", "OPERAR", "Earnings próximo con IV alta; evaluar estrategia definida de earnings.", 5, False)
+        else:
+            add_candidate("EARNINGS", "ESPERAR", "Earnings próximo, pero falta IV suficientemente alta o hay riesgo de evento.", -2, False)
+
+    if asset_class in ["FUTURE", "FUTURES"] or strategy_hint in ["FUTURES", "FUTURE", "MNQ", "NQ", "ES"]:
+        if has_1h and has_15 and has_5 and score >= 75:
+            add_candidate("FUTURES", "OPERAR" if classification.get("session_state") in ["OPEN_WINDOW", "AFTER_INITIAL_WINDOW"] else "RADAR", "Futuros con alineación multi-timeframe; requiere gestión por sesión.", 6, False)
+        else:
+            add_candidate("FUTURES", "RADAR", "Futuros en observación; falta alineación completa.", 0, False)
+
+    if not candidates:
+        add_candidate("NO_TRADE", "ESPERAR", "No hay estrategia V5 con edge suficiente.", -20, False)
+
+    preferred_order = {"OPERAR": 5, "RADAR": 4, "ESPERAR": 3, "EXPIRADO": 2, "EVITAR": 1}
+    candidates = sorted(candidates, key=lambda x: (preferred_order.get(x["decision"], 0), x["score"]), reverse=True)
+    best = candidates[0]
+
+    return {
+        "primary": best,
+        "candidates": candidates,
+        "final_decision": best["decision"],
+        "strategy": best["strategy"],
+        "reason": best["reason"],
+        "requires_window": best["requires_window"],
+    }
+
+
+def strategy_selection_v5(classification, regime="MIXED_OR_CHOP"):
     base = strategy_selection(classification)
     probability = probability_engine(classification, regime)
     theta = theta_engine(classification, regime)
-    risk = risk_engine(classification, regime)
     expected_pl = expected_pl_engine(classification)
+    matrix = strategy_matrix_v5(classification, regime)
+    primary = matrix["primary"]
+    risk = primary["risk"]
 
     return {
         **base,
-        "strategy_score": probability["probability_estimate"],
+        "strategy_score": primary["score"],
         "probability": probability,
         "theta": theta,
         "risk": risk,
         "expected_pl": expected_pl,
+        "strategy_matrix": matrix,
+        "final_decision": matrix["final_decision"],
+        "v5_strategy": matrix["strategy"],
+        "v5_reason": matrix["reason"],
     }
 
 
@@ -1037,7 +1229,7 @@ def build_dashboard():
 
     for ticker, timeframes in trade_store.items():
         c = classify_asset(timeframes)
-        strategy = strategy_selection_v4(c, regime)
+        strategy = strategy_selection_v5(c, regime)
 
         dashboard.append(
             {
@@ -1054,10 +1246,14 @@ def build_dashboard():
                 "secondary_strategy": strategy["secondary_strategy"],
                 "avoid": strategy["avoid"],
                 "strategy_score": strategy["strategy_score"],
+                "v5_strategy": strategy["v5_strategy"],
+                "final_decision": strategy["final_decision"],
+                "v5_reason": strategy["v5_reason"],
                 "theta": strategy["theta"],
                 "probability": strategy["probability"],
                 "risk": strategy["risk"],
                 "expected_pl": strategy["expected_pl"],
+                "strategy_matrix": strategy["strategy_matrix"],
                 "alignment": c["alignment"],
                 "alignment_score": strategy["probability"]["alignment_score"],
                 "weighted_score": c["weighted_score"],
@@ -1066,12 +1262,14 @@ def build_dashboard():
                 "recommendation": c["recommendation"],
                 "reason": c["reason"],
                 "missing_timeframes": c["missing_timeframes"],
+                "latest_data": c.get("latest_data", {}),
             }
         )
 
+    decision_order = {"OPERAR": 5, "RADAR": 4, "ESPERAR": 3, "EXPIRADO": 2, "EVITAR": 1}
     return sorted(
         dashboard,
-        key=lambda x: (x["priority_score"], x["weighted_score"]),
+        key=lambda x: (decision_order.get(x["final_decision"], 0), x["strategy_score"], x["priority_score"]),
         reverse=True,
     )
 
@@ -1081,17 +1279,20 @@ def stats_from_signals(signals):
     by_timeframe = {}
     by_setup = {}
     by_state = {}
+    by_decision = {}
 
     for s in signals:
         ticker = str(s.get("ticker", "UNKNOWN")).upper()
         timeframe = str(s.get("timeframe", "unknown"))
         setup = str(s.get("setup", "WAIT"))
         state = str(s.get("state", "NO_DATA"))
+        decision = str(s.get("final_decision", "UNKNOWN"))
 
         by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
         by_timeframe[timeframe] = by_timeframe.get(timeframe, 0) + 1
         by_setup[setup] = by_setup.get(setup, 0) + 1
         by_state[state] = by_state.get(state, 0) + 1
+        by_decision[decision] = by_decision.get(decision, 0) + 1
 
     return {
         "total_signals": len(signals),
@@ -1099,7 +1300,16 @@ def stats_from_signals(signals):
         "by_timeframe": by_timeframe,
         "by_setup": by_setup,
         "by_state": by_state,
+        "by_decision": by_decision,
     }
+
+
+def verify_webhook_secret(x_webhook_secret: Optional[str]):
+    if REQUIRE_WEBHOOK_SECRET:
+        if not WEBHOOK_SECRET:
+            raise HTTPException(status_code=500, detail="WEBHOOK_SECRET required but not configured")
+        if x_webhook_secret != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
 @app.on_event("startup")
@@ -1112,8 +1322,8 @@ def startup():
 def root():
     return {
         "status": "alive",
-        "engine": "Super Engine Bolsa v4.0",
-        "mode": "Decision Intelligence Core",
+        "engine": "Super Engine Bolsa v5.0",
+        "mode": "Strategy Matrix Decision Core",
     }
 
 
@@ -1123,9 +1333,10 @@ def health():
 
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v4.0",
-        "mode": "Decision Intelligence Core",
+        "engine": "Super Engine Bolsa v5.0",
+        "mode": "Strategy Matrix Decision Core",
         "supabase_enabled": supabase_enabled(),
+        "webhook_secret_required": REQUIRE_WEBHOOK_SECRET,
         "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
         "last_signal": signals[-1] if signals else None,
@@ -1141,7 +1352,9 @@ def health():
 
 
 @app.post("/webhook/tradingview")
-async def tradingview_webhook(request: Request):
+async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+    verify_webhook_secret(x_webhook_secret)
+
     raw_body = await request.body()
     raw_text = raw_body.decode("utf-8", errors="ignore").strip()
 
@@ -1170,7 +1383,7 @@ async def tradingview_webhook(request: Request):
 
     classification = classify_asset(trade_store[ticker])
     regime = market_regime().get("regime", "MIXED_OR_CHOP")
-    strategy = strategy_selection_v4(classification, regime)
+    strategy = strategy_selection_v5(classification, regime)
 
     parsed["state"] = classification["state"]
     parsed["grade"] = classification["grade"]
@@ -1178,6 +1391,8 @@ async def tradingview_webhook(request: Request):
     parsed["priority_score"] = classification["priority_score"]
     parsed["execution_window"] = classification["execution_window"]
     parsed["session_state"] = classification["session_state"]
+    parsed["final_decision"] = strategy["final_decision"]
+    parsed["v5_strategy"] = strategy["v5_strategy"]
 
     trade_store[ticker][timeframe] = parsed
 
@@ -1185,7 +1400,7 @@ async def tradingview_webhook(request: Request):
 
     return {
         "status": "ok",
-        "engine": "v4.0",
+        "engine": "v5.0",
         "message": f"Webhook received for {ticker} {timeframe}",
         "ticker": ticker,
         "timeframe": timeframe,
@@ -1219,7 +1434,7 @@ def test_signal(signal: TradingSignal):
 
     classification = classify_asset(trade_store[ticker])
     regime = market_regime().get("regime", "MIXED_OR_CHOP")
-    strategy = strategy_selection_v4(classification, regime)
+    strategy = strategy_selection_v5(classification, regime)
 
     parsed["state"] = classification["state"]
     parsed["grade"] = classification["grade"]
@@ -1227,6 +1442,8 @@ def test_signal(signal: TradingSignal):
     parsed["priority_score"] = classification["priority_score"]
     parsed["execution_window"] = classification["execution_window"]
     parsed["session_state"] = classification["session_state"]
+    parsed["final_decision"] = strategy["final_decision"]
+    parsed["v5_strategy"] = strategy["v5_strategy"]
 
     trade_store[ticker][timeframe] = parsed
 
@@ -1234,7 +1451,7 @@ def test_signal(signal: TradingSignal):
 
     return {
         "status": "ok",
-        "engine": "v4.0",
+        "engine": "v5.0",
         "message": f"Test signal saved for {ticker} {timeframe}",
         "storage": storage_result,
         "classification": classification,
@@ -1256,11 +1473,11 @@ def get_trade_context(ticker: str):
 
     c = classify_asset(trade_store[ticker])
     regime = market_regime().get("regime", "MIXED_OR_CHOP")
-    c["strategy_selection"] = strategy_selection_v4(c, regime)
+    c["strategy_selection"] = strategy_selection_v5(c, regime)
 
     return {
         "ticker": ticker,
-        "engine": "v4.0",
+        "engine": "v5.0",
         "classification": c,
     }
 
@@ -1274,7 +1491,7 @@ def get_dashboard():
 
     return {
         "generated_at": now_utc().isoformat(),
-        "engine": "v4.0",
+        "engine": "v5.0",
         "supabase_enabled": supabase_enabled(),
         "market_regime": market_regime(),
         "dashboard": dashboard,
@@ -1291,7 +1508,7 @@ def get_report():
         item["priority_rank"] = i
 
     lines = []
-    lines.append("SUPER ENGINE BOLSA v4.0 — DECISION INTELLIGENCE CORE")
+    lines.append("SUPER ENGINE BOLSA v5.0 — STRATEGY MATRIX DECISION CORE")
     lines.append(f"Generado UTC: {now_utc().isoformat()}")
     lines.append("")
     lines.append("RÉGIMEN DE MERCADO")
@@ -1299,7 +1516,7 @@ def get_report():
     lines.append(f"- Lectura: {regime['summary']}")
     lines.append(f"- Sesión: {market_session_state()}")
     lines.append(f"- Minutos desde apertura: {round(minutes_since_open(), 1)}")
-    lines.append(f"- Ventana operativa activa: {inside_execution_window()}")
+    lines.append(f"- Ventana intradía activa: {inside_execution_window()}")
     lines.append("")
 
     if not dashboard:
@@ -1307,74 +1524,64 @@ def get_report():
 
         return {
             "generated_at": now_utc().isoformat(),
-            "engine": "v4.0",
+            "engine": "v5.0",
             "report": "\n".join(lines),
             "dashboard": [],
         }
 
-    ready = [x for x in dashboard if x["state"] in ["LONG_READY", "SHORT_READY", "LONG_ACTIVE", "SHORT_ACTIVE"]]
-    extended = [x for x in dashboard if x["state"] in ["EXTENDED_LONG", "EXTENDED_SHORT"]]
-    radar = [x for x in dashboard if x["state"] in ["PRE_LONG", "PRE_SHORT", "PARTIAL_LONG", "PARTIAL_SHORT"]]
-    expired = [x for x in dashboard if x["state"] == "EXPIRED_SETUP"]
-    avoid = [x for x in dashboard if x["state"] in ["WAIT", "NO_DATA", "MIXED", "MIXED_OR_CHOP", "EXPIRED_SETUP"]]
+    operar = [x for x in dashboard if x["final_decision"] == "OPERAR"]
+    radar = [x for x in dashboard if x["final_decision"] == "RADAR"]
+    esperar = [x for x in dashboard if x["final_decision"] == "ESPERAR"]
+    evitar = [x for x in dashboard if x["final_decision"] == "EVITAR"]
+    expirado = [x for x in dashboard if x["final_decision"] == "EXPIRADO"]
 
     lines.append("RESUMEN EJECUTIVO")
-    lines.append(f"- Setups listos/activos: {len(ready)}")
-    lines.append(f"- Extendidos/no perseguir: {len(extended)}")
-    lines.append(f"- Radar: {len(radar)}")
-    lines.append(f"- Expirados por ventana: {len(expired)}")
-    lines.append(f"- Evitar/sin edge: {len(avoid)}")
+    lines.append(f"- OPERAR: {len(operar)}")
+    lines.append(f"- RADAR: {len(radar)}")
+    lines.append(f"- ESPERAR: {len(esperar)}")
+    lines.append(f"- EVITAR: {len(evitar)}")
+    lines.append(f"- EXPIRADO: {len(expirado)}")
     lines.append("")
 
     lines.append("TOP PRIORITY SETUPS")
     for x in dashboard[:5]:
         lines.append(
-            f"{x['priority_rank']}. {x['ticker']} | {x['grade']} | {x['conviction']} | "
-            f"{x['state']} | Priority {x['priority_score']} | Prob {x['probability']['probability_estimate']}% | "
-            f"Risk {x['risk']['risk_level']} | Allowed {x['risk']['trade_allowed']} | {x['primary_strategy']}"
+            f"{x['priority_rank']}. {x['ticker']} | {x['final_decision']} | {x['v5_strategy']} | "
+            f"{x['grade']} | {x['conviction']} | {x['state']} | Priority {x['priority_score']} | "
+            f"Prob {x['probability']['probability_estimate']}% | Risk {x['risk']['risk_level']} | {x['v5_reason']}"
         )
 
     lines.append("")
 
-    if ready:
-        lines.append("SETUPS LISTOS / ACTIVOS")
-        for x in ready:
+    if operar:
+        lines.append("OPERAR")
+        for x in operar:
             lines.append(
-                f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | "
-                f"Priority {x['priority_score']} | {x['recommendation']} | {x['reason']}"
+                f"- {x['ticker']} | {x['v5_strategy']} | {x['grade']} | {x['conviction']} | "
+                f"Priority {x['priority_score']} | {x['v5_reason']}"
             )
-        lines.append("")
-
-    if extended:
-        lines.append("EXTENDIDOS — NO PERSEGUIR")
-        for x in extended:
-            lines.append(f"- {x['ticker']} | {x['state']} | Priority {x['priority_score']} | {x['reason']}")
         lines.append("")
 
     if radar:
-        lines.append("RADAR / EN FORMACIÓN")
+        lines.append("RADAR")
         for x in radar:
-            missing = ", ".join(x["missing_timeframes"]) if x["missing_timeframes"] else "confirmación"
-            lines.append(
-                f"- {x['ticker']} | {x['grade']} | {x['conviction']} | {x['state']} | "
-                f"Priority {x['priority_score']} | Falta: {missing} | {x['reason']}"
-            )
+            lines.append(f"- {x['ticker']} | {x['v5_strategy']} | {x['v5_reason']}")
         lines.append("")
 
-    if expired:
-        lines.append("EXPIRADOS POR VENTANA OPERATIVA")
-        for x in expired:
-            lines.append(f"- {x['ticker']} | {x['state']} | {x['reason']}")
+    if expirado:
+        lines.append("EXPIRADO")
+        for x in expirado:
+            lines.append(f"- {x['ticker']} | {x['v5_strategy']} | {x['v5_reason']}")
         lines.append("")
 
-    if avoid:
-        lines.append("EVITAR / SIN EDGE")
-        for x in avoid:
-            lines.append(f"- {x['ticker']} | {x['state']} | {x['reason']}")
+    if evitar:
+        lines.append("EVITAR")
+        for x in evitar:
+            lines.append(f"- {x['ticker']} | {x['v5_strategy']} | {x['v5_reason']}")
 
     return {
         "generated_at": now_utc().isoformat(),
-        "engine": "v4.0",
+        "engine": "v5.0",
         "supabase_enabled": supabase_enabled(),
         "report": "\n".join(lines),
         "dashboard": dashboard,
@@ -1390,7 +1597,7 @@ def gpt_report():
 
     if not best:
         return {
-            "engine": "v4.0",
+            "engine": "v5.0",
             "market": regime["regime"],
             "status": "NO_DATA",
             "best_setup": None,
@@ -1398,23 +1605,33 @@ def gpt_report():
         }
 
     return {
-        "engine": "v4.0",
-        "market": regime["regime"],
+        "engine": "v5.0",
+        "market_regime": regime["regime"],
         "market_summary": regime["summary"],
         "session_state": market_session_state(),
         "execution_window": inside_execution_window(),
         "minutes_since_open": minutes_since_open(),
-        "best_setup": f"{best['ticker']} {best['state']}",
-        "strategy": best["primary_strategy"],
-        "probability": best["probability"]["probability_estimate"],
-        "confidence": best["probability"]["confidence"],
-        "risk": best["risk"]["risk_level"],
-        "trade_allowed": best["risk"]["trade_allowed"],
-        "plan": best["recommendation"],
-        "avoid": best["avoid"],
-        "top_5": dashboard[:5],
-        "radar": [x for x in dashboard if x["state"] in ["PRE_LONG", "PRE_SHORT", "PARTIAL_LONG", "PARTIAL_SHORT"]][:5],
-        "avoid_list": [x for x in dashboard if not x["risk"]["trade_allowed"]][:5],
+        "top_focus": [
+            {
+                "ticker": x["ticker"],
+                "decision": x["final_decision"],
+                "strategy": x["v5_strategy"],
+                "grade": x["grade"],
+                "conviction": x["conviction"],
+                "priority_score": x["priority_score"],
+                "probability": x["probability"]["probability_estimate"],
+                "risk": x["risk"]["risk_level"],
+                "trade_allowed": x["risk"]["trade_allowed"],
+                "reason": x["v5_reason"],
+                "warnings": x["risk"].get("warnings", []),
+            }
+            for x in dashboard[:5]
+        ],
+        "operate_now": [x for x in dashboard if x["final_decision"] == "OPERAR"][:5],
+        "radar": [x for x in dashboard if x["final_decision"] == "RADAR"][:5],
+        "avoid": [x for x in dashboard if x["final_decision"] in ["EVITAR", "EXPIRADO"]][:5],
+        "best_setup": f"{best['ticker']} {best['final_decision']} {best['v5_strategy']}",
+        "plan": best["v5_reason"],
     }
 
 
@@ -1427,7 +1644,7 @@ def position_sizing(req: PositionSizingRequest):
         return {"error": "Entry and stop cannot be equal."}
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "account_size": req.account_size,
         "risk_percent": req.risk_percent,
         "risk_budget": round(risk_budget, 2),
@@ -1460,21 +1677,48 @@ def evaluate_option(req: OptionEvalRequest):
             iv_comment = "IV rank baja; prima puede no compensar riesgo."
 
     dictamen = "No recomendable: falta contexto técnico reciente."
+    strategy_context = None
 
     if context:
-        theta = theta_engine(context, regime)
+        latest = context.get("latest_data", {})
+        if req.iv_rank is not None:
+            latest["iv_rank"] = req.iv_rank
+        if req.price is not None:
+            latest["price"] = req.price
+        if req.support_near is not None:
+            latest["support_near"] = req.support_near
+        if req.resistance_near is not None:
+            latest["resistance_near"] = req.resistance_near
+        if req.earnings_soon is not None:
+            latest["earnings_soon"] = req.earnings_soon
+        context["latest_data"] = latest
 
-        if req.strategy.upper() in ["NAKED_PUT", "SELL_PUT"] and theta["naked_put_bias"] in ["FAVORABLE", "WATCH"]:
-            dictamen = "Condicional/Favorable: revisar soporte, IV, DTE y assignment risk."
+        matrix = strategy_matrix_v5(context, regime)
+        strategy_context = matrix
 
-        elif req.strategy.upper() in ["COVERED_CALL", "SELL_CALL"] and theta["covered_call_bias"] in ["FAVORABLE_IF_HOLDING_SHARES"]:
-            dictamen = "Condicional/Favorable si ya existe posición y resistencia clara."
+        if req.strategy.upper() in ["NAKED_PUT", "SELL_PUT"]:
+            naked = [c for c in matrix["candidates"] if c["strategy"] == "NAKED_PUT"]
+            if naked and naked[0]["decision"] == "OPERAR":
+                dictamen = "Favorable/condicional para naked put: revisar strike, soporte, IV, DTE y assignment risk."
+            elif naked:
+                dictamen = f"{naked[0]['decision']}: {naked[0]['reason']}"
+            else:
+                dictamen = "No hay edge claro para naked put."
+
+        elif req.strategy.upper() in ["COVERED_CALL", "SELL_CALL"]:
+            cc = [c for c in matrix["candidates"] if c["strategy"] == "COVERED_CALL"]
+            if cc and cc[0]["decision"] == "OPERAR":
+                dictamen = "Favorable/condicional para covered call si ya existe posición y resistencia clara."
+            elif cc:
+                dictamen = f"{cc[0]['decision']}: {cc[0]['reason']}"
+            else:
+                dictamen = "No hay edge claro para covered call."
 
         else:
-            dictamen = "Condicional: el contexto no favorece claramente la estrategia."
+            dictamen = f"Dictamen matriz V5: {matrix['final_decision']} / {matrix['strategy']} — {matrix['reason']}"
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "ticker": ticker,
         "strategy": req.strategy,
         "strike": req.strike,
@@ -1486,6 +1730,7 @@ def evaluate_option(req: OptionEvalRequest):
         "iv_comment": iv_comment,
         "context_available": context is not None,
         "technical_context": context,
+        "strategy_context": strategy_context,
         "dictamen": dictamen,
     }
 
@@ -1500,7 +1745,7 @@ def history(limit: int = 100):
     signals = load_signals(limit=limit)
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "supabase_enabled": supabase_enabled(),
         "showing": min(limit, len(signals)),
         "signals": signals[-limit:],
@@ -1512,7 +1757,7 @@ def stats(limit: int = 1000):
     signals = load_signals(limit=limit)
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "generated_at": now_utc().isoformat(),
         "stats": stats_from_signals(signals),
     }
@@ -1528,7 +1773,7 @@ def stats_ticker(ticker: str, limit: int = 1000):
     ]
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "ticker": ticker,
         "generated_at": now_utc().isoformat(),
         "stats": stats_from_signals(signals),
@@ -1539,7 +1784,7 @@ def stats_ticker(ticker: str, limit: int = 1000):
 @app.get("/debug/supabase")
 def debug_supabase():
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "supabase_enabled": supabase_enabled(),
         "supabase_url_present": bool(SUPABASE_URL),
         "supabase_key_present": bool(SUPABASE_KEY),
@@ -1550,7 +1795,7 @@ def debug_supabase():
 @app.get("/debug/regime")
 def debug_regime():
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "market_regime": market_regime(),
         "market_clock": {
             "market_timezone": "America/New_York",
@@ -1568,7 +1813,7 @@ def debug_scoring(ticker: str = "QQQ"):
 
     if ticker not in trade_store:
         return {
-            "engine": "v4.0",
+            "engine": "v5.0",
             "ticker": ticker,
             "error": "Ticker not in memory",
         }
@@ -1577,21 +1822,22 @@ def debug_scoring(ticker: str = "QQQ"):
     c = classify_asset(trade_store[ticker])
 
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "ticker": ticker,
         "classification": c,
-        "strategy": strategy_selection_v4(c, regime),
+        "strategy": strategy_selection_v5(c, regime),
         "probability": probability_engine(c, regime),
         "risk": risk_engine(c, regime),
         "theta": theta_engine(c, regime),
         "expected_pl": expected_pl_engine(c),
+        "strategy_matrix": strategy_matrix_v5(c, regime),
     }
 
 
 @app.get("/debug/routes")
 def debug_routes():
     return {
-        "engine": "v4.0",
+        "engine": "v5.0",
         "routes": [
             "/",
             "/health",
@@ -1630,8 +1876,17 @@ def dashboard_html():
         "C": "#E76F51",
     }
 
+    decision_color = {
+        "OPERAR": "#0B6E4F",
+        "RADAR": "#2A9D8F",
+        "ESPERAR": "#F4A261",
+        "EVITAR": "#E76F51",
+        "EXPIRADO": "#6C757D",
+    }
+
     for i, item in enumerate(dashboard, start=1):
-        color = color_map.get(item["grade"], "#999")
+        grade_color = color_map.get(item["grade"], "#999")
+        d_color = decision_color.get(item["final_decision"], "#999")
         prob = item.get("probability", {}).get("probability_estimate", "")
         risk = item.get("risk", {}).get("risk_level", "")
         allowed = item.get("risk", {}).get("trade_allowed", False)
@@ -1641,10 +1896,11 @@ def dashboard_html():
         <tr>
             <td>{i}</td>
             <td>{item['ticker']}</td>
-            <td style="background:{color}; color:white; font-weight:bold;">{item['grade']}</td>
+            <td style="background:{d_color}; color:white; font-weight:bold;">{item['final_decision']}</td>
+            <td>{item['v5_strategy']}</td>
+            <td style="background:{grade_color}; color:white; font-weight:bold;">{item['grade']}</td>
             <td>{item['conviction']}</td>
             <td>{item['state']}</td>
-            <td>{item['primary_strategy']}</td>
             <td>{theta}</td>
             <td>{prob}%</td>
             <td>{risk}</td>
@@ -1654,7 +1910,7 @@ def dashboard_html():
             <td>{item['alignment']}</td>
             <td>{item['execution_window']}</td>
             <td>{item['minutes_since_open']}</td>
-            <td>{item['reason']}</td>
+            <td>{item['v5_reason']}</td>
         </tr>
         """
 
@@ -1673,23 +1929,24 @@ def dashboard_html():
         </style>
     </head>
     <body>
-        <h1>Super Engine Bolsa v4.0</h1>
-        <div class="meta">Supabase enabled: {supabase_enabled()}</div>
+        <h1>Super Engine Bolsa v5.0</h1>
+        <div class="meta">Supabase enabled: {supabase_enabled()} | Webhook secret required: {REQUIRE_WEBHOOK_SECRET}</div>
         <div class="regime">
             <b>Market Regime:</b> {regime['regime']}<br>
             <b>Lectura:</b> {regime['summary']}<br>
             <b>Sesión:</b> {market_session_state()}<br>
-            <b>Ventana activa:</b> {inside_execution_window()}<br>
+            <b>Ventana intradía activa:</b> {inside_execution_window()}<br>
             <b>Minutos desde apertura:</b> {minutes_since_open()}
         </div>
         <table>
             <tr>
                 <th>Rank</th>
                 <th>Ticker</th>
+                <th>Decision</th>
+                <th>V5 Strategy</th>
                 <th>Grade</th>
                 <th>Conviction</th>
                 <th>State</th>
-                <th>Strategy</th>
                 <th>Theta</th>
                 <th>Prob</th>
                 <th>Risk</th>
@@ -1708,3 +1965,4 @@ def dashboard_html():
     """
 
     return html
+
