@@ -10,9 +10,11 @@ import os
 import math
 import requests
 
-app = FastAPI(title="Super Engine Bolsa", version="6.0.0")
+app = FastAPI(title="Super Engine Bolsa", version="7.0.0")
 
 SIGNALS_FILE = "signals_history.json"
+OUTCOMES_FILE = "trade_outcomes.json"
+OUTCOMES_FILE = "trade_outcomes.json"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -257,6 +259,58 @@ def load_signals_from_file():
         except Exception:
             return []
     return []
+
+
+def load_outcomes_from_file():
+    if os.path.exists(OUTCOMES_FILE):
+        try:
+            with open(OUTCOMES_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_outcome_file(outcome):
+    outcomes = load_outcomes_from_file()
+    outcome = dict(outcome)
+    outcome["recorded_at"] = now_utc().isoformat()
+    outcome["id"] = f"OUT-{len(outcomes) + 1}-{outcome.get('ticker', 'UNKNOWN')}-{int(now_utc().timestamp())}"
+    outcomes.append(outcome)
+    outcomes = outcomes[-10000:]
+    with open(OUTCOMES_FILE, "w") as f:
+        json.dump(outcomes, f, indent=2)
+    return outcome
+
+
+def outcome_stats(outcomes):
+    closed = [o for o in outcomes if str(o.get("outcome", "")).upper() in ["WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"]]
+    wins = [o for o in closed if str(o.get("outcome", "")).upper() == "WIN"]
+    losses = [o for o in closed if str(o.get("outcome", "")).upper() == "LOSS"]
+    breakeven = [o for o in closed if str(o.get("outcome", "")).upper() == "BREAKEVEN"]
+    pnl_values = [safe_float(o.get("pnl"), 0) for o in closed if o.get("pnl") is not None]
+    gross_profit = sum(x for x in pnl_values if x > 0)
+    gross_loss = abs(sum(x for x in pnl_values if x < 0))
+    by_strategy = {}
+    by_ticker = {}
+    for o in outcomes:
+        strategy = str(o.get("strategy", "UNKNOWN")).upper()
+        ticker = str(o.get("ticker", "UNKNOWN")).upper()
+        by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
+        by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
+    return {
+        "total_outcomes": len(outcomes),
+        "closed_trades": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "breakeven": len(breakeven),
+        "win_rate": round((len(wins) / max(len(wins) + len(losses), 1)) * 100, 2),
+        "net_pnl": round(sum(pnl_values), 2),
+        "avg_pnl": round(sum(pnl_values) / len(pnl_values), 2) if pnl_values else 0,
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
+        "by_strategy": by_strategy,
+        "by_ticker": by_ticker,
+    }
 
 
 def load_signals(limit=3000):
@@ -969,7 +1023,7 @@ def startup():
 
 @app.get("/")
 def root():
-    return {"status": "alive", "engine": "Super Engine Bolsa v6.0", "mode": "Release Candidate Institutional Desk Core"}
+    return {"status": "alive", "engine": "Super Engine Bolsa v7.0", "mode": "Release Candidate Institutional Desk Core"}
 
 
 @app.get("/health")
@@ -977,7 +1031,7 @@ def health():
     signals = load_signals(limit=100)
     return {
         "status": "ok",
-        "engine": "Super Engine Bolsa v6.0",
+        "engine": "Super Engine Bolsa v7.0",
         "mode": "Release Candidate Institutional Desk Core",
         "operating_mode": OPERATING_MODE,
         "supabase_enabled": supabase_enabled(),
@@ -1006,7 +1060,7 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
     parsed.update({"state": classification["state"], "grade": classification["grade"], "conviction": classification["conviction"], "priority_score": classification["priority_score"], "final_decision": classification["final_decision"], "v6_strategy": classification["v6_strategy"], "master_score": classification["master_score"]})
     trade_store[ticker][timeframe] = parsed
     storage_result = save_signal(parsed)
-    return {"status": "ok", "engine": "v6.0", "message": f"Webhook received for {ticker} {timeframe}", "ticker": ticker, "timeframe": timeframe, "storage": storage_result, "classification": classification, "data": parsed}
+    return {"status": "ok", "engine": "v7.0", "message": f"Webhook received for {ticker} {timeframe}", "ticker": ticker, "timeframe": timeframe, "storage": storage_result, "classification": classification, "data": parsed}
 
 
 @app.post("/test_signal")
@@ -1022,7 +1076,7 @@ def test_signal(signal: TradingSignal):
     parsed.update({"state": classification["state"], "grade": classification["grade"], "conviction": classification["conviction"], "priority_score": classification["priority_score"], "final_decision": classification["final_decision"], "v6_strategy": classification["v6_strategy"], "master_score": classification["master_score"]})
     trade_store[ticker][timeframe] = parsed
     storage_result = save_signal(parsed)
-    return {"status": "ok", "engine": "v6.0", "message": f"Test signal saved for {ticker} {timeframe}", "storage": storage_result, "classification": classification, "data": parsed}
+    return {"status": "ok", "engine": "v7.0", "message": f"Test signal saved for {ticker} {timeframe}", "storage": storage_result, "classification": classification, "data": parsed}
 
 
 @app.get("/get_trade_context")
@@ -1030,7 +1084,7 @@ def get_trade_context(ticker: str):
     ticker = ticker.upper().strip()
     if ticker not in trade_store:
         return {"ticker": ticker, "status": "missing_data", "message": "No hay datos todavía para este ticker."}
-    return {"ticker": ticker, "engine": "v6.0", "classification": classify_asset(trade_store[ticker])}
+    return {"ticker": ticker, "engine": "v7.0", "classification": classify_asset(trade_store[ticker])}
 
 
 @app.get("/get_dashboard")
@@ -1038,7 +1092,7 @@ def get_dashboard():
     dashboard = build_dashboard()
     for i, item in enumerate(dashboard, start=1):
         item["priority_rank"] = i
-    return {"generated_at": now_utc().isoformat(), "engine": "v6.0", "supabase_enabled": supabase_enabled(), "market_regime": market_regime(), "dashboard": dashboard, "groups": grouped_dashboard(), "best_setups": dashboard[:5]}
+    return {"generated_at": now_utc().isoformat(), "engine": "v7.0", "supabase_enabled": supabase_enabled(), "market_regime": market_regime(), "dashboard": dashboard, "groups": grouped_dashboard(), "best_setups": dashboard[:5]}
 
 
 @app.get("/get_report")
@@ -1054,7 +1108,7 @@ def get_report():
         for x in items[:10]:
             lines.append(f"- {x['ticker']} | {x['v6_strategy']} | {x['v6_state']} | Master {x['master_score']} | Priority {x['priority_score']} | Prob {x['probability']['probability_estimate']}% | Risk {x['risk']['risk_level']} | {x['v6_reason']}")
         lines.append("")
-    return {"generated_at": now_utc().isoformat(), "engine": "v6.0", "supabase_enabled": supabase_enabled(), "report": "\n".join(lines), "groups": groups, "best_setups": build_dashboard()[:5]}
+    return {"generated_at": now_utc().isoformat(), "engine": "v7.0", "supabase_enabled": supabase_enabled(), "report": "\n".join(lines), "groups": groups, "best_setups": build_dashboard()[:5]}
 
 
 @app.get("/gpt_report")
@@ -1062,9 +1116,9 @@ def gpt_report():
     dashboard = build_dashboard()
     regime = market_regime()
     if not dashboard:
-        return {"engine": "v6.0", "market": regime["regime"], "status": "NO_DATA", "plan": "Esperar nuevas señales frescas."}
+        return {"engine": "v7.0", "market": regime["regime"], "status": "NO_DATA", "plan": "Esperar nuevas señales frescas."}
     return {
-        "engine": "v6.0",
+        "engine": "v7.0",
         "market_regime": regime["regime"],
         "market_summary": regime["summary"],
         "session_state": market_session_state(),
@@ -1081,7 +1135,7 @@ def gpt_report():
 def premarket_plan():
     dashboard = build_dashboard()
     regime = market_regime()
-    return {"engine": "v6.0", "generated_at": now_utc().isoformat(), "market_regime": regime, "session_state": market_session_state(), "plan": {"operate": [x for x in dashboard if x["final_decision"] == "OPERAR"][:5], "radar": [x for x in dashboard if x["final_decision"] == "RADAR"][:10], "avoid": [x for x in dashboard if x["final_decision"] in ["EVITAR", "EXPIRADO"]][:10]}, "note": "Premarket plan usa las últimas señales disponibles; ideal actualizar 1d/1h antes de apertura."}
+    return {"engine": "v7.0", "generated_at": now_utc().isoformat(), "market_regime": regime, "session_state": market_session_state(), "plan": {"operate": [x for x in dashboard if x["final_decision"] == "OPERAR"][:5], "radar": [x for x in dashboard if x["final_decision"] == "RADAR"][:10], "avoid": [x for x in dashboard if x["final_decision"] in ["EVITAR", "EXPIRADO"]][:10]}, "note": "Premarket plan usa las últimas señales disponibles; ideal actualizar 1d/1h antes de apertura."}
 
 
 @app.get("/after_action_review")
@@ -1089,7 +1143,7 @@ def after_action_review(limit: int = 500):
     signals = load_signals(limit=limit)
     stats = stats_from_signals(signals)
     recent_decisions = [s for s in signals if s.get("final_decision")]
-    return {"engine": "v6.0", "generated_at": now_utc().isoformat(), "review_window_signals": len(signals), "stats": stats, "recent_decisions": recent_decisions[-50:], "note": "AAR todavía no calcula win rate real hasta conectar precios posteriores o resultados manuales."}
+    return {"engine": "v7.0", "generated_at": now_utc().isoformat(), "review_window_signals": len(signals), "stats": stats, "recent_decisions": recent_decisions[-50:], "note": "AAR todavía no calcula win rate real hasta conectar precios posteriores o resultados manuales."}
 
 
 @app.post("/position_sizing")
@@ -1098,7 +1152,7 @@ def position_sizing(req: PositionSizingRequest):
     unit_risk = abs(req.entry - req.stop)
     if unit_risk <= 0:
         return {"error": "Entry and stop cannot be equal."}
-    return {"engine": "v6.0", "account_size": req.account_size, "risk_percent": req.risk_percent, "risk_budget": round(risk_budget, 2), "entry": req.entry, "stop": req.stop, "unit_risk": round(unit_risk, 4), "suggested_units": math.floor(risk_budget / unit_risk)}
+    return {"engine": "v7.0", "account_size": req.account_size, "risk_percent": req.risk_percent, "risk_budget": round(risk_budget, 2), "entry": req.entry, "stop": req.stop, "unit_risk": round(unit_risk, 4), "suggested_units": math.floor(risk_budget / unit_risk)}
 
 
 @app.post("/portfolio_commander")
@@ -1114,7 +1168,7 @@ def portfolio_commander(req: PortfolioInput):
         warnings.append("Exposición alta en futuros; controlar drawdown intradía.")
     if len(theta_candidates) >= 3:
         warnings.append("Muchas oportunidades theta simultáneas; priorizar por IV/soporte/correlación.")
-    return {"engine": "v6.0", "operating_mode": OPERATING_MODE, "portfolio_input": req.dict(), "summary": {"operate_candidates": len(operate), "theta_candidates": len(theta_candidates), "futures_candidates": len(futures_candidates), "directional_bias": req.directional_bias}, "warnings": warnings, "top_candidates": operate[:5]}
+    return {"engine": "v7.0", "operating_mode": OPERATING_MODE, "portfolio_input": req.dict(), "summary": {"operate_candidates": len(operate), "theta_candidates": len(theta_candidates), "futures_candidates": len(futures_candidates), "directional_bias": req.directional_bias}, "warnings": warnings, "top_candidates": operate[:5]}
 
 
 @app.post("/evaluate_option")
@@ -1144,7 +1198,7 @@ def evaluate_option(req: OptionEvalRequest):
         brains = build_brains(context, regime)
         strategy_context = brains
         dictamen = f"Dictamen V6: {brains['final']['final_decision']} / {brains['final']['strategy']} — {brains['final']['reason']}"
-    return {"engine": "v6.0", "ticker": ticker, "strategy": req.strategy, "strike": req.strike, "premium": req.premium, "dte": req.dte, "margin_required": req.margin_required, "premium_on_margin_percent": margin_yield, "iv_rank": req.iv_rank, "iv_comment": iv_comment, "context_available": context is not None, "technical_context": context, "strategy_context": strategy_context, "dictamen": dictamen}
+    return {"engine": "v7.0", "ticker": ticker, "strategy": req.strategy, "strike": req.strike, "premium": req.premium, "dte": req.dte, "margin_required": req.margin_required, "premium_on_margin_percent": margin_yield, "iv_rank": req.iv_rank, "iv_comment": iv_comment, "context_available": context is not None, "technical_context": context, "strategy_context": strategy_context, "dictamen": dictamen}
 
 
 @app.get("/latest")
@@ -1155,45 +1209,45 @@ def latest():
 @app.get("/history")
 def history(limit: int = 100):
     signals = load_signals(limit=limit)
-    return {"engine": "v6.0", "supabase_enabled": supabase_enabled(), "showing": min(limit, len(signals)), "signals": signals[-limit:]}
+    return {"engine": "v7.0", "supabase_enabled": supabase_enabled(), "showing": min(limit, len(signals)), "signals": signals[-limit:]}
 
 
 @app.get("/stats")
 def stats(limit: int = 1000):
     signals = load_signals(limit=limit)
-    return {"engine": "v6.0", "generated_at": now_utc().isoformat(), "stats": stats_from_signals(signals)}
+    return {"engine": "v7.0", "generated_at": now_utc().isoformat(), "stats": stats_from_signals(signals)}
 
 
 @app.get("/stats/ticker/{ticker}")
 def stats_ticker(ticker: str, limit: int = 1000):
     ticker = ticker.upper().strip()
     signals = [s for s in load_signals(limit=limit) if str(s.get("ticker", "")).upper() == ticker]
-    return {"engine": "v6.0", "ticker": ticker, "generated_at": now_utc().isoformat(), "stats": stats_from_signals(signals), "signals": signals[-50:]}
+    return {"engine": "v7.0", "ticker": ticker, "generated_at": now_utc().isoformat(), "stats": stats_from_signals(signals), "signals": signals[-50:]}
 
 
 @app.get("/debug/supabase")
 def debug_supabase():
-    return {"engine": "v6.0", "supabase_enabled": supabase_enabled(), "supabase_url_present": bool(SUPABASE_URL), "supabase_key_present": bool(SUPABASE_KEY), "count_test": supabase_count_signals()}
+    return {"engine": "v7.0", "supabase_enabled": supabase_enabled(), "supabase_url_present": bool(SUPABASE_URL), "supabase_key_present": bool(SUPABASE_KEY), "count_test": supabase_count_signals()}
 
 
 @app.get("/debug/regime")
 def debug_regime():
-    return {"engine": "v6.0", "market_regime": market_regime(), "market_clock": {"market_timezone": "America/New_York", "session_state": market_session_state(), "execution_window": inside_execution_window(), "minutes_since_open": minutes_since_open(), "initial_window_minutes": INITIAL_WINDOW_MINUTES}}
+    return {"engine": "v7.0", "market_regime": market_regime(), "market_clock": {"market_timezone": "America/New_York", "session_state": market_session_state(), "execution_window": inside_execution_window(), "minutes_since_open": minutes_since_open(), "initial_window_minutes": INITIAL_WINDOW_MINUTES}}
 
 
 @app.get("/debug/scoring")
 def debug_scoring(ticker: str = "QQQ"):
     ticker = ticker.upper().strip()
     if ticker not in trade_store:
-        return {"engine": "v6.0", "ticker": ticker, "error": "Ticker not in memory"}
+        return {"engine": "v7.0", "ticker": ticker, "error": "Ticker not in memory"}
     regime = market_regime().get("regime", "MIXED_OR_CHOP")
     c = technical_core(trade_store[ticker])
-    return {"engine": "v6.0", "ticker": ticker, "classification": classify_asset(trade_store[ticker]), "brains": build_brains(c, regime), "probability": probability_engine(c, regime), "expected_pl": expected_pl_engine(c)}
+    return {"engine": "v7.0", "ticker": ticker, "classification": classify_asset(trade_store[ticker]), "brains": build_brains(c, regime), "probability": probability_engine(c, regime), "expected_pl": expected_pl_engine(c)}
 
 
 @app.get("/debug/routes")
 def debug_routes():
-    return {"engine": "v6.0", "routes": ["/", "/health", "/webhook/tradingview", "/test_signal", "/get_trade_context", "/get_dashboard", "/get_report", "/gpt_report", "/premarket_plan", "/after_action_review", "/portfolio_commander", "/position_sizing", "/evaluate_option", "/latest", "/history", "/stats", "/stats/ticker/{ticker}", "/debug/supabase", "/debug/regime", "/debug/scoring", "/debug/routes", "/dashboard_html"]}
+    return {"engine": "v7.0", "routes": ["/", "/health", "/webhook/tradingview", "/test_signal", "/get_trade_context", "/get_dashboard", "/get_report", "/gpt_report", "/premarket_plan", "/after_action_review", "/record_outcome", "/outcomes", "/live_market_input", "/v7_live_snapshot", "/v7_status", "/record_outcome", "/outcomes", "/live_market_input", "/v7_live_snapshot", "/v7_status", "/portfolio_commander", "/position_sizing", "/evaluate_option", "/latest", "/history", "/stats", "/stats/ticker/{ticker}", "/debug/supabase", "/debug/regime", "/debug/scoring", "/debug/routes", "/dashboard_html"]}
 
 
 @app.get("/dashboard_html", response_class=HTMLResponse)
@@ -1220,7 +1274,7 @@ def dashboard_html():
     html = f"""
     <html><head><title>Super Engine Bolsa v6 Dashboard</title><style>
     body{{font-family:Arial;margin:30px;background:#f7f7f7}} h1{{color:#111}} table{{border-collapse:collapse;width:100%;background:white;margin-bottom:26px}} th,td{{border:1px solid #ddd;padding:9px;text-align:left;font-size:13px}} th{{background:#111;color:white}} .regime{{padding:15px;background:white;margin-bottom:20px;border-left:5px solid #111}} .meta{{font-size:13px;color:#555;margin-bottom:20px}}
-    </style></head><body><h1>Super Engine Bolsa v6.0</h1><div class='meta'>Supabase enabled: {supabase_enabled()} | Webhook secret required: {REQUIRE_WEBHOOK_SECRET} | Mode: {OPERATING_MODE}</div><div class='regime'><b>Market Regime:</b> {regime['regime']}<br><b>Lectura:</b> {regime['summary']}<br><b>Sesión:</b> {market_session_state()}<br><b>Ventana intradía activa:</b> {inside_execution_window()}<br><b>Minutos desde apertura:</b> {minutes_since_open()}</div>{sections}</body></html>
+    </style></head><body><h1>Super Engine Bolsa v7.0</h1><div class='meta'>Supabase enabled: {supabase_enabled()} | Webhook secret required: {REQUIRE_WEBHOOK_SECRET} | Mode: {OPERATING_MODE}</div><div class='regime'><b>Market Regime:</b> {regime['regime']}<br><b>Lectura:</b> {regime['summary']}<br><b>Sesión:</b> {market_session_state()}<br><b>Ventana intradía activa:</b> {inside_execution_window()}<br><b>Minutos desde apertura:</b> {minutes_since_open()}</div>{sections}</body></html>
     """
     return html
 
