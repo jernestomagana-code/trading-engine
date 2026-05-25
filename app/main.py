@@ -4378,3 +4378,278 @@ def debug_routes_v11():
     }
 
 # END SUPER ENGINE BOLSA — V11 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V12 PATCH
+# Technical Context Upgrade + Manual Market Context
+# ============================================================
+
+manual_market_store = {
+    "vix": None,
+    "event_risk": False,
+    "macro_risk": False,
+    "notes": None,
+    "updated_at": None,
+    "ticker_overrides": {}
+}
+
+
+def normalize_bool_or_none(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in ["true", "1", "yes", "y", "si", "sí"]:
+            return True
+        if value in ["false", "0", "no", "n"]:
+            return False
+    return bool(value)
+
+
+def merge_manual_overrides_into_classification(ticker, classification):
+    ticker = ticker.upper().strip()
+    classification = dict(classification)
+    latest = dict(classification.get("latest_data", {}))
+
+    overrides = manual_market_store.get("ticker_overrides", {}).get(ticker, {})
+
+    for key in [
+        "iv_rank",
+        "iv_percentile",
+        "earnings_soon",
+        "event_risk",
+        "support_near",
+        "resistance_near",
+        "rsi",
+        "adx",
+        "range_20d",
+        "range_breakout",
+        "institutional_flow_bias",
+        "options_flow_bias",
+    ]:
+        if key in overrides and overrides.get(key) is not None:
+            latest[key] = overrides.get(key)
+
+    if manual_market_store.get("event_risk") is True:
+        latest["event_risk"] = True
+
+    classification["latest_data"] = latest
+    return classification
+
+
+_get_technical_context_v11 = get_technical_context
+
+
+def get_technical_context(ticker: str):
+    ticker = ticker.upper().strip()
+    ctx = _get_technical_context_v11(ticker)
+
+    if ctx.get("classification"):
+        ctx["classification"] = merge_manual_overrides_into_classification(
+            ticker,
+            ctx["classification"]
+        )
+
+    ctx["manual_overrides"] = manual_market_store.get("ticker_overrides", {}).get(ticker, {})
+    return ctx
+
+
+_get_market_context_v11 = get_market_context
+
+
+def get_market_context():
+    base = _get_market_context_v11()
+
+    if manual_market_store.get("vix") is not None:
+        base["vix"] = manual_market_store.get("vix")
+
+    base["manual_market_context"] = manual_market_store
+    base["event_risk"] = manual_market_store.get("event_risk")
+    base["macro_risk"] = manual_market_store.get("macro_risk")
+    base["notes"] = manual_market_store.get("notes")
+    base["manual_updated_at"] = manual_market_store.get("updated_at")
+
+    return base
+
+
+@app.post("/manual_market_context")
+async def manual_market_context(request: Request):
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8", errors="ignore").strip()
+    parsed = extract_json_from_text(raw_text)
+
+    if not isinstance(parsed, dict):
+        return {
+            "status": "error",
+            "message": "Invalid JSON payload."
+        }
+
+    if "vix" in parsed:
+        manual_market_store["vix"] = safe_float(parsed.get("vix"), None)
+
+    if "event_risk" in parsed:
+        manual_market_store["event_risk"] = normalize_bool_or_none(parsed.get("event_risk"))
+
+    if "macro_risk" in parsed:
+        manual_market_store["macro_risk"] = normalize_bool_or_none(parsed.get("macro_risk"))
+
+    if "notes" in parsed:
+        manual_market_store["notes"] = parsed.get("notes")
+
+    ticker = parsed.get("ticker")
+    if ticker:
+        ticker = str(ticker).upper().strip()
+        manual_market_store.setdefault("ticker_overrides", {})
+        manual_market_store["ticker_overrides"].setdefault(ticker, {})
+
+        for key in [
+            "iv_rank",
+            "iv_percentile",
+            "earnings_soon",
+            "event_risk",
+            "support_near",
+            "resistance_near",
+            "rsi",
+            "adx",
+            "range_20d",
+            "range_breakout",
+            "institutional_flow_bias",
+            "options_flow_bias",
+        ]:
+            if key in parsed:
+                manual_market_store["ticker_overrides"][ticker][key] = parsed.get(key)
+
+        manual_market_store["ticker_overrides"][ticker]["updated_at"] = now_utc().isoformat()
+
+    manual_market_store["updated_at"] = now_utc().isoformat()
+
+    return {
+        "status": "ok",
+        "engine": "v12_manual_market_context",
+        "manual_market_store": manual_market_store,
+        "message": "Manual market context updated."
+    }
+
+
+@app.post("/technical_snapshot")
+async def technical_snapshot(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+    verify_webhook_secret(x_webhook_secret)
+
+    parsed, raw_text = await parse_request_payload(request)
+
+    ticker = find_ticker(parsed, raw_text)
+    timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
+
+    parsed = dict(parsed)
+    parsed.update({
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "received_at": now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "source": "TECHNICAL_SNAPSHOT",
+        "raw_payload_preview": raw_text[:500],
+    })
+
+    trade_store.setdefault(ticker, {})
+    trade_store[ticker][timeframe] = parsed
+
+    # Also keep latest technical snapshot in a dedicated layer
+    trade_store[ticker]["technical_snapshot"] = parsed
+
+    classification = classify_asset(trade_store[ticker])
+    parsed.update({
+        "state": classification["state"],
+        "grade": classification["grade"],
+        "conviction": classification["conviction"],
+        "priority_score": classification["priority_score"],
+        "final_decision": classification["final_decision"],
+        "v6_strategy": classification["v6_strategy"],
+        "master_score": classification["master_score"],
+    })
+
+    storage_result = save_signal(parsed)
+    unified = build_unified_context(ticker)
+
+    return {
+        "status": "ok",
+        "engine": "v12_technical_snapshot",
+        "message": f"Technical snapshot received for {ticker} {timeframe}",
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "storage": storage_result,
+        "unified_context": unified,
+        "data": parsed,
+    }
+
+
+@app.get("/debug/market_context")
+def debug_market_context():
+    return {
+        "engine": "v12_market_context",
+        "market_context": get_market_context(),
+        "manual_market_store": manual_market_store,
+    }
+
+
+@app.get("/gpt_missing_data")
+def gpt_missing_data():
+    dashboard = build_dashboard()
+    decision_rows = [compact_decision_row(x) for x in dashboard]
+    plan_rows = [compact_action_plan_row(x) for x in decision_rows]
+    missing = collect_critical_missing_data(plan_rows)
+
+    return {
+        "engine": "v12_missing_data",
+        "generated_at": now_utc().isoformat(),
+        "critical_missing_data": missing,
+        "recommended_manual_updates": [
+            {
+                "type": "market",
+                "endpoint": "/manual_market_context",
+                "example": {
+                    "vix": 18.5,
+                    "event_risk": False,
+                    "macro_risk": False,
+                    "notes": "No major macro event in next 24h"
+                }
+            },
+            {
+                "type": "ticker",
+                "endpoint": "/manual_market_context",
+                "example": {
+                    "ticker": "QQQ",
+                    "iv_rank": 45,
+                    "rsi": 51,
+                    "adx": 18,
+                    "range_20d": True,
+                    "range_breakout": False,
+                    "earnings_soon": False,
+                    "event_risk": False
+                }
+            }
+        ],
+        "note": "Estos datos pueden alimentarse manualmente, desde TradingView o desde un futuro proveedor externo."
+    }
+
+
+@app.get("/debug/routes_v12")
+def debug_routes_v12():
+    return {
+        "engine": "v12",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/manual_market_context",
+            "/technical_snapshot",
+            "/debug/market_context",
+            "/gpt_missing_data",
+            "/gpt_action_plan",
+            "/gpt_iron_condors",
+            "/debug/iron_condor",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V12 PATCH
