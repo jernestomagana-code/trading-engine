@@ -4653,3 +4653,148 @@ def debug_routes_v12():
     }
 
 # END SUPER ENGINE BOLSA — V12 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V12.1 PATCH
+# Manual Data Safety Cap
+# ============================================================
+
+def ticker_has_manual_override(ticker):
+    ticker = str(ticker or "").upper().strip()
+    overrides = manual_market_store.get("ticker_overrides", {}).get(ticker, {})
+    if not overrides:
+        return False
+
+    meaningful_keys = [
+        "iv_rank",
+        "iv_percentile",
+        "earnings_soon",
+        "event_risk",
+        "support_near",
+        "resistance_near",
+        "rsi",
+        "adx",
+        "range_20d",
+        "range_breakout",
+        "institutional_flow_bias",
+        "options_flow_bias",
+    ]
+
+    return any(key in overrides and overrides.get(key) is not None for key in meaningful_keys)
+
+
+def market_has_manual_context():
+    return any([
+        manual_market_store.get("vix") is not None,
+        manual_market_store.get("event_risk") is not None,
+        manual_market_store.get("macro_risk") is not None,
+        manual_market_store.get("notes") is not None,
+    ])
+
+
+def manual_data_used_for_strategy(ticker, strategy_name):
+    strategy_name = str(strategy_name or "").upper()
+
+    # Iron Condor depende mucho de VIX, IV Rank, RSI, ADX y rango.
+    if strategy_name == "IRON_CONDOR_PRO":
+        return ticker_has_manual_override(ticker) or market_has_manual_context()
+
+    # Naked Put y Covered Call también pueden depender de IV Rank / soporte / resistencia.
+    if strategy_name in ["NAKED_PUT_PRO", "COVERED_CALL_PRO"]:
+        return ticker_has_manual_override(ticker)
+
+    return False
+
+
+def apply_manual_data_safety_cap(ticker, result):
+    result = dict(result)
+    strategy_name = str(result.get("strategy") or "").upper()
+
+    if not manual_data_used_for_strategy(ticker, strategy_name):
+        return result
+
+    details = dict(result.get("details", {}))
+    blockers = list(result.get("blockers", []))
+
+    details["manual_data_safety_cap"] = {
+        "active": True,
+        "reason": "La decisión usa datos manuales/provisionales. Se limita la decisión máxima a RADAR.",
+        "manual_market_updated_at": manual_market_store.get("updated_at"),
+        "ticker_manual_override": manual_market_store.get("ticker_overrides", {}).get(str(ticker).upper().strip(), {}),
+    }
+
+    if result.get("decision") == "OPERAR":
+        result["decision"] = "RADAR"
+        result["reason"] = str(result.get("reason", "")) + " Decisión limitada a RADAR por uso de datos manuales."
+        blockers.append("Manual data safety cap: confirmar datos desde fuente automatizada antes de operar.")
+
+    result["details"] = details
+    result["blockers"] = sorted(list(set(blockers)))
+
+    return result
+
+
+_evaluate_iron_condor_pro_v12 = evaluate_iron_condor_pro
+_evaluate_naked_put_pro_v12 = evaluate_naked_put_pro
+_evaluate_covered_call_pro_v12 = evaluate_covered_call_pro
+
+
+def evaluate_iron_condor_pro(ticker, technical, ibkr, market):
+    result = _evaluate_iron_condor_pro_v12(ticker, technical, ibkr, market)
+    return apply_manual_data_safety_cap(ticker, result)
+
+
+def evaluate_naked_put_pro(ticker, technical, ibkr, market):
+    result = _evaluate_naked_put_pro_v12(ticker, technical, ibkr, market)
+    return apply_manual_data_safety_cap(ticker, result)
+
+
+def evaluate_covered_call_pro(ticker, technical, ibkr, market):
+    result = _evaluate_covered_call_pro_v12(ticker, technical, ibkr, market)
+    return apply_manual_data_safety_cap(ticker, result)
+
+
+@app.get("/debug/manual_safety")
+def debug_manual_safety(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    technical = get_technical_context(ticker)
+    ibkr = get_ibkr_context(ticker)
+    market = get_market_context()
+
+    iron = evaluate_iron_condor_pro(ticker, technical, ibkr, market)
+    naked_put = evaluate_naked_put_pro(ticker, technical, ibkr, market)
+    covered_call = evaluate_covered_call_pro(ticker, technical, ibkr, market)
+
+    return {
+        "engine": "v12.1_manual_safety",
+        "ticker": ticker,
+        "market_has_manual_context": market_has_manual_context(),
+        "ticker_has_manual_override": ticker_has_manual_override(ticker),
+        "manual_market_store": manual_market_store,
+        "iron_condor": iron,
+        "naked_put": naked_put,
+        "covered_call": covered_call,
+        "note": "Si una estrategia dependía de datos manuales y antes decía OPERAR, ahora debe quedar limitada a RADAR."
+    }
+
+
+@app.get("/debug/routes_v12_1")
+def debug_routes_v12_1():
+    return {
+        "engine": "v12.1",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/debug/manual_safety",
+            "/debug/iron_condor",
+            "/gpt_iron_condors",
+            "/gpt_action_plan",
+            "/manual_market_context",
+            "/technical_snapshot",
+            "/debug/market_context",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V12.1 PATCH
