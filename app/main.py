@@ -4085,3 +4085,296 @@ def debug_routes_v10_2():
     }
 
 # END SUPER ENGINE BOLSA — V10.2 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V11 PATCH
+# Iron Condor PRO Builder using multi-option candidates
+# ============================================================
+
+def get_all_option_candidates(ibkr):
+    candidates = ibkr.get("options_candidates") or []
+    if not isinstance(candidates, list):
+        return []
+    return candidates
+
+
+def option_abs_delta(option):
+    return abs(safe_float(option.get("delta"), 999))
+
+
+def option_mid_value(option):
+    return safe_float(option.get("mid"), 0)
+
+
+def option_dte_value(option):
+    return safe_float(option.get("dte"), None)
+
+
+def option_type_value(option):
+    return str(option.get("option_type") or "").upper()
+
+
+def strategy_hint_value(option):
+    return str(option.get("strategy_hint") or "").upper()
+
+
+def iron_condor_candidate_score(option, target_delta_min=0.15, target_delta_max=0.20):
+    score = 0
+
+    delta = option.get("delta")
+    mid = option_mid_value(option)
+    dte = option_dte_value(option)
+    quality = str(option.get("data_quality") or "").upper()
+    decision = str(option.get("strategy_decision") or "").upper()
+
+    if delta is not None:
+        abs_delta = abs(safe_float(delta, 0))
+        if target_delta_min <= abs_delta <= target_delta_max:
+            score += 40
+        elif 0.10 <= abs_delta < target_delta_min:
+            score += 25
+        elif target_delta_max < abs_delta <= 0.30:
+            score += 15
+        else:
+            score -= 10
+    else:
+        score -= 15
+
+    if mid and mid > 0:
+        score += min(mid * 5, 20)
+    else:
+        score -= 15
+
+    if dte is not None:
+        if 35 <= dte <= 45:
+            score += 25
+        elif 25 <= dte <= 65:
+            score += 10
+        else:
+            score -= 10
+    else:
+        score -= 10
+
+    if quality in ["FULL_WITH_GREEKS", "PRICE_WITH_GREEKS_NO_BIDASK"]:
+        score += 15
+    elif quality == "PRICE_ONLY_NO_GREEKS":
+        score -= 10
+
+    if decision == "RADAR":
+        score += 10
+    elif decision == "WAIT_FOR_GREEKS":
+        score -= 5
+
+    return round(score, 2)
+
+
+def select_iron_condor_leg(candidates, option_type):
+    option_type = option_type.upper()
+    filtered = [
+        option for option in candidates
+        if option_type_value(option) == option_type
+    ]
+
+    if not filtered:
+        return None
+
+    return sorted(
+        filtered,
+        key=lambda option: iron_condor_candidate_score(option),
+        reverse=True,
+    )[0]
+
+
+def build_iron_condor_structure(ibkr):
+    candidates = get_all_option_candidates(ibkr)
+
+    put_leg = select_iron_condor_leg(candidates, "PUT")
+    call_leg = select_iron_condor_leg(candidates, "CALL")
+
+    estimated_credit = None
+    dte_match = None
+    legs_valid = bool(put_leg and call_leg)
+
+    if put_leg and call_leg:
+        put_mid = option_mid_value(put_leg)
+        call_mid = option_mid_value(call_leg)
+        estimated_credit = round((put_mid or 0) + (call_mid or 0), 4)
+
+        put_dte = option_dte_value(put_leg)
+        call_dte = option_dte_value(call_leg)
+        dte_match = put_dte == call_dte
+
+    return {
+        "legs_valid": legs_valid,
+        "put_leg": compact_option(put_leg),
+        "call_leg": compact_option(call_leg),
+        "estimated_short_credit": estimated_credit,
+        "dte_match": dte_match,
+        "put_leg_score": iron_condor_candidate_score(put_leg) if put_leg else None,
+        "call_leg_score": iron_condor_candidate_score(call_leg) if call_leg else None,
+        "candidates_count": len(candidates),
+    }
+
+
+_evaluate_iron_condor_pro_v10 = evaluate_iron_condor_pro
+
+
+def evaluate_iron_condor_pro(ticker, technical, ibkr, market):
+    base = _evaluate_iron_condor_pro_v10(ticker, technical, ibkr, market)
+    structure = build_iron_condor_structure(ibkr)
+
+    result = dict(base)
+    details = dict(result.get("details", {}))
+    blockers = list(result.get("blockers", []))
+    missing = list(result.get("missing_data", []))
+
+    details["iron_condor_structure"] = structure
+
+    if not structure.get("put_leg"):
+        missing.append("iron_condor_put_leg")
+
+    if not structure.get("call_leg"):
+        missing.append("iron_condor_call_leg")
+
+    if structure.get("put_leg") and structure.get("call_leg"):
+        result["score"] = min(100, safe_float(result.get("score"), 0) + 10)
+
+        if structure.get("dte_match") is False:
+            blockers.append("Las alas seleccionadas no tienen el mismo DTE.")
+
+        credit = structure.get("estimated_short_credit")
+        if credit is None or credit <= 0:
+            missing.append("estimated_credit")
+        elif credit > 0:
+            details["credit_comment"] = "Hay crédito estimado positivo usando short put + short call."
+
+        put_leg = structure.get("put_leg") or {}
+        call_leg = structure.get("call_leg") or {}
+
+        put_delta = abs(safe_float(put_leg.get("delta"), 999))
+        call_delta = abs(safe_float(call_leg.get("delta"), 999))
+
+        if 0.10 <= put_delta <= 0.30 and 0.10 <= call_delta <= 0.30:
+            result["score"] = min(100, safe_float(result.get("score"), 0) + 10)
+        else:
+            blockers.append("Delta de una o ambas alas fuera de zona razonable 0.10–0.30.")
+
+    result["details"] = details
+    result["blockers"] = sorted(list(set(blockers)))
+    result["missing_data"] = sorted(list(set(missing)))
+
+    has_core_legs = bool(structure.get("put_leg") and structure.get("call_leg"))
+    has_major_missing = any(
+        item in result["missing_data"]
+        for item in ["rsi", "adx", "range_20d", "vix", "iv_rank"]
+    )
+
+    if not has_core_legs:
+        result["decision"] = "MISSING_DATA"
+        result["reason"] = "Iron Condor potencial, pero faltan ambas alas o una de las alas."
+    elif has_major_missing:
+        result["decision"] = "MISSING_DATA"
+        result["reason"] = "Iron Condor armado con opciones, pero faltan datos técnicos críticos para confirmar."
+    elif result["blockers"]:
+        result["decision"] = "RADAR" if safe_float(result.get("score"), 0) >= 70 else "BLOCKED"
+        result["reason"] = "Iron Condor armado, pero existen bloqueos que deben revisarse."
+    elif safe_float(result.get("score"), 0) >= 85:
+        result["decision"] = "OPERAR"
+        result["reason"] = "Iron Condor PRO cumple estructura, crédito estimado y condiciones principales."
+    elif safe_float(result.get("score"), 0) >= 70:
+        result["decision"] = "RADAR"
+        result["reason"] = "Iron Condor PRO en radar con estructura válida."
+    else:
+        result["decision"] = "ESPERAR"
+        result["reason"] = "Iron Condor todavía no tiene suficiente calidad."
+
+    return result
+
+
+@app.get("/debug/iron_condor")
+def debug_iron_condor(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    if ticker not in trade_store:
+        return {
+            "engine": "v11_iron_condor",
+            "ticker": ticker,
+            "status": "missing_ticker",
+        }
+
+    technical = get_technical_context(ticker)
+    ibkr = get_ibkr_context(ticker)
+    market = get_market_context()
+    result = evaluate_iron_condor_pro(ticker, technical, ibkr, market)
+
+    return {
+        "engine": "v11_iron_condor",
+        "ticker": ticker,
+        "technical_available": technical.get("available"),
+        "ibkr_available": ibkr.get("available"),
+        "options_candidates_count": ibkr.get("options_candidates_count"),
+        "iron_condor": result,
+    }
+
+
+@app.get("/gpt_iron_condors")
+def gpt_iron_condors():
+    rows = []
+
+    for ticker in sorted(trade_store.keys()):
+        technical = get_technical_context(ticker)
+        ibkr = get_ibkr_context(ticker)
+        market = get_market_context()
+
+        if not ibkr.get("options_candidates_count"):
+            continue
+
+        result = evaluate_iron_condor_pro(ticker, technical, ibkr, market)
+        structure = result.get("details", {}).get("iron_condor_structure", {})
+
+        rows.append({
+            "ticker": ticker,
+            "decision": result.get("decision"),
+            "score": result.get("score"),
+            "reason": result.get("reason"),
+            "blockers": result.get("blockers", []),
+            "missing_data": result.get("missing_data", []),
+            "estimated_short_credit": structure.get("estimated_short_credit"),
+            "put_leg": structure.get("put_leg"),
+            "call_leg": structure.get("call_leg"),
+            "dte_match": structure.get("dte_match"),
+            "candidates_count": structure.get("candidates_count"),
+        })
+
+    rows = sorted(
+        rows,
+        key=lambda x: (decision_rank(x.get("decision")), safe_float(x.get("score"), 0)),
+        reverse=True,
+    )
+
+    return {
+        "engine": "v11_iron_condor",
+        "generated_at": now_utc().isoformat(),
+        "count": len(rows),
+        "iron_condor_candidates": rows,
+        "note": "V11 arma Iron Condor con mejor PUT y mejor CALL disponibles. Falta conectar ancho de spread, VIX, IV Rank, RSI, ADX y rango 20d para decisión final institucional.",
+    }
+
+
+@app.get("/debug/routes_v11")
+def debug_routes_v11():
+    return {
+        "engine": "v11",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/gpt_action_plan",
+            "/gpt_iron_condors",
+            "/debug/iron_condor",
+            "/debug/options",
+            "/debug/rebuild",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V11 PATCH
