@@ -4965,3 +4965,126 @@ def debug_routes_v13():
     }
 
 # END SUPER ENGINE BOLSA — V13 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V13.1 PATCH
+# Prefer automated technical snapshot over manual context
+# + clear manual context endpoint
+# ============================================================
+
+def ticker_has_automated_technical_snapshot(ticker):
+    ticker = str(ticker or "").upper().strip()
+    snap = get_latest_technical_snapshot(ticker)
+
+    if not isinstance(snap, dict):
+        return False
+
+    if str(snap.get("source", "")).upper() != "TECHNICAL_SNAPSHOT":
+        return False
+
+    meaningful_keys = [
+        "rsi",
+        "adx",
+        "range_20d",
+        "range_breakout",
+        "support_near",
+        "resistance_near",
+        "vwap_position",
+        "volume_relative",
+        "iv_rank",
+        "iv_percentile",
+        "earnings_soon",
+        "event_risk",
+    ]
+
+    return any(key in snap and snap.get(key) is not None for key in meaningful_keys)
+
+
+_apply_manual_data_safety_cap_v12_1 = apply_manual_data_safety_cap
+
+
+def apply_manual_data_safety_cap(ticker, result):
+    ticker = str(ticker or "").upper().strip()
+
+    # If TradingView/technical_snapshot is available, treat it as preferred automated context.
+    # Manual context should not cap the decision when automated technical data exists.
+    if ticker_has_automated_technical_snapshot(ticker):
+        result = dict(result)
+        details = dict(result.get("details", {}))
+        details["manual_data_safety_cap"] = {
+            "active": False,
+            "reason": "Automated technical snapshot is available; manual context is not capping this decision.",
+            "technical_snapshot_available": True,
+            "technical_snapshot_received_at": (get_latest_technical_snapshot(ticker) or {}).get("received_at"),
+        }
+        result["details"] = details
+        return result
+
+    return _apply_manual_data_safety_cap_v12_1(ticker, result)
+
+
+@app.post("/clear_manual_context")
+def clear_manual_context():
+    manual_market_store["vix"] = None
+    manual_market_store["event_risk"] = False
+    manual_market_store["macro_risk"] = False
+    manual_market_store["notes"] = None
+    manual_market_store["updated_at"] = now_utc().isoformat()
+    manual_market_store["ticker_overrides"] = {}
+
+    return {
+        "status": "ok",
+        "engine": "v13.1_clear_manual_context",
+        "message": "Manual market context cleared.",
+        "manual_market_store": manual_market_store,
+    }
+
+
+@app.get("/debug/data_sources")
+def debug_data_sources(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    snap = get_latest_technical_snapshot(ticker)
+    ibkr = get_ibkr_context(ticker)
+    manual_override = manual_market_store.get("ticker_overrides", {}).get(ticker, {})
+
+    return {
+        "engine": "v13.1_data_sources",
+        "ticker": ticker,
+        "sources": {
+            "ibkr_available": ibkr.get("available"),
+            "ibkr_price_source": ibkr.get("price_source"),
+            "ibkr_options_candidates_count": ibkr.get("options_candidates_count"),
+            "technical_snapshot_available": snap is not None,
+            "technical_snapshot_source": (snap or {}).get("source") if snap else None,
+            "technical_snapshot_received_at": (snap or {}).get("received_at") if snap else None,
+            "manual_market_context_active": market_has_manual_context(),
+            "manual_ticker_override_active": ticker_has_manual_override(ticker),
+            "automated_snapshot_preferred": ticker_has_automated_technical_snapshot(ticker),
+        },
+        "technical_snapshot": snap,
+        "manual_override": manual_override,
+        "manual_market_store": manual_market_store,
+    }
+
+
+@app.get("/debug/routes_v13_1")
+def debug_routes_v13_1():
+    return {
+        "engine": "v13.1",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/clear_manual_context",
+            "/debug/data_sources",
+            "/debug/technical_context",
+            "/technical_snapshot",
+            "/debug/iron_condor",
+            "/gpt_iron_condors",
+            "/gpt_action_plan",
+            "/manual_market_context",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V13.1 PATCH
