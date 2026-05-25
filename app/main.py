@@ -3273,3 +3273,84 @@ def gpt_summary():
 
 # END SUPER ENGINE BOLSA — V9 PATCH
 
+
+# ============================================================
+# SUPER ENGINE BOLSA — V9.1 PATCH
+# Debug options + memory store diagnostics
+# ============================================================
+
+@app.get("/debug/options")
+def debug_options(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+    raw = trade_store.get(ticker, {})
+
+    candidates = raw.get("options_candidates", [])
+    best_any = select_best_option_candidate(candidates)
+    best_put = select_best_option_candidate(candidates, option_type="PUT")
+    best_call = select_best_option_candidate(candidates, option_type="CALL")
+    best_naked_put = select_best_option_candidate(candidates, strategy_hint="NAKED_PUT")
+    best_covered_call = select_best_option_candidate(candidates, strategy_hint="COVERED_CALL")
+
+    return {
+        "engine": "v9.1_debug",
+        "ticker": ticker,
+        "ticker_in_memory": ticker in trade_store,
+        "available_layers": list(raw.keys()),
+        "options_candidates_count": len(candidates),
+        "best_any": best_any,
+        "best_put": best_put,
+        "best_call": best_call,
+        "best_naked_put": best_naked_put,
+        "best_covered_call": best_covered_call,
+        "options_candidates": candidates[:30],
+        "note": "Si options_candidates_count es 0 después de un ciclo completo de ibkr_bridge.py, las opciones no están quedando guardadas como candidatos múltiples."
+    }
+
+
+@app.get("/debug/stores")
+def debug_stores(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+    raw = trade_store.get(ticker, {})
+
+    compact = {}
+    for key, value in raw.items():
+        if key == "options_candidates":
+            compact[key] = {
+                "type": "list",
+                "count": len(value),
+                "sample": value[:3],
+            }
+        elif isinstance(value, dict):
+            compact[key] = {
+                "type": "dict",
+                "ticker": value.get("ticker"),
+                "timeframe": value.get("timeframe"),
+                "setup": value.get("setup"),
+                "source": value.get("source"),
+                "price": value.get("price"),
+                "strategy_hint": value.get("strategy_hint"),
+                "strategy_decision": value.get("strategy_decision"),
+                "data_quality": value.get("data_quality"),
+                "received_at": value.get("received_at"),
+            }
+        else:
+            compact[key] = str(type(value))
+
+    return {
+        "engine": "v9.1_debug",
+        "ticker": ticker,
+        "ticker_in_memory": ticker in trade_store,
+        "available_layers": list(raw.keys()),
+        "store_compact": compact,
+        "raw_store": raw,
+    }
+
+
+@app.get("/debug/routes_full")
+def debug_routes_full():
+    return {
+        "engine": "v9.1_debug",
+        "routes": sorted([route.path for route in app.routes]),
+    }
+
+# END SUPER ENGINE BOLSA — V9.1 PATCH
