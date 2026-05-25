@@ -4798,3 +4798,170 @@ def debug_routes_v12_1():
     }
 
 # END SUPER ENGINE BOLSA — V12.1 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V13 PATCH
+# Automated TradingView Technical Snapshot Integration
+# ============================================================
+
+TECHNICAL_SNAPSHOT_FIELDS = [
+    "rsi",
+    "adx",
+    "range_20d",
+    "range_breakout",
+    "support_near",
+    "resistance_near",
+    "vwap_position",
+    "volume_relative",
+    "iv_rank",
+    "iv_percentile",
+    "earnings_soon",
+    "event_risk",
+    "institutional_flow_bias",
+    "options_flow_bias",
+]
+
+
+def get_latest_technical_snapshot(ticker):
+    ticker = str(ticker or "").upper().strip()
+    raw = trade_store.get(ticker, {})
+    snap = raw.get("technical_snapshot")
+
+    if isinstance(snap, dict):
+        return snap
+
+    # fallback: look through common timeframes for TECHNICAL_SNAPSHOT source
+    for tf in ["5m", "15m", "1h", "1d", "live"]:
+        item = raw.get(tf)
+        if isinstance(item, dict) and str(item.get("source", "")).upper() == "TECHNICAL_SNAPSHOT":
+            return item
+
+    return None
+
+
+def merge_technical_snapshot_into_classification(ticker, classification):
+    ticker = str(ticker or "").upper().strip()
+    classification = dict(classification)
+    latest = dict(classification.get("latest_data", {}))
+
+    snap = get_latest_technical_snapshot(ticker)
+
+    if not snap:
+        classification["latest_data"] = latest
+        classification["technical_snapshot_used"] = False
+        return classification
+
+    for key in TECHNICAL_SNAPSHOT_FIELDS:
+        if key in snap and snap.get(key) is not None:
+            latest[key] = snap.get(key)
+
+    classification["latest_data"] = latest
+    classification["technical_snapshot_used"] = True
+    classification["technical_snapshot_received_at"] = snap.get("received_at")
+    classification["technical_snapshot_timeframe"] = snap.get("timeframe")
+    classification["technical_snapshot_source"] = snap.get("source")
+
+    return classification
+
+
+_get_technical_context_v12_1 = get_technical_context
+
+
+def get_technical_context(ticker: str):
+    ticker = ticker.upper().strip()
+    ctx = _get_technical_context_v12_1(ticker)
+
+    if ctx.get("classification"):
+        ctx["classification"] = merge_technical_snapshot_into_classification(
+            ticker,
+            ctx["classification"]
+        )
+
+    ctx["technical_snapshot"] = get_latest_technical_snapshot(ticker)
+    ctx["technical_snapshot_available"] = ctx["technical_snapshot"] is not None
+
+    return ctx
+
+
+@app.get("/debug/technical_context")
+def debug_technical_context(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    return {
+        "engine": "v13_technical_context",
+        "ticker": ticker,
+        "ticker_in_memory": ticker in trade_store,
+        "technical_context": get_technical_context(ticker),
+        "latest_technical_snapshot": get_latest_technical_snapshot(ticker),
+        "available_layers": list(trade_store.get(ticker, {}).keys()),
+    }
+
+
+@app.get("/gpt_technical_payload_template")
+def gpt_technical_payload_template(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    return {
+        "engine": "v13_technical_payload_template",
+        "endpoint": "/technical_snapshot",
+        "method": "POST",
+        "content_type": "application/json",
+        "example_payload": {
+            "ticker": ticker,
+            "timeframe": "1h",
+            "price": 714.51,
+            "trend": "neutral",
+            "score": 70,
+            "rsi": 51,
+            "adx": 18,
+            "range_20d": True,
+            "range_breakout": False,
+            "support_near": False,
+            "resistance_near": False,
+            "vwap_position": "near",
+            "volume_relative": 1.0,
+            "iv_rank": 45,
+            "earnings_soon": False,
+            "event_risk": False
+        },
+        "tradingview_alert_message_example": {
+            "ticker": "{{ticker}}",
+            "timeframe": "{{interval}}",
+            "price": "{{close}}",
+            "trend": "neutral",
+            "score": 70,
+            "rsi": "{{plot(\"RSI\")}}",
+            "adx": "{{plot(\"ADX\")}}",
+            "range_20d": True,
+            "range_breakout": False,
+            "support_near": False,
+            "resistance_near": False,
+            "vwap_position": "near",
+            "volume_relative": 1.0,
+            "iv_rank": None,
+            "earnings_soon": False,
+            "event_risk": False
+        },
+        "note": "TradingView debe mandar estos campos a /technical_snapshot para que el motor use datos técnicos automatizados y deje de depender de manual_market_context."
+    }
+
+
+@app.get("/debug/routes_v13")
+def debug_routes_v13():
+    return {
+        "engine": "v13",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/technical_snapshot",
+            "/debug/technical_context",
+            "/gpt_technical_payload_template",
+            "/debug/iron_condor",
+            "/gpt_iron_condors",
+            "/gpt_action_plan",
+            "/manual_market_context",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V13 PATCH
