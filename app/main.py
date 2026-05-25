@@ -2923,3 +2923,353 @@ def dashboard_html():
     """
 
     return html
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V9 PATCH
+# Multi-option candidates + safer commander + GPT summary
+# ============================================================
+
+MAX_OPTIONS_CANDIDATES_PER_TICKER = 80
+
+def option_candidate_key(option):
+    return "|".join([
+        str(option.get("ticker", "")),
+        str(option.get("strategy_hint", "")),
+        str(option.get("option_type", "")),
+        str(option.get("option_symbol", "")),
+        str(option.get("strike", "")),
+        str(option.get("expiration", "")),
+    ])
+
+
+def option_quality_score(option):
+    quality = str(option.get("data_quality") or "").upper()
+    if quality == "FULL_WITH_GREEKS":
+        return 30
+    if quality == "PRICE_WITH_GREEKS_NO_BIDASK":
+        return 22
+    if quality == "PARTIAL_OPTION_DATA":
+        return 12
+    if quality == "PRICE_ONLY_NO_GREEKS":
+        return 8
+    return 0
+
+
+def option_candidate_rank(option):
+    decision = str(option.get("strategy_decision") or "").upper()
+    score = safe_float(option.get("score"), 0)
+    mid = safe_float(option.get("mid"), 0)
+    delta = option.get("delta")
+    iv = option.get("implied_volatility")
+    has_delta = 1 if delta is not None else 0
+    has_iv = 1 if iv is not None else 0
+
+    return (
+        decision_rank(decision),
+        option_quality_score(option),
+        score,
+        has_delta + has_iv,
+        mid,
+    )
+
+
+def upsert_option_candidate(ticker, option):
+    ticker = ticker.upper().strip()
+    trade_store.setdefault(ticker, {})
+
+    candidates = trade_store[ticker].get("options_candidates", [])
+    key = option_candidate_key(option)
+
+    candidates = [
+        existing for existing in candidates
+        if option_candidate_key(existing) != key
+    ]
+
+    candidates.append(option)
+    candidates = sorted(candidates, key=option_candidate_rank, reverse=True)
+    candidates = candidates[:MAX_OPTIONS_CANDIDATES_PER_TICKER]
+
+    trade_store[ticker]["options_candidates"] = candidates
+    trade_store[ticker]["options"] = candidates[0] if candidates else option
+
+    return candidates
+
+
+def select_best_option_candidate(candidates, strategy_hint=None, option_type=None):
+    if not candidates:
+        return None
+
+    filtered = []
+
+    for option in candidates:
+        candidate_strategy = str(option.get("strategy_hint") or "").upper()
+        candidate_type = str(option.get("option_type") or "").upper()
+
+        if strategy_hint and candidate_strategy != strategy_hint:
+            continue
+
+        if option_type and candidate_type != option_type:
+            continue
+
+        filtered.append(option)
+
+    if not filtered:
+        return None
+
+    return sorted(filtered, key=option_candidate_rank, reverse=True)[0]
+
+
+def save_ingested_payload(parsed, raw_text, source_label):
+    ticker = find_ticker(parsed, raw_text)
+    timeframe = normalize_timeframe(parsed.get("timeframe", "unknown"))
+
+    parsed = dict(parsed)
+    parsed.update({
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "received_at": now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "source": source_label,
+        "raw_payload_preview": raw_text[:500],
+    })
+
+    trade_store.setdefault(ticker, {})
+
+    if source_label == "IBKR" and timeframe == "options":
+        upsert_option_candidate(ticker, parsed)
+    else:
+        trade_store[ticker][timeframe] = parsed
+
+    classification = classify_asset(trade_store[ticker])
+
+    parsed.update({
+        "state": classification["state"],
+        "grade": classification["grade"],
+        "conviction": classification["conviction"],
+        "priority_score": classification["priority_score"],
+        "final_decision": classification["final_decision"],
+        "v6_strategy": classification["v6_strategy"],
+        "master_score": classification["master_score"],
+    })
+
+    if source_label == "IBKR" and timeframe == "options":
+        upsert_option_candidate(ticker, parsed)
+    else:
+        trade_store[ticker][timeframe] = parsed
+
+    unified = build_unified_context(ticker)
+    parsed["strategy_commander_summary"] = unified["strategy_commander"]["summary"]
+
+    if source_label == "IBKR" and timeframe == "options":
+        upsert_option_candidate(ticker, parsed)
+    else:
+        trade_store[ticker][timeframe] = parsed
+
+    storage_result = save_signal(parsed)
+
+    return ticker, timeframe, parsed, classification, unified, storage_result
+
+
+def get_ibkr_context(ticker: str):
+    ticker = ticker.upper().strip()
+    raw = trade_store.get(ticker, {})
+
+    live = raw.get("live")
+    position = raw.get("position")
+    portfolio = raw.get("portfolio")
+
+    options_candidates = raw.get("options_candidates", [])
+    best_option = select_best_option_candidate(options_candidates) or raw.get("options")
+    best_naked_put = select_best_option_candidate(options_candidates, strategy_hint="NAKED_PUT") or select_best_option_candidate(options_candidates, option_type="PUT")
+    best_covered_call = select_best_option_candidate(options_candidates, strategy_hint="COVERED_CALL") or select_best_option_candidate(options_candidates, option_type="CALL")
+
+    options = best_option
+
+    return {
+        "available": bool(live or position or options or portfolio or options_candidates),
+        "ticker": ticker,
+        "live": live,
+        "position": position,
+        "options": options,
+        "portfolio": portfolio,
+        "options_candidates_count": len(options_candidates),
+        "options_candidates": options_candidates[:20],
+        "best_naked_put": best_naked_put,
+        "best_covered_call": best_covered_call,
+        "latest_price": safe_float((live or {}).get("price"), None) if live else None,
+        "price_source": (live or {}).get("price_source") if live else None,
+        "position_class": (position or {}).get("position_class") if position else None,
+        "sec_type": (position or {}).get("sec_type") if position else None,
+        "position_size": safe_float((position or {}).get("position_size"), None) if position else None,
+        "market_value": safe_float((position or {}).get("market_value"), None) if position else None,
+        "unrealized_pl": safe_float((position or {}).get("unrealized_pl"), None) if position else None,
+        "option_strategy_hint": (options or {}).get("strategy_hint") if options else None,
+        "option_decision": (options or {}).get("strategy_decision") if options else None,
+        "option_data_quality": (options or {}).get("data_quality") if options else None,
+        "option_dte": safe_float((options or {}).get("dte"), None) if options else None,
+        "option_delta": safe_float((options or {}).get("delta"), None) if options else None,
+        "option_iv": safe_float((options or {}).get("implied_volatility"), None) if options else None,
+        "option_mid": safe_float((options or {}).get("mid"), None) if options else None,
+        "option_spread_pct": safe_float((options or {}).get("spread_pct"), None) if options else None,
+        "option_strike": safe_float((options or {}).get("strike"), None) if options else None,
+        "option_type": (options or {}).get("option_type") if options else None,
+    }
+
+
+def apply_live_price_safety_cap(result, ibkr):
+    price_source = str(ibkr.get("price_source") or "")
+
+    if price_source == "IBKR_HISTORICAL_CLOSE_FALLBACK":
+        result = dict(result)
+        blockers = list(result.get("blockers", []))
+        blockers.append("Precio del subyacente viene de fallback histórico; confirmar precio live en TWS antes de operar.")
+        result["blockers"] = blockers
+        result["details"] = dict(result.get("details", {}))
+        result["details"]["price_source_blocker"] = price_source
+
+        if result.get("decision") == "OPERAR":
+            result["decision"] = "RADAR"
+            result["reason"] = result.get("reason", "") + " Decisión limitada a RADAR por precio no live."
+
+    return result
+
+
+_evaluate_naked_put_pro_v8 = evaluate_naked_put_pro
+_evaluate_covered_call_pro_v8 = evaluate_covered_call_pro
+_evaluate_iron_condor_pro_v8 = evaluate_iron_condor_pro
+
+
+def inject_option_candidate_into_ibkr_context(ibkr, candidate):
+    if not candidate:
+        return ibkr
+
+    patched = dict(ibkr)
+    patched["options"] = candidate
+    patched["option_strategy_hint"] = candidate.get("strategy_hint")
+    patched["option_decision"] = candidate.get("strategy_decision")
+    patched["option_data_quality"] = candidate.get("data_quality")
+    patched["option_dte"] = safe_float(candidate.get("dte"), None)
+    patched["option_delta"] = safe_float(candidate.get("delta"), None)
+    patched["option_iv"] = safe_float(candidate.get("implied_volatility"), None)
+    patched["option_mid"] = safe_float(candidate.get("mid"), None)
+    patched["option_spread_pct"] = safe_float(candidate.get("spread_pct"), None)
+    patched["option_strike"] = safe_float(candidate.get("strike"), None)
+    patched["option_type"] = candidate.get("option_type")
+    return patched
+
+
+def evaluate_naked_put_pro(ticker, technical, ibkr, market):
+    candidate = ibkr.get("best_naked_put")
+    patched_ibkr = inject_option_candidate_into_ibkr_context(ibkr, candidate)
+    result = _evaluate_naked_put_pro_v8(ticker, technical, patched_ibkr, market)
+    result = apply_live_price_safety_cap(result, patched_ibkr)
+
+    result["details"] = dict(result.get("details", {}))
+    result["details"]["selected_option_candidate"] = candidate
+
+    return result
+
+
+def evaluate_covered_call_pro(ticker, technical, ibkr, market):
+    candidate = ibkr.get("best_covered_call")
+    patched_ibkr = inject_option_candidate_into_ibkr_context(ibkr, candidate)
+    result = _evaluate_covered_call_pro_v8(ticker, technical, patched_ibkr, market)
+    result = apply_live_price_safety_cap(result, patched_ibkr)
+
+    result["details"] = dict(result.get("details", {}))
+    result["details"]["selected_option_candidate"] = candidate
+
+    return result
+
+
+def evaluate_iron_condor_pro(ticker, technical, ibkr, market):
+    result = _evaluate_iron_condor_pro_v8(ticker, technical, ibkr, market)
+
+    candidates = ibkr.get("options_candidates", [])
+    best_put = select_best_option_candidate(candidates, option_type="PUT")
+    best_call = select_best_option_candidate(candidates, option_type="CALL")
+
+    result = dict(result)
+    result["details"] = dict(result.get("details", {}))
+    result["details"]["best_put_candidate"] = best_put
+    result["details"]["best_call_candidate"] = best_call
+    result["details"]["options_candidates_count"] = len(candidates)
+
+    missing = list(result.get("missing_data", []))
+    blockers = list(result.get("blockers", []))
+
+    if not best_put:
+        missing.append("short_put_candidate")
+    if not best_call:
+        missing.append("short_call_candidate")
+
+    result["missing_data"] = sorted(list(set(missing)))
+    result["blockers"] = sorted(list(set(blockers)))
+
+    if result.get("decision") == "OPERAR" and (not best_put or not best_call):
+        result["decision"] = "MISSING_DATA"
+        result["reason"] = result.get("reason", "") + " Falta una de las dos alas del Iron Condor."
+
+    return result
+
+
+def compact_strategy_result(item):
+    return {
+        "strategy": item.get("strategy"),
+        "decision": item.get("decision"),
+        "score": item.get("score"),
+        "reason": item.get("reason"),
+        "blockers": item.get("blockers", []),
+        "missing_data": item.get("missing_data", []),
+        "details": item.get("details", {}),
+    }
+
+
+@app.get("/gpt_summary")
+def gpt_summary():
+    dashboard = build_dashboard()
+    regime = market_regime()
+
+    top = []
+    for x in dashboard[:10]:
+        top.append({
+            "ticker": x["ticker"],
+            "decision": x["final_decision"],
+            "best_strategy": x["commander_strategy"],
+            "commander_score": x["commander_score"],
+            "master_score": x["master_score"],
+            "reason": x["commander_reason"],
+            "blockers": x["commander_blockers"],
+            "missing_data": x["commander_missing_data"],
+            "ibkr": {
+                "available": x.get("ibkr_context", {}).get("available"),
+                "price_source": x.get("ibkr_context", {}).get("price_source"),
+                "latest_price": x.get("ibkr_context", {}).get("latest_price"),
+                "position_class": x.get("ibkr_context", {}).get("position_class"),
+                "position_size": x.get("ibkr_context", {}).get("position_size"),
+                "options_candidates_count": x.get("ibkr_context", {}).get("options_candidates_count"),
+                "best_naked_put": x.get("ibkr_context", {}).get("best_naked_put"),
+                "best_covered_call": x.get("ibkr_context", {}).get("best_covered_call"),
+            },
+        })
+
+    return {
+        "engine": "v9.0_patch",
+        "generated_at": now_utc().isoformat(),
+        "market_regime": regime.get("regime"),
+        "market_summary": regime.get("summary"),
+        "session_state": market_session_state(),
+        "summary": {
+            "operate_count": len([x for x in dashboard if x["final_decision"] == "OPERAR"]),
+            "radar_count": len([x for x in dashboard if x["final_decision"] == "RADAR"]),
+            "missing_data_count": len([x for x in dashboard if x["final_decision"] == "MISSING_DATA"]),
+            "blocked_count": len([x for x in dashboard if x["final_decision"] == "BLOCKED"]),
+        },
+        "top_opportunities": top,
+        "next_best_action": "Revisar oportunidades RADAR/MISSING_DATA y confirmar datos faltantes: griegas, IV Rank, VIX, macro y precio live cuando aplique.",
+    }
+
+
+# END SUPER ENGINE BOLSA — V9 PATCH
+
