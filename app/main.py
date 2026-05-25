@@ -3794,3 +3794,294 @@ def gpt_decision_clean():
     }
 
 # END SUPER ENGINE BOLSA — V10.1 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V10.2 PATCH
+# GPT Action Plan: executive actionable output
+# ============================================================
+
+PREFERRED_STRATEGY_ORDER = {
+    "COVERED_CALL_PRO": 100,
+    "NAKED_PUT_PRO": 95,
+    "IRON_CONDOR_PRO": 90,
+    "EXIT_MANAGER": 85,
+    "FUTURES_PRO": 70,
+    "EARNINGS_PRO": 60,
+    "NO_ENTRY_STRATEGY": 0,
+}
+
+
+def preferred_strategy_weight(strategy):
+    return PREFERRED_STRATEGY_ORDER.get(str(strategy or "").upper(), 10)
+
+
+def has_real_entry_edge(row):
+    decision = str(row.get("decision") or "").upper()
+    final_action = str(row.get("final_action") or "").upper()
+    strategy = str(row.get("best_entry_strategy") or row.get("primary_focus") or "").upper()
+    score = safe_float(row.get("best_entry_score") or row.get("master_score"), 0)
+
+    if strategy == "EARNINGS_PRO":
+        return False
+
+    if strategy == "FUTURES_PRO" and final_action != "ENTRY_OPPORTUNITY":
+        return False
+
+    if final_action == "ENTRY_OPPORTUNITY" and decision in ["OPERAR", "RADAR"]:
+        return True
+
+    if decision in ["OPERAR", "RADAR"] and strategy in ["COVERED_CALL_PRO", "NAKED_PUT_PRO", "IRON_CONDOR_PRO"]:
+        return True
+
+    if score >= 75 and strategy in ["COVERED_CALL_PRO", "NAKED_PUT_PRO", "IRON_CONDOR_PRO"]:
+        return True
+
+    return False
+
+
+def has_management_edge(row):
+    final_action = str(row.get("final_action") or "").upper()
+    management_action = str(row.get("best_management_action") or "").upper()
+    management_decision = str(row.get("best_management_decision") or "").upper()
+    alerts = row.get("management_alerts", [])
+
+    if final_action == "MANAGE_POSITION":
+        return True
+
+    if management_action == "EXIT_MANAGER" and management_decision in ["OPERAR", "RADAR"]:
+        return True
+
+    if alerts:
+        return True
+
+    return False
+
+
+def is_wait_for_data_candidate(row):
+    final_action = str(row.get("final_action") or "").upper()
+    decision = str(row.get("decision") or "").upper()
+    missing = row.get("entry_missing_data", [])
+
+    if final_action == "WAIT_FOR_DATA":
+        return True
+
+    if decision == "MISSING_DATA":
+        return True
+
+    if missing and row.get("best_entry_strategy") in ["COVERED_CALL_PRO", "NAKED_PUT_PRO", "IRON_CONDOR_PRO"]:
+        return True
+
+    return False
+
+
+def action_priority(row):
+    strategy = row.get("best_entry_strategy") or row.get("primary_focus")
+    decision = str(row.get("decision") or "").upper()
+    score = safe_float(row.get("best_entry_score") or row.get("master_score"), 0)
+    mgmt_score = safe_float(row.get("best_management_score"), 0)
+    options_count = safe_float(row.get("ibkr", {}).get("options_candidates_count"), 0)
+    position_size = safe_float(row.get("ibkr", {}).get("position_size"), 0)
+    price_source = str(row.get("ibkr", {}).get("price_source") or "")
+
+    priority = 0
+    priority += preferred_strategy_weight(strategy)
+    priority += decision_rank(decision) * 15
+    priority += score * 0.60
+    priority += mgmt_score * 0.25
+
+    if options_count > 0:
+        priority += 10
+
+    if position_size and position_size >= 100:
+        priority += 10
+
+    if price_source == "IBKR_HISTORICAL_CLOSE_FALLBACK":
+        priority -= 15
+
+    return round(priority, 2)
+
+
+def compact_action_plan_row(row):
+    ibkr = row.get("ibkr", {})
+    best_put = ibkr.get("best_naked_put")
+    best_call = ibkr.get("best_covered_call")
+
+    suggested_action = "ESPERAR"
+
+    if has_management_edge(row):
+        suggested_action = "REVISAR_GESTION"
+    elif has_real_entry_edge(row):
+        if row.get("decision") == "OPERAR":
+            suggested_action = "EVALUAR_ENTRADA_AHORA"
+        else:
+            suggested_action = "MANTENER_EN_RADAR"
+    elif is_wait_for_data_candidate(row):
+        suggested_action = "COMPLETAR_DATOS"
+    elif row.get("final_action") == "BLOCKED":
+        suggested_action = "NO_OPERAR"
+
+    return {
+        "ticker": row.get("ticker"),
+        "suggested_action": suggested_action,
+        "decision": row.get("decision"),
+        "final_action": row.get("final_action"),
+        "primary_focus": row.get("primary_focus"),
+        "best_entry_strategy": row.get("best_entry_strategy"),
+        "best_entry_decision": row.get("best_entry_decision"),
+        "best_entry_score": row.get("best_entry_score"),
+        "best_management_action": row.get("best_management_action"),
+        "best_management_decision": row.get("best_management_decision"),
+        "best_management_score": row.get("best_management_score"),
+        "priority": action_priority(row),
+        "reason": row.get("reason"),
+        "entry_blockers": row.get("entry_blockers", []),
+        "entry_missing_data": row.get("entry_missing_data", []),
+        "management_alerts": row.get("management_alerts", []),
+        "technical": row.get("technical", {}),
+        "ibkr": {
+            "available": ibkr.get("available"),
+            "latest_price": ibkr.get("latest_price"),
+            "price_source": ibkr.get("price_source"),
+            "position_class": ibkr.get("position_class"),
+            "position_size": ibkr.get("position_size"),
+            "unrealized_pl": ibkr.get("unrealized_pl"),
+            "options_candidates_count": ibkr.get("options_candidates_count"),
+            "best_naked_put": best_put,
+            "best_covered_call": best_call,
+        },
+    }
+
+
+def collect_critical_missing_data(rows):
+    missing_counter = {}
+    affected = {}
+
+    for row in rows:
+        ticker = row.get("ticker")
+        missing_items = row.get("entry_missing_data", []) or []
+
+        for item in missing_items:
+            missing_counter[item] = missing_counter.get(item, 0) + 1
+            affected.setdefault(item, []).append(ticker)
+
+    ranked = sorted(
+        [
+            {
+                "missing_data": key,
+                "count": value,
+                "affected_tickers": sorted(list(set(affected.get(key, [])))),
+            }
+            for key, value in missing_counter.items()
+        ],
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+    return ranked
+
+
+@app.get("/gpt_action_plan")
+def gpt_action_plan():
+    dashboard = build_dashboard()
+    regime = market_regime()
+
+    decision_rows = [compact_decision_row(x) for x in dashboard]
+    plan_rows = [compact_action_plan_row(x) for x in decision_rows]
+
+    actionable_opportunities = sorted(
+        [x for x in plan_rows if has_real_entry_edge(x)],
+        key=action_priority,
+        reverse=True,
+    )
+
+    radar_candidates = sorted(
+        [
+            x for x in plan_rows
+            if x.get("suggested_action") == "MANTENER_EN_RADAR"
+            or str(x.get("best_entry_decision") or "").upper() == "RADAR"
+        ],
+        key=action_priority,
+        reverse=True,
+    )
+
+    management_alerts = sorted(
+        [x for x in plan_rows if has_management_edge(x)],
+        key=action_priority,
+        reverse=True,
+    )
+
+    wait_for_data = sorted(
+        [x for x in plan_rows if is_wait_for_data_candidate(x)],
+        key=action_priority,
+        reverse=True,
+    )
+
+    blocked = sorted(
+        [x for x in plan_rows if str(x.get("final_action") or "").upper() == "BLOCKED"],
+        key=action_priority,
+        reverse=True,
+    )
+
+    no_trade_low_priority = sorted(
+        [
+            x for x in plan_rows
+            if x not in actionable_opportunities
+            and x not in radar_candidates
+            and x not in management_alerts
+            and x not in wait_for_data
+            and x not in blocked
+        ],
+        key=action_priority,
+        reverse=True,
+    )
+
+    critical_missing_data = collect_critical_missing_data(plan_rows)
+
+    return {
+        "engine": "v10.2_gpt_action_plan",
+        "generated_at": now_utc().isoformat(),
+        "market": {
+            "regime": regime.get("regime"),
+            "summary": regime.get("summary"),
+            "session_state": market_session_state(),
+            "execution_window": inside_execution_window(),
+            "minutes_since_open": minutes_since_open(),
+        },
+        "executive_summary": {
+            "actionable_opportunities_count": len(actionable_opportunities),
+            "radar_candidates_count": len(radar_candidates),
+            "management_alerts_count": len(management_alerts),
+            "wait_for_data_count": len(wait_for_data),
+            "blocked_count": len(blocked),
+            "main_message": "Priorizar covered calls, naked puts, iron condors y gestión de posiciones abiertas. Ignorar estrategias sin edge real.",
+        },
+        "actionable_opportunities": actionable_opportunities[:10],
+        "radar_candidates": radar_candidates[:10],
+        "management_alerts": management_alerts[:10],
+        "wait_for_data": wait_for_data[:10],
+        "blocked": blocked[:10],
+        "critical_missing_data": critical_missing_data[:10],
+        "no_trade_low_priority": no_trade_low_priority[:10],
+        "next_best_action": "Revisar primero management_alerts, después actionable_opportunities y finalmente wait_for_data. Confirmar precio live si price_source es IBKR_HISTORICAL_CLOSE_FALLBACK.",
+    }
+
+
+@app.get("/debug/routes_v10_2")
+def debug_routes_v10_2():
+    return {
+        "engine": "v10.2",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/gpt_action_plan",
+            "/gpt_decision_clean",
+            "/gpt_decision",
+            "/gpt_summary",
+            "/debug/options",
+            "/debug/stores",
+            "/debug/rebuild",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V10.2 PATCH
