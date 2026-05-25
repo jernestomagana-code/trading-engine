@@ -3354,3 +3354,313 @@ def debug_routes_full():
     }
 
 # END SUPER ENGINE BOLSA — V9.1 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V10 PATCH
+# Strategy Commander PRO separation:
+# Entry Strategies vs Management Actions + GPT Decision
+# ============================================================
+
+ENTRY_STRATEGY_KEYS = [
+    "naked_put_pro",
+    "covered_call_pro",
+    "iron_condor_pro",
+    "earnings_pro",
+    "futures_pro",
+]
+
+MANAGEMENT_STRATEGY_KEYS = [
+    "exit_manager",
+]
+
+
+def pick_best_entry_strategy(modules):
+    entry_candidates = [
+        modules[k] for k in ENTRY_STRATEGY_KEYS
+        if k in modules
+    ]
+
+    if not entry_candidates:
+        return module_result(
+            "NO_ENTRY_STRATEGY",
+            "NO_DATA",
+            "ESPERAR",
+            0,
+            "No hay estrategias de entrada evaluables.",
+            [],
+            ["entry_strategies"],
+            {},
+        )
+
+    return sorted(
+        entry_candidates,
+        key=lambda x: (decision_rank(x.get("decision")), safe_float(x.get("score"), 0)),
+        reverse=True,
+    )[0]
+
+
+def pick_best_management_action(modules):
+    management_candidates = [
+        modules[k] for k in MANAGEMENT_STRATEGY_KEYS
+        if k in modules
+    ]
+
+    if not management_candidates:
+        return module_result(
+            "NO_MANAGEMENT_ACTION",
+            "NO_DATA",
+            "ESPERAR",
+            0,
+            "No hay acciones de gestión evaluables.",
+            [],
+            ["management_actions"],
+            {},
+        )
+
+    return sorted(
+        management_candidates,
+        key=lambda x: (decision_rank(x.get("decision")), safe_float(x.get("score"), 0)),
+        reverse=True,
+    )[0]
+
+
+def final_action_from_entry_and_management(best_entry, best_management):
+    entry_decision = str(best_entry.get("decision", "ESPERAR")).upper()
+    management_decision = str(best_management.get("decision", "ESPERAR")).upper()
+
+    management_alert = management_decision in ["OPERAR", "RADAR"]
+    entry_actionable = entry_decision in ["OPERAR", "RADAR"]
+
+    if management_alert and best_management.get("score", 0) >= 70:
+        return {
+            "final_action": "MANAGE_POSITION",
+            "decision": management_decision,
+            "primary_focus": best_management.get("strategy"),
+            "secondary_focus": best_entry.get("strategy"),
+            "reason": "Hay una posición abierta que requiere revisión antes de abrir nuevas operaciones.",
+        }
+
+    if entry_actionable:
+        return {
+            "final_action": "ENTRY_OPPORTUNITY",
+            "decision": entry_decision,
+            "primary_focus": best_entry.get("strategy"),
+            "secondary_focus": best_management.get("strategy"),
+            "reason": "La mejor oportunidad actual viene de una estrategia de entrada.",
+        }
+
+    if entry_decision == "MISSING_DATA":
+        return {
+            "final_action": "WAIT_FOR_DATA",
+            "decision": "MISSING_DATA",
+            "primary_focus": best_entry.get("strategy"),
+            "secondary_focus": best_management.get("strategy"),
+            "reason": "Hay oportunidad potencial, pero faltan datos para confirmar.",
+        }
+
+    if entry_decision == "BLOCKED":
+        return {
+            "final_action": "BLOCKED",
+            "decision": "BLOCKED",
+            "primary_focus": best_entry.get("strategy"),
+            "secondary_focus": best_management.get("strategy"),
+            "reason": "La mejor oportunidad está bloqueada por una o más reglas de riesgo.",
+        }
+
+    return {
+        "final_action": "NO_TRADE",
+        "decision": "ESPERAR",
+        "primary_focus": best_entry.get("strategy"),
+        "secondary_focus": best_management.get("strategy"),
+        "reason": "No hay oportunidad de entrada ni alerta de gestión suficientemente fuerte.",
+    }
+
+
+_strategy_commander_v9 = strategy_commander
+
+
+def strategy_commander(ticker, technical, ibkr, market):
+    modules = {
+        "naked_put_pro": evaluate_naked_put_pro(ticker, technical, ibkr, market),
+        "covered_call_pro": evaluate_covered_call_pro(ticker, technical, ibkr, market),
+        "iron_condor_pro": evaluate_iron_condor_pro(ticker, technical, ibkr, market),
+        "earnings_pro": evaluate_earnings_pro(ticker, technical, ibkr, market),
+        "futures_pro": evaluate_futures_pro(ticker, technical, ibkr, market),
+        "exit_manager": evaluate_exit_manager(ticker, technical, ibkr, market),
+    }
+
+    best_entry = pick_best_entry_strategy(modules)
+    best_management = pick_best_management_action(modules)
+    final = final_action_from_entry_and_management(best_entry, best_management)
+
+    legacy_best = sorted(
+        list(modules.values()),
+        key=lambda x: (decision_rank(x.get("decision")), safe_float(x.get("score"), 0)),
+        reverse=True,
+    )[0]
+
+    return {
+        "engine": "STRATEGY_COMMANDER_V10",
+        "final": {
+            "strategy": final["primary_focus"],
+            "state": final["final_action"],
+            "decision": final["decision"],
+            "score": max(
+                safe_float(best_entry.get("score"), 0),
+                safe_float(best_management.get("score"), 0),
+            ),
+            "reason": final["reason"],
+            "blockers": best_entry.get("blockers", []) + best_management.get("blockers", []),
+            "missing_data": best_entry.get("missing_data", []) + best_management.get("missing_data", []),
+            "details": {
+                "final_action": final,
+                "best_entry_strategy": best_entry,
+                "best_management_action": best_management,
+                "legacy_best": legacy_best,
+            },
+        },
+        "best_entry_strategy": best_entry,
+        "best_management_action": best_management,
+        "modules": modules,
+        "summary": {
+            "final_action": final["final_action"],
+            "decision": final["decision"],
+            "best_entry_strategy": best_entry.get("strategy"),
+            "best_entry_decision": best_entry.get("decision"),
+            "best_entry_score": best_entry.get("score"),
+            "best_management_action": best_management.get("strategy"),
+            "best_management_decision": best_management.get("decision"),
+            "best_management_score": best_management.get("score"),
+            "primary_focus": final["primary_focus"],
+            "secondary_focus": final["secondary_focus"],
+            "reason": final["reason"],
+            "entry_blockers": best_entry.get("blockers", []),
+            "entry_missing_data": best_entry.get("missing_data", []),
+            "management_alerts": best_management.get("details", {}).get("alerts", []),
+        },
+    }
+
+
+def compact_option(option):
+    if not option:
+        return None
+
+    return {
+        "ticker": option.get("ticker"),
+        "strategy_hint": option.get("strategy_hint"),
+        "option_type": option.get("option_type"),
+        "option_symbol": option.get("option_symbol"),
+        "strike": option.get("strike"),
+        "expiration": option.get("expiration"),
+        "dte": option.get("dte"),
+        "mid": option.get("mid"),
+        "bid": option.get("bid"),
+        "ask": option.get("ask"),
+        "delta": option.get("delta"),
+        "iv": option.get("implied_volatility"),
+        "score": option.get("score"),
+        "decision": option.get("strategy_decision"),
+        "data_quality": option.get("data_quality"),
+    }
+
+
+def compact_decision_row(x):
+    commander = x.get("strategy_commander", {})
+    summary = commander.get("summary", {})
+    ibkr = x.get("ibkr_context", {})
+
+    return {
+        "ticker": x.get("ticker"),
+        "decision": summary.get("decision", x.get("final_decision")),
+        "final_action": summary.get("final_action"),
+        "primary_focus": summary.get("primary_focus"),
+        "best_entry_strategy": summary.get("best_entry_strategy"),
+        "best_entry_decision": summary.get("best_entry_decision"),
+        "best_entry_score": summary.get("best_entry_score"),
+        "best_management_action": summary.get("best_management_action"),
+        "best_management_decision": summary.get("best_management_decision"),
+        "best_management_score": summary.get("best_management_score"),
+        "reason": summary.get("reason"),
+        "entry_blockers": summary.get("entry_blockers", []),
+        "entry_missing_data": summary.get("entry_missing_data", []),
+        "management_alerts": summary.get("management_alerts", []),
+        "master_score": x.get("master_score"),
+        "technical": {
+            "alignment": x.get("alignment"),
+            "priority_score": x.get("priority_score"),
+            "grade": x.get("grade"),
+            "conviction": x.get("conviction"),
+        },
+        "ibkr": {
+            "available": ibkr.get("available"),
+            "price_source": ibkr.get("price_source"),
+            "latest_price": ibkr.get("latest_price"),
+            "position_class": ibkr.get("position_class"),
+            "position_size": ibkr.get("position_size"),
+            "unrealized_pl": ibkr.get("unrealized_pl"),
+            "options_candidates_count": ibkr.get("options_candidates_count"),
+            "best_naked_put": compact_option(ibkr.get("best_naked_put")),
+            "best_covered_call": compact_option(ibkr.get("best_covered_call")),
+        },
+    }
+
+
+@app.get("/gpt_decision")
+def gpt_decision():
+    dashboard = build_dashboard()
+    regime = market_regime()
+
+    compact = [compact_decision_row(x) for x in dashboard]
+
+    entry_opportunities = [
+        x for x in compact
+        if x.get("final_action") == "ENTRY_OPPORTUNITY"
+    ]
+
+    management_actions = [
+        x for x in compact
+        if x.get("final_action") == "MANAGE_POSITION"
+    ]
+
+    wait_for_data = [
+        x for x in compact
+        if x.get("final_action") == "WAIT_FOR_DATA"
+    ]
+
+    blocked = [
+        x for x in compact
+        if x.get("final_action") == "BLOCKED"
+    ]
+
+    no_trade = [
+        x for x in compact
+        if x.get("final_action") == "NO_TRADE"
+    ]
+
+    return {
+        "engine": "v10_strategy_commander_pro",
+        "generated_at": now_utc().isoformat(),
+        "market": {
+            "regime": regime.get("regime"),
+            "summary": regime.get("summary"),
+            "session_state": market_session_state(),
+            "execution_window": inside_execution_window(),
+            "minutes_since_open": minutes_since_open(),
+        },
+        "counts": {
+            "entry_opportunities": len(entry_opportunities),
+            "management_actions": len(management_actions),
+            "wait_for_data": len(wait_for_data),
+            "blocked": len(blocked),
+            "no_trade": len(no_trade),
+        },
+        "top_entry_opportunities": entry_opportunities[:10],
+        "top_management_actions": management_actions[:10],
+        "wait_for_data": wait_for_data[:10],
+        "blocked": blocked[:10],
+        "no_trade": no_trade[:10],
+        "all_ranked": compact[:20],
+        "next_best_action": "Priorizar primero gestión de posiciones abiertas con alerta fuerte; después revisar oportunidades de entrada con decisión OPERAR/RADAR y confirmar datos faltantes.",
+    }
+
+# END SUPER ENGINE BOLSA — V10 PATCH
