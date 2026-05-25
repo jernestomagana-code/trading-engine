@@ -3664,3 +3664,133 @@ def gpt_decision():
     }
 
 # END SUPER ENGINE BOLSA — V10 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V10.1 PATCH
+# Rebuild options candidates from history + actionable entry filtering
+# ============================================================
+
+def is_actionable_entry_candidate(item):
+    strategy = str(item.get("strategy") or "").upper()
+    decision = str(item.get("decision") or "").upper()
+    state = str(item.get("state") or "").upper()
+    score = safe_float(item.get("score"), 0)
+
+    if strategy == "EARNINGS_PRO" and state in ["NO_EVENT", "EVALUATED"] and decision == "ESPERAR":
+        return False
+
+    if decision in ["OPERAR", "RADAR", "MISSING_DATA", "BLOCKED"]:
+        return True
+
+    if score >= 55 and strategy in ["NAKED_PUT_PRO", "COVERED_CALL_PRO", "IRON_CONDOR_PRO", "FUTURES_PRO"]:
+        return True
+
+    return False
+
+
+def pick_best_entry_strategy(modules):
+    entry_candidates = [
+        modules[k] for k in ENTRY_STRATEGY_KEYS
+        if k in modules and is_actionable_entry_candidate(modules[k])
+    ]
+
+    if not entry_candidates:
+        return module_result(
+            "NO_ENTRY_STRATEGY",
+            "NO_EDGE",
+            "ESPERAR",
+            0,
+            "No hay oportunidad real de entrada con la información actual.",
+            [],
+            ["actionable_entry_strategy"],
+            {},
+        )
+
+    return sorted(
+        entry_candidates,
+        key=lambda x: (decision_rank(x.get("decision")), safe_float(x.get("score"), 0)),
+        reverse=True,
+    )[0]
+
+
+def rebuild_store_from_history():
+    signals = load_signals(limit=5000)
+    store = {}
+
+    for signal in signals:
+        ticker = str(signal.get("ticker", "UNKNOWN")).upper().strip()
+        tf = normalize_timeframe(signal.get("timeframe", "unknown"))
+        source = str(signal.get("source", "")).upper()
+
+        if ticker not in store:
+            store[ticker] = {}
+
+        if source == "IBKR" and tf == "options":
+            existing = store[ticker].get("options_candidates", [])
+            key = option_candidate_key(signal)
+
+            existing = [
+                item for item in existing
+                if option_candidate_key(item) != key
+            ]
+
+            existing.append(signal)
+            existing = sorted(existing, key=option_candidate_rank, reverse=True)
+            existing = existing[:MAX_OPTIONS_CANDIDATES_PER_TICKER]
+
+            store[ticker]["options_candidates"] = existing
+            store[ticker]["options"] = existing[0] if existing else signal
+
+        else:
+            store[ticker][tf] = signal
+
+    return store
+
+
+@app.get("/debug/rebuild")
+def debug_rebuild():
+    global trade_store
+    trade_store = rebuild_store_from_history()
+
+    summary = {}
+    for ticker, raw in trade_store.items():
+        summary[ticker] = {
+            "layers": list(raw.keys()),
+            "options_candidates_count": len(raw.get("options_candidates", [])),
+        }
+
+    return {
+        "engine": "v10.1_debug",
+        "status": "rebuilt",
+        "tickers": summary,
+    }
+
+
+@app.get("/gpt_decision_clean")
+def gpt_decision_clean():
+    dashboard = build_dashboard()
+    regime = market_regime()
+
+    compact = [compact_decision_row(x) for x in dashboard]
+
+    actionable = [
+        x for x in compact
+        if x.get("final_action") in ["ENTRY_OPPORTUNITY", "MANAGE_POSITION", "WAIT_FOR_DATA", "BLOCKED"]
+    ]
+
+    return {
+        "engine": "v10.1_clean",
+        "generated_at": now_utc().isoformat(),
+        "market": {
+            "regime": regime.get("regime"),
+            "summary": regime.get("summary"),
+            "session_state": market_session_state(),
+            "execution_window": inside_execution_window(),
+            "minutes_since_open": minutes_since_open(),
+        },
+        "top": actionable[:10],
+        "all_ranked": compact[:20],
+        "note": "Versión limpia: evita que Earnings PRO gane si no hay evento y reconstruye options_candidates desde historial.",
+    }
+
+# END SUPER ENGINE BOLSA — V10.1 PATCH
