@@ -5395,3 +5395,204 @@ def debug_routes_v14():
     }
 
 # END SUPER ENGINE BOLSA — V14 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V15 PATCH
+# TradingView Technical Snapshot Setup & Alert Payload Builder
+# ============================================================
+
+TRADINGVIEW_TECHNICAL_WEBHOOK_URL = "https://trading-engine-p097.onrender.com/technical_snapshot"
+
+
+@app.get("/gpt_tradingview_setup")
+def gpt_tradingview_setup():
+    return {
+        "engine": "v15_tradingview_setup",
+        "purpose": "Configurar TradingView para mandar technical_snapshot automático al Super Engine Bolsa.",
+        "webhook_url": TRADINGVIEW_TECHNICAL_WEBHOOK_URL,
+        "required_alert_settings": {
+            "condition": "Usar alerta del indicador Super Engine / Technical Snapshot",
+            "webhook_url": TRADINGVIEW_TECHNICAL_WEBHOOK_URL,
+            "message_format": "JSON",
+            "timeframe_recommended": ["1h", "15m", "5m", "1d"],
+        },
+        "required_fields": [
+            "ticker",
+            "timeframe",
+            "price",
+            "trend",
+            "score",
+            "rsi",
+            "adx",
+            "range_20d",
+            "range_breakout",
+            "support_near",
+            "resistance_near",
+            "vwap_position",
+            "volume_relative",
+            "iv_rank",
+            "earnings_soon",
+            "event_risk",
+        ],
+        "next_step": "Crear/actualizar Pine Script para exponer plots RSI, ADX, range_20d, range_breakout, soporte, resistencia, VWAP y volumen relativo."
+    }
+
+
+@app.get("/gpt_tradingview_alert_message")
+def gpt_tradingview_alert_message(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    return {
+        "engine": "v15_tradingview_alert_message",
+        "webhook_url": TRADINGVIEW_TECHNICAL_WEBHOOK_URL,
+        "ticker": ticker,
+        "alert_message_to_copy": """
+{
+  "ticker": "{{ticker}}",
+  "timeframe": "{{interval}}",
+  "price": {{close}},
+  "trend": "{{plot(\"TrendCode\")}}",
+  "score": {{plot("TechScore")}},
+  "rsi": {{plot("RSI")}},
+  "adx": {{plot("ADX")}},
+  "range_20d": {{plot("Range20D")}},
+  "range_breakout": {{plot("RangeBreakout")}},
+  "support_near": {{plot("SupportNear")}},
+  "resistance_near": {{plot("ResistanceNear")}},
+  "vwap_position": "{{plot(\"VWAPPosition\")}}",
+  "volume_relative": {{plot("VolumeRelative")}},
+  "iv_rank": null,
+  "earnings_soon": false,
+  "event_risk": false
+}
+""".strip(),
+        "important_note": "TradingView solo puede usar {{plot(\"Nombre\")}} si el Pine Script tiene plots con esos nombres exactos.",
+        "fallback_alert_message_if_string_plots_fail": """
+{
+  "ticker": "{{ticker}}",
+  "timeframe": "{{interval}}",
+  "price": {{close}},
+  "trend": "neutral",
+  "score": {{plot("TechScore")}},
+  "rsi": {{plot("RSI")}},
+  "adx": {{plot("ADX")}},
+  "range_20d": {{plot("Range20D")}},
+  "range_breakout": {{plot("RangeBreakout")}},
+  "support_near": {{plot("SupportNear")}},
+  "resistance_near": {{plot("ResistanceNear")}},
+  "vwap_position": "near",
+  "volume_relative": {{plot("VolumeRelative")}},
+  "iv_rank": null,
+  "earnings_soon": false,
+  "event_risk": false
+}
+""".strip()
+    }
+
+
+@app.get("/gpt_pine_snapshot_template")
+def gpt_pine_snapshot_template():
+    pine = r'''
+//@version=5
+indicator("Super Engine Bolsa - Technical Snapshot V15", overlay=true)
+
+// ==========================
+// Core indicators
+// ==========================
+rsiLen = input.int(14, "RSI Length")
+adxLen = input.int(14, "ADX Length")
+rangeLen = input.int(20, "Range Length")
+volLen = input.int(20, "Relative Volume Length")
+
+rsiValue = ta.rsi(close, rsiLen)
+adxValue = ta.adx(adxLen)
+
+rangeHigh = ta.highest(high, rangeLen)
+rangeLow = ta.lowest(low, rangeLen)
+rangeMid = (rangeHigh + rangeLow) / 2.0
+
+insideRange20D = close <= rangeHigh and close >= rangeLow
+rangeBreakout = close > rangeHigh or close < rangeLow
+
+rangeSize = rangeHigh - rangeLow
+supportNear = rangeSize > 0 ? math.abs(close - rangeLow) / close <= 0.01 : false
+resistanceNear = rangeSize > 0 ? math.abs(close - rangeHigh) / close <= 0.01 : false
+
+vwapValue = ta.vwap(hlc3)
+vwapPositionCode = close > vwapValue ? 1 : close < vwapValue ? -1 : 0
+
+volAvg = ta.sma(volume, volLen)
+volumeRelative = volAvg > 0 ? volume / volAvg : na
+
+// ==========================
+// Technical score
+// ==========================
+neutralRSI = rsiValue >= 45 and rsiValue <= 55
+lowADX = adxValue <= 22
+rangeGood = insideRange20D and not rangeBreakout
+
+score = 0.0
+score += neutralRSI ? 30 : 0
+score += lowADX ? 30 : 0
+score += rangeGood ? 25 : 0
+score += volumeRelative <= 1.3 ? 15 : 0
+
+// trend code:
+// 1 = bullish
+// 0 = neutral
+// -1 = bearish
+trendCode = close > rangeMid and adxValue > 22 ? 1 : close < rangeMid and adxValue > 22 ? -1 : 0
+
+// ==========================
+// Plots for TradingView alert placeholders
+// IMPORTANT: names must match alert JSON
+// ==========================
+plot(rsiValue, title="RSI", display=display.none)
+plot(adxValue, title="ADX", display=display.none)
+plot(insideRange20D ? 1 : 0, title="Range20D", display=display.none)
+plot(rangeBreakout ? 1 : 0, title="RangeBreakout", display=display.none)
+plot(supportNear ? 1 : 0, title="SupportNear", display=display.none)
+plot(resistanceNear ? 1 : 0, title="ResistanceNear", display=display.none)
+plot(vwapPositionCode, title="VWAPPosition", display=display.none)
+plot(volumeRelative, title="VolumeRelative", display=display.none)
+plot(score, title="TechScore", display=display.none)
+plot(trendCode, title="TrendCode", display=display.none)
+
+// ==========================
+// Visual aids
+// ==========================
+plot(rangeHigh, "20D Range High")
+plot(rangeLow, "20D Range Low")
+plot(vwapValue, "VWAP")
+
+bgcolor(insideRange20D and lowADX and neutralRSI ? color.new(color.green, 88) : na)
+
+alertcondition(true, title="Technical Snapshot V15", message="Send webhook using JSON message from /gpt_tradingview_alert_message")
+'''
+    return {
+        "engine": "v15_pine_snapshot_template",
+        "pine_script": pine.strip(),
+        "important_note": "Este Pine Script expone plots para que TradingView pueda construir el JSON del technical_snapshot."
+    }
+
+
+@app.get("/debug/routes_v15")
+def debug_routes_v15():
+    return {
+        "engine": "v15",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/gpt_tradingview_setup",
+            "/gpt_tradingview_alert_message",
+            "/gpt_pine_snapshot_template",
+            "/technical_snapshot",
+            "/debug/technical_context",
+            "/debug/data_sources",
+            "/debug/quality_gate",
+            "/gpt_action_plan",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V15 PATCH
