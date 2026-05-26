@@ -5088,3 +5088,310 @@ def debug_routes_v13_1():
     }
 
 # END SUPER ENGINE BOLSA — V13.1 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V14 PATCH
+# Decision Quality & Liquidity Rules
+# ============================================================
+
+ACCEPTABLE_OPTION_QUALITY_FOR_OPERAR = [
+    "FULL_WITH_GREEKS",
+    "PRICE_WITH_GREEKS_NO_BIDASK",
+]
+
+POOR_OPTION_QUALITY = [
+    "PRICE_ONLY_NO_GREEKS",
+    "NO_DATA",
+    "UNKNOWN",
+    "",
+]
+
+
+def option_has_greeks(option):
+    if not option:
+        return False
+
+    return (
+        option.get("delta") is not None
+        and option.get("implied_volatility") is not None
+    )
+
+
+def option_has_price(option):
+    if not option:
+        return False
+
+    mid = safe_float(option.get("mid"), None)
+    last = safe_float(option.get("last"), None)
+    close = safe_float(option.get("close"), None)
+
+    return any(x is not None and x > 0 for x in [mid, last, close])
+
+
+def option_has_bidask(option):
+    if not option:
+        return False
+
+    bid = safe_float(option.get("bid"), None)
+    ask = safe_float(option.get("ask"), None)
+
+    return bool(bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid)
+
+
+def option_spread_ok(option, max_spread_pct=0.18):
+    if not option:
+        return False
+
+    spread_pct = safe_float(option.get("spread_pct"), None)
+
+    if spread_pct is None:
+        return False
+
+    return spread_pct <= max_spread_pct
+
+
+def option_quality_value(option):
+    if not option:
+        return "NO_DATA"
+    return str(option.get("data_quality") or "UNKNOWN").upper()
+
+
+def option_quality_allows_operar(option):
+    quality = option_quality_value(option)
+    return quality in ACCEPTABLE_OPTION_QUALITY_FOR_OPERAR and option_has_greeks(option) and option_has_price(option)
+
+
+def option_quality_allows_radar(option):
+    quality = option_quality_value(option)
+
+    if quality in ACCEPTABLE_OPTION_QUALITY_FOR_OPERAR:
+        return option_has_price(option)
+
+    if quality == "PRICE_ONLY_NO_GREEKS":
+        return option_has_price(option)
+
+    return False
+
+
+def delta_zone_for_short_leg(option):
+    if not option or option.get("delta") is None:
+        return "MISSING"
+
+    d = abs(safe_float(option.get("delta"), 999))
+
+    if 0.15 <= d <= 0.20:
+        return "IDEAL"
+
+    if 0.10 <= d < 0.15:
+        return "CONSERVATIVE"
+
+    if 0.20 < d <= 0.30:
+        return "AGGRESSIVE"
+
+    return "OUT_OF_RANGE"
+
+
+def iron_condor_leg_quality_report(option):
+    if not option:
+        return {
+            "available": False,
+            "quality": "NO_DATA",
+            "has_greeks": False,
+            "has_price": False,
+            "has_bidask": False,
+            "spread_ok": False,
+            "delta_zone": "MISSING",
+            "can_operar": False,
+            "can_radar": False,
+        }
+
+    quality = option_quality_value(option)
+
+    return {
+        "available": True,
+        "quality": quality,
+        "has_greeks": option_has_greeks(option),
+        "has_price": option_has_price(option),
+        "has_bidask": option_has_bidask(option),
+        "spread_ok": option_spread_ok(option),
+        "delta_zone": delta_zone_for_short_leg(option),
+        "can_operar": option_quality_allows_operar(option),
+        "can_radar": option_quality_allows_radar(option),
+    }
+
+
+def iron_condor_quality_gate(structure):
+    blockers = []
+    missing = []
+    warnings = []
+
+    put_leg = structure.get("put_leg")
+    call_leg = structure.get("call_leg")
+
+    put_quality = iron_condor_leg_quality_report(put_leg)
+    call_quality = iron_condor_leg_quality_report(call_leg)
+
+    if not put_leg:
+        missing.append("put_leg")
+    if not call_leg:
+        missing.append("call_leg")
+
+    if put_leg and not put_quality["has_greeks"]:
+        missing.append("put_greeks")
+    if call_leg and not call_quality["has_greeks"]:
+        missing.append("call_greeks")
+
+    if put_leg and not put_quality["has_price"]:
+        missing.append("put_price")
+    if call_leg and not call_quality["has_price"]:
+        missing.append("call_price")
+
+    if put_leg and put_quality["delta_zone"] == "OUT_OF_RANGE":
+        blockers.append("Put delta fuera de rango aceptable 0.10–0.30.")
+    if call_leg and call_quality["delta_zone"] == "OUT_OF_RANGE":
+        blockers.append("Call delta fuera de rango aceptable 0.10–0.30.")
+
+    if put_leg and put_quality["delta_zone"] in ["CONSERVATIVE", "AGGRESSIVE"]:
+        warnings.append("Put delta no está en zona ideal 0.15–0.20.")
+    if call_leg and call_quality["delta_zone"] in ["CONSERVATIVE", "AGGRESSIVE"]:
+        warnings.append("Call delta no está en zona ideal 0.15–0.20.")
+
+    if structure.get("dte_match") is False:
+        blockers.append("Las dos alas no tienen el mismo DTE.")
+
+    credit = safe_float(structure.get("estimated_short_credit"), None)
+    if credit is None or credit <= 0:
+        missing.append("estimated_credit")
+
+    # Bid/ask no siempre llega desde IBKR para todos los contratos; si falta, máximo RADAR.
+    if put_leg and not put_quality["has_bidask"]:
+        warnings.append("Put sin bid/ask completo; no permite OPERAR directo.")
+    if call_leg and not call_quality["has_bidask"]:
+        warnings.append("Call sin bid/ask completo; no permite OPERAR directo.")
+
+    can_operar = (
+        put_quality["can_operar"]
+        and call_quality["can_operar"]
+        and put_quality["delta_zone"] == "IDEAL"
+        and call_quality["delta_zone"] == "IDEAL"
+        and structure.get("dte_match") is True
+        and credit is not None
+        and credit > 0
+        and not blockers
+        and not missing
+    )
+
+    can_radar = (
+        put_quality["can_radar"]
+        and call_quality["can_radar"]
+        and put_quality["delta_zone"] in ["IDEAL", "CONSERVATIVE", "AGGRESSIVE"]
+        and call_quality["delta_zone"] in ["IDEAL", "CONSERVATIVE", "AGGRESSIVE"]
+        and structure.get("dte_match") is True
+        and credit is not None
+        and credit > 0
+        and not blockers
+    )
+
+    return {
+        "put_quality": put_quality,
+        "call_quality": call_quality,
+        "blockers": sorted(list(set(blockers))),
+        "missing_data": sorted(list(set(missing))),
+        "warnings": sorted(list(set(warnings))),
+        "can_operar": can_operar,
+        "can_radar": can_radar,
+    }
+
+
+_evaluate_iron_condor_pro_v13_1 = evaluate_iron_condor_pro
+
+
+def evaluate_iron_condor_pro(ticker, technical, ibkr, market):
+    result = _evaluate_iron_condor_pro_v13_1(ticker, technical, ibkr, market)
+
+    result = dict(result)
+    details = dict(result.get("details", {}))
+    blockers = list(result.get("blockers", []))
+    missing = list(result.get("missing_data", []))
+
+    structure = details.get("iron_condor_structure") or build_iron_condor_structure(ibkr)
+    quality_gate = iron_condor_quality_gate(structure)
+
+    details["v14_quality_gate"] = quality_gate
+
+    blockers.extend(quality_gate.get("blockers", []))
+    missing.extend(quality_gate.get("missing_data", []))
+
+    result["details"] = details
+    result["blockers"] = sorted(list(set(blockers)))
+    result["missing_data"] = sorted(list(set(missing)))
+
+    if quality_gate["can_operar"]:
+        # Still respect higher-level event/technical blockers if any exist.
+        if result["blockers"]:
+            result["decision"] = "RADAR"
+            result["reason"] = "Iron Condor tiene calidad suficiente, pero existen bloqueos de riesgo."
+        else:
+            result["decision"] = "OPERAR"
+            result["reason"] = "Iron Condor PRO cumple calidad de datos, griegas, delta ideal, DTE y crédito estimado."
+
+    elif quality_gate["can_radar"]:
+        result["decision"] = "RADAR"
+        result["reason"] = "Iron Condor PRO tiene estructura válida, pero no cumple todos los requisitos para OPERAR."
+
+    elif result["missing_data"]:
+        result["decision"] = "MISSING_DATA"
+        result["reason"] = "Iron Condor potencial, pero faltan datos de calidad, griegas, precio o confirmaciones."
+
+    elif result["blockers"]:
+        result["decision"] = "BLOCKED"
+        result["reason"] = "Iron Condor bloqueado por reglas de delta, DTE, liquidez o riesgo."
+
+    else:
+        result["decision"] = "ESPERAR"
+        result["reason"] = "Iron Condor sin edge suficiente bajo reglas V14."
+
+    return result
+
+
+@app.get("/debug/quality_gate")
+def debug_quality_gate(ticker: str = "QQQ"):
+    ticker = ticker.upper().strip()
+
+    technical = get_technical_context(ticker)
+    ibkr = get_ibkr_context(ticker)
+    market = get_market_context()
+
+    structure = build_iron_condor_structure(ibkr)
+    quality_gate = iron_condor_quality_gate(structure)
+    decision = evaluate_iron_condor_pro(ticker, technical, ibkr, market)
+
+    return {
+        "engine": "v14_quality_gate",
+        "ticker": ticker,
+        "options_candidates_count": ibkr.get("options_candidates_count"),
+        "structure": structure,
+        "quality_gate": quality_gate,
+        "decision": decision,
+        "note": "V14 limita OPERAR si faltan griegas, bid/ask, precio, DTE match, delta ideal o crédito válido."
+    }
+
+
+@app.get("/debug/routes_v14")
+def debug_routes_v14():
+    return {
+        "engine": "v14",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/debug/quality_gate",
+            "/debug/iron_condor",
+            "/gpt_iron_condors",
+            "/gpt_action_plan",
+            "/debug/data_sources",
+            "/technical_snapshot",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V14 PATCH
