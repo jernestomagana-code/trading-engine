@@ -5874,3 +5874,110 @@ def debug_routes_v15_1():
     }
 
 # END SUPER ENGINE BOLSA — V15.1 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V15.2 PATCH
+# Force /technical_snapshot to use normalized V15.1 handler
+# Removes older duplicate routes registered earlier in the file.
+# ============================================================
+
+async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+    verify_webhook_secret(x_webhook_secret)
+
+    parsed, raw_text = await parse_request_payload(request)
+
+    if not isinstance(parsed, dict):
+        return {
+            "status": "error",
+            "engine": "v15.2_technical_snapshot_forced",
+            "message": "Invalid JSON payload",
+            "raw_preview": raw_text[:500],
+        }
+
+    parsed = normalize_technical_snapshot_payload(parsed)
+
+    ticker = find_ticker(parsed, raw_text)
+    timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
+
+    parsed.update({
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "received_at": now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "source": "TECHNICAL_SNAPSHOT",
+        "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_2_FORCED",
+        "raw_payload_preview": raw_text[:500],
+    })
+
+    trade_store.setdefault(ticker, {})
+    trade_store[ticker][timeframe] = parsed
+    trade_store[ticker]["technical_snapshot"] = parsed
+
+    classification = classify_asset(trade_store[ticker])
+
+    parsed.update({
+        "state": classification.get("state"),
+        "grade": classification.get("grade"),
+        "conviction": classification.get("conviction"),
+        "priority_score": classification.get("priority_score"),
+        "final_decision": classification.get("final_decision"),
+        "v6_strategy": classification.get("v6_strategy"),
+        "master_score": classification.get("master_score"),
+    })
+
+    trade_store[ticker][timeframe] = parsed
+    trade_store[ticker]["technical_snapshot"] = parsed
+
+    storage_result = save_signal(parsed)
+    unified = build_unified_context(ticker)
+
+    return {
+        "status": "ok",
+        "engine": "v15.2_technical_snapshot_forced",
+        "message": f"Normalized technical snapshot received for {ticker} {timeframe}",
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "storage": storage_result,
+        "normalized_payload": parsed,
+        "unified_context": unified,
+    }
+
+
+# Remove all previous POST /technical_snapshot routes.
+app.router.routes = [
+    route for route in app.router.routes
+    if not (
+        getattr(route, "path", None) == "/technical_snapshot"
+        and "POST" in getattr(route, "methods", set())
+    )
+]
+
+# Re-register clean normalized route.
+app.add_api_route(
+    "/technical_snapshot",
+    technical_snapshot_forced_v15_2,
+    methods=["POST"],
+    name="technical_snapshot_forced_v15_2"
+)
+
+
+@app.get("/debug/routes_v15_2")
+def debug_routes_v15_2():
+    technical_snapshot_routes = [
+        {
+            "path": getattr(route, "path", None),
+            "name": getattr(route, "name", None),
+            "methods": sorted(list(getattr(route, "methods", [])))
+        }
+        for route in app.routes
+        if getattr(route, "path", None) == "/technical_snapshot"
+    ]
+
+    return {
+        "engine": "v15.2",
+        "technical_snapshot_routes": technical_snapshot_routes,
+        "routes": sorted([route.path for route in app.routes]),
+        "expected": "Only one POST /technical_snapshot route should exist and it should be technical_snapshot_forced_v15_2."
+    }
+
+# END SUPER ENGINE BOLSA — V15.2 PATCH
