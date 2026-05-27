@@ -5596,3 +5596,281 @@ def debug_routes_v15():
     }
 
 # END SUPER ENGINE BOLSA — V15 PATCH
+
+# ============================================================
+# SUPER ENGINE BOLSA — V15.1 PATCH
+# TradingView Technical Snapshot Normalizer
+# ============================================================
+
+BOOLEAN_NUMERIC_FIELDS_V15_1 = [
+    "range_20d",
+    "range_breakout",
+    "support_near",
+    "resistance_near",
+    "earnings_soon",
+    "event_risk",
+]
+
+NUMERIC_FIELDS_V15_1 = [
+    "price",
+    "score",
+    "rsi",
+    "adx",
+    "volume_relative",
+    "iv_rank",
+    "iv_percentile",
+    "trend_code",
+    "vwap_position_code",
+]
+
+
+def normalize_numeric_bool(value):
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return value
+
+    try:
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ["true", "yes", "y", "si", "sí"]:
+                return True
+            if v in ["false", "no", "n"]:
+                return False
+            if v in ["1", "1.0"]:
+                return True
+            if v in ["0", "0.0"]:
+                return False
+
+        n = float(value)
+        if math.isnan(n) or math.isinf(n):
+            return None
+        return n >= 0.5
+
+    except Exception:
+        return None
+
+
+def normalize_number_or_none(value):
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if value.lower() in ["na", "nan", "none", "null", ""]:
+                return None
+
+        n = float(value)
+        if math.isnan(n) or math.isinf(n):
+            return None
+
+        return round(n, 6)
+
+    except Exception:
+        return None
+
+
+def normalize_trend_code(value):
+    n = normalize_number_or_none(value)
+
+    if n is None:
+        return None
+
+    if n > 0:
+        return "bullish"
+
+    if n < 0:
+        return "bearish"
+
+    return "neutral"
+
+
+def normalize_vwap_position_code(value):
+    n = normalize_number_or_none(value)
+
+    if n is None:
+        return None
+
+    if n > 0:
+        return "above"
+
+    if n < 0:
+        return "below"
+
+    return "near"
+
+
+def normalize_technical_snapshot_payload(payload):
+    payload = dict(payload or {})
+
+    for key in NUMERIC_FIELDS_V15_1:
+        if key in payload:
+            payload[key] = normalize_number_or_none(payload.get(key))
+
+    for key in BOOLEAN_NUMERIC_FIELDS_V15_1:
+        if key in payload:
+            payload[key] = normalize_numeric_bool(payload.get(key))
+
+    if payload.get("trend") in [None, "", "null"]:
+        trend = normalize_trend_code(payload.get("trend_code"))
+        if trend:
+            payload["trend"] = trend
+
+    if payload.get("vwap_position") in [None, "", "null"]:
+        vwap_position = normalize_vwap_position_code(payload.get("vwap_position_code"))
+        if vwap_position:
+            payload["vwap_position"] = vwap_position
+
+    payload["normalizer_version"] = "v15.1"
+    payload["normalized_at"] = now_utc().isoformat()
+
+    return payload
+
+
+# Preserve existing V13/V15 technical_snapshot endpoint logic
+_technical_snapshot_v15 = technical_snapshot
+
+
+@app.post("/technical_snapshot_v15_1")
+async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+    verify_webhook_secret(x_webhook_secret)
+
+    parsed, raw_text = await parse_request_payload(request)
+
+    if not isinstance(parsed, dict):
+        return {
+            "status": "error",
+            "engine": "v15.1_technical_snapshot",
+            "message": "Invalid JSON payload",
+            "raw_preview": raw_text[:500],
+        }
+
+    parsed = normalize_technical_snapshot_payload(parsed)
+
+    ticker = find_ticker(parsed, raw_text)
+    timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
+
+    parsed.update({
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "received_at": now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "source": "TECHNICAL_SNAPSHOT",
+        "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_1",
+        "raw_payload_preview": raw_text[:500],
+    })
+
+    trade_store.setdefault(ticker, {})
+    trade_store[ticker][timeframe] = parsed
+    trade_store[ticker]["technical_snapshot"] = parsed
+
+    classification = classify_asset(trade_store[ticker])
+
+    parsed.update({
+        "state": classification.get("state"),
+        "grade": classification.get("grade"),
+        "conviction": classification.get("conviction"),
+        "priority_score": classification.get("priority_score"),
+        "final_decision": classification.get("final_decision"),
+        "v6_strategy": classification.get("v6_strategy"),
+        "master_score": classification.get("master_score"),
+    })
+
+    trade_store[ticker][timeframe] = parsed
+    trade_store[ticker]["technical_snapshot"] = parsed
+
+    storage_result = save_signal(parsed)
+    unified = build_unified_context(ticker)
+
+    return {
+        "status": "ok",
+        "engine": "v15.1_technical_snapshot",
+        "message": f"Normalized technical snapshot received for {ticker} {timeframe}",
+        "ticker": ticker,
+        "timeframe": timeframe,
+        "storage": storage_result,
+        "normalized_payload": parsed,
+        "unified_context": unified,
+    }
+
+
+@app.post("/technical_snapshot")
+async def technical_snapshot(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+    # Replace previous endpoint behavior with normalized V15.1 behavior.
+    return await technical_snapshot_v15_1(request, x_webhook_secret)
+
+
+@app.get("/debug/normalizer")
+def debug_normalizer(
+    ticker: str = "QQQ",
+    trend_code: Optional[float] = 0,
+    vwap_position_code: Optional[float] = 0,
+    range_20d: Optional[float] = 1,
+    range_breakout: Optional[float] = 0,
+    support_near: Optional[float] = 0,
+    resistance_near: Optional[float] = 0,
+):
+    sample = {
+        "ticker": ticker.upper().strip(),
+        "timeframe": "1h",
+        "price": 714.51,
+        "score": 70,
+        "rsi": 51,
+        "adx": 18,
+        "trend_code": trend_code,
+        "vwap_position_code": vwap_position_code,
+        "range_20d": range_20d,
+        "range_breakout": range_breakout,
+        "support_near": support_near,
+        "resistance_near": resistance_near,
+        "volume_relative": 1.0,
+        "iv_rank": 45,
+        "earnings_soon": 0,
+        "event_risk": 0,
+    }
+
+    return {
+        "engine": "v15.1_normalizer_debug",
+        "raw_sample": sample,
+        "normalized_sample": normalize_technical_snapshot_payload(sample),
+        "mapping": {
+            "trend_code": {
+                "1": "bullish",
+                "0": "neutral",
+                "-1": "bearish",
+            },
+            "vwap_position_code": {
+                "1": "above",
+                "0": "near",
+                "-1": "below",
+            },
+            "numeric_booleans": {
+                "1": True,
+                "0": False,
+            },
+        },
+    }
+
+
+@app.get("/debug/routes_v15_1")
+def debug_routes_v15_1():
+    return {
+        "engine": "v15.1",
+        "routes": sorted([route.path for route in app.routes]),
+        "key_routes": [
+            "/technical_snapshot",
+            "/technical_snapshot_v15_1",
+            "/debug/normalizer",
+            "/debug/technical_context",
+            "/debug/data_sources",
+            "/debug/quality_gate",
+            "/gpt_action_plan",
+            "/gpt_tradingview_alert_message",
+            "/webhook/ibkr",
+            "/webhook/tradingview",
+        ],
+    }
+
+# END SUPER ENGINE BOLSA — V15.1 PATCH
