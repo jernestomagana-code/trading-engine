@@ -6006,7 +6006,7 @@ def _v18_api_load_snapshot():
             pass
 
     return {
-        "engine": "V18_OPERATIONAL_DECISION_API",
+        "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
         "generated_at": _v18_api_datetime.now(_v18_api_timezone.utc).isoformat(),
         "snapshot_available": False,
         "summary": {
@@ -6038,7 +6038,7 @@ def decision_desk():
 def decision_desk_health():
     data = _v18_api_load_snapshot()
     return {
-        "engine": "V18_OPERATIONAL_DECISION_API",
+        "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
         "status": "OK" if data.get("health", {}).get("snapshot_available") else "NO_SNAPSHOT",
         "generated_at": data.get("generated_at"),
         "summary": data.get("summary"),
@@ -6064,7 +6064,7 @@ def decision_desk_ticker(ticker: str):
     best = top[0] if top else None
 
     return {
-        "engine": "V18_OPERATIONAL_DECISION_API",
+        "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
         "ticker": t,
         "generated_at": data.get("generated_at"),
         "summary": ticker_summary or {
@@ -6081,4 +6081,73 @@ def decision_desk_ticker(ticker: str):
         "recommendation": best.get("recommendation") if best else f"No hay oportunidades capturadas para {t} en el último ciclo.",
         "top": top[:10],
     }
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V18.1 REMOTE SNAPSHOT INGEST ENDPOINT
+# ============================================================
+
+from fastapi import Request as _v18_1_Request, Header as _v18_1_Header
+import os as _v18_1_api_os
+
+_V18_1_API_INGEST_TOKEN = _v18_1_api_os.getenv("DECISION_DESK_INGEST_TOKEN", "")
+
+@app.post("/decision_desk/ingest")
+async def decision_desk_ingest(
+    request: _v18_1_Request,
+    x_decision_desk_token: str | None = _v18_1_Header(default=None)
+):
+    """
+    Recibe desde ibkr_bridge.py el snapshot operativo generado localmente
+    y lo guarda en Render para que los endpoints GET lo puedan leer.
+    """
+    try:
+        if _V18_1_API_INGEST_TOKEN:
+            if x_decision_desk_token != _V18_1_API_INGEST_TOKEN:
+                return {
+                    "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
+                    "status": "UNAUTHORIZED",
+                    "saved": False,
+                }
+
+        payload = await request.json()
+
+        if not isinstance(payload, dict):
+            return {
+                "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
+                "status": "INVALID_PAYLOAD",
+                "saved": False,
+            }
+
+        payload["remote_ingested_at"] = _v18_api_datetime.now(_v18_api_timezone.utc).isoformat()
+        payload["snapshot_available"] = True
+
+        try:
+            payload.setdefault("health", {})
+            payload["health"]["snapshot_available"] = True
+            payload["health"]["remote_ingested"] = True
+        except Exception:
+            pass
+
+        save_path = _v18_api_Path("runtime/decision_desk_snapshot.json")
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(_v18_api_json.dumps(payload, ensure_ascii=False, indent=2))
+
+        return {
+            "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
+            "status": "OK",
+            "saved": True,
+            "generated_at": payload.get("generated_at"),
+            "summary": payload.get("summary"),
+            "next_best_action": payload.get("next_best_action"),
+            "rows_captured": payload.get("health", {}).get("rows_captured"),
+        }
+
+    except Exception as e:
+        return {
+            "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
+            "status": "ERROR",
+            "saved": False,
+            "error": str(e),
+        }
 

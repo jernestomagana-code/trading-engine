@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V18_OPERATIONAL_DECISION_API
+# SUPER ENGINE BOLSA — IBKR BRIDGE V18_1_REMOTE_SNAPSHOT_INGEST
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -415,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V18_OPERATIONAL_DECISION_API",
+            "source": "IBKR_REALTIME_V18_1_REMOTE_SNAPSHOT_INGEST",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -454,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V18_OPERATIONAL_DECISION_API",
+            "source": "IBKR_REALTIME_V18_1_REMOTE_SNAPSHOT_INGEST",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -503,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V18_OPERATIONAL_DECISION_API",
+            "source": "IBKR_HISTORICAL_V18_1_REMOTE_SNAPSHOT_INGEST",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -545,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V18_OPERATIONAL_DECISION_API ===\n")
+    print("\n=== MARKET DATA V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -699,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V18_OPERATIONAL_DECISION_API ===\n")
+    print("\n=== PORTFOLIO COMMANDER V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
 
     rows = get_positions_rows()
 
@@ -1448,7 +1448,7 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V18_OPERATIONAL_DECISION_API ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1516,7 +1516,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V18_OPERATIONAL_DECISION_API",
+                        "source": "IBKR_OPTIONS_V18_1_REMOTE_SNAPSHOT_INGEST",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1631,6 +1631,65 @@ def v17_reset_summary_rows():
 
 
 
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V18.1 REMOTE SNAPSHOT INGEST CLIENT
+# ============================================================
+
+import os as _v18_1_os
+import urllib.request as _v18_1_urllib_request
+import urllib.error as _v18_1_urllib_error
+
+V18_1_REMOTE_INGEST_URL = _v18_1_os.getenv(
+    "DECISION_DESK_INGEST_URL",
+    "https://trading-engine-p097.onrender.com/decision_desk/ingest"
+)
+
+V18_1_INGEST_TOKEN = _v18_1_os.getenv("DECISION_DESK_INGEST_TOKEN", "")
+
+def v18_1_post_decision_snapshot(payload):
+    """
+    V18.1:
+    Envía el snapshot generado localmente por ibkr_bridge.py hacia Render,
+    para que /decision_desk, /decision_desk/{ticker} y /decision_desk/health
+    puedan mostrar datos reales.
+    """
+    try:
+        if not payload or not isinstance(payload, dict):
+            return {"posted": False, "reason": "empty_payload"}
+
+        body = _v18_json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "SuperEngineBolsa-V18.1",
+        }
+
+        if V18_1_INGEST_TOKEN:
+            headers["X-Decision-Desk-Token"] = V18_1_INGEST_TOKEN
+
+        req = _v18_1_urllib_request.Request(
+            V18_1_REMOTE_INGEST_URL,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+
+        with _v18_1_urllib_request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+            return {
+                "posted": True,
+                "status": getattr(resp, "status", None),
+                "response": raw[:300],
+            }
+
+    except Exception as e:
+        return {
+            "posted": False,
+            "error": str(e),
+            "url": V18_1_REMOTE_INGEST_URL,
+        }
 
 # ============================================================
 # SUPER ENGINE BOLSA — V18 OPERATIONAL DECISION API HELPERS
@@ -1906,7 +1965,7 @@ def v18_build_decision_payload(rows=None):
             global_recommendation = "No hay oportunidades operativas disponibles en el último ciclo."
 
         payload = {
-            "engine": "V18_OPERATIONAL_DECISION_API",
+            "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
             "generated_at": _v18_datetime.now(_v18_timezone.utc).isoformat(),
             "summary": summary,
             "next_best_action": next_best_action,
@@ -1925,7 +1984,7 @@ def v18_build_decision_payload(rows=None):
 
     except Exception as e:
         return {
-            "engine": "V18_OPERATIONAL_DECISION_API",
+            "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
             "generated_at": _v18_datetime.now(_v18_timezone.utc).isoformat(),
             "error": str(e),
             "summary": {
@@ -1957,7 +2016,7 @@ def v18_write_decision_snapshot(rows=None):
         return payload
     except Exception as e:
         return {
-            "engine": "V18_OPERATIONAL_DECISION_API",
+            "engine": "V18_1_REMOTE_SNAPSHOT_INGEST",
             "error": str(e),
             "recommendation": "No se pudo guardar el snapshot V18.",
         }
@@ -2433,7 +2492,7 @@ def v17_build_cycle_summary(local_vars):
 
     except Exception as e:
         return f"V17 summary unavailable: {e}"
-print("SUPER ENGINE IBKR BRIDGE V18_OPERATIONAL_DECISION_API")
+print("SUPER ENGINE IBKR BRIDGE V18_1_REMOTE_SNAPSHOT_INGEST")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -2444,7 +2503,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V18_OPERATIONAL_DECISION_API")
+    print("NUEVO CICLO V18_1_REMOTE_SNAPSHOT_INGEST")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
@@ -2460,11 +2519,16 @@ while True:
             print(v17_build_cycle_summary(locals()))
             try:
                 v18_payload = v18_write_decision_snapshot(V17_SUMMARY_ROWS)
+            v18_remote = v18_1_post_decision_snapshot(v18_payload)
                 nba = v18_payload.get("next_best_action")
                 if nba:
                     print("")
                     print("V18 DECISION API SNAPSHOT UPDATED")
                     print(f"NEXT: {nba.get('ticker')} | {nba.get('strategy')} | {nba.get('decision')} | can_operate:{nba.get('can_operate')}")
+                try:
+                    print(f"REMOTE INGEST: {v18_remote.get('posted')} | status:{v18_remote.get('status')} | url:{v18_remote.get('url', '')}")
+                except Exception:
+                    pass
                 else:
                     print("")
                     print("V18 DECISION API SNAPSHOT UPDATED | No next_best_action")
