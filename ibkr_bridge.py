@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V16_1_MARKET_AWARE
+# SUPER ENGINE BOLSA — IBKR BRIDGE V16_2_DECISION_CAP
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -415,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_1_MARKET_AWARE",
+            "source": "IBKR_REALTIME_V16_2_DECISION_CAP",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -454,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_1_MARKET_AWARE",
+            "source": "IBKR_REALTIME_V16_2_DECISION_CAP",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -503,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V16_1_MARKET_AWARE",
+            "source": "IBKR_HISTORICAL_V16_2_DECISION_CAP",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -545,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V16_1_MARKET_AWARE ===\n")
+    print("\n=== MARKET DATA V16_2_DECISION_CAP ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -699,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V16_1_MARKET_AWARE ===\n")
+    print("\n=== PORTFOLIO COMMANDER V16_2_DECISION_CAP ===\n")
 
     rows = get_positions_rows()
 
@@ -775,6 +775,100 @@ def choose_expiration_from_chain(expirations):
         )[0]
 
     return None, None
+
+
+
+def score_option_candidate(*args, **kwargs):
+    """
+    V16.2 Decision Cap:
+    Envuelve la evaluación original de opciones.
+    - Mercado cerrado: nunca permite OPERAR; máximo RADAR/preparación.
+    - Mercado abierto: si faltan bid/ask/spread confiable, bloquea OPERAR.
+    """
+    result = _score_option_candidate_core(*args, **kwargs)
+
+    if not isinstance(result, dict):
+        return result
+
+    market_open = ibkr_market_is_open_for_options()
+    result["market_open_for_options"] = market_open
+
+    decision = str(result.get("decision", "")).upper()
+    final_decision = str(result.get("final_decision", "")).upper()
+    strategy_decision = str(result.get("strategy_decision", "")).upper()
+    cap = str(result.get("cap", "")).upper()
+    quality = str(result.get("data_quality", result.get("quality", ""))).upper()
+
+    blockers = result.get("blockers", [])
+    if blockers is None:
+        blockers = []
+    if not isinstance(blockers, list):
+        blockers = [str(blockers)]
+
+    warnings = result.get("warnings", [])
+    if warnings is None:
+        warnings = []
+    if not isinstance(warnings, list):
+        warnings = [str(warnings)]
+
+    # Mercado cerrado: no hay entrada ejecutable.
+    if not market_open:
+        result["market_closed_note"] = "MARKET_CLOSED_NO_BIDASK_EXPECTED"
+        result["execution_cap"] = "RADAR_ONLY_MARKET_CLOSED"
+
+        if decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]:
+            result["decision"] = "RADAR"
+
+        if final_decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]:
+            result["final_decision"] = "RADAR"
+
+        if strategy_decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]:
+            result["strategy_decision"] = "RADAR"
+
+        if cap in ["OPERAR", "ENTRY", "TRADE"]:
+            result["cap"] = "RADAR"
+
+        if "Mercado cerrado: bid/ask de opciones puede no ser confiable." not in warnings:
+            warnings.append("Mercado cerrado: bid/ask de opciones puede no ser confiable.")
+
+        result["warnings"] = warnings
+        result["blockers"] = blockers
+        result["can_operar"] = False
+
+        if result.get("decision") in [None, "", "OPERAR"]:
+            result["decision"] = "RADAR"
+
+        return result
+
+    # Mercado abierto: si el motor quería OPERAR pero no hay bid/ask o spread completo, se bloquea.
+    wants_operate = (
+        decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]
+        or final_decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]
+        or strategy_decision in ["OPERAR", "ENTRY_OPPORTUNITY", "TRADE", "BUY", "SELL"]
+    )
+
+    incomplete_market_quality = (
+        "NO_BIDASK" in quality
+        or "NO_GREEKS" in quality
+        or "WAIT_FOR_GREEKS" in cap
+        or "PRICE_ONLY" in quality
+    )
+
+    if market_open and wants_operate and incomplete_market_quality:
+        result["execution_cap"] = "BLOCKED_OPEN_MARKET_REQUIRES_BIDASK_SPREAD"
+        result["decision"] = "RADAR"
+        result["final_decision"] = "RADAR"
+        result["strategy_decision"] = "RADAR"
+        result["cap"] = "RADAR"
+        result["can_operar"] = False
+
+        blocker = "Mercado abierto: para OPERAR se requiere bid/ask/spread y griegas confiables."
+        if blocker not in blockers:
+            blockers.append(blocker)
+
+    result["warnings"] = warnings
+    result["blockers"] = blockers
+    return result
 
 
 def get_option_chain(symbol):
@@ -1176,7 +1270,7 @@ def apply_decision_cap(raw_decision, decision_cap):
     return "ESPERAR"
 
 
-def score_option_candidate(strategy, option_type, strike, stock_price, dte, greeks, mid, data_quality, spread_pct):
+def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte, greeks, mid, data_quality, spread_pct):
     score = 50
     reason = []
 
@@ -1352,7 +1446,7 @@ def score_option_candidate(strategy, option_type, strike, stock_price, dte, gree
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V16_1_MARKET_AWARE ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V16_2_DECISION_CAP ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1420,7 +1514,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V16_1_MARKET_AWARE",
+                        "source": "IBKR_OPTIONS_V16_2_DECISION_CAP",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1498,7 +1592,7 @@ except Exception as e:
 set_market_data_type()
 
 print("")
-print("SUPER ENGINE IBKR BRIDGE V16_1_MARKET_AWARE")
+print("SUPER ENGINE IBKR BRIDGE V16_2_DECISION_CAP")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -1509,7 +1603,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V16_1_MARKET_AWARE")
+    print("NUEVO CICLO V16_2_DECISION_CAP")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
