@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V16_2_DECISION_CAP
+# SUPER ENGINE BOLSA — IBKR BRIDGE V17_2_CONSOLE_CAPTURE
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -415,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_2_DECISION_CAP",
+            "source": "IBKR_REALTIME_V17_2_CONSOLE_CAPTURE",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -454,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_2_DECISION_CAP",
+            "source": "IBKR_REALTIME_V17_2_CONSOLE_CAPTURE",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -503,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V16_2_DECISION_CAP",
+            "source": "IBKR_HISTORICAL_V17_2_CONSOLE_CAPTURE",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -545,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V16_2_DECISION_CAP ===\n")
+    print("\n=== MARKET DATA V17_2_CONSOLE_CAPTURE ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -699,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V16_2_DECISION_CAP ===\n")
+    print("\n=== PORTFOLIO COMMANDER V17_2_CONSOLE_CAPTURE ===\n")
 
     rows = get_positions_rows()
 
@@ -838,6 +838,7 @@ def score_option_candidate(*args, **kwargs):
         if result.get("decision") in [None, "", "OPERAR"]:
             result["decision"] = "RADAR"
 
+        v17_store_row(result)
         return result
 
     # Mercado abierto: si el motor quería OPERAR pero no hay bid/ask o spread completo, se bloquea.
@@ -868,6 +869,7 @@ def score_option_candidate(*args, **kwargs):
 
     result["warnings"] = warnings
     result["blockers"] = blockers
+    v17_store_row(result)
     return result
 
 
@@ -1446,7 +1448,7 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V16_2_DECISION_CAP ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V17_2_CONSOLE_CAPTURE ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1514,7 +1516,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V16_2_DECISION_CAP",
+                        "source": "IBKR_OPTIONS_V17_2_CONSOLE_CAPTURE",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1592,7 +1594,402 @@ except Exception as e:
 set_market_data_type()
 
 print("")
-print("SUPER ENGINE IBKR BRIDGE V16_2_DECISION_CAP")
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V17.1 SUMMARY STORE
+# ============================================================
+
+V17_SUMMARY_ROWS = []
+
+def v17_store_row(row):
+    try:
+        if isinstance(row, dict):
+            V17_SUMMARY_ROWS.append(row)
+    except Exception:
+        pass
+    return row
+
+def v17_store_rows(rows):
+    try:
+        if isinstance(rows, list):
+            for r in rows:
+                if isinstance(r, dict):
+                    V17_SUMMARY_ROWS.append(r)
+        elif isinstance(rows, dict):
+            V17_SUMMARY_ROWS.append(rows)
+    except Exception:
+        pass
+    return rows
+
+def v17_reset_summary_rows():
+    try:
+        V17_SUMMARY_ROWS.clear()
+    except Exception:
+        pass
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V17.2 CONSOLE CAPTURE
+# ============================================================
+
+import builtins as _v17_builtins
+import re as _v17_re
+
+V17_ORIGINAL_PRINT = _v17_builtins.print
+
+def v17_parse_console_line_for_summary(text):
+    try:
+        if not isinstance(text, str):
+            text = str(text)
+
+        if " decision:" not in text and " cap:" not in text:
+            return None
+
+        if " score:" not in text:
+            return None
+
+        parts = text.strip().split()
+        if len(parts) < 2:
+            return None
+
+        ticker = parts[0]
+        strategy = parts[1]
+
+        def pick(pattern, default=None):
+            m = _v17_re.search(pattern, text)
+            return m.group(1) if m else default
+
+        score = pick(r"score:([-+]?\d+\.?\d*)", 0)
+        decision = pick(r"decision:([A-Z_]+)", None)
+        cap = pick(r"cap:([A-Z_]+)", None)
+        quality = pick(r"quality:([A-Z_]+)", "CONSOLE_CAPTURE")
+        price = pick(r"price:([-+]?\d+\.?\d*)", None)
+        mid = pick(r"mid:([-+]?\d+\.?\d*)", None)
+
+        final_decision = decision or cap or "WAIT"
+
+        row = {
+            "ticker": ticker,
+            "strategy": strategy,
+            "decision": final_decision,
+            "score": float(score) if score is not None else 0,
+            "data_quality": quality,
+            "source": "CONSOLE_CAPTURE",
+        }
+
+        if price is not None:
+            row["price"] = price
+        elif mid is not None:
+            row["price"] = mid
+
+        return row
+
+    except Exception:
+        return None
+
+
+def v17_print(*args, **kwargs):
+    try:
+        text = " ".join(str(a) for a in args)
+        for line in text.splitlines():
+            row = v17_parse_console_line_for_summary(line)
+            if row:
+                try:
+                    v17_store_row(row)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return V17_ORIGINAL_PRINT(*args, **kwargs)
+
+
+if getattr(_v17_builtins.print, "__name__", "") != "v17_print":
+    _v17_builtins.print = v17_print
+
+# ============================================================
+# SUPER ENGINE BOLSA — V17 OPERATIONAL DESK OUTPUT
+# ============================================================
+
+def v17_safe_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def v17_get(row, *keys, default=None):
+    try:
+        for k in keys:
+            if isinstance(row, dict) and row.get(k) is not None:
+                return row.get(k)
+    except Exception:
+        pass
+    return default
+
+
+def v17_collect_rows(obj, out=None, max_items=300):
+    if out is None:
+        out = []
+
+    if len(out) >= max_items:
+        return out
+
+    try:
+        if isinstance(obj, dict):
+            keys = set(obj.keys())
+            if (
+                "ticker" in keys
+                or "symbol" in keys
+                or "decision" in keys
+                or "final_decision" in keys
+                or "strategy_decision" in keys
+                or "score" in keys
+                or "master_score" in keys
+                or "position_class" in keys
+                or "quality" in keys
+                or "data_quality" in keys
+            ):
+                out.append(obj)
+
+            for v in obj.values():
+                if isinstance(v, (dict, list, tuple)):
+                    v17_collect_rows(v, out, max_items)
+
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                if isinstance(item, (dict, list, tuple)):
+                    v17_collect_rows(item, out, max_items)
+    except Exception:
+        pass
+
+    return out
+
+
+def v17_score(row):
+    return v17_safe_float(
+        v17_get(
+            row,
+            "master_score",
+            "priority_score",
+            "score",
+            "best_entry_score",
+            "best_management_score",
+            default=0,
+        )
+    )
+
+
+def v17_decision(row):
+    return str(
+        v17_get(
+            row,
+            "final_action",
+            "final_decision",
+            "strategy_decision",
+            "option_decision",
+            "decision",
+            "cap",
+            default="WAIT",
+        )
+    )
+
+
+def v17_ticker(row):
+    return str(
+        v17_get(
+            row,
+            "ticker",
+            "symbol",
+            "local_symbol",
+            "option_symbol",
+            "underlying",
+            default="UNKNOWN",
+        )
+    )
+
+
+def v17_strategy(row):
+    return str(
+        v17_get(
+            row,
+            "best_strategy",
+            "strategy",
+            "strategy_hint",
+            "option_strategy_hint",
+            "setup",
+            "position_class",
+            "asset_class",
+            default="GENERAL",
+        )
+    )
+
+
+def v17_quality(row):
+    return str(
+        v17_get(
+            row,
+            "data_quality",
+            "quality",
+            "price_source",
+            "source",
+            default="NO_QUALITY",
+        )
+    )
+
+
+def v17_bucket(row):
+    d = v17_decision(row).upper()
+    q = v17_quality(row).upper()
+    cap = str(v17_get(row, "execution_cap", "cap", default="")).upper()
+    blockers = v17_get(row, "blockers", default=[])
+    missing = v17_get(row, "missing_data", "entry_missing_data", default=[])
+
+    if blockers and "RADAR_ONLY_MARKET_CLOSED" not in cap:
+        return "BLOCKED"
+
+    if "OPERAR" in d or "ENTRY_OPPORTUNITY" in d or d in ["BUY", "SELL", "TRADE"]:
+        return "ENTRY"
+
+    if "BLOCKED" in d or "BLOCKED" in cap:
+        return "BLOCKED"
+
+    if "RADAR" in d or "RADAR" in cap:
+        return "RADAR"
+
+    if "WAIT_FOR_GREEKS" in d or "WAIT_FOR_GREEKS" in cap or "NO_GREEKS" in q:
+        return "WAIT_GREEKS"
+
+    if missing:
+        return "WAIT_DATA"
+
+    return "WAIT"
+
+
+def v17_format_row(row):
+    price = v17_get(row, "price", "market_price", "latest_price", "last", "close", default=None)
+    price_txt = f" | price:{price}" if price is not None else ""
+    return (
+        f"{v17_ticker(row)} | "
+        f"{v17_strategy(row)} | "
+        f"{v17_decision(row)} | "
+        f"score:{v17_score(row):.1f}"
+        f"{price_txt} | "
+        f"{v17_quality(row)}"
+    )
+
+
+def v17_build_cycle_summary(local_vars):
+    try:
+        rows = []
+        try:
+            rows.extend(V17_SUMMARY_ROWS)
+        except Exception:
+            pass
+
+        for name, value in local_vars.items():
+            if name.startswith("__"):
+                continue
+            if isinstance(value, (dict, list, tuple)):
+                rows.extend(v17_collect_rows(value))
+
+        seen = set()
+        unique = []
+
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+
+            key = (
+                v17_ticker(r),
+                v17_strategy(r),
+                v17_decision(r),
+                round(v17_score(r), 2),
+                v17_quality(r),
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique.append(r)
+
+        buckets = {
+            "ENTRY": [],
+            "RADAR": [],
+            "WAIT_GREEKS": [],
+            "WAIT_DATA": [],
+            "BLOCKED": [],
+            "WAIT": [],
+        }
+
+        for r in unique:
+            buckets.setdefault(v17_bucket(r), []).append(r)
+
+        for k in buckets:
+            buckets[k] = sorted(buckets[k], key=v17_score, reverse=True)[:8]
+
+        top = (
+            buckets["ENTRY"][:1]
+            or buckets["RADAR"][:1]
+            or buckets["BLOCKED"][:1]
+            or buckets["WAIT_GREEKS"][:1]
+            or buckets["WAIT_DATA"][:1]
+            or buckets["WAIT"][:1]
+        )
+
+        lines = []
+        lines.append("")
+        lines.append("============================================================")
+        lines.append("V17 OPERATIONAL DESK SUMMARY")
+        lines.append("============================================================")
+        lines.append(
+            f"ENTRY:{len(buckets['ENTRY'])} | "
+            f"RADAR:{len(buckets['RADAR'])} | "
+            f"WAIT_GREEKS:{len(buckets['WAIT_GREEKS'])} | "
+            f"WAIT_DATA:{len(buckets['WAIT_DATA'])} | "
+            f"BLOCKED:{len(buckets['BLOCKED'])}"
+        )
+        lines.append("")
+
+        if top:
+            lines.append("NEXT BEST ACTION:")
+            lines.append("  " + v17_format_row(top[0]))
+            lines.append("")
+
+        if buckets["ENTRY"]:
+            lines.append("ENTRY CANDIDATES:")
+            for r in buckets["ENTRY"][:5]:
+                lines.append("  - " + v17_format_row(r))
+            lines.append("")
+
+        if buckets["RADAR"]:
+            lines.append("RADAR / PREPARACION:")
+            for r in buckets["RADAR"][:5]:
+                lines.append("  - " + v17_format_row(r))
+            lines.append("")
+
+        if buckets["BLOCKED"]:
+            lines.append("BLOCKED / NO OPERAR:")
+            for r in buckets["BLOCKED"][:5]:
+                lines.append("  - " + v17_format_row(r))
+            lines.append("")
+
+        if buckets["WAIT_GREEKS"] or buckets["WAIT_DATA"]:
+            lines.append("FALTANTES DE DATOS:")
+            for r in (buckets["WAIT_GREEKS"] + buckets["WAIT_DATA"])[:5]:
+                lines.append("  - " + v17_format_row(r))
+            lines.append("")
+
+        lines.append("============================================================")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"V17 summary unavailable: {e}"
+print("SUPER ENGINE IBKR BRIDGE V17_2_CONSOLE_CAPTURE")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -1603,7 +2000,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V16_2_DECISION_CAP")
+    print("NUEVO CICLO V17_2_CONSOLE_CAPTURE")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
@@ -1615,8 +2012,11 @@ while True:
     if ENABLE_OPTIONS_INTELLIGENCE:
         send_options_intelligence()
 
-    print("")
-    print(f"Esperando {LOOP_SECONDS} segundos...")
-    print("")
+        try:
+            print(v17_build_cycle_summary(locals()))
+        except Exception as e:
+            print(f"V17 summary error: {e}")
 
-    time.sleep(LOOP_SECONDS)
+        print(f"Esperando {LOOP_SECONDS} segundos...")
+        print("")
+        time.sleep(LOOP_SECONDS)
