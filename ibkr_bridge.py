@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V17_2_CONSOLE_CAPTURE
+# SUPER ENGINE BOLSA — IBKR BRIDGE V17_3C_CLEAN_CONSOLE
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -415,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V17_2_CONSOLE_CAPTURE",
+            "source": "IBKR_REALTIME_V17_3C_CLEAN_CONSOLE",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -454,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V17_2_CONSOLE_CAPTURE",
+            "source": "IBKR_REALTIME_V17_3C_CLEAN_CONSOLE",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -503,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V17_2_CONSOLE_CAPTURE",
+            "source": "IBKR_HISTORICAL_V17_3C_CLEAN_CONSOLE",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -545,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V17_2_CONSOLE_CAPTURE ===\n")
+    print("\n=== MARKET DATA V17_3C_CLEAN_CONSOLE ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -699,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V17_2_CONSOLE_CAPTURE ===\n")
+    print("\n=== PORTFOLIO COMMANDER V17_3C_CLEAN_CONSOLE ===\n")
 
     rows = get_positions_rows()
 
@@ -1448,7 +1448,7 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V17_2_CONSOLE_CAPTURE ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V17_3C_CLEAN_CONSOLE ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1516,7 +1516,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V17_2_CONSOLE_CAPTURE",
+                        "source": "IBKR_OPTIONS_V17_3C_CLEAN_CONSOLE",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1629,6 +1629,105 @@ def v17_reset_summary_rows():
         pass
 
 
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V17.3C SUPPRESS IBKR NOISE
+# ============================================================
+
+import sys as _v17_sys
+import logging as _v17_logging
+
+class V17NoiseFilter:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, message):
+        try:
+            msg = str(message)
+            if "Unknown contract:" in msg:
+                return
+            if "Option(symbol=" in msg and "tradingClass=" in msg:
+                return
+            return self.stream.write(message)
+        except Exception:
+            return self.stream.write(message)
+
+    def flush(self):
+        try:
+            return self.stream.flush()
+        except Exception:
+            pass
+
+try:
+    _v17_sys.stderr = V17NoiseFilter(_v17_sys.stderr)
+except Exception:
+    pass
+
+try:
+    class V17LoggingNoiseFilter(_v17_logging.Filter):
+        def filter(self, record):
+            msg = str(record.getMessage())
+            if "Unknown contract:" in msg:
+                return False
+            if "Option(symbol=" in msg and "tradingClass=" in msg:
+                return False
+            return True
+
+    _v17_logging.getLogger().addFilter(V17LoggingNoiseFilter())
+    _v17_logging.getLogger("ib_insync").addFilter(V17LoggingNoiseFilter())
+except Exception:
+    pass
+
+# ============================================================
+# SUPER ENGINE BOLSA — V17.3 CLEAN CONSOLE
+# ============================================================
+
+V17_CLEAN_CONSOLE = True
+
+def v17_should_hide_console_line(text):
+    try:
+        if not V17_CLEAN_CONSOLE:
+            return False
+
+        if not isinstance(text, str):
+            text = str(text)
+
+        stripped = text.strip()
+
+        if not stripped:
+            return False
+
+        # Ocultar ruido de contratos inválidos / desconocidos
+        if "Unknown contract:" in stripped:
+            return True
+
+        if "Option(symbol=" in stripped and "tradingClass=" in stripped:
+            return True
+
+        # Ocultar líneas masivas de contratos de opciones individuales.
+        # El resumen ejecutivo ya captura esta información.
+        option_tokens = [
+            " NAKED_PUT ",
+            " COVERED_CALL ",
+            " SHORT_PUT ",
+            " SHORT_CALL ",
+            " IRON_CONDOR ",
+        ]
+
+        if any(tok in stripped for tok in option_tokens):
+            if " exp:" in stripped and (" decision:" in stripped or " cap:" in stripped or " quality:" in stripped):
+                return True
+
+        # Ocultar dumps largos de status si son demasiado técnicos
+        if len(stripped) > 240 and (" underlying_source:" in stripped or " price_source:" in stripped):
+            return True
+
+        return False
+
+    except Exception:
+        return False
+
 # ============================================================
 # SUPER ENGINE BOLSA — V17.2 CONSOLE CAPTURE
 # ============================================================
@@ -1692,6 +1791,8 @@ def v17_parse_console_line_for_summary(text):
 def v17_print(*args, **kwargs):
     try:
         text = " ".join(str(a) for a in args)
+
+        # Primero capturamos para summary, aunque luego ocultemos la línea.
         for line in text.splitlines():
             row = v17_parse_console_line_for_summary(line)
             if row:
@@ -1699,11 +1800,23 @@ def v17_print(*args, **kwargs):
                     v17_store_row(row)
                 except Exception:
                     pass
+
+        # Después filtramos ruido visual de consola.
+        visible_lines = []
+        for line in text.splitlines():
+            if not v17_should_hide_console_line(line):
+                visible_lines.append(line)
+
+        if not visible_lines and text.strip():
+            return None
+
+        if visible_lines and len(visible_lines) != len(text.splitlines()):
+            return V17_ORIGINAL_PRINT("\n".join(visible_lines), **kwargs)
+
     except Exception:
         pass
 
     return V17_ORIGINAL_PRINT(*args, **kwargs)
-
 
 if getattr(_v17_builtins.print, "__name__", "") != "v17_print":
     _v17_builtins.print = v17_print
@@ -1989,7 +2102,7 @@ def v17_build_cycle_summary(local_vars):
 
     except Exception as e:
         return f"V17 summary unavailable: {e}"
-print("SUPER ENGINE IBKR BRIDGE V17_2_CONSOLE_CAPTURE")
+print("SUPER ENGINE IBKR BRIDGE V17_3C_CLEAN_CONSOLE")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -2000,7 +2113,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V17_2_CONSOLE_CAPTURE")
+    print("NUEVO CICLO V17_3C_CLEAN_CONSOLE")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
