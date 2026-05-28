@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V16_INCREMENTAL
+# SUPER ENGINE BOLSA — IBKR BRIDGE V16_1_MARKET_AWARE
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -255,6 +255,32 @@ def stock_contract(symbol):
 
 
 
+
+
+def ibkr_market_is_open_for_options():
+    """
+    V16.1 Market-Aware:
+    Detecta si estamos en horario regular aproximado de mercado USA.
+    Sirve para no castigar bid/ask faltante cuando el mercado está cerrado.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        # NY regular market: 9:30-16:00 ET.
+        # Aproximación simple usando UTC:
+        # Durante horario estándar: 14:30-21:00 UTC.
+        # Durante horario de verano: 13:30-20:00 UTC.
+        # Usamos ventana amplia para evitar falsos negativos.
+        weekday = now.weekday() < 5
+        minutes_utc = now.hour * 60 + now.minute
+        open_wide = (13 * 60 + 25) <= minutes_utc <= (21 * 60 + 5)
+        return weekday and open_wide
+    except Exception:
+        return False
+
+
+def market_closed_bidask_note():
+    return "MARKET_CLOSED_NO_BIDASK_EXPECTED"
+
 def option_needs_second_pass(ticker):
     """
     V16 incremental:
@@ -389,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_INCREMENTAL",
+            "source": "IBKR_REALTIME_V16_1_MARKET_AWARE",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -428,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V16_INCREMENTAL",
+            "source": "IBKR_REALTIME_V16_1_MARKET_AWARE",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -477,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V16_INCREMENTAL",
+            "source": "IBKR_HISTORICAL_V16_1_MARKET_AWARE",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -519,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V16_INCREMENTAL ===\n")
+    print("\n=== MARKET DATA V16_1_MARKET_AWARE ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -673,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V16_INCREMENTAL ===\n")
+    print("\n=== PORTFOLIO COMMANDER V16_1_MARKET_AWARE ===\n")
 
     rows = get_positions_rows()
 
@@ -1326,7 +1352,7 @@ def score_option_candidate(strategy, option_type, strike, stock_price, dte, gree
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V16_INCREMENTAL ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V16_1_MARKET_AWARE ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1394,7 +1420,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V16_INCREMENTAL",
+                        "source": "IBKR_OPTIONS_V16_1_MARKET_AWARE",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1472,7 +1498,7 @@ except Exception as e:
 set_market_data_type()
 
 print("")
-print("SUPER ENGINE IBKR BRIDGE V16_INCREMENTAL")
+print("SUPER ENGINE IBKR BRIDGE V16_1_MARKET_AWARE")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -1483,7 +1509,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V16_INCREMENTAL")
+    print("NUEVO CICLO V16_1_MARKET_AWARE")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
