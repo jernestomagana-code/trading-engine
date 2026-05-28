@@ -5981,3 +5981,104 @@ def debug_routes_v15_2():
     }
 
 # END SUPER ENGINE BOLSA — V15.2 PATCH
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V18 OPERATIONAL DECISION API ENDPOINTS
+# ============================================================
+
+from pathlib import Path as _v18_api_Path
+from datetime import datetime as _v18_api_datetime, timezone as _v18_api_timezone
+import json as _v18_api_json
+
+_V18_API_SNAPSHOT_PATHS = [
+    _v18_api_Path("runtime/decision_desk_snapshot.json"),
+    _v18_api_Path("../runtime/decision_desk_snapshot.json"),
+    _v18_api_Path("/tmp/decision_desk_snapshot.json"),
+]
+
+def _v18_api_load_snapshot():
+    for path in _V18_API_SNAPSHOT_PATHS:
+        try:
+            if path.exists():
+                return _v18_api_json.loads(path.read_text())
+        except Exception:
+            pass
+
+    return {
+        "engine": "V18_OPERATIONAL_DECISION_API",
+        "generated_at": _v18_api_datetime.now(_v18_api_timezone.utc).isoformat(),
+        "snapshot_available": False,
+        "summary": {
+            "entry": 0,
+            "manage_position": 0,
+            "radar": 0,
+            "wait_greeks": 0,
+            "wait_data": 0,
+            "blocked": 0,
+            "total": 0,
+        },
+        "next_best_action": None,
+        "recommendation": "No hay snapshot V18 disponible todavía. Corre ibkr_bridge.py para generar el último decision desk.",
+        "by_ticker": [],
+        "by_strategy": [],
+        "top": [],
+        "health": {
+            "snapshot_available": False,
+            "rows_captured": 0,
+            "can_operate_count": 0,
+        },
+    }
+
+@app.get("/decision_desk")
+def decision_desk():
+    return _v18_api_load_snapshot()
+
+@app.get("/decision_desk/health")
+def decision_desk_health():
+    data = _v18_api_load_snapshot()
+    return {
+        "engine": "V18_OPERATIONAL_DECISION_API",
+        "status": "OK" if data.get("health", {}).get("snapshot_available") else "NO_SNAPSHOT",
+        "generated_at": data.get("generated_at"),
+        "summary": data.get("summary"),
+        "health": data.get("health"),
+    }
+
+@app.get("/decision_desk/{ticker}")
+def decision_desk_ticker(ticker: str):
+    data = _v18_api_load_snapshot()
+    t = str(ticker or "").upper().strip()
+
+    top = [
+        row for row in data.get("top", [])
+        if str(row.get("ticker", "")).upper() == t
+    ]
+
+    ticker_summary = None
+    for item in data.get("by_ticker", []):
+        if str(item.get("ticker", "")).upper() == t:
+            ticker_summary = item
+            break
+
+    best = top[0] if top else None
+
+    return {
+        "engine": "V18_OPERATIONAL_DECISION_API",
+        "ticker": t,
+        "generated_at": data.get("generated_at"),
+        "summary": ticker_summary or {
+            "ticker": t,
+            "total": 0,
+            "entry": 0,
+            "radar": 0,
+            "wait_greeks": 0,
+            "wait_data": 0,
+            "blocked": 0,
+            "best": None,
+        },
+        "next_best_action": best,
+        "recommendation": best.get("recommendation") if best else f"No hay oportunidades capturadas para {t} en el último ciclo.",
+        "top": top[:10],
+    }
+

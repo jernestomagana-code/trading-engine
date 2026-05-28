@@ -9,7 +9,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ============================================================
-# SUPER ENGINE BOLSA — IBKR BRIDGE V17_3C_CLEAN_CONSOLE
+# SUPER ENGINE BOLSA — IBKR BRIDGE V18_OPERATIONAL_DECISION_API
 # IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION
 # Market + Portfolio + Options + Strategy Commander
 # FULL FILE VERSION
@@ -415,7 +415,7 @@ def get_price_snapshot_req_tickers(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V17_3C_CLEAN_CONSOLE",
+            "source": "IBKR_REALTIME_V18_OPERATIONAL_DECISION_API",
             "price_source": "IBKR_REQ_TICKERS"
         }
 
@@ -454,7 +454,7 @@ def get_price_snapshot_req_mkt_data(symbol, contract):
             "last": data["last"],
             "close": data["close"],
             "market_price": data["market_price"],
-            "source": "IBKR_REALTIME_V17_3C_CLEAN_CONSOLE",
+            "source": "IBKR_REALTIME_V18_OPERATIONAL_DECISION_API",
             "price_source": "IBKR_MKT_DATA_FALLBACK"
         }
 
@@ -503,7 +503,7 @@ def get_price_snapshot_historical(symbol, contract):
             "last": None,
             "close": close,
             "market_price": None,
-            "source": "IBKR_HISTORICAL_V17_3C_CLEAN_CONSOLE",
+            "source": "IBKR_HISTORICAL_V18_OPERATIONAL_DECISION_API",
             "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
         }
 
@@ -545,7 +545,7 @@ def get_price_snapshot(symbol):
 
 
 def send_market_data():
-    print("\n=== MARKET DATA V17_3C_CLEAN_CONSOLE ===\n")
+    print("\n=== MARKET DATA V18_OPERATIONAL_DECISION_API ===\n")
 
     for symbol in WATCHLIST:
         snap = get_price_snapshot(symbol)
@@ -699,7 +699,7 @@ def classify_position(row):
 
 
 def send_positions():
-    print("\n=== PORTFOLIO COMMANDER V17_3C_CLEAN_CONSOLE ===\n")
+    print("\n=== PORTFOLIO COMMANDER V18_OPERATIONAL_DECISION_API ===\n")
 
     rows = get_positions_rows()
 
@@ -1448,7 +1448,7 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
 
 
 def send_options_intelligence():
-    print("\n=== OPTIONS INTELLIGENCE V17_3C_CLEAN_CONSOLE ===\n")
+    print("\n=== OPTIONS INTELLIGENCE V18_OPERATIONAL_DECISION_API ===\n")
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -1516,7 +1516,7 @@ def send_options_intelligence():
                         "score": score,
                         "price": stock_price,
                         "underlying_price_source": snap.get("price_source"),
-                        "source": "IBKR_OPTIONS_V17_3C_CLEAN_CONSOLE",
+                        "source": "IBKR_OPTIONS_V18_OPERATIONAL_DECISION_API",
                         "asset_class": "OPTION",
                         "engine_layer": "IBKR_OPTIONS_INTELLIGENCE",
                         "integration_ready_for_tradingview": True,
@@ -1630,6 +1630,337 @@ def v17_reset_summary_rows():
 
 
 
+
+
+# ============================================================
+# SUPER ENGINE BOLSA — V18 OPERATIONAL DECISION API HELPERS
+# ============================================================
+
+import json as _v18_json
+from pathlib import Path as _v18_Path
+from datetime import datetime as _v18_datetime, timezone as _v18_timezone
+
+V18_SNAPSHOT_PATH = _v18_Path("runtime/decision_desk_snapshot.json")
+
+def v18_safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def v18_normalize_decision(raw):
+    try:
+        d = str(raw or "").upper().strip()
+    except Exception:
+        d = ""
+
+    if d in ["ENTRY", "ENTRY_OPPORTUNITY", "OPERAR", "TRADE"]:
+        return "ENTRY"
+    if d in ["MANAGE_POSITION", "MANAGE", "GESTION", "REVISAR_GESTION"]:
+        return "MANAGE_POSITION"
+    if d in ["RADAR", "WATCH", "PREPARATION", "PREPARACION"]:
+        return "RADAR"
+    if d in ["WAIT_FOR_GREEKS", "WAIT_GREEKS"]:
+        return "WAIT_GREEKS"
+    if d in ["WAIT_FOR_DATA", "MISSING_DATA", "WAIT_DATA"]:
+        return "WAIT_DATA"
+    if d in ["BLOCKED", "NO_TRADE", "REJECTED"]:
+        return "BLOCKED"
+    if d in ["ESPERAR", "WAIT"]:
+        return "WAIT_DATA"
+
+    return d or "WAIT_DATA"
+
+def v18_missing_confirmations(row):
+    missing = []
+
+    quality = str(row.get("data_quality") or row.get("quality") or "").upper()
+    decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
+
+    if "NO_BIDASK" in quality:
+        missing.append("bid_ask")
+        missing.append("spread")
+
+    if "PRICE_ONLY" in quality:
+        missing.append("greeks")
+        missing.append("bid_ask")
+        missing.append("spread")
+
+    if decision == "WAIT_GREEKS":
+        if "greeks" not in missing:
+            missing.append("greeks")
+
+    if decision == "WAIT_DATA":
+        if "data_confirmation" not in missing:
+            missing.append("data_confirmation")
+
+    if row.get("price") in [None, "", "None"]:
+        missing.append("price")
+
+    # Deduplicar preservando orden
+    final = []
+    for x in missing:
+        if x not in final:
+            final.append(x)
+
+    return final
+
+def v18_can_operate(row):
+    decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
+    missing = v18_missing_confirmations(row)
+    score = v18_safe_float(row.get("score"), 0)
+
+    if decision != "ENTRY":
+        return False
+
+    if score < 80:
+        return False
+
+    if missing:
+        return False
+
+    return True
+
+def v18_recommendation(row):
+    decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
+    missing = v18_missing_confirmations(row)
+    can_operate = v18_can_operate(row)
+
+    if can_operate:
+        return "Posible operación. Validar tamaño, riesgo y confirmación final antes de ejecutar."
+
+    if decision == "MANAGE_POSITION":
+        return "Prioridad de gestión. Revisar posición abierta antes de abrir nuevas operaciones."
+
+    if decision == "RADAR":
+        if missing:
+            return "Mantener en radar. No operar directo hasta confirmar: " + ", ".join(missing) + "."
+        return "Mantener en radar. Aún no es entrada confirmada."
+
+    if decision == "WAIT_GREEKS":
+        return "Esperar. Faltan griegas o datos suficientes para validar la operación."
+
+    if decision == "WAIT_DATA":
+        return "Esperar. Faltan datos críticos o confirmación suficiente."
+
+    if decision == "BLOCKED":
+        return "Bloqueado. No operar bajo las condiciones actuales."
+
+    return "Esperar. No hay ventaja operativa suficiente."
+
+def v18_reason(row):
+    decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
+    quality = str(row.get("data_quality") or row.get("quality") or "UNKNOWN")
+    score = v18_safe_float(row.get("score"), 0)
+    missing = v18_missing_confirmations(row)
+
+    if decision == "RADAR" and score >= 80:
+        if missing:
+            return f"Score alto y datos parciales útiles, pero faltan confirmaciones: {', '.join(missing)}."
+        return "Score alto, pero la señal permanece en radar y no en entrada."
+
+    if decision == "WAIT_GREEKS":
+        return "La oportunidad requiere griegas completas antes de tomar decisión."
+
+    if decision == "WAIT_DATA":
+        return "La oportunidad requiere más datos antes de tomar decisión."
+
+    if decision == "BLOCKED":
+        return "La operación fue bloqueada por calidad, liquidez, spread o reglas de seguridad."
+
+    if decision == "ENTRY":
+        return "La oportunidad cumple criterios principales de entrada, sujeto a gestión de riesgo."
+
+    return f"Decisión {decision} con calidad de datos {quality}."
+
+def v18_compact_row(row):
+    decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
+
+    compact = {
+        "ticker": str(row.get("ticker") or row.get("symbol") or "UNKNOWN"),
+        "strategy": str(row.get("strategy") or row.get("strategy_hint") or row.get("setup") or "UNKNOWN"),
+        "decision": decision,
+        "score": v18_safe_float(row.get("score"), 0),
+        "price": row.get("price") or row.get("mid") or row.get("last"),
+        "data_quality": row.get("data_quality") or row.get("quality") or "UNKNOWN",
+        "can_operate": False,
+        "missing_confirmations": [],
+        "recommendation": "",
+        "reason": "",
+    }
+
+    compact["missing_confirmations"] = v18_missing_confirmations(compact | row)
+    compact["can_operate"] = v18_can_operate(compact | row)
+    compact["recommendation"] = v18_recommendation(compact | row)
+    compact["reason"] = v18_reason(compact | row)
+
+    return compact
+
+def v18_priority_rank(row):
+    decision = v18_normalize_decision(row.get("decision"))
+    score = v18_safe_float(row.get("score"), 0)
+
+    decision_weight = {
+        "MANAGE_POSITION": 500,
+        "ENTRY": 400,
+        "RADAR": 300,
+        "WAIT_GREEKS": 150,
+        "WAIT_DATA": 100,
+        "BLOCKED": 0,
+    }.get(decision, 50)
+
+    return decision_weight + score
+
+def v18_build_decision_payload(rows=None):
+    try:
+        if rows is None:
+            rows = []
+
+        clean_rows = []
+        seen = set()
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            c = v18_compact_row(row)
+            key = (
+                c.get("ticker"),
+                c.get("strategy"),
+                c.get("decision"),
+                str(c.get("price")),
+                str(c.get("score")),
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            clean_rows.append(c)
+
+        clean_rows.sort(key=v18_priority_rank, reverse=True)
+
+        summary = {
+            "entry": sum(1 for r in clean_rows if r["decision"] == "ENTRY"),
+            "manage_position": sum(1 for r in clean_rows if r["decision"] == "MANAGE_POSITION"),
+            "radar": sum(1 for r in clean_rows if r["decision"] == "RADAR"),
+            "wait_greeks": sum(1 for r in clean_rows if r["decision"] == "WAIT_GREEKS"),
+            "wait_data": sum(1 for r in clean_rows if r["decision"] == "WAIT_DATA"),
+            "blocked": sum(1 for r in clean_rows if r["decision"] == "BLOCKED"),
+            "total": len(clean_rows),
+        }
+
+        by_ticker = {}
+        by_strategy = {}
+
+        for r in clean_rows:
+            ticker = r["ticker"]
+            strategy = r["strategy"]
+            decision = r["decision"]
+
+            by_ticker.setdefault(ticker, {
+                "ticker": ticker,
+                "total": 0,
+                "entry": 0,
+                "radar": 0,
+                "wait_greeks": 0,
+                "wait_data": 0,
+                "blocked": 0,
+                "best": None,
+            })
+
+            by_strategy.setdefault(strategy, {
+                "strategy": strategy,
+                "total": 0,
+                "entry": 0,
+                "radar": 0,
+                "wait_greeks": 0,
+                "wait_data": 0,
+                "blocked": 0,
+                "best": None,
+            })
+
+            for bucket in [by_ticker[ticker], by_strategy[strategy]]:
+                bucket["total"] += 1
+                if decision == "ENTRY":
+                    bucket["entry"] += 1
+                elif decision == "RADAR":
+                    bucket["radar"] += 1
+                elif decision == "WAIT_GREEKS":
+                    bucket["wait_greeks"] += 1
+                elif decision == "WAIT_DATA":
+                    bucket["wait_data"] += 1
+                elif decision == "BLOCKED":
+                    bucket["blocked"] += 1
+
+                if bucket["best"] is None or v18_priority_rank(r) > v18_priority_rank(bucket["best"]):
+                    bucket["best"] = r
+
+        next_best_action = clean_rows[0] if clean_rows else None
+
+        if next_best_action:
+            global_recommendation = next_best_action.get("recommendation")
+        else:
+            global_recommendation = "No hay oportunidades operativas disponibles en el último ciclo."
+
+        payload = {
+            "engine": "V18_OPERATIONAL_DECISION_API",
+            "generated_at": _v18_datetime.now(_v18_timezone.utc).isoformat(),
+            "summary": summary,
+            "next_best_action": next_best_action,
+            "recommendation": global_recommendation,
+            "by_ticker": list(by_ticker.values()),
+            "by_strategy": list(by_strategy.values()),
+            "top": clean_rows[:20],
+            "health": {
+                "snapshot_available": True,
+                "rows_captured": len(clean_rows),
+                "can_operate_count": sum(1 for r in clean_rows if r.get("can_operate")),
+            },
+        }
+
+        return payload
+
+    except Exception as e:
+        return {
+            "engine": "V18_OPERATIONAL_DECISION_API",
+            "generated_at": _v18_datetime.now(_v18_timezone.utc).isoformat(),
+            "error": str(e),
+            "summary": {
+                "entry": 0,
+                "manage_position": 0,
+                "radar": 0,
+                "wait_greeks": 0,
+                "wait_data": 0,
+                "blocked": 0,
+                "total": 0,
+            },
+            "next_best_action": None,
+            "recommendation": "No se pudo construir la decisión operativa.",
+            "by_ticker": [],
+            "by_strategy": [],
+            "top": [],
+            "health": {
+                "snapshot_available": False,
+                "rows_captured": 0,
+                "can_operate_count": 0,
+            },
+        }
+
+def v18_write_decision_snapshot(rows=None):
+    try:
+        payload = v18_build_decision_payload(rows or V17_SUMMARY_ROWS)
+        V18_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        V18_SNAPSHOT_PATH.write_text(_v18_json.dumps(payload, ensure_ascii=False, indent=2))
+        return payload
+    except Exception as e:
+        return {
+            "engine": "V18_OPERATIONAL_DECISION_API",
+            "error": str(e),
+            "recommendation": "No se pudo guardar el snapshot V18.",
+        }
 
 # ============================================================
 # SUPER ENGINE BOLSA — V17.3C SUPPRESS IBKR NOISE
@@ -2102,7 +2433,7 @@ def v17_build_cycle_summary(local_vars):
 
     except Exception as e:
         return f"V17 summary unavailable: {e}"
-print("SUPER ENGINE IBKR BRIDGE V17_3C_CLEAN_CONSOLE")
+print("SUPER ENGINE IBKR BRIDGE V18_OPERATIONAL_DECISION_API")
 print("Market + Portfolio + Options + Strategy Commander")
 print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
@@ -2113,7 +2444,7 @@ print("")
 while True:
     print("")
     print("=========================================")
-    print("NUEVO CICLO V17_3C_CLEAN_CONSOLE")
+    print("NUEVO CICLO V18_OPERATIONAL_DECISION_API")
     print("=========================================")
 
     if ENABLE_MARKET_DATA:
@@ -2127,6 +2458,18 @@ while True:
 
         try:
             print(v17_build_cycle_summary(locals()))
+            try:
+                v18_payload = v18_write_decision_snapshot(V17_SUMMARY_ROWS)
+                nba = v18_payload.get("next_best_action")
+                if nba:
+                    print("")
+                    print("V18 DECISION API SNAPSHOT UPDATED")
+                    print(f"NEXT: {nba.get('ticker')} | {nba.get('strategy')} | {nba.get('decision')} | can_operate:{nba.get('can_operate')}")
+                else:
+                    print("")
+                    print("V18 DECISION API SNAPSHOT UPDATED | No next_best_action")
+            except Exception as e:
+                print(f"V18 snapshot error: {e}")
         except Exception as e:
             print(f"V17 summary error: {e}")
 
