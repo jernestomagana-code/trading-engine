@@ -2519,7 +2519,7 @@ while True:
             print(v17_build_cycle_summary(locals()))
             try:
                 v18_payload = v18_write_decision_snapshot(V17_SUMMARY_ROWS)
-            v18_remote = v18_1_post_decision_snapshot(v18_payload)
+                v18_remote = v18_1_post_decision_snapshot(v18_payload)
                 nba = v18_payload.get("next_best_action")
                 if nba:
                     print("")
