@@ -2537,6 +2537,179 @@ while True:
         except Exception as e:
             print(f"V17 summary error: {e}")
 
-        print(f"Esperando {LOOP_SECONDS} segundos...")
+        
+# V22.2 REMOTE SYNC CALL INSERTED
+try:
+    v22_2_print_remote_sync_status(extra_payload={"cycle": "auto"})
+except Exception as _v22_2_sync_e:
+    print(f"V22.2 sync call error: {_v22_2_sync_e}")
+
+print(f"Esperando {LOOP_SECONDS} segundos...")
         print("")
         time.sleep(LOOP_SECONDS)
+
+
+# ============================================================
+# V22.2 REMOTE SNAPSHOT SYNC — LOCAL BRIDGE POST TO RENDER
+# ============================================================
+
+import json as _v22_2_json
+from pathlib import Path as _v22_2_Path
+from datetime import datetime as _v22_2_datetime, timezone as _v22_2_timezone
+
+try:
+    import requests as _v22_2_requests
+except Exception:
+    _v22_2_requests = None
+
+V22_2_REMOTE_BASE_URL = "https://trading-engine-p097.onrender.com"
+
+def _v22_2_now_iso():
+    return _v22_2_datetime.now(_v22_2_timezone.utc).isoformat()
+
+def _v22_2_read_json_file(path):
+    try:
+        p = _v22_2_Path(path)
+        if p.exists():
+            return _v22_2_json.loads(p.read_text())
+    except Exception:
+        pass
+    return None
+
+def _v22_2_post_json(endpoint, payload, timeout=8):
+    if _v22_2_requests is None:
+        return {"ok": False, "status": "NO_REQUESTS_LIB", "url": endpoint}
+
+    url = V22_2_REMOTE_BASE_URL.rstrip("/") + endpoint
+    try:
+        r = _v22_2_requests.post(url, json=payload, timeout=timeout)
+        try:
+            body = r.json()
+        except Exception:
+            body = {"text": r.text[:500]}
+        return {
+            "ok": 200 <= r.status_code < 300,
+            "status": r.status_code,
+            "url": url,
+            "body": body,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "status": "POST_ERROR",
+            "url": url,
+            "error": str(e),
+        }
+
+def _v22_2_collect_candidate_files():
+    return {
+        "technical": [
+            "runtime/technical_snapshot_by_ticker_safe.json",
+            "runtime/technical_snapshot_by_ticker.json",
+            "technical_snapshot_by_ticker_safe.json",
+            "technical_snapshot_by_ticker.json",
+        ],
+        "decision": [
+            "runtime/decision_desk_snapshot.json",
+            "runtime/v18_decision_snapshot.json",
+            "runtime/v18_decision_desk_snapshot.json",
+            "decision_desk_snapshot.json",
+            "decision_snapshot.json",
+        ],
+    }
+
+def _v22_2_find_first_json(paths):
+    for p in paths:
+        data = _v22_2_read_json_file(p)
+        if data:
+            return p, data
+    return None, None
+
+def _v22_2_remote_sync_snapshots(extra_payload=None):
+    files = _v22_2_collect_candidate_files()
+
+    tech_path, tech_data = _v22_2_find_first_json(files["technical"])
+    decision_path, decision_data = _v22_2_find_first_json(files["decision"])
+
+    results = {
+        "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
+        "generated_at": _v22_2_now_iso(),
+        "technical_path": tech_path,
+        "decision_path": decision_path,
+        "technical_sent": False,
+        "decision_sent": False,
+        "unified_sent": False,
+        "responses": {},
+    }
+
+    if isinstance(tech_data, dict):
+        # Caso A: store por ticker {"QQQ": {...}, "SPY": {...}}
+        if any(isinstance(v, dict) for v in tech_data.values()):
+            for ticker, snap in tech_data.items():
+                if isinstance(snap, dict):
+                    payload = {
+                        "ticker": str(ticker).upper(),
+                        "snapshot": snap,
+                        "source": "IBKR_BRIDGE_V22_2_REMOTE_SYNC",
+                        "local_path": tech_path,
+                    }
+                    resp = _v22_2_post_json("/v22_2_ingest_technical_snapshot", payload)
+                    results["responses"][f"technical_{ticker}"] = resp
+                    if resp.get("ok"):
+                        results["technical_sent"] = True
+        # Caso B: snapshot directo {"ticker":"QQQ", ...}
+        elif tech_data.get("ticker"):
+            payload = {
+                "ticker": str(tech_data.get("ticker")).upper(),
+                "snapshot": tech_data,
+                "source": "IBKR_BRIDGE_V22_2_REMOTE_SYNC",
+                "local_path": tech_path,
+            }
+            resp = _v22_2_post_json("/v22_2_ingest_technical_snapshot", payload)
+            results["responses"]["technical_single"] = resp
+            if resp.get("ok"):
+                results["technical_sent"] = True
+
+    if isinstance(decision_data, dict):
+        payload = dict(decision_data)
+        payload["source"] = payload.get("source") or "IBKR_BRIDGE_V22_2_REMOTE_SYNC"
+        payload["local_path"] = decision_path
+        resp = _v22_2_post_json("/v22_2_ingest_decision_snapshot", payload)
+        results["responses"]["decision"] = resp
+        if resp.get("ok"):
+            results["decision_sent"] = True
+
+    unified_payload = {
+        "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
+        "generated_at": _v22_2_now_iso(),
+        "technical_available": bool(tech_data),
+        "decision_available": bool(decision_data),
+        "technical_path": tech_path,
+        "decision_path": decision_path,
+        "extra_payload": extra_payload or {},
+        "source": "IBKR_BRIDGE_V22_2_REMOTE_SYNC",
+    }
+    resp = _v22_2_post_json("/v22_2_ingest_unified_snapshot", unified_payload)
+    results["responses"]["unified"] = resp
+    if resp.get("ok"):
+        results["unified_sent"] = True
+
+    return results
+
+def v22_2_print_remote_sync_status(extra_payload=None):
+    try:
+        res = _v22_2_remote_sync_snapshots(extra_payload=extra_payload)
+        print("")
+        print("=== V22.2 REMOTE SNAPSHOT SYNC ===")
+        print(f"technical_sent: {res.get('technical_sent')} | path: {res.get('technical_path')}")
+        print(f"decision_sent: {res.get('decision_sent')} | path: {res.get('decision_path')}")
+        print(f"unified_sent: {res.get('unified_sent')}")
+        for k, v in (res.get("responses") or {}).items():
+            print(f"{k}: ok={v.get('ok')} status={v.get('status')}")
+        print("==================================")
+        print("")
+        return res
+    except Exception as e:
+        print(f"V22.2 remote sync error: {e}")
+        return {"ok": False, "error": str(e)}
+
