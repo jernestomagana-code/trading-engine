@@ -9948,3 +9948,21 @@ async def v224_get_technical_snapshot_safe_ticker(ticker: str):
 
 # === END V22.4 SAFE TECHNICAL SNAPSHOT GATEWAY ===
 
+
+# === V22.5 DEPLOY UNBLOCKER / COMPATIBILITY ALIAS ===
+@app.post("/technical-snapshot")
+async def technical_snapshot_dash_alias(payload: dict):
+    return await technical_snapshot(payload)
+
+@app.get("/v22_5_system_status")
+async def v22_5_system_status():
+    return {
+        "engine": "V22_5_DEPLOY_UNBLOCKER",
+        "status": "OK",
+        "technical_snapshot_route": "/technical_snapshot",
+        "technical_snapshot_alias": "/technical-snapshot",
+        "safe_route": "/technical_snapshot_safe",
+        "deploy_unblocked": True,
+    }
+# === END V22.5 DEPLOY UNBLOCKER ===
+

@@ -2536,17 +2536,9 @@ while True:
                 print(f"V18 snapshot error: {e}")
         except Exception as e:
             print(f"V17 summary error: {e}")
-
-        
-# V22.2 REMOTE SYNC CALL INSERTED
-try:
-    v22_2_print_remote_sync_status(extra_payload={"cycle": "auto"})
-except Exception as _v22_2_sync_e:
-    print(f"V22.2 sync call error: {_v22_2_sync_e}")
-
 print(f"Esperando {LOOP_SECONDS} segundos...")
-        print("")
-        time.sleep(LOOP_SECONDS)
+print("")
+time.sleep(LOOP_SECONDS)
 
 
 # ============================================================
