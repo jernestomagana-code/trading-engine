@@ -5680,9 +5680,6 @@ def normalize_technical_snapshot_payload(payload):
 
 
 # Preserve existing V13/V15 technical_snapshot endpoint logic
-_technical_snapshot_v15 = technical_snapshot
-
-
 @app.post("/technical_snapshot_v15_1")
 async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
     verify_webhook_secret(x_webhook_secret)
