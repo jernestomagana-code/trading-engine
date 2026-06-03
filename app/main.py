@@ -4533,56 +4533,6 @@ async def manual_market_context(request: Request):
     }
 
 
-@app.post("/technical_snapshot")
-async def technical_snapshot(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
-    verify_webhook_secret(x_webhook_secret)
-
-    parsed, raw_text = await parse_request_payload(request)
-
-    ticker = find_ticker(parsed, raw_text)
-    timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
-
-    parsed = dict(parsed)
-    parsed.update({
-        "ticker": ticker,
-        "timeframe": timeframe,
-        "received_at": now_utc().isoformat(),
-        "saved_at": now_utc().isoformat(),
-        "source": "TECHNICAL_SNAPSHOT",
-        "raw_payload_preview": raw_text[:500],
-    })
-
-    trade_store.setdefault(ticker, {})
-    trade_store[ticker][timeframe] = parsed
-
-    # Also keep latest technical snapshot in a dedicated layer
-    trade_store[ticker]["technical_snapshot"] = parsed
-
-    classification = classify_asset(trade_store[ticker])
-    parsed.update({
-        "state": classification["state"],
-        "grade": classification["grade"],
-        "conviction": classification["conviction"],
-        "priority_score": classification["priority_score"],
-        "final_decision": classification["final_decision"],
-        "v6_strategy": classification["v6_strategy"],
-        "master_score": classification["master_score"],
-    })
-
-    storage_result = save_signal(parsed)
-    unified = build_unified_context(ticker)
-
-    return {
-        "status": "ok",
-        "engine": "v12_technical_snapshot",
-        "message": f"Technical snapshot received for {ticker} {timeframe}",
-        "ticker": ticker,
-        "timeframe": timeframe,
-        "storage": storage_result,
-        "unified_context": unified,
-        "data": parsed,
-    }
-
 
 @app.get("/debug/market_context")
 def debug_market_context():
@@ -5795,11 +5745,6 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "unified_context": unified,
     }
 
-
-@app.post("/technical_snapshot")
-async def technical_snapshot(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
-    # Replace previous endpoint behavior with normalized V15.1 behavior.
-    return await technical_snapshot_v15_1(request, x_webhook_secret)
 
 
 @app.get("/debug/normalizer")
@@ -9806,4 +9751,63 @@ def v22_2_trade_decision(ticker: str):
         "market_hours": decision.get("market_hours") if isinstance(decision, dict) else None,
         "generated_at": _v22_2_now_iso(),
     }
+
+
+# === V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
+@app.post("/technical_snapshot")
+async def technical_snapshot(payload: dict):
+    """
+    Endpoint seguro para recibir snapshot técnico desde curl / TradingView / puente externo.
+    Guarda el snapshot en runtime/technical_snapshot_by_ticker_safe.json.
+    Nunca debe romper el servidor por campos faltantes.
+    """
+    from pathlib import Path
+    from datetime import datetime, timezone
+    import json
+
+    try:
+        runtime = Path("runtime")
+        runtime.mkdir(exist_ok=True)
+
+        ticker = str(payload.get("ticker") or payload.get("symbol") or "UNKNOWN").upper().strip()
+
+        clean_payload = dict(payload)
+        clean_payload["ticker"] = ticker
+        clean_payload["received_at"] = datetime.now(timezone.utc).isoformat()
+        clean_payload["source"] = clean_payload.get("source") or "TECHNICAL_SNAPSHOT_ENDPOINT"
+
+        path = runtime / "technical_snapshot_by_ticker_safe.json"
+
+        try:
+            existing = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(existing, dict):
+                existing = {}
+        except Exception:
+            existing = {}
+
+        existing[ticker] = clean_payload
+        path.write_text(json.dumps(existing, indent=2, sort_keys=True))
+
+        return {
+            "engine": "V22_3_SAFE_TECHNICAL_SNAPSHOT_ENDPOINT",
+            "status": "OK",
+            "ticker": ticker,
+            "snapshot": clean_payload,
+            "available_tickers": sorted(existing.keys()),
+            "path": str(path),
+        }
+
+    except Exception as e:
+        return {
+            "engine": "V22_3_SAFE_TECHNICAL_SNAPSHOT_ENDPOINT",
+            "status": "ERROR_HANDLED",
+            "error": str(e),
+            "payload_preview": str(payload)[:500],
+        }
+
+
+@app.post("/technical-snapshot")
+async def technical_snapshot_dash(payload: dict):
+    return await technical_snapshot(payload)
+# === END V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
 
