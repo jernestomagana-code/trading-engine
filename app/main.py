@@ -14716,7 +14716,7 @@ def _v29_technical_state(ticker, technical):
     score = _v29_safe_float(t.get("score") or t.get("technical_score"), None)
     trend = _v29_safe_upper(t.get("trend") or t.get("bias") or t.get("technical_bias"), "UNKNOWN")
 
-    confirmed = score is not None and score >= _V29_MIN_TECH_SCORE and trend not in ["UNKNOWN", "NEUTRAL", ""]
+    confirmed = score is not None and score >= _V29_MIN_TECH_SCORE
 
     return {
         "available": bool(t),
@@ -14815,20 +14815,20 @@ def _v29_decide_ticker(ticker):
         severity = "gray"
         blocker = "MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE"
         action = f"{ticker}: setup detectado, pero esperar ventana confiable de mercado/opciones."
-    elif not technical_ok:
-        final_state = "WAIT_TECHNICAL"
-        decision = "WAIT_TECHNICAL"
-        can_operate = False
-        severity = "yellow"
-        blocker = "TECHNICAL_NOT_CONFIRMED"
-        action = f"{ticker}: opciones detectadas, pero falta confirmación técnica."
     elif not options_ok:
         final_state = "WAIT_OPTIONS_DATA"
         decision = "WAIT_OPTIONS_DATA"
         can_operate = False
         severity = "yellow"
         blocker = "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"
-        action = f"{ticker}: técnico confirmado, pero falta contrato ejecutable con bid/ask/spread/delta/DTE completos."
+        action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/delta/DTE/strike completos."
+    elif not technical_ok:
+        final_state = "WAIT_TECHNICAL"
+        decision = "WAIT_TECHNICAL"
+        can_operate = False
+        severity = "yellow"
+        blocker = "TECHNICAL_NOT_CONFIRMED"
+        action = f"{ticker}: opciones completas, pero falta confirmación técnica."
     else:
         final_state = "RADAR"
         decision = "RADAR"
@@ -14859,8 +14859,8 @@ def _v29_decide_ticker(ticker):
         "technical_bias": tech_state["trend"],
         "technical_score": tech_state["score"],
         "options_score": options_score,
-        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE",
-        "technical_fit": "TECHNICAL_CONFIRMED" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
+        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_DTE_DELTA",
+        "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
         "main_blocker": blocker,
         "action": action,
         "executive_summary": executive_summary,
