@@ -1603,7 +1603,7 @@ def request_option_market_data(contract):
     try:
         ticker = ib.reqMktData(
             contract,
-            genericTickList="106",
+            genericTickList="100,101,106",
             snapshot=False,
             regulatorySnapshot=False
         )
@@ -1638,6 +1638,21 @@ def request_option_market_data(contract):
             mid=mid
         )
 
+        spread = None
+        if bid is not None and ask is not None and ask >= bid:
+            spread = safe_round(ask - bid, 4)
+
+        volume = clean(getattr(ticker, "volume", None))
+        if getattr(contract, "right", "") == "P":
+            option_volume = clean(getattr(ticker, "putVolume", None)) or volume
+            open_interest = clean(getattr(ticker, "putOpenInterest", None))
+        elif getattr(contract, "right", "") == "C":
+            option_volume = clean(getattr(ticker, "callVolume", None)) or volume
+            open_interest = clean(getattr(ticker, "callOpenInterest", None))
+        else:
+            option_volume = volume
+            open_interest = None
+
         data_quality = data_quality_for_option(
             bid=bid,
             ask=ask,
@@ -1658,8 +1673,11 @@ def request_option_market_data(contract):
             "market_price": market_price,
             "mid": mid,
             "spread_pct": spread_pct,
+            "spread": spread,
             "greeks": greeks,
-            "data_quality": data_quality
+            "data_quality": data_quality,
+            "volume": option_volume,
+            "open_interest": open_interest
         }
 
     except Exception as e:
@@ -1677,6 +1695,7 @@ def request_option_market_data(contract):
             "market_price": None,
             "mid": None,
             "spread_pct": None,
+            "spread": None,
             "greeks": {
                 "iv": None,
                 "delta": None,
@@ -1685,6 +1704,8 @@ def request_option_market_data(contract):
                 "vega": None
             },
             "data_quality": "OPTION_MARKET_DATA_ERROR",
+            "volume": None,
+            "open_interest": None,
             "error": str(e)
         }
 
@@ -1953,8 +1974,11 @@ def send_options_intelligence():
                     market_price = option_data.get("market_price")
                     mid = option_data.get("mid")
                     spread_pct = option_data.get("spread_pct")
+                    spread = option_data.get("spread")
                     greeks = option_data.get("greeks")
                     data_quality = option_data.get("data_quality")
+                    volume = option_data.get("volume")
+                    open_interest = option_data.get("open_interest")
 
                     if not SEND_OPTIONS_WITHOUT_GREEKS:
                         if data_quality != "FULL_WITH_GREEKS":
@@ -1978,6 +2002,26 @@ def send_options_intelligence():
                         spread_pct=spread_pct
                     )
 
+                    required_execution_fields = {
+                        "bid": bid,
+                        "ask": ask,
+                        "spread": spread,
+                        "spread_pct": spread_pct,
+                        "strike": contract.strike,
+                        "expiration": contract.lastTradeDateOrContractMonth,
+                        "dte": dte,
+                        "delta": greeks.get("delta"),
+                    }
+                    missing_confirmations = [
+                        key
+                        for key, value in required_execution_fields.items()
+                        if value is None
+                    ]
+                    execution_ready = (
+                        len(missing_confirmations) == 0
+                        and decision in ["OPERAR", "ENTRY", "ENTRY_READY"]
+                    )
+
                     tv_context = tradingview_context_stub(symbol)
 
                     payload = {
@@ -1994,7 +2038,10 @@ def send_options_intelligence():
                         "integration_ready_for_tradingview": True,
                         "data_quality": data_quality,
                         "decision_cap": decision_cap,
+                        "decision": "ENTRY_READY" if execution_ready else decision,
+                        "final_decision": "ENTRY_READY" if execution_ready else decision,
                         "option_symbol": contract.localSymbol,
+                        "local_symbol": contract.localSymbol,
                         "option_type": option_type,
                         "strategy_hint": strategy,
                         "strategy_decision": decision,
@@ -2009,11 +2056,21 @@ def send_options_intelligence():
                         "market_price": market_price,
                         "mid": mid,
                         "spread_pct": spread_pct,
+                        "spread": spread,
                         "implied_volatility": greeks["iv"],
+                        "iv": greeks["iv"],
                         "delta": greeks["delta"],
                         "gamma": greeks["gamma"],
                         "theta": greeks["theta"],
                         "vega": greeks["vega"],
+                        "volume": volume,
+                        "open_interest": open_interest,
+                        "can_operate": execution_ready,
+                        "missing_confirmations": missing_confirmations,
+                        "recommendation": "VALIDAR_MANUALMENTE_ANTES_DE_OPERAR" if execution_ready else "ESPERAR_DATOS_EJECUTABLES",
+                        "reason": reason,
+                        "v30_contract_enrichment": True,
+                        "v30_required_fields_complete": len(missing_confirmations) == 0,
                         "moneyness_pct": safe_round(
                             (contract.strike / stock_price - 1) * 100,
                             2
@@ -2022,12 +2079,14 @@ def send_options_intelligence():
                         **tv_context
                     }
 
+                    v17_store_row(payload)
+
                     status = post(payload)
 
                     print(
                         f"{symbol} {strategy} "
                         f"{contract.strike} exp:{contract.lastTradeDateOrContractMonth} "
-                        f"mid:{mid} bid:{bid} ask:{ask} spread:{spread_pct} "
+                        f"mid:{mid} bid:{bid} ask:{ask} spread:{spread} spread_pct:{spread_pct} "
                         f"delta:{greeks['delta']} iv:{greeks['iv']} "
                         f"quality:{data_quality} cap:{decision_cap} "
                         f"score:{score} decision:{decision} "
@@ -2190,7 +2249,7 @@ def v18_normalize_decision(raw):
     except Exception:
         d = ""
 
-    if d in ["ENTRY", "ENTRY_OPPORTUNITY", "OPERAR", "TRADE"]:
+    if d in ["ENTRY", "ENTRY_READY", "ENTRY_OPPORTUNITY", "OPERAR", "TRADE"]:
         return "ENTRY"
     if d in ["MANAGE_POSITION", "MANAGE", "GESTION", "REVISAR_GESTION"]:
         return "MANAGE_POSITION"
@@ -2232,6 +2291,32 @@ def v18_missing_confirmations(row):
 
     if row.get("price") in [None, "", "None"]:
         missing.append("price")
+
+    for field in [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+    ]:
+        if row.get(field) in [None, "", "None"]:
+            missing.append(field)
+
+    try:
+        bid = v18_safe_float(row.get("bid"), 0)
+        ask = v18_safe_float(row.get("ask"), 0)
+        if bid <= 0:
+            missing.append("bid")
+        if ask <= 0:
+            missing.append("ask")
+        if bid > 0 and ask > 0 and ask < bid:
+            missing.append("bid_ask_order")
+    except Exception:
+        pass
 
     # Deduplicar preservando orden
     final = []
@@ -2324,6 +2409,33 @@ def v18_compact_row(row):
         "recommendation": "",
         "reason": "",
     }
+
+    for field in [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
+        "iv",
+        "implied_volatility",
+        "volume",
+        "open_interest",
+        "option_symbol",
+        "local_symbol",
+        "option_type",
+        "decision_cap",
+        "v30_contract_enrichment",
+        "v30_required_fields_complete",
+    ]:
+        if field in row:
+            compact[field] = row.get(field)
 
     compact["missing_confirmations"] = v18_missing_confirmations(compact | row)
     compact["can_operate"] = v18_can_operate(compact | row)
@@ -3383,7 +3495,5 @@ def _v28_publish_master_snapshot(extra_payload=None):
 # ============================================================
 # END V28 REMOTE MASTER SNAPSHOT AUTO PUBLISHER
 # ============================================================
-
-
 
 

@@ -14509,19 +14509,37 @@ def _v29_extract_options_rows_from_obj(obj):
             0
         )
 
-        r["price"] = _v29_safe_float(
-            r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid"),
-            None
-        )
+        r["price"] = _v29_safe_float(r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid"), None)
 
         r["bid"] = _v29_safe_float(r.get("bid") or r.get("option_bid"), None)
         r["ask"] = _v29_safe_float(r.get("ask") or r.get("option_ask"), None)
         r["mid"] = _v29_safe_float(r.get("mid") or r.get("mark") or r.get("price"), None)
+        r["spread"] = _v29_safe_float(r.get("spread"), None)
+        r["spread_pct"] = _v29_safe_float(r.get("spread_pct"), None)
         r["delta"] = _v29_safe_float(r.get("delta"), None)
+        r["gamma"] = _v29_safe_float(r.get("gamma"), None)
+        r["theta"] = _v29_safe_float(r.get("theta"), None)
+        r["vega"] = _v29_safe_float(r.get("vega"), None)
+        r["iv"] = _v29_safe_float(r.get("iv") or r.get("implied_volatility"), None)
+        r["volume"] = _v29_safe_float(r.get("volume"), None)
+        r["open_interest"] = _v29_safe_float(r.get("open_interest") or r.get("oi"), None)
         r["strike"] = _v29_safe_float(r.get("strike"), None)
         r["dte"] = _v29_safe_float(r.get("dte"), None)
         r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
+        r["can_operate"] = bool(r.get("can_operate")) if r.get("can_operate") is not None else False
+        r["missing_confirmations"] = r.get("missing_confirmations") if isinstance(r.get("missing_confirmations"), list) else []
+        r["recommendation"] = r.get("recommendation")
+        r["reason"] = r.get("reason") or r.get("strategy_reason")
         r["data_quality"] = r.get("data_quality") or r.get("quality") or "UNKNOWN"
+
+        if r["spread"] is None or r["mid"] is None or r["spread_pct"] is None:
+            spread, mid, spread_pct = _v29_spread_metrics(r)
+            if r["spread"] is None:
+                r["spread"] = spread
+            if r["mid"] is None:
+                r["mid"] = mid
+            if r["spread_pct"] is None:
+                r["spread_pct"] = spread_pct
 
         key = (
             ticker,
@@ -14618,6 +14636,7 @@ def _v29_quality_gate(row):
     delta = _v29_safe_float(row.get("delta"), None)
     strike = _v29_safe_float(row.get("strike"), None)
     dte = _v29_safe_float(row.get("dte"), None)
+    expiration = row.get("expiration")
 
     spread, mid, spread_pct = _v29_spread_metrics(row)
 
@@ -14633,6 +14652,8 @@ def _v29_quality_gate(row):
         missing.append("strike")
     if dte is None:
         missing.append("dte")
+    if not expiration:
+        missing.append("expiration")
     if delta is None:
         missing.append("delta")
     if price is None and mid is None:
@@ -14659,6 +14680,16 @@ def _v29_quality_gate(row):
         "spread_pct": spread_pct,
         "bid": bid,
         "ask": ask,
+        "strike": strike,
+        "expiration": expiration,
+        "dte": dte,
+        "delta": delta,
+        "gamma": _v29_safe_float(row.get("gamma"), None),
+        "theta": _v29_safe_float(row.get("theta"), None),
+        "vega": _v29_safe_float(row.get("vega"), None),
+        "iv": _v29_safe_float(row.get("iv") or row.get("implied_volatility"), None),
+        "volume": _v29_safe_float(row.get("volume"), None),
+        "open_interest": _v29_safe_float(row.get("open_interest") or row.get("oi"), None),
     }
 
 
@@ -14821,7 +14852,7 @@ def _v29_decide_ticker(ticker):
         can_operate = False
         severity = "yellow"
         blocker = "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"
-        action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/delta/DTE/strike completos."
+        action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/spread_pct/delta/DTE/expiration/strike completos."
     elif not technical_ok:
         final_state = "WAIT_TECHNICAL"
         decision = "WAIT_TECHNICAL"
@@ -14859,7 +14890,7 @@ def _v29_decide_ticker(ticker):
         "technical_bias": tech_state["trend"],
         "technical_score": tech_state["score"],
         "options_score": options_score,
-        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_DTE_DELTA",
+        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
         "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
         "main_blocker": blocker,
         "action": action,
@@ -15146,6 +15177,18 @@ async def gpt_v29_trade_decision(ticker: str):
             "mid": (d.get("best_row_quality") or {}).get("mid"),
             "spread": (d.get("best_row_quality") or {}).get("spread"),
             "spread_pct": (d.get("best_row_quality") or {}).get("spread_pct"),
+            "delta": (d.get("best_row_quality") or {}).get("delta"),
+            "gamma": (d.get("best_row_quality") or {}).get("gamma"),
+            "theta": (d.get("best_row_quality") or {}).get("theta"),
+            "vega": (d.get("best_row_quality") or {}).get("vega"),
+            "iv": (d.get("best_row_quality") or {}).get("iv"),
+            "volume": (d.get("best_row_quality") or {}).get("volume"),
+            "open_interest": (d.get("best_row_quality") or {}).get("open_interest"),
+            "data_quality": (d.get("best_row") or {}).get("data_quality"),
+            "can_operate": d.get("can_operate"),
+            "missing_confirmations": (d.get("best_row") or {}).get("missing_confirmations") or (d.get("best_row_quality") or {}).get("missing"),
+            "recommendation": (d.get("best_row") or {}).get("recommendation"),
+            "reason": (d.get("best_row") or {}).get("reason"),
             "missing": (d.get("best_row_quality") or {}).get("missing"),
         },
         "main_blocker": d.get("main_blocker"),
@@ -15171,4 +15214,3 @@ async def v29_dashboard_ticker(ticker: str):
 # ============================================================
 # END V29 FINAL DECISION QUALITY ENGINE
 # ============================================================
-
