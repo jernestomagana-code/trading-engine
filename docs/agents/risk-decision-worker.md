@@ -1,4 +1,4 @@
-# Risk And Decision Worker Brief
+# Atlas - Risk And Decision Worker Brief
 
 ## Mission
 

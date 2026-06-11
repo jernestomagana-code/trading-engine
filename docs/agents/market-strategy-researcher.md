@@ -1,4 +1,4 @@
-# Market Strategy Researcher Agent Brief
+# Morgan - Market Strategy Researcher Agent Brief
 
 ## Mission
 

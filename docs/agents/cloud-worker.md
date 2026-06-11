@@ -1,4 +1,4 @@
-# Cloud Worker Brief
+# Nova - Cloud Worker Brief
 
 ## Mission
 

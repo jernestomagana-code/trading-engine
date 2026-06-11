@@ -4,36 +4,36 @@
 
 These roles protect continuity across project versions and market changes:
 
-1. Project Goal Guardian
-2. Market Strategy Researcher
-3. Information Security Guardian
+1. Athena (Project Goal Guardian)
+2. Morgan (Market Strategy Researcher)
+3. Sentinel (Information Security Guardian)
 
 ## On-Demand Implementation Agents
 
 Use implementation agents only when there is code to inspect or change:
 
-- Explorer: maps current code flow and should not edit files.
-- Bridge Worker: owns `ibkr_bridge.py` and bridge-side helpers.
-- Cloud Worker: owns `app/main.py` and cloud/API/dashboard handling.
-- Risk/Decision Worker: owns blocker priority and readiness logic.
-- QA Worker: owns tests, fixtures, and verification commands.
+- Scout (Explorer): maps current code flow and should not edit files.
+- Bridge (Bridge Worker): owns `ibkr_bridge.py` and bridge-side helpers.
+- Nova (Cloud Worker): owns `app/main.py` and cloud/API/dashboard handling.
+- Atlas (Risk/Decision Worker): owns blocker priority and readiness logic.
+- Quinn (QA Worker): owns tests, fixtures, and verification commands.
 
 ## Recommended Workflow
 
-1. Project Goal Guardian confirms the objective, non-negotiables, and acceptance criteria.
-2. Information Security Guardian flags secrets, authentication, endpoint,
+1. Athena confirms the objective, non-negotiables, and acceptance criteria.
+2. Sentinel flags secrets, authentication, endpoint,
    logging, runtime-data, dependency, and multi-user risks for security-sensitive
    work.
-3. Explorer maps the real project files and identifies write scopes.
+3. Scout maps the real project files and identifies write scopes.
 4. Worker agents make scoped changes only in their owned areas.
-5. QA Worker verifies fixtures, tests, and compile checks.
-6. Project Goal Guardian performs a final consistency pass.
-7. Market Strategy Researcher stays research-only unless a proposed rule becomes a documented implementation task.
+5. Quinn verifies fixtures, tests, and compile checks.
+6. Athena performs a final consistency pass.
+7. Morgan stays research-only unless a proposed rule becomes a documented implementation task.
 
 ## Coordination Rules
 
 - Workers must have disjoint write scopes.
-- Explorers should not edit files.
+- Scout should not edit files.
 - The main Codex thread integrates all changes.
 - No agent may introduce live automatic order execution.
 - Every strategy recommendation must become either a documented research note or a testable implementation task.

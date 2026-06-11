@@ -1,4 +1,4 @@
-# Explorer Agent Brief
+# Scout - Explorer Agent Brief
 
 ## Mission
 

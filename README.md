@@ -21,7 +21,7 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 ## V30 Workspace Map
 
 - `AGENTS.md`: project context, non-negotiables, and agent workflow.
-- `docs/agents/`: ready-to-use briefs for Explorer, Bridge, Cloud, Risk/Decision, and QA agents.
+- `docs/agents/`: ready-to-use briefs for named agents such as Athena, Sentinel, Morgan, Scout, Bridge, Nova, Atlas, and Quinn.
 - `docs/product-vision.md`: long-term platform direction and commercial boundary.
 - `docs/roadmap.md`: V30 through product-grade readiness roadmap.
 - `docs/project-dashboard.md`: live project dashboard with current status, risks, and next actions.

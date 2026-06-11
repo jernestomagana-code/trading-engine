@@ -1,4 +1,4 @@
-# Project Goal Guardian Agent Brief
+# Athena - Project Goal Guardian Agent Brief
 
 ## Mission
 

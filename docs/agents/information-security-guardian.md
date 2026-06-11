@@ -1,4 +1,4 @@
-# Information Security Guardian Agent Brief
+# Sentinel - Information Security Guardian Agent Brief
 
 ## Mission
 

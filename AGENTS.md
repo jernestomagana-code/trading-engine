@@ -129,19 +129,21 @@ Use agents only after the real project files are present in this workspace.
 
 Persistent roles:
 
-- Project Goal Guardian: keeps the final objective, safety rules, blocker priority, and manual-decision model intact across all work.
-- Market Strategy Researcher: reviews changing market practices and proposes research-backed strategy or parameter updates as testable rules.
-- Information Security Guardian: reviews secrets, authentication, authorization,
-  data exposure, logging, dependency risk, endpoint hardening, and multi-user
-  isolation before security-sensitive changes are accepted.
+- Athena (Project Goal Guardian): keeps the final objective, safety rules,
+  blocker priority, and manual-decision model intact across all work.
+- Morgan (Market Strategy Researcher): reviews changing market practices and
+  proposes research-backed strategy or parameter updates as testable rules.
+- Sentinel (Information Security Guardian): reviews secrets, authentication,
+  authorization, data exposure, logging, dependency risk, endpoint hardening,
+  and multi-user isolation before security-sensitive changes are accepted.
 
 On-demand implementation roles:
 
-- Explorer: map current data flow from IBKR snapshot to cloud decision.
-- Bridge Worker: enrich option contract data in `ibkr_bridge.py`.
-- Cloud Worker: update FastAPI schemas/endpoints/dashboard handling in `app/main.py`.
-- Risk/Decision Worker: enforce `ENTRY_READY` gating and blocker priority.
-- QA Worker: build fixtures/tests for snapshot states such as `WAIT_OPTIONS_DATA`, `WAIT_TECHNICAL`, and `ENTRY_READY`.
+- Scout (Explorer): map current data flow from IBKR snapshot to cloud decision.
+- Bridge (Bridge Worker): enrich option contract data in `ibkr_bridge.py`.
+- Nova (Cloud Worker): update FastAPI schemas/endpoints/dashboard handling in `app/main.py`.
+- Atlas (Risk/Decision Worker): enforce `ENTRY_READY` gating and blocker priority.
+- Quinn (QA Worker): build fixtures/tests for snapshot states such as `WAIT_OPTIONS_DATA`, `WAIT_TECHNICAL`, and `ENTRY_READY`.
 
 Each worker should own a disjoint write scope to avoid conflicts.
 

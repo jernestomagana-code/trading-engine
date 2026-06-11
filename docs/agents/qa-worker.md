@@ -1,4 +1,4 @@
-# QA Worker Brief
+# Quinn - QA Worker Brief
 
 ## Mission
 
