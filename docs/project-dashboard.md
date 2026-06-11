@@ -6,6 +6,8 @@ Este tablero es el punto vivo para saber como vamos. Cada vez que avancemos en
 codigo, fixtures, documentacion o validacion, se debe actualizar esta pagina con
 el nuevo estado, evidencia y siguiente accion.
 
+Vista visual amigable: `docs/project-dashboard.html`.
+
 ## Estado Ejecutivo
 
 Estado actual: V30 en verificacion e integracion.
@@ -125,12 +127,13 @@ No bloqueo la validacion.
 ## Proximas Acciones
 
 1. Probar V30 con un snapshot real sanitizado de IBKR y confirmar campos completos.
-2. Actualizar `docs/v30/acceptance-checklist.md` para que coincida con este estado.
-3. Crear pruebas automatizadas formales alrededor del motor V29/V30 si el proyecto adopta pytest.
-4. Iniciar V31: una decision canonica, schema compartido y una sola prioridad de blockers.
+2. Crear pruebas automatizadas formales alrededor del motor V29/V30 si el proyecto adopta pytest.
+3. Iniciar V31: una decision canonica, schema compartido y una sola prioridad de blockers.
+4. Definir fixtures runtime sanitizados para casos reales raros.
 
 ## Registro De Avances
 
 | Fecha | Cambio | Evidencia |
 | --- | --- | --- |
 | 2026-06-11 | Se crea tablero de proyecto y se registra estado V30 actual. | `scripts/check_v30_integrity.py` y `scripts/validate_v30_fixtures.py` pasan. |
+| 2026-06-11 | Se agrega version visual HTML del tablero. | `docs/project-dashboard.html`. |
