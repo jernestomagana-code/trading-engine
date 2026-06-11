@@ -1,0 +1,437 @@
+diff --git a/contexto/01_arquitectura_actual.md b/contexto/01_arquitectura_actual.md
+new file mode 100644
+index 0000000..dfd81c2
+--- /dev/null
++++ b/contexto/01_arquitectura_actual.md
+@@ -0,0 +1,25 @@
++# Arquitectura actual
++
++Stock Ultimus es un trading engine híbrido local/cloud.
++
++## Local
++
++`ibkr_bridge.py` se conecta a Interactive Brokers mediante `ib_insync`. Lee precios, posiciones y cadenas de opciones, evalúa estrategias Naked Put y Covered Call, y publica snapshots hacia Render.
++
++## Cloud
++
++`app/main.py` corre en Render con FastAPI. Recibe snapshots por endpoints POST, los guarda temporalmente en `runtime/*.json`, y expone endpoints GET para estado, dashboards HTML y decisiones por ticker consumibles por GPT.
++
++## TradingView
++
++TradingView se integra mediante alertas webhook que pueden enviar snapshots técnicos a Render. Esas señales se guardan como JSON y pueden combinarse con datos de IBKR por el motor de decisión.
++
++## Estado V29.1
++
++V29.1 corrige la prioridad de bloqueadores:
++
++- si el técnico está confirmado pero faltan datos ejecutables del contrato, la decisión debe ser `WAIT_OPTIONS_DATA`;
++- no debe degradarse incorrectamente a `WAIT_TECHNICAL`.
++
++## Regla operativa
++
++El sistema funciona como asistente de decisión y validación manual. No debe ejecutar operaciones automáticamente.
+diff --git a/objetivos/01_objetivo_v30_contract_enrichment.md b/objetivos/01_objetivo_v30_contract_enrichment.md
+new file mode 100644
+index 0000000..f877ca5
+--- /dev/null
++++ b/objetivos/01_objetivo_v30_contract_enrichment.md
+@@ -0,0 +1,44 @@
++# Objetivo V30 — Bridge Contract Execution Enrichment
++
++El sistema ya conecta IBKR local con Render mediante `ibkr_bridge.py` y `app/main.py`.
++
++## Estado actual
++
++- `ibkr_bridge.py` lee precios, portafolio y opciones desde IBKR.
++- `app/main.py` en Render recibe snapshots y expone dashboards/endpoints GPT.
++- V29.1 ya clasifica correctamente `WAIT_OPTIONS_DATA` cuando faltan datos ejecutables.
++- El bloqueo principal es que muchos contratos aparecen como `PRICE_WITH_GREEKS_NO_BIDASK` y quedan en `RADAR` o `WAIT_OPTIONS_DATA`.
++
++## Objetivo
++
++Modificar principalmente `ibkr_bridge.py` para publicar contratos ejecutables completos al snapshot maestro.
++
++## Campos mínimos por contrato
++
++- `ticker`
++- `strategy`
++- `decision`
++- `score`
++- `strike`
++- `expiration`
++- `dte`
++- `bid`
++- `ask`
++- `mid`
++- `spread`
++- `spread_pct`
++- `delta`
++- `gamma`
++- `theta`
++- `vega`
++- `iv`
++- `volume`
++- `open_interest`
++- `can_operate`
++- `data_quality`
++- `missing_confirmations`
++- `recommendation`
++- `reason`
++
++## Regla
++
++No marcar `ENTRY_READY` si faltan `bid`, `ask`, `spread`, `spread_pct`, `strike`, `expiration`, `dte` o `delta`.
++
++## Resultado esperado
++
++`GET /gpt_v29_trade_decision/QQQ` debe pasar de `WAIT_OPTIONS_DATA` a `ENTRY_READY` únicamente cuando exista un contrato ejecutable real.
+diff --git a/ibkr_bridge.py b/ibkr_bridge.py
+index 227c24c..f7a0e24 100644
+--- a/ibkr_bridge.py
++++ b/ibkr_bridge.py
+@@ -2181,7 +2181,7 @@ def v18_normalize_decision(raw):
+     except Exception:
+         d = ""
+ 
+-    if d in ["ENTRY", "ENTRY_OPPORTUNITY", "OPERAR", "TRADE"]:
++    if d in ["ENTRY", "ENTRY_READY", "ENTRY_OPPORTUNITY", "OPERAR", "TRADE"]:
+         return "ENTRY"
+     if d in ["MANAGE_POSITION", "MANAGE", "GESTION", "REVISAR_GESTION"]:
+         return "MANAGE_POSITION"
+@@ -2225,6 +2225,28 @@ def v18_missing_confirmations(row):
+     if row.get("price") in [None, "", "None"]:
+         missing.append("price")
+ 
++    for field in [
++        "strike",
++        "expiration",
++        "dte",
++        "bid",
++        "ask",
++        "mid",
++        "spread",
++        "spread_pct",
++        "delta",
++    ]:
++        if row.get(field) in [None, "", "None"]:
++            missing.append(field)
++
++    try:
++        bid = v18_safe_float(row.get("bid"), 0)
++        ask = v18_safe_float(row.get("ask"), 0)
++        if bid <= 0:
++            missing.append("bid")
++        if ask <= 0:
++            missing.append("ask")
++        if bid > 0 and ask > 0 and ask < bid:
++            missing.append("bid_ask_order")
++    except Exception:
++        pass
++
+     # Deduplicar preservando orden
+     final = []
+     for x in missing:
+@@ -2298,6 +2320,32 @@ def v18_compact_row(row):
+         "reason": "",
+     }
+ 
++    for field in [
++        "strike",
++        "expiration",
++        "dte",
++        "bid",
++        "ask",
++        "mid",
++        "spread",
++        "spread_pct",
++        "delta",
++        "gamma",
++        "theta",
++        "vega",
++        "iv",
++        "implied_volatility",
++        "volume",
++        "open_interest",
++        "option_symbol",
++        "local_symbol",
++        "option_type",
++        "decision_cap",
++        "v30_contract_enrichment",
++        "v30_required_fields_complete",
++    ]:
++        if field in row:
++            compact[field] = row.get(field)
++
+     compact["missing_confirmations"] = v18_missing_confirmations(compact | row)
+     compact["can_operate"] = v18_can_operate(compact | row)
+     compact["recommendation"] = v18_recommendation(compact | row)
+@@ -1599,7 +1599,7 @@ def request_option_market_data(contract):
+     try:
+         ticker = ib.reqMktData(
+             contract,
+-            genericTickList="106",
++            genericTickList="100,101,106",
+             snapshot=False,
+             regulatorySnapshot=False
+         )
+@@ -1630,6 +1630,19 @@ def request_option_market_data(contract):
+             mid=mid
+         )
+ 
++        spread = None
++        if bid is not None and ask is not None and ask >= bid:
++            spread = safe_round(ask - bid, 4)
++
++        volume = clean(getattr(ticker, "volume", None))
++        if getattr(contract, "right", "") == "P":
++            option_volume = clean(getattr(ticker, "putVolume", None)) or volume
++            open_interest = clean(getattr(ticker, "putOpenInterest", None))
++        elif getattr(contract, "right", "") == "C":
++            option_volume = clean(getattr(ticker, "callVolume", None)) or volume
++            open_interest = clean(getattr(ticker, "callOpenInterest", None))
++        else:
++            option_volume = volume
++            open_interest = None
++
+         data_quality = data_quality_for_option(
+             bid=bid,
+             ask=ask,
+@@ -1648,8 +1661,11 @@ def request_option_market_data(contract):
+             "market_price": market_price,
+             "mid": mid,
+             "spread_pct": spread_pct,
++            "spread": spread,
+             "greeks": greeks,
+-            "data_quality": data_quality
++            "data_quality": data_quality,
++            "volume": option_volume,
++            "open_interest": open_interest
+         }
+ 
+     except Exception as e:
+@@ -1672,6 +1688,7 @@ def request_option_market_data(contract):
+             "market_price": None,
+             "mid": None,
+             "spread_pct": None,
++            "spread": None,
+             "greeks": {
+                 "iv": None,
+                 "delta": None,
+@@ -1681,6 +1698,8 @@ def request_option_market_data(contract):
+                 "vega": None
+             },
+             "data_quality": "OPTION_MARKET_DATA_ERROR",
++            "volume": None,
++            "open_interest": None,
+             "error": str(e)
+         }
+ 
+@@ -1944,8 +1963,11 @@ def send_options_intelligence():
+                     market_price = option_data.get("market_price")
+                     mid = option_data.get("mid")
+                     spread_pct = option_data.get("spread_pct")
++                    spread = option_data.get("spread")
+                     greeks = option_data.get("greeks")
+                     data_quality = option_data.get("data_quality")
++                    volume = option_data.get("volume")
++                    open_interest = option_data.get("open_interest")
+ 
+                     if not SEND_OPTIONS_WITHOUT_GREEKS:
+                         if data_quality != "FULL_WITH_GREEKS":
+@@ -1973,6 +1995,17 @@ def send_options_intelligence():
+                         spread_pct=spread_pct
+                     )
+ 
++                    missing_confirmations = []
++                    required_execution_fields = {
++                        "bid": bid,
++                        "ask": ask,
++                        "spread": spread,
++                        "spread_pct": spread_pct,
++                        "strike": contract.strike,
++                        "expiration": contract.lastTradeDateOrContractMonth,
++                        "dte": dte,
++                        "delta": greeks.get("delta"),
++                    }
++                    missing_confirmations = [k for k, v in required_execution_fields.items() if v is None]
++                    execution_ready = len(missing_confirmations) == 0 and decision in ["OPERAR", "ENTRY", "ENTRY_READY"]
++
+                     tv_context = tradingview_context_stub(symbol)
+ 
+                     payload = {
+@@ -1991,7 +2024,10 @@ def send_options_intelligence():
+                         "integration_ready_for_tradingview": True,
+                         "data_quality": data_quality,
+                         "decision_cap": decision_cap,
++                        "decision": "ENTRY_READY" if execution_ready else decision,
++                        "final_decision": "ENTRY_READY" if execution_ready else decision,
+                         "option_symbol": contract.localSymbol,
++                        "local_symbol": contract.localSymbol,
+                         "option_type": option_type,
+                         "strategy_hint": strategy,
+                         "strategy_decision": decision,
+@@ -2007,12 +2043,22 @@ def send_options_intelligence():
+                         "market_price": market_price,
+                         "mid": mid,
+                         "spread_pct": spread_pct,
++                        "spread": spread,
+                         "implied_volatility": greeks["iv"],
++                        "iv": greeks["iv"],
+                         "delta": greeks["delta"],
+                         "gamma": greeks["gamma"],
+                         "theta": greeks["theta"],
+                         "vega": greeks["vega"],
++                        "volume": volume,
++                        "open_interest": open_interest,
++                        "can_operate": execution_ready,
++                        "missing_confirmations": missing_confirmations,
++                        "recommendation": "VALIDAR_MANUALMENTE_ANTES_DE_OPERAR" if execution_ready else "ESPERAR_DATOS_EJECUTABLES",
++                        "reason": reason,
++                        "v30_contract_enrichment": True,
++                        "v30_required_fields_complete": len(missing_confirmations) == 0,
+                         "moneyness_pct": safe_round(
+                             (contract.strike / stock_price - 1) * 100,
+                             2
+@@ -2026,7 +2072,7 @@ def send_options_intelligence():
+                         f"{symbol} {strategy} "
+                         f"{contract.strike} exp:{contract.lastTradeDateOrContractMonth} "
+-                        f"mid:{mid} bid:{bid} ask:{ask} spread:{spread_pct} "
++                        f"mid:{mid} bid:{bid} ask:{ask} spread:{spread} spread_pct:{spread_pct} "
+                         f"delta:{greeks['delta']} iv:{greeks['iv']} "
+                         f"quality:{data_quality} cap:{decision_cap} "
+                         f"score:{score} decision:{decision} "
+@@ -2023,6 +2078,8 @@ def send_options_intelligence():
+                         **tv_context
+                     }
+ 
++                    v17_store_row(payload)
++
+                     status = post(payload)
+ 
+                     print(
+diff --git a/app/main.py b/app/main.py
+index 2f02c4e..fffe29d 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -14519,16 +14519,35 @@ def _v29_extract_options_rows_from_obj(obj):
+             None
+         )
+ 
+-        r["price"] = _v29_safe_float(
+-            r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid"),
+-            None
+-        )
++        r["price"] = _v29_safe_float(r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid"), None)
+ 
+         r["bid"] = _v29_safe_float(r.get("bid") or r.get("option_bid"), None)
+         r["ask"] = _v29_safe_float(r.get("ask") or r.get("option_ask"), None)
+         r["mid"] = _v29_safe_float(r.get("mid") or r.get("mark") or r.get("price"), None)
++        r["spread"] = _v29_safe_float(r.get("spread"), None)
++        r["spread_pct"] = _v29_safe_float(r.get("spread_pct"), None)
+         r["delta"] = _v29_safe_float(r.get("delta"), None)
++        r["gamma"] = _v29_safe_float(r.get("gamma"), None)
++        r["theta"] = _v29_safe_float(r.get("theta"), None)
++        r["vega"] = _v29_safe_float(r.get("vega"), None)
++        r["iv"] = _v29_safe_float(r.get("iv") or r.get("implied_volatility"), None)
++        r["volume"] = _v29_safe_float(r.get("volume"), None)
++        r["open_interest"] = _v29_safe_float(r.get("open_interest") or r.get("oi"), None)
+         r["strike"] = _v29_safe_float(r.get("strike"), None)
+         r["dte"] = _v29_safe_float(r.get("dte"), None)
+         r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
++        r["can_operate"] = bool(r.get("can_operate")) if r.get("can_operate") is not None else False
++        r["missing_confirmations"] = r.get("missing_confirmations") if isinstance(r.get("missing_confirmations"), list) else []
++        r["recommendation"] = r.get("recommendation")
++        r["reason"] = r.get("reason") or r.get("strategy_reason")
+         r["data_quality"] = r.get("data_quality") or r.get("quality") or "UNKNOWN"
+ 
++        if r["spread"] is None or r["mid"] is None or r["spread_pct"] is None:
++            spread, mid, spread_pct = _v29_spread_metrics(r)
++            if r["spread"] is None:
++                r["spread"] = spread
++            if r["mid"] is None:
++                r["mid"] = mid
++            if r["spread_pct"] is None:
++                r["spread_pct"] = spread_pct
++
+         key = (
+             ticker,
+             strategy,
+@@ -14581,6 +14600,7 @@ def _v29_quality_gate(row):
+     delta = _v29_safe_float(row.get("delta"), None)
+     strike = _v29_safe_float(row.get("strike"), None)
+     dte = _v29_safe_float(row.get("dte"), None)
++    expiration = row.get("expiration")
+ 
+     spread, mid, spread_pct = _v29_spread_metrics(row)
+ 
+@@ -14596,6 +14616,8 @@ def _v29_quality_gate(row):
+         missing.append("strike")
+     if dte is None:
+         missing.append("dte")
++    if not expiration:
++        missing.append("expiration")
+     if delta is None:
+         missing.append("delta")
+     if price is None and mid is None:
+@@ -14624,8 +14646,20 @@ def _v29_quality_gate(row):
+         "spread_pct": spread_pct,
+         "bid": bid,
+         "ask": ask,
++        "strike": strike,
++        "expiration": expiration,
++        "dte": dte,
++        "delta": delta,
++        "gamma": _v29_safe_float(row.get("gamma"), None),
++        "theta": _v29_safe_float(row.get("theta"), None),
++        "vega": _v29_safe_float(row.get("vega"), None),
++        "iv": _v29_safe_float(row.get("iv") or row.get("implied_volatility"), None),
++        "volume": _v29_safe_float(row.get("volume"), None),
++        "open_interest": _v29_safe_float(row.get("open_interest") or row.get("oi"), None),
+     }
+ 
+@@ -14820,7 +14854,7 @@ def _v29_decide_ticker(ticker):
+         can_operate = False
+         severity = "yellow"
+         blocker = "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"
+-        action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/delta/DTE/strike completos."
++        action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/spread_pct/delta/DTE/expiration/strike completos."
+     elif not technical_ok:
+         final_state = "WAIT_TECHNICAL"
+         decision = "WAIT_TECHNICAL"
+@@ -14876,7 +14910,7 @@ def _v29_decide_ticker(ticker):
+         "strategy": strategy,
+         "technical_bias": tech_state["trend"],
+         "technical_score": tech_state["score"],
+         "options_score": options_score,
+-        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_DTE_DELTA",
++        "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
+         "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
+         "main_blocker": blocker,
+         "action": action,
+@@ -15138,15 +15172,28 @@ async def gpt_v29_trade_decision(ticker: str):
+         "options_fit": d.get("options_fit"),
+         "best_contract": {
+             "strike": (d.get("best_row") or {}).get("strike"),
+             "expiration": (d.get("best_row") or {}).get("expiration"),
+             "dte": (d.get("best_row") or {}).get("dte"),
+             "bid": (d.get("best_row_quality") or {}).get("bid"),
+             "ask": (d.get("best_row_quality") or {}).get("ask"),
+             "mid": (d.get("best_row_quality") or {}).get("mid"),
+             "spread": (d.get("best_row_quality") or {}).get("spread"),
+             "spread_pct": (d.get("best_row_quality") or {}).get("spread_pct"),
++            "delta": (d.get("best_row_quality") or {}).get("delta"),
++            "gamma": (d.get("best_row_quality") or {}).get("gamma"),
++            "theta": (d.get("best_row_quality") or {}).get("theta"),
++            "vega": (d.get("best_row_quality") or {}).get("vega"),
++            "iv": (d.get("best_row_quality") or {}).get("iv"),
++            "volume": (d.get("best_row_quality") or {}).get("volume"),
++            "open_interest": (d.get("best_row_quality") or {}).get("open_interest"),
++            "data_quality": (d.get("best_row") or {}).get("data_quality"),
++            "can_operate": d.get("can_operate"),
++            "missing_confirmations": (d.get("best_row") or {}).get("missing_confirmations") or (d.get("best_row_quality") or {}).get("missing"),
++            "recommendation": (d.get("best_row") or {}).get("recommendation"),
++            "reason": (d.get("best_row") or {}).get("reason"),
+             "missing": (d.get("best_row_quality") or {}).get("missing"),
+         },
+         "main_blocker": d.get("main_blocker"),
+         "action": d.get("action"),

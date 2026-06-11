@@ -1,0 +1,26 @@
+{
+  "ticker": "AAPL",
+  "strategy": "COVERED_CALL",
+  "technical": {
+    "confirmed": true,
+    "source": "tradingview"
+  },
+  "candidate": {
+    "intent": "ENTRY",
+    "option": {
+      "strike": 205.0,
+      "expiration": "2026-07-17",
+      "dte": 39,
+      "bid": 1.1,
+      "ask": 1.25,
+      "mid": 1.175,
+      "spread": 0.15,
+      "spread_pct": 12.77,
+      "delta": 0.24
+    }
+  },
+  "risk": {
+    "passes": true
+  },
+  "expected_decision": "ENTRY_READY"
+}

@@ -1,0 +1,26 @@
+{
+  "ticker": "AAPL",
+  "strategy": "NAKED_PUT",
+  "technical": {
+    "confirmed": false,
+    "source": "tradingview"
+  },
+  "candidate": {
+    "intent": "ENTRY",
+    "option": {
+      "strike": 180.0,
+      "expiration": "2026-07-17",
+      "dte": 39,
+      "bid": 1.2,
+      "ask": 1.35,
+      "mid": 1.275,
+      "spread": 0.15,
+      "spread_pct": 11.76,
+      "delta": -0.28
+    }
+  },
+  "risk": {
+    "passes": true
+  },
+  "expected_decision": "WAIT_TECHNICAL"
+}

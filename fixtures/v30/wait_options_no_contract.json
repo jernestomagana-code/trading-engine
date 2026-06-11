@@ -1,0 +1,12 @@
+{
+  "ticker": "AAPL",
+  "strategy": "NAKED_PUT",
+  "technical": {
+    "confirmed": true,
+    "source": "tradingview"
+  },
+  "candidate": {
+    "intent": "ENTRY"
+  },
+  "expected_decision": "WAIT_OPTIONS_DATA"
+}
