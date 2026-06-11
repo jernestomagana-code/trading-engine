@@ -25,10 +25,12 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 - `docs/product-vision.md`: long-term platform direction and commercial boundary.
 - `docs/roadmap.md`: V30 through product-grade readiness roadmap.
 - `docs/project-dashboard.md`: live project dashboard with current status, risks, and next actions.
+- `docs/project-dashboard.html`: visual dashboard that can be opened directly in a browser.
 - `docs/v30/decision-contract.md`: executable option field contract and blocker priority.
 - `docs/v30/acceptance-checklist.md`: release checklist for V30.
 - `fixtures/v30/`: example decision fixtures for incomplete and complete option-data states.
-- `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, and Python compile checks.
+- `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, Python compile checks, V29 engine checks, and endpoint smoke checks.
+- `scripts/smoke_v29_endpoints.py`: direct FastAPI handler smoke test for V29 trade, GPT, and dashboard endpoints with controlled snapshots.
 
 ## V30 Integrity Check
 

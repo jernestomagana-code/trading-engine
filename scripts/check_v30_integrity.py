@@ -23,6 +23,7 @@ COMPILE_CANDIDATES = [
     ROOT / "tmp_v30_patch" / "ibkr_bridge.py",
     ROOT / "tmp_v30_patch" / "app" / "main.py",
     ROOT / "scripts" / "validate_v30_fixtures.py",
+    ROOT / "scripts" / "smoke_v29_endpoints.py",
 ]
 REQUIRED_OPTION = {
     "strike": 180.0,
@@ -56,6 +57,23 @@ def run_fixture_guard() -> list[str]:
 
     output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
     return [output or "fixture guard failed without output"]
+
+
+def run_endpoint_smoke() -> list[str]:
+    script = ROOT / "scripts" / "smoke_v29_endpoints.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "endpoint smoke failed without output"]
 
 
 def compile_available_files() -> list[str]:
@@ -222,6 +240,7 @@ def main() -> int:
     failures.extend(run_fixture_guard())
     failures.extend(compile_available_files())
     failures.extend(run_v29_engine_guard())
+    failures.extend(run_endpoint_smoke())
 
     if failures:
         print("\nV30 integrity check failed:")

@@ -52,7 +52,7 @@ For V30 changes, run:
 PYTHONPYCACHEPREFIX=/private/tmp/stock_ultimus_pycache python3 scripts/check_v30_integrity.py
 ```
 
-This validates V30 fixtures, scans available Python files for automatic order-execution patterns, and compiles the production files or staged patch files that are present in the workspace.
+This validates V30 fixtures, scans available Python files for automatic order-execution patterns, compiles the production files or staged patch files that are present in the workspace, checks V29 decision scenarios, and smoke-tests the V29 trade/GPT/dashboard endpoint handlers.
 
 Additional verification depends on the changed surface:
 
