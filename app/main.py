@@ -390,6 +390,28 @@ def supabase_fetch_signals(limit=3000):
         return []
 
 
+def supabase_fetch_table_rows(table, order_column="received_at", limit=1000):
+    if not supabase_enabled():
+        return []
+
+    safe_limit = max(1, min(int(limit or 1000), 50000))
+    url = (
+        f"{SUPABASE_URL}/rest/v1/{table}"
+        f"?select=*&order={order_column}.desc&limit={safe_limit}"
+    )
+
+    try:
+        response = requests.get(url, headers=supabase_headers(None), timeout=10)
+        if response.status_code != 200:
+            return []
+        rows = response.json()
+        if isinstance(rows, list):
+            return list(reversed(rows))
+        return []
+    except Exception:
+        return []
+
+
 def supabase_count_signals():
     if not supabase_enabled():
         return {"enabled": False, "count": 0}
@@ -505,7 +527,138 @@ def outcome_stats(outcomes):
     }
 
 
-def load_intraday_futures_alert_events(limit=5000):
+def row_to_intraday_futures_alert_event(row):
+    if not isinstance(row, dict):
+        return {}
+
+    raw_payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+    event = dict(raw_payload)
+
+    for key in [
+        "event_id",
+        "received_at",
+        "saved_at",
+        "session_date",
+        "strategy",
+        "strategy_version",
+        "source",
+        "engine_layer",
+        "ticker",
+        "symbol",
+        "timeframe",
+        "price",
+        "entry_price",
+        "stop_price",
+        "stop_points",
+        "tp1_price",
+        "tp2_price",
+        "rr_ratio",
+        "event_code",
+        "event",
+        "direction_code",
+        "direction",
+        "setup_type",
+        "instrument_family",
+        "target_instrument",
+        "range_used_percent",
+        "vwap",
+        "previous_day_high",
+        "previous_day_low",
+        "previous_day_close",
+        "construction_status",
+        "decision_max_state",
+        "warnings",
+        "missing_fields",
+        "not_order_instruction",
+        "evaluation_status",
+        "paper_outcome",
+    ]:
+        if row.get(key) is not None:
+            event[key] = row.get(key)
+
+    return event
+
+
+def row_to_intraday_futures_price_point(row):
+    if not isinstance(row, dict):
+        return {}
+
+    raw_payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+    point = dict(raw_payload)
+
+    for key in [
+        "point_id",
+        "received_at",
+        "saved_at",
+        "session_date",
+        "ticker",
+        "symbol",
+        "timeframe",
+        "price",
+        "strategy",
+        "strategy_version",
+        "source",
+        "event_code",
+        "event",
+    ]:
+        if row.get(key) is not None:
+            point[key] = row.get(key)
+
+    return point
+
+
+def attach_intraday_futures_outcomes(events, outcome_rows):
+    events_by_id = {
+        str(event.get("event_id")): event
+        for event in events
+        if event.get("event_id")
+    }
+
+    for row in outcome_rows:
+        event = events_by_id.get(str(row.get("event_id")))
+        if not event:
+            continue
+
+        outcome = {
+            "classification": row.get("classification"),
+            "notes": row.get("notes"),
+            "mfe_points": row.get("mfe_points"),
+            "mae_points": row.get("mae_points"),
+            "mfe_r": row.get("mfe_r"),
+            "mae_r": row.get("mae_r"),
+            "hypothetical_result_r": row.get("hypothetical_result_r"),
+            "real_trade_result_r": row.get("real_trade_result_r"),
+            "paper_outcome": row.get("paper_outcome"),
+            "screenshot_url": row.get("screenshot_url"),
+            "evaluated_by": row.get("evaluated_by"),
+            "evaluated_at": row.get("evaluated_at"),
+            "outcome_engine_version": row.get("outcome_engine_version"),
+        }
+
+        evaluation_type = str(row.get("evaluation_type") or "").upper()
+        if evaluation_type == "AUTO":
+            event["auto_outcome"] = {
+                "evaluated_at": row.get("evaluated_at"),
+                "outcome_engine_version": row.get("outcome_engine_version"),
+                "paper_outcome": row.get("paper_outcome"),
+                "windows": row.get("auto_windows") or {},
+            }
+        elif evaluation_type == "MANUAL":
+            event["manual_outcome"] = outcome
+            if row.get("classification"):
+                event["classification"] = row.get("classification")
+
+        if row.get("evaluation_status"):
+            event["evaluation_status"] = row.get("evaluation_status")
+        if row.get("evaluated_at"):
+            event["evaluated_at"] = row.get("evaluated_at")
+        if row.get("paper_outcome") is not None:
+            event["paper_outcome"] = row.get("paper_outcome")
+
+    return events
+
+
+def load_intraday_futures_alert_events_from_file(limit=5000):
     if os.path.exists(INTRADAY_FUTURES_ALERT_EVENTS_FILE):
         try:
             with open(INTRADAY_FUTURES_ALERT_EVENTS_FILE, "r") as f:
@@ -517,7 +670,25 @@ def load_intraday_futures_alert_events(limit=5000):
     return []
 
 
-def load_intraday_futures_price_points(limit=20000):
+def load_intraday_futures_alert_events(limit=5000):
+    rows = supabase_fetch_table_rows(
+        "intraday_futures_alert_events",
+        order_column="received_at",
+        limit=limit,
+    )
+    if rows:
+        events = [row_to_intraday_futures_alert_event(row) for row in rows]
+        outcome_rows = supabase_fetch_table_rows(
+            "intraday_futures_outcomes",
+            order_column="updated_at",
+            limit=max(limit, 1000),
+        )
+        return attach_intraday_futures_outcomes(events, outcome_rows)[-limit:]
+
+    return load_intraday_futures_alert_events_from_file(limit=limit)
+
+
+def load_intraday_futures_price_points_from_file(limit=20000):
     if os.path.exists(INTRADAY_FUTURES_PRICE_POINTS_FILE):
         try:
             with open(INTRADAY_FUTURES_PRICE_POINTS_FILE, "r") as f:
@@ -527,6 +698,19 @@ def load_intraday_futures_price_points(limit=20000):
         except Exception:
             return []
     return []
+
+
+def load_intraday_futures_price_points(limit=20000):
+    rows = supabase_fetch_table_rows(
+        "intraday_futures_price_points",
+        order_column="received_at",
+        limit=limit,
+    )
+    if rows:
+        points = [row_to_intraday_futures_price_point(row) for row in rows]
+        return points[-limit:]
+
+    return load_intraday_futures_price_points_from_file(limit=limit)
 
 
 def save_intraday_futures_price_points_file(points):
@@ -1156,8 +1340,8 @@ def build_intraday_futures_daily_report(session_date=None):
         },
         "latest_events": latest_events,
         "notes": [
-            "Report uses current runtime storage.",
-            "Runtime storage may reset on Render redeploy until durable persistence is added.",
+            "Report reads Supabase durable storage first and runtime storage only as fallback.",
+            "Runtime fallback may reset on Render redeploy.",
             "AUTO_EVALUATED outcomes are paper measurements, not trading instructions.",
         ],
     }
