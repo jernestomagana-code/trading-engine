@@ -32,6 +32,8 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 - `fixtures/runtime/v28_master_snapshot_sanitized.json`: sanitized production-style runtime snapshot for multi-ticker V29/V30 decision validation.
 - `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, Python compile checks, V29 engine checks, and endpoint smoke checks.
 - `scripts/smoke_v29_endpoints.py`: direct FastAPI handler smoke test for V29 trade, GPT, and dashboard endpoints with controlled snapshots.
+- `scripts/sanitize_runtime_snapshot.py`: sanitizes real runtime snapshots before they are committed as fixtures.
+- `scripts/validate_runtime_privacy.py`: blocks obvious account, token, secret, balance, local-path, and private URL leaks in runtime fixtures.
 
 ## V30 Integrity Check
 
@@ -42,6 +44,13 @@ PYTHONPYCACHEPREFIX=/private/tmp/stock_ultimus_pycache python3 scripts/check_v30
 ```
 
 While this workspace is still staging-only, the check compiles the available V30 patch files under `tmp_v30_patch/` and reports missing production files. Once `ibkr_bridge.py` and `app/main.py` are present in the root, the same command will include them automatically.
+
+Before adding a real runtime snapshot, sanitize it outside the repo:
+
+```bash
+python3 scripts/sanitize_runtime_snapshot.py path/to/raw.json fixtures/runtime/real_sanitized/example.json
+python3 scripts/validate_runtime_privacy.py
+```
 
 ## Next Step
 

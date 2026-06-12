@@ -25,6 +25,8 @@ COMPILE_CANDIDATES = [
     ROOT / "tmp_v30_patch" / "app" / "main.py",
     ROOT / "scripts" / "validate_v30_fixtures.py",
     ROOT / "scripts" / "smoke_v29_endpoints.py",
+    ROOT / "scripts" / "sanitize_runtime_snapshot.py",
+    ROOT / "scripts" / "validate_runtime_privacy.py",
 ]
 REQUIRED_OPTION = {
     "strike": 180.0,
@@ -75,6 +77,23 @@ def run_endpoint_smoke() -> list[str]:
 
     output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
     return [output or "endpoint smoke failed without output"]
+
+
+def run_runtime_privacy_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_runtime_privacy.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "runtime privacy guard failed without output"]
 
 
 def compile_available_files() -> list[str]:
@@ -288,6 +307,7 @@ def main() -> int:
     failures: list[str] = []
     failures.extend(run_fixture_guard())
     failures.extend(compile_available_files())
+    failures.extend(run_runtime_privacy_guard())
     failures.extend(run_v29_engine_guard())
     failures.extend(run_sanitized_runtime_fixture_guard())
     failures.extend(run_endpoint_smoke())
