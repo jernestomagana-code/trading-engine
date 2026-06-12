@@ -21,6 +21,7 @@ app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
 INTRADAY_FUTURES_ALERT_EVENTS_FILE = "intraday_futures_alert_events.json"
+INTRADAY_FUTURES_PRICE_POINTS_FILE = "intraday_futures_price_points.json"
 INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS = [
     "GOOD_SIGNAL",
     "BAD_SIGNAL",
@@ -491,8 +492,106 @@ def load_intraday_futures_alert_events(limit=5000):
     return []
 
 
+def load_intraday_futures_price_points(limit=20000):
+    if os.path.exists(INTRADAY_FUTURES_PRICE_POINTS_FILE):
+        try:
+            with open(INTRADAY_FUTURES_PRICE_POINTS_FILE, "r") as f:
+                points = json.load(f)
+                if isinstance(points, list):
+                    return points[-limit:]
+        except Exception:
+            return []
+    return []
+
+
+def save_intraday_futures_price_points_file(points):
+    points = list(points or [])[-50000:]
+    with open(INTRADAY_FUTURES_PRICE_POINTS_FILE, "w") as f:
+        json.dump(points, f, indent=2)
+    return True
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def coerce_float_or_none(value):
+    try:
+        if value in [None, "", "null", "None"]:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
 def is_intraday_futures_signal(payload):
     return str((payload or {}).get("strategy") or "").upper() == "INTRADAY_INDEX_FUTURES"
+
+
+def build_intraday_futures_price_point(payload):
+    payload = dict(payload or {})
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    ticker = str(
+        payload.get("ticker")
+        or payload.get("symbol")
+        or construction.get("ticker")
+        or "UNKNOWN"
+    ).upper().strip()
+    price = coerce_float_or_none(
+        payload.get("price")
+        or payload.get("entry_price")
+        or construction.get("entry_price")
+    )
+
+    if not ticker or ticker == "UNKNOWN" or price is None:
+        return None
+
+    return {
+        "point_id": "IFPX-{ticker}-{timestamp}".format(
+            ticker=ticker,
+            timestamp=int(now_utc().timestamp() * 1000),
+        ),
+        "received_at": payload.get("received_at") or now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "ticker": ticker,
+        "symbol": payload.get("symbol"),
+        "timeframe": payload.get("timeframe"),
+        "price": price,
+        "strategy": payload.get("strategy"),
+        "strategy_version": payload.get("strategy_version"),
+        "source": payload.get("source"),
+        "event_code": payload.get("event_code") or construction.get("event_code"),
+        "event": payload.get("event") or construction.get("event"),
+    }
+
+
+def save_intraday_futures_price_point(payload):
+    if not is_intraday_futures_signal(payload):
+        return {"saved": False, "reason": "NOT_INTRADAY_INDEX_FUTURES"}
+
+    point = build_intraday_futures_price_point(payload)
+    if not point:
+        return {"saved": False, "reason": "NO_PRICE_POINT"}
+
+    points = load_intraday_futures_price_points(limit=50000)
+    points.append(point)
+    save_intraday_futures_price_points_file(points)
+
+    return {
+        "saved": True,
+        "point_id": point.get("point_id"),
+        "ticker": point.get("ticker"),
+        "price": point.get("price"),
+        "received_at": point.get("received_at"),
+    }
 
 
 def build_intraday_futures_alert_event(payload):
@@ -552,6 +651,8 @@ def build_intraday_futures_alert_event(payload):
 def save_intraday_futures_alert_event(payload):
     if not is_intraday_futures_signal(payload):
         return {"saved": False, "reason": "NOT_INTRADAY_INDEX_FUTURES"}
+    if not payload.get("event") and payload.get("event_code") is None:
+        return {"saved": False, "reason": "NO_INTRADAY_EVENT"}
 
     event = build_intraday_futures_alert_event(payload)
     events = load_intraday_futures_alert_events(limit=10000)
@@ -633,6 +734,132 @@ def update_intraday_futures_event_outcome(event_id, outcome_payload):
     }
 
 
+def calculate_intraday_futures_window_outcome(event, points, window_minutes):
+    alert_dt = parse_iso_datetime(event.get("received_at"))
+    alert_price = coerce_float_or_none(event.get("price"))
+    if not alert_dt or alert_price is None:
+        return None
+
+    window_points = []
+    for point in points:
+        point_dt = parse_iso_datetime(point.get("received_at"))
+        if not point_dt:
+            continue
+        delta_minutes = (point_dt - alert_dt).total_seconds() / 60
+        if 0 < delta_minutes <= window_minutes:
+            window_points.append((point_dt, point))
+
+    if not window_points:
+        return None
+
+    window_points.sort(key=lambda item: item[0])
+    prices = [
+        coerce_float_or_none(point.get("price"))
+        for _, point in window_points
+    ]
+    prices = [price for price in prices if price is not None]
+    if not prices:
+        return None
+
+    high_price = max(prices)
+    low_price = min(prices)
+    close_price = prices[-1]
+    direction = str(event.get("direction") or "").upper()
+
+    if direction == "LONG":
+        mfe_points = high_price - alert_price
+        mae_points = alert_price - low_price
+    elif direction == "SHORT":
+        mfe_points = alert_price - low_price
+        mae_points = high_price - alert_price
+    else:
+        mfe_points = None
+        mae_points = None
+
+    stop_points = coerce_float_or_none(event.get("stop_points"))
+    mfe_r = round(mfe_points / stop_points, 4) if mfe_points is not None and stop_points else None
+    mae_r = round(mae_points / stop_points, 4) if mae_points is not None and stop_points else None
+
+    return {
+        "window_minutes": window_minutes,
+        "points_used": len(prices),
+        "first_point_at": window_points[0][1].get("received_at"),
+        "last_point_at": window_points[-1][1].get("received_at"),
+        "alert_price": alert_price,
+        "high_price": high_price,
+        "low_price": low_price,
+        "close_price": close_price,
+        "net_change_points": round(close_price - alert_price, 4),
+        "mfe_points": round(mfe_points, 4) if mfe_points is not None else None,
+        "mae_points": round(mae_points, 4) if mae_points is not None else None,
+        "mfe_r": mfe_r,
+        "mae_r": mae_r,
+    }
+
+
+def evaluate_intraday_futures_pending_events():
+    events = load_intraday_futures_alert_events(limit=10000)
+    points = load_intraday_futures_price_points(limit=50000)
+    windows = [5, 15, 30, 60]
+    updated = []
+    skipped = []
+
+    points_by_ticker = {}
+    for point in points:
+        ticker = str(point.get("ticker") or "UNKNOWN").upper()
+        points_by_ticker.setdefault(ticker, []).append(point)
+
+    for idx, event in enumerate(events):
+        if event.get("evaluation_status") not in ["PENDING_OUTCOME", "PARTIALLY_AUTO_EVALUATED"]:
+            continue
+
+        ticker = str(event.get("ticker") or "UNKNOWN").upper()
+        ticker_points = points_by_ticker.get(ticker, [])
+        window_results = {}
+
+        for window in windows:
+            result = calculate_intraday_futures_window_outcome(event, ticker_points, window)
+            if result:
+                window_results[f"{window}m"] = result
+
+        if not window_results:
+            skipped.append({
+                "event_id": event.get("event_id"),
+                "ticker": ticker,
+                "reason": "NO_FORWARD_PRICE_POINTS",
+            })
+            continue
+
+        evaluation_status = "AUTO_EVALUATED" if "60m" in window_results else "PARTIALLY_AUTO_EVALUATED"
+        updated_event = dict(event)
+        updated_event["evaluation_status"] = evaluation_status
+        updated_event["auto_outcome"] = {
+            "evaluated_at": now_utc().isoformat(),
+            "outcome_engine_version": "outcome_engine_v1_phase_3",
+            "paper_outcome": True,
+            "windows": window_results,
+        }
+        updated_event["evaluated_at"] = updated_event["auto_outcome"]["evaluated_at"]
+        updated_event["outcome_engine_version"] = "outcome_engine_v1_phase_3"
+        events[idx] = updated_event
+        updated.append({
+            "event_id": event.get("event_id"),
+            "ticker": ticker,
+            "evaluation_status": evaluation_status,
+            "windows": list(window_results.keys()),
+        })
+
+    if updated:
+        save_intraday_futures_events_file(events)
+
+    return {
+        "updated_count": len(updated),
+        "skipped_count": len(skipped),
+        "updated": updated,
+        "skipped": skipped[:50],
+    }
+
+
 def summarize_intraday_futures_alert_events(events):
     by_ticker = {}
     by_event_code = {}
@@ -671,6 +898,14 @@ def summarize_intraday_futures_alert_events(events):
         "evaluated_manually": len([
             event for event in events
             if event.get("evaluation_status") == "EVALUATED_MANUALLY"
+        ]),
+        "auto_evaluated": len([
+            event for event in events
+            if event.get("evaluation_status") == "AUTO_EVALUATED"
+        ]),
+        "partially_auto_evaluated": len([
+            event for event in events
+            if event.get("evaluation_status") == "PARTIALLY_AUTO_EVALUATED"
         ]),
     }
 
@@ -2889,6 +3124,17 @@ def intraday_futures_events(limit: int = 100):
     }
 
 
+@app.get("/intraday_futures/price_points")
+def intraday_futures_price_points(limit: int = 100):
+    limit = max(1, min(int(limit), 1000))
+    points = load_intraday_futures_price_points(limit=limit)
+    return {
+        "engine": "intraday_futures_outcome_engine_v1_phase_3",
+        "count": len(points),
+        "price_points": points,
+    }
+
+
 @app.post("/intraday_futures/events/{event_id}/outcome")
 async def intraday_futures_event_outcome(event_id: str, request: Request):
     raw_body = await request.body()
@@ -2907,6 +3153,16 @@ async def intraday_futures_event_outcome(event_id: str, request: Request):
     return {
         "status": "ok" if result.get("updated") else "error",
         "engine": "intraday_futures_outcome_engine_v1_phase_2",
+        **result,
+    }
+
+
+@app.post("/intraday_futures/evaluate_pending")
+def intraday_futures_evaluate_pending():
+    result = evaluate_intraday_futures_pending_events()
+    return {
+        "status": "ok",
+        "engine": "intraday_futures_outcome_engine_v1_phase_3",
         **result,
     }
 
@@ -6297,6 +6553,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
 
     storage_result, unified = safe_persist_and_context(ticker, parsed)
     outcome_event_storage = save_intraday_futures_alert_event(parsed)
+    price_point_storage = save_intraday_futures_price_point(parsed)
 
     return {
         "status": "ok",
@@ -6313,6 +6570,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "construction_status": parsed.get("construction_status"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
+        "price_point_storage": price_point_storage,
         "accepted": True,
     }
 
@@ -6446,6 +6704,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
 
     storage_result, unified = safe_persist_and_context(ticker, parsed)
     outcome_event_storage = save_intraday_futures_alert_event(parsed)
+    price_point_storage = save_intraday_futures_price_point(parsed)
 
     return {
         "status": "ok",
@@ -6462,6 +6721,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "construction_status": parsed.get("construction_status"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
+        "price_point_storage": price_point_storage,
         "accepted": True,
     }
 
