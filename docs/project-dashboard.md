@@ -29,7 +29,7 @@ Resumen:
 | Bridge IBKR | En progreso | `ibkr_bridge.py` contiene campos V30, calidad de datos y validacion de contrato ejecutable. | Revisar contra datos reales de IBKR cuando haya snapshot runtime. |
 | Cloud/FastAPI | En progreso | `app/main.py` expone estados V30 y campos de contrato en endpoints/dashboard. | Consolidar decision canonica en V31. |
 | Decision/Riesgo | Validado localmente | `scripts/check_v30_integrity.py` valida prioridad `WAIT_OPTIONS_DATA`, `ENTRY_READY` y guardrails. | Agregar pruebas automatizadas formales si se adopta pytest. |
-| Fixtures V30 | Validado | 7 fixtures V30 pasan con `scripts/validate_v30_fixtures.py`. | Mantener fixtures sincronizados con cambios de contrato. |
+| Fixtures V30 | Validado | 7 fixtures V30 y 1 snapshot runtime sanitizado pasan con `scripts/check_v30_integrity.py`. | Mantener fixtures sincronizados con cambios de contrato. |
 | Seguridad | Alineado | Guardrail local busca patrones de orden automatica prohibida. | Endurecer auth, logs y aislamiento antes de uso multiusuario/comercial. |
 | Documentacion | En progreso | Roadmap, contrato V30, checklist y briefs de agentes existen. | Marcar checklist de aceptacion con evidencia por item. |
 
@@ -97,8 +97,10 @@ Resultado:
 
 - 7 fixtures V30 validados.
 - Guardrails de no-auto-order validados.
-- 5 archivos Python compilados.
+- 6 archivos Python compilados.
 - Escenarios guard V29 validados.
+- Snapshot runtime sanitizado validado para 5 tickers.
+- Endpoint smoke V29 validado.
 - Resultado final: `V30 integrity check passed`.
 
 Comando:
@@ -126,10 +128,10 @@ No bloqueo la validacion.
 
 ## Proximas Acciones
 
-1. Probar V30 con un snapshot real sanitizado de IBKR y confirmar campos completos.
+1. Probar V30 con un snapshot real capturado desde IBKR y sanitizado antes de commit.
 2. Crear pruebas automatizadas formales alrededor del motor V29/V30 si el proyecto adopta pytest.
 3. Iniciar V31: una decision canonica, schema compartido y una sola prioridad de blockers.
-4. Definir fixtures runtime sanitizados para casos reales raros.
+4. Ampliar fixtures runtime para casos reales raros detectados por Vega/Ledger.
 
 ## Registro De Avances
 
@@ -137,3 +139,4 @@ No bloqueo la validacion.
 | --- | --- | --- |
 | 2026-06-11 | Se crea tablero de proyecto y se registra estado V30 actual. | `scripts/check_v30_integrity.py` y `scripts/validate_v30_fixtures.py` pasan. |
 | 2026-06-11 | Se agrega version visual HTML del tablero. | `docs/project-dashboard.html`. |
+| 2026-06-12 | Se agrega snapshot runtime sanitizado multi-ticker. | `fixtures/runtime/v28_master_snapshot_sanitized.json` validado por `scripts/check_v30_integrity.py`. |

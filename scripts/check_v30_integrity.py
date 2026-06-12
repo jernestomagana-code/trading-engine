@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 RUNTIME_DIR = ROOT / "runtime"
 V29_MASTER_SNAPSHOT = RUNTIME_DIR / "v28_master_snapshot.json"
+SANITIZED_RUNTIME_FIXTURE = ROOT / "fixtures" / "runtime" / "v28_master_snapshot_sanitized.json"
 COMPILE_CANDIDATES = [
     ROOT / "ibkr_bridge.py",
     ROOT / "app" / "main.py",
@@ -235,11 +236,60 @@ def run_v29_engine_guard() -> list[str]:
     return failures
 
 
+def run_sanitized_runtime_fixture_guard() -> list[str]:
+    failures: list[str] = []
+    backup = V29_MASTER_SNAPSHOT.read_text() if V29_MASTER_SNAPSHOT.exists() else None
+
+    try:
+        if not SANITIZED_RUNTIME_FIXTURE.exists():
+            return [f"missing sanitized runtime fixture: {rel(SANITIZED_RUNTIME_FIXTURE)}"]
+
+        RUNTIME_DIR.mkdir(exist_ok=True)
+        fixture = json.loads(SANITIZED_RUNTIME_FIXTURE.read_text())
+        expected = fixture.get("expected_decisions") or {}
+        if not expected:
+            return [f"{rel(SANITIZED_RUNTIME_FIXTURE)} missing expected_decisions"]
+
+        V29_MASTER_SNAPSHOT.write_text(json.dumps(fixture, indent=2, sort_keys=True))
+        app_module = load_app_module()
+
+        for ticker, expectation in sorted(expected.items()):
+            result = app_module._v29_decide_ticker(ticker)
+            state = result.get("final_state")
+            blocker = result.get("main_blocker")
+            expected_state = expectation.get("final_state")
+            expected_blocker = expectation.get("main_blocker")
+
+            if state != expected_state:
+                failures.append(f"sanitized runtime {ticker}: expected {expected_state}, got {state}")
+            if blocker != expected_blocker:
+                failures.append(f"sanitized runtime {ticker}: expected blocker {expected_blocker}, got {blocker}")
+            if state != "ENTRY_READY" and result.get("can_operate") is True:
+                failures.append(f"sanitized runtime {ticker}: can_operate must be false for {state}")
+
+    except Exception as exc:
+        failures.append(f"sanitized runtime fixture guard failed to run: {exc}")
+    finally:
+        if backup is None:
+            try:
+                V29_MASTER_SNAPSHOT.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            V29_MASTER_SNAPSHOT.write_text(backup)
+
+    if not failures:
+        print(f"Validated sanitized runtime fixture for {len(expected)} tickers.")
+
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     failures.extend(run_fixture_guard())
     failures.extend(compile_available_files())
     failures.extend(run_v29_engine_guard())
+    failures.extend(run_sanitized_runtime_fixture_guard())
     failures.extend(run_endpoint_smoke())
 
     if failures:

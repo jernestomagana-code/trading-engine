@@ -39,3 +39,4 @@
 - [x] Fixture covers risk failure.
 - [x] Fixture covers `ENTRY_READY`.
 - [x] Tests or script checks are documented.
+- [x] Sanitized runtime snapshot covers multi-ticker cloud decision states.

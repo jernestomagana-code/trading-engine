@@ -1,0 +1,218 @@
+{
+  "source": "SANITIZED_RUNTIME_FIXTURE_V30",
+  "generated_at": "2026-06-12T14:00:00+00:00",
+  "runtime_fixture": true,
+  "sanitized": true,
+  "market": {
+    "status": "REGULAR_OPTIONS_SESSION",
+    "label": "Sanitized regular session fixture",
+    "is_regular_market_open": true,
+    "options_bidask_expected": true
+  },
+  "technical_snapshot": {
+    "AAPL": {
+      "ticker": "AAPL",
+      "timeframe": "15m",
+      "trend": "BULLISH",
+      "technical_score": 88,
+      "score": 88,
+      "source": "TRADINGVIEW_SANITIZED"
+    },
+    "QQQ": {
+      "ticker": "QQQ",
+      "timeframe": "15m",
+      "trend": "BULLISH",
+      "technical_score": 86,
+      "score": 86,
+      "source": "TRADINGVIEW_SANITIZED"
+    },
+    "MSFT": {
+      "ticker": "MSFT",
+      "timeframe": "15m",
+      "trend": "BULLISH",
+      "technical_score": 84,
+      "score": 84,
+      "source": "TRADINGVIEW_SANITIZED"
+    },
+    "NVDA": {
+      "ticker": "NVDA",
+      "timeframe": "15m",
+      "trend": "BULLISH",
+      "technical_score": 42,
+      "score": 42,
+      "source": "TRADINGVIEW_SANITIZED"
+    },
+    "SPY": {
+      "ticker": "SPY",
+      "timeframe": "15m",
+      "trend": "BULLISH",
+      "technical_score": 87,
+      "score": 87,
+      "source": "TRADINGVIEW_SANITIZED"
+    }
+  },
+  "options_rows": [
+    {
+      "ticker": "AAPL",
+      "strategy": "NAKED_PUT",
+      "decision": "ENTRY",
+      "score": 91,
+      "price": 185.0,
+      "data_quality": "FULL_WITH_GREEKS",
+      "strike": 180.0,
+      "expiration": "2026-07-17",
+      "dte": 35,
+      "bid": 1.2,
+      "ask": 1.35,
+      "mid": 1.275,
+      "spread": 0.15,
+      "spread_pct": 11.76,
+      "delta": -0.28,
+      "gamma": 0.017,
+      "theta": -0.045,
+      "vega": 0.122,
+      "iv": 0.31,
+      "volume": 1240,
+      "open_interest": 8200,
+      "risk": {
+        "passes": true
+      },
+      "missing_confirmations": []
+    },
+    {
+      "ticker": "QQQ",
+      "strategy": "NAKED_PUT",
+      "decision": "ENTRY",
+      "score": 89,
+      "price": 470.0,
+      "data_quality": "PRICE_WITH_GREEKS_NO_BIDASK",
+      "strike": 455.0,
+      "expiration": "2026-07-17",
+      "dte": 35,
+      "bid": 0.0,
+      "ask": 1.4,
+      "mid": 0.7,
+      "spread": 1.4,
+      "spread_pct": 200.0,
+      "delta": null,
+      "gamma": null,
+      "theta": null,
+      "vega": null,
+      "iv": 0.28,
+      "volume": 0,
+      "open_interest": 4100,
+      "risk": {
+        "passes": true
+      },
+      "missing_confirmations": [
+        "bid",
+        "delta"
+      ]
+    },
+    {
+      "ticker": "MSFT",
+      "strategy": "NAKED_PUT",
+      "decision": "ENTRY",
+      "score": 92,
+      "price": 430.0,
+      "data_quality": "FULL_WITH_GREEKS",
+      "strike": 415.0,
+      "expiration": "2026-07-17",
+      "dte": 35,
+      "bid": 1.45,
+      "ask": 1.62,
+      "mid": 1.535,
+      "spread": 0.17,
+      "spread_pct": 11.07,
+      "delta": -0.24,
+      "gamma": 0.014,
+      "theta": -0.052,
+      "vega": 0.141,
+      "iv": 0.29,
+      "volume": 980,
+      "open_interest": 6900,
+      "risk": {
+        "passes": false,
+        "blocker": "RISK_RULE_FAILED"
+      },
+      "missing_confirmations": []
+    },
+    {
+      "ticker": "NVDA",
+      "strategy": "NAKED_PUT",
+      "decision": "ENTRY",
+      "score": 90,
+      "price": 125.0,
+      "data_quality": "FULL_WITH_GREEKS",
+      "strike": 118.0,
+      "expiration": "2026-07-17",
+      "dte": 35,
+      "bid": 1.32,
+      "ask": 1.49,
+      "mid": 1.405,
+      "spread": 0.17,
+      "spread_pct": 12.1,
+      "delta": -0.26,
+      "gamma": 0.021,
+      "theta": -0.061,
+      "vega": 0.166,
+      "iv": 0.44,
+      "volume": 2100,
+      "open_interest": 13400,
+      "risk": {
+        "passes": true
+      },
+      "missing_confirmations": []
+    },
+    {
+      "ticker": "SPY",
+      "strategy": "COVERED_CALL",
+      "decision": "ENTRY",
+      "score": 88,
+      "price": 545.0,
+      "data_quality": "FULL_WITH_GREEKS",
+      "strike": 560.0,
+      "expiration": "2026-07-17",
+      "dte": 35,
+      "bid": 1.1,
+      "ask": 1.25,
+      "mid": 1.175,
+      "spread": 0.15,
+      "spread_pct": 12.77,
+      "delta": 0.24,
+      "gamma": 0.012,
+      "theta": -0.038,
+      "vega": 0.11,
+      "iv": 0.22,
+      "volume": 3050,
+      "open_interest": 18700,
+      "risk": {
+        "passes": true
+      },
+      "manual_review_required": true,
+      "missing_confirmations": []
+    }
+  ],
+  "expected_decisions": {
+    "AAPL": {
+      "final_state": "ENTRY_READY",
+      "main_blocker": null
+    },
+    "QQQ": {
+      "final_state": "WAIT_OPTIONS_DATA",
+      "main_blocker": "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"
+    },
+    "MSFT": {
+      "final_state": "RISK_BLOCKED",
+      "main_blocker": "RISK_RULE_FAILED"
+    },
+    "NVDA": {
+      "final_state": "WAIT_TECHNICAL",
+      "main_blocker": "TECHNICAL_NOT_CONFIRMED"
+    },
+    "SPY": {
+      "final_state": "MANUAL_REVIEW_BLOCKED",
+      "main_blocker": "MANUAL_REVIEW_REQUIRED"
+    }
+  }
+}

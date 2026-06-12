@@ -481,7 +481,7 @@
             <div class="area-row">
               <div class="area-name">Fixtures V30</div>
               <span class="status-pill is-good">Validado</span>
-              <div class="area-text">7 fixtures cubren ausencia de contrato, contrato parcial, contrato completo, riesgo y readiness.</div>
+              <div class="area-text">7 fixtures y 1 snapshot runtime sanitizado cubren ausencia de contrato, contrato parcial, contrato completo, riesgo y readiness.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Seguridad</div>
@@ -499,7 +499,7 @@
         <section class="panel" aria-label="Checklist V30">
           <div class="panel-title">
             <h2>Checklist V30</h2>
-            <span class="status-pill is-good">24/24 items OK</span>
+            <span class="status-pill is-good">25/25 items OK</span>
           </div>
           <div class="progress-track" aria-label="Progreso V30">
             <div class="progress-fill"></div>
@@ -511,6 +511,7 @@
             <div class="check-item"><span class="check">✓</span> Contrato completo mas riesgo aprobado puede llegar a ENTRY_READY.</div>
             <div class="check-item"><span class="check">✓</span> Falla de riesgo bloquea ENTRY_READY.</div>
             <div class="check-item"><span class="check">✓</span> API, dashboard y GPT-facing payload mantienen el mismo estado.</div>
+            <div class="check-item"><span class="check">✓</span> Snapshot runtime sanitizado cubre decisiones cloud multi-ticker.</div>
             <div class="check-item"><span class="check">✓</span> Snapshots antiguos no deben crashear la app cloud.</div>
             <div class="check-item"><span class="check">✓</span> No se permite envio automatico de ordenes IBKR.</div>
           </div>
@@ -559,8 +560,10 @@
           <ul class="validation-list">
             <li>7 fixtures V30 validados.</li>
             <li>Guardrails de no-auto-order validados.</li>
-            <li>5 archivos Python compilados.</li>
+            <li>6 archivos Python compilados.</li>
             <li>Escenarios guard V29 validados.</li>
+            <li>Snapshot runtime sanitizado validado para 5 tickers.</li>
+            <li>Endpoint smoke V29 validado.</li>
           </ul>
           <p class="small" style="margin-top:16px;">
             Comando base: <span class="code">scripts/check_v30_integrity.py</span>
@@ -572,10 +575,10 @@
             <h2>Proximas Acciones</h2>
           </div>
           <ol class="action-list">
-            <li><span class="number">1</span><span>Probar V30 con un snapshot real sanitizado de IBKR.</span></li>
+            <li><span class="number">1</span><span>Probar V30 con un snapshot real capturado desde IBKR y sanitizado antes de commit.</span></li>
             <li><span class="number">2</span><span>Agregar pruebas automatizadas formales si el proyecto adopta pytest.</span></li>
             <li><span class="number">3</span><span>Iniciar V31 con una decision canonica y schema compartido.</span></li>
-            <li><span class="number">4</span><span>Definir fixtures runtime sanitizados para casos reales raros.</span></li>
+            <li><span class="number">4</span><span>Ampliar fixtures runtime para casos reales raros detectados por Vega/Ledger.</span></li>
           </ol>
         </section>
 
@@ -606,6 +609,10 @@
           <div class="timeline-item">
             <time>2026-06-11</time>
             Se crea tablero visual y se registra V30 como validado localmente.
+          </div>
+          <div class="timeline-item">
+            <time>2026-06-12</time>
+            Se agrega snapshot runtime sanitizado multi-ticker validado por el guardia V30.
           </div>
         </section>
       </aside>

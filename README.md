@@ -29,6 +29,7 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 - `docs/v30/decision-contract.md`: executable option field contract and blocker priority.
 - `docs/v30/acceptance-checklist.md`: release checklist for V30.
 - `fixtures/v30/`: example decision fixtures for incomplete and complete option-data states.
+- `fixtures/runtime/v28_master_snapshot_sanitized.json`: sanitized production-style runtime snapshot for multi-ticker V29/V30 decision validation.
 - `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, Python compile checks, V29 engine checks, and endpoint smoke checks.
 - `scripts/smoke_v29_endpoints.py`: direct FastAPI handler smoke test for V29 trade, GPT, and dashboard endpoints with controlled snapshots.
 
