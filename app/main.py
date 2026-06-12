@@ -343,6 +343,31 @@ def supabase_insert_signal(signal):
         return {"enabled": True, "saved": False, "error": str(e)}
 
 
+def supabase_upsert_row(table, row, conflict_key):
+    if not supabase_enabled():
+        return {"enabled": False, "saved": False, "error": "Supabase env vars missing"}
+
+    url = f"{SUPABASE_URL}/rest/v1/{table}?on_conflict={conflict_key}"
+
+    try:
+        response = requests.post(
+            url,
+            headers=supabase_headers("resolution=merge-duplicates,return=minimal"),
+            json=row,
+            timeout=10,
+        )
+        if response.status_code in [200, 201, 204]:
+            return {"enabled": True, "saved": True, "status_code": response.status_code}
+        return {
+            "enabled": True,
+            "saved": False,
+            "status_code": response.status_code,
+            "error": response.text[:800],
+        }
+    except Exception as e:
+        return {"enabled": True, "saved": False, "error": str(e)}
+
+
 def supabase_fetch_signals(limit=3000):
     if not supabase_enabled():
         return []
@@ -523,6 +548,13 @@ def parse_iso_datetime(value):
         return None
 
 
+def session_date_from_iso(value):
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return None
+    return dt.astimezone(MARKET_TZ).date().isoformat()
+
+
 def coerce_float_or_none(value):
     try:
         if value in [None, "", "null", "None"]:
@@ -530,6 +562,123 @@ def coerce_float_or_none(value):
         return float(value)
     except Exception:
         return None
+
+
+def supabase_alert_event_row(event):
+    return {
+        "event_id": event.get("event_id"),
+        "received_at": event.get("received_at"),
+        "saved_at": event.get("saved_at"),
+        "session_date": event.get("session_date") or session_date_from_iso(event.get("received_at")),
+        "strategy": event.get("strategy"),
+        "strategy_version": event.get("strategy_version"),
+        "source": event.get("source"),
+        "engine_layer": event.get("engine_layer"),
+        "ticker": event.get("ticker"),
+        "symbol": event.get("symbol"),
+        "timeframe": event.get("timeframe"),
+        "price": coerce_float_or_none(event.get("price")),
+        "entry_price": coerce_float_or_none(event.get("entry_price")),
+        "stop_price": coerce_float_or_none(event.get("stop_price")),
+        "stop_points": coerce_float_or_none(event.get("stop_points")),
+        "tp1_price": coerce_float_or_none(event.get("tp1_price")),
+        "tp2_price": coerce_float_or_none(event.get("tp2_price")),
+        "rr_ratio": coerce_float_or_none(event.get("rr_ratio")),
+        "event_code": event.get("event_code"),
+        "event": event.get("event"),
+        "direction_code": event.get("direction_code"),
+        "direction": event.get("direction"),
+        "setup_type": event.get("setup_type"),
+        "instrument_family": event.get("instrument_family"),
+        "target_instrument": event.get("target_instrument"),
+        "range_used_percent": coerce_float_or_none(event.get("range_used_percent")),
+        "vwap": coerce_float_or_none(event.get("vwap")),
+        "previous_day_high": coerce_float_or_none(event.get("previous_day_high")),
+        "previous_day_low": coerce_float_or_none(event.get("previous_day_low")),
+        "previous_day_close": coerce_float_or_none(event.get("previous_day_close")),
+        "construction_status": event.get("construction_status"),
+        "decision_max_state": event.get("decision_max_state"),
+        "warnings": event.get("warnings") or [],
+        "missing_fields": event.get("missing_fields") or [],
+        "not_order_instruction": event.get("not_order_instruction"),
+        "evaluation_status": event.get("evaluation_status"),
+        "paper_outcome": event.get("paper_outcome"),
+        "raw_payload": event,
+        "updated_at": now_utc().isoformat(),
+    }
+
+
+def supabase_price_point_row(point):
+    return {
+        "point_id": point.get("point_id"),
+        "received_at": point.get("received_at"),
+        "saved_at": point.get("saved_at"),
+        "session_date": point.get("session_date") or session_date_from_iso(point.get("received_at")),
+        "ticker": point.get("ticker"),
+        "symbol": point.get("symbol"),
+        "timeframe": point.get("timeframe"),
+        "price": coerce_float_or_none(point.get("price")),
+        "strategy": point.get("strategy"),
+        "strategy_version": point.get("strategy_version"),
+        "source": point.get("source"),
+        "event_code": point.get("event_code"),
+        "event": point.get("event"),
+        "raw_payload": point,
+    }
+
+
+def supabase_outcome_row(event, outcome, evaluation_type):
+    outcome = dict(outcome or {})
+    event = dict(event or {})
+    outcome_id = outcome.get("outcome_id") or "IFOUT-{event_id}-{evaluation_type}".format(
+        event_id=event.get("event_id"),
+        evaluation_type=str(evaluation_type).upper(),
+    )
+    return {
+        "outcome_id": outcome_id,
+        "event_id": event.get("event_id"),
+        "evaluation_type": evaluation_type,
+        "evaluation_status": event.get("evaluation_status"),
+        "evaluated_at": outcome.get("evaluated_at") or event.get("evaluated_at"),
+        "evaluated_by": outcome.get("evaluated_by"),
+        "classification": outcome.get("classification") or event.get("classification"),
+        "paper_outcome": outcome.get("paper_outcome", event.get("paper_outcome")),
+        "mfe_points": coerce_float_or_none(outcome.get("mfe_points")),
+        "mae_points": coerce_float_or_none(outcome.get("mae_points")),
+        "mfe_r": coerce_float_or_none(outcome.get("mfe_r")),
+        "mae_r": coerce_float_or_none(outcome.get("mae_r")),
+        "hypothetical_result_r": coerce_float_or_none(outcome.get("hypothetical_result_r")),
+        "real_trade_result_r": coerce_float_or_none(outcome.get("real_trade_result_r")),
+        "screenshot_url": outcome.get("screenshot_url"),
+        "notes": outcome.get("notes"),
+        "auto_windows": outcome.get("windows"),
+        "outcome_engine_version": outcome.get("outcome_engine_version") or event.get("outcome_engine_version"),
+        "updated_at": now_utc().isoformat(),
+    }
+
+
+def supabase_persist_intraday_alert_event(event):
+    return supabase_upsert_row(
+        "intraday_futures_alert_events",
+        supabase_alert_event_row(event),
+        "event_id",
+    )
+
+
+def supabase_persist_intraday_price_point(point):
+    return supabase_upsert_row(
+        "intraday_futures_price_points",
+        supabase_price_point_row(point),
+        "point_id",
+    )
+
+
+def supabase_persist_intraday_outcome(event, outcome, evaluation_type):
+    return supabase_upsert_row(
+        "intraday_futures_outcomes",
+        supabase_outcome_row(event, outcome, evaluation_type),
+        "outcome_id",
+    )
 
 
 def is_intraday_futures_signal(payload):
@@ -561,6 +710,7 @@ def build_intraday_futures_price_point(payload):
         ),
         "received_at": payload.get("received_at") or now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
+        "session_date": session_date_from_iso(payload.get("received_at") or now_utc().isoformat()),
         "ticker": ticker,
         "symbol": payload.get("symbol"),
         "timeframe": payload.get("timeframe"),
@@ -584,6 +734,7 @@ def save_intraday_futures_price_point(payload):
     points = load_intraday_futures_price_points(limit=50000)
     points.append(point)
     save_intraday_futures_price_points_file(points)
+    supabase_result = supabase_persist_intraday_price_point(point)
 
     return {
         "saved": True,
@@ -591,6 +742,7 @@ def save_intraday_futures_price_point(payload):
         "ticker": point.get("ticker"),
         "price": point.get("price"),
         "received_at": point.get("received_at"),
+        "supabase": supabase_result,
     }
 
 
@@ -617,6 +769,7 @@ def build_intraday_futures_alert_event(payload):
         "event_id": event_id,
         "received_at": received_at,
         "saved_at": now_utc().isoformat(),
+        "session_date": session_date_from_iso(received_at),
         "strategy": "INTRADAY_INDEX_FUTURES",
         "strategy_version": payload.get("strategy_version"),
         "outcome_engine_version": "outcome_engine_v1_phase_1",
@@ -667,6 +820,7 @@ def save_intraday_futures_alert_event(payload):
 
     with open(INTRADAY_FUTURES_ALERT_EVENTS_FILE, "w") as f:
         json.dump(events, f, indent=2)
+    supabase_result = supabase_persist_intraday_alert_event(event)
 
     return {
         "saved": True,
@@ -675,6 +829,7 @@ def save_intraday_futures_alert_event(payload):
         "event": event.get("event"),
         "ticker": event.get("ticker"),
         "evaluation_status": event.get("evaluation_status"),
+        "supabase": supabase_result,
     }
 
 
@@ -727,10 +882,16 @@ def update_intraday_futures_event_outcome(event_id, outcome_payload):
         updated_event["outcome_engine_version"] = "outcome_engine_v1_phase_2"
         events[idx] = updated_event
         save_intraday_futures_events_file(events)
+        supabase_event_result = supabase_persist_intraday_alert_event(updated_event)
+        supabase_outcome_result = supabase_persist_intraday_outcome(updated_event, outcome, "MANUAL")
 
         return {
             "updated": True,
             "event": updated_event,
+            "supabase": {
+                "alert_event": supabase_event_result,
+                "outcome": supabase_outcome_result,
+            },
         }
 
     return {
@@ -848,11 +1009,21 @@ def evaluate_intraday_futures_pending_events():
         updated_event["evaluated_at"] = updated_event["auto_outcome"]["evaluated_at"]
         updated_event["outcome_engine_version"] = "outcome_engine_v1_phase_3"
         events[idx] = updated_event
+        supabase_event_result = supabase_persist_intraday_alert_event(updated_event)
+        supabase_outcome_result = supabase_persist_intraday_outcome(
+            updated_event,
+            updated_event["auto_outcome"],
+            "AUTO",
+        )
         updated.append({
             "event_id": event.get("event_id"),
             "ticker": ticker,
             "evaluation_status": evaluation_status,
             "windows": list(window_results.keys()),
+            "supabase": {
+                "alert_event": supabase_event_result,
+                "outcome": supabase_outcome_result,
+            },
         })
 
     if updated:
