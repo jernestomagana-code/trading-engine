@@ -5796,12 +5796,22 @@ STOCK_ULTIMUS_EVENT_CODE_MAP = {
 }
 
 
+STOCK_ULTIMUS_EVENT_NAME_TO_CODE = {
+    str(value.get("event") or "").upper(): code
+    for code, value in STOCK_ULTIMUS_EVENT_CODE_MAP.items()
+}
+
+
 def map_stock_ultimus_event_code(payload):
     payload = dict(payload or {})
     event_code = normalize_number_or_none(payload.get("event_code"))
 
     if event_code is None:
-        return payload
+        event_name = str(payload.get("event") or "").upper().strip()
+        mapped_code = STOCK_ULTIMUS_EVENT_NAME_TO_CODE.get(event_name)
+        if mapped_code is None:
+            return payload
+        event_code = mapped_code
 
     event_code_int = int(event_code)
     mapped = STOCK_ULTIMUS_EVENT_CODE_MAP.get(event_code_int)
