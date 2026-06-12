@@ -3124,7 +3124,7 @@ def intraday_futures_events(limit: int = 100):
     limit = max(1, min(int(limit), 1000))
     events = load_intraday_futures_alert_events(limit=limit)
     return {
-        "engine": "intraday_futures_outcome_engine_v1_phase_1",
+        "engine": "intraday_futures_outcome_engine_v1_phase_3",
         "count": len(events),
         "events": events,
     }
@@ -3178,7 +3178,7 @@ def intraday_futures_events_summary(limit: int = 1000):
     limit = max(1, min(int(limit), 10000))
     events = load_intraday_futures_alert_events(limit=limit)
     return {
-        "engine": "intraday_futures_outcome_engine_v1_phase_1",
+        "engine": "intraday_futures_outcome_engine_v1_phase_3",
         "summary": summarize_intraday_futures_alert_events(events),
         "latest_event": events[-1] if events else None,
     }
