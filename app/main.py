@@ -3058,17 +3058,46 @@ def save_ingested_payload(parsed, raw_text, source_label):
     else:
         trade_store[ticker][timeframe] = parsed
 
-    unified = build_unified_context(ticker)
-    parsed["strategy_commander_summary"] = unified["strategy_commander"]["summary"]
+    storage_result, unified = safe_persist_and_context(ticker, parsed)
+    parsed["strategy_commander_summary"] = (unified.get("strategy_commander") or {}).get("summary") if isinstance(unified, dict) else None
 
     if source_label == "IBKR" and timeframe == "options":
         upsert_option_candidate(ticker, parsed)
     else:
         trade_store[ticker][timeframe] = parsed
 
-    storage_result = save_signal(parsed)
-
     return ticker, timeframe, parsed, classification, unified, storage_result
+
+
+def safe_persist_and_context(ticker, parsed):
+    storage_result = {
+        "saved": False,
+        "warning": "save_signal_not_attempted",
+    }
+    unified = {
+        "ticker": ticker,
+        "warning": "unified_context_not_attempted",
+    }
+
+    try:
+        storage_result = save_signal(parsed)
+    except Exception as exc:
+        storage_result = {
+            "saved": False,
+            "error": str(exc),
+            "warning": "save_signal_failed_but_webhook_accepted",
+        }
+
+    try:
+        unified = build_unified_context(ticker)
+    except Exception as exc:
+        unified = {
+            "ticker": ticker,
+            "error": str(exc),
+            "warning": "build_unified_context_failed_but_webhook_accepted",
+        }
+
+    return storage_result, unified
 
 
 def get_ibkr_context(ticker: str):
@@ -5728,8 +5757,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
     trade_store[ticker][timeframe] = parsed
     trade_store[ticker]["technical_snapshot"] = parsed
 
-    storage_result = save_signal(parsed)
-    unified = build_unified_context(ticker)
+    storage_result, unified = safe_persist_and_context(ticker, parsed)
 
     return {
         "status": "ok",
@@ -5870,8 +5898,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     trade_store[ticker][timeframe] = parsed
     trade_store[ticker]["technical_snapshot"] = parsed
 
-    storage_result = save_signal(parsed)
-    unified = build_unified_context(ticker)
+    storage_result, unified = safe_persist_and_context(ticker, parsed)
 
     return {
         "status": "ok",
