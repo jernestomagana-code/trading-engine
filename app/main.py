@@ -5824,7 +5824,7 @@ def map_stock_ultimus_event_code(payload):
         payload["direction_code"] = int(direction_code)
 
     if payload.get("not_order_instruction") is not True:
-        warnings = list(payload.get("warnings") or [])
+        warnings = normalize_warning_list(payload.get("warnings"))
         if "MANUAL_REVIEW_REQUIRED" not in warnings:
             warnings.append("MANUAL_REVIEW_REQUIRED")
         payload["warnings"] = warnings
@@ -5832,6 +5832,14 @@ def map_stock_ultimus_event_code(payload):
 
     payload["event_mapper_version"] = "stock_ultimus_event_code_mapper_v1"
     return payload
+
+
+def normalize_warning_list(value):
+    if value in [None, "", "null", "None"]:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()]
 
 
 def build_intraday_futures_construction(payload):
@@ -5843,7 +5851,7 @@ def build_intraday_futures_construction(payload):
     event_code = payload.get("event_code")
     event = payload.get("event")
     direction = payload.get("direction") or "NONE"
-    warnings = list(payload.get("warnings") or [])
+    warnings = normalize_warning_list(payload.get("warnings"))
     missing_fields = []
     risk_notes = []
 
@@ -5851,7 +5859,13 @@ def build_intraday_futures_construction(payload):
         value = payload.get(key)
         return value not in [None, "", "null", "None"]
 
-    ticker = str(payload.get("ticker") or "").upper().strip()
+    ticker = str(
+        payload.get("ticker")
+        or payload.get("symbol")
+        or payload.get("underlying")
+        or payload.get("asset")
+        or ""
+    ).upper().strip()
     instrument_family = "S&P 500" if ticker in ["SPY", "SPX", "US500", "US500F"] else "Nasdaq"
     target_instrument = "MES_OR_ES" if instrument_family == "S&P 500" else "MNQ_OR_NQ"
 
