@@ -1286,12 +1286,52 @@ def average_or_none(values):
     return round(sum(values) / len(values), 4)
 
 
-def build_intraday_futures_daily_report(session_date=None):
+def intraday_futures_is_validation_event(event):
+    if event.get("is_validation") is True:
+        return True
+
+    source_values = [
+        event.get("source"),
+        event.get("original_source"),
+        event.get("raw_payload_preview"),
+    ]
+    source_text = " ".join(str(value or "") for value in source_values).upper()
+    return "SYNTHETIC" in source_text or "VALIDATION" in source_text or "CODEX_" in source_text
+
+
+def filter_intraday_futures_validation_events(events, include_validation=False):
+    if include_validation:
+        return list(events or [])
+    return [
+        event for event in events or []
+        if not intraday_futures_is_validation_event(event)
+    ]
+
+
+def intraday_futures_validation_summary(events):
+    events = list(events or [])
+    validation_events = [
+        event for event in events
+        if intraday_futures_is_validation_event(event)
+    ]
+    return {
+        "total_events_including_validation": len(events),
+        "real_events": len(events) - len(validation_events),
+        "validation_events": len(validation_events),
+        "validation_excluded_by_default": True,
+    }
+
+
+def build_intraday_futures_daily_report(session_date=None, include_validation=False):
     session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
-    events = [
+    all_session_events = [
         event for event in load_intraday_futures_alert_events(limit=10000)
         if intraday_futures_event_session_date(event) == session_date
     ]
+    events = filter_intraday_futures_validation_events(
+        all_session_events,
+        include_validation=include_validation,
+    )
     summary = summarize_intraday_futures_alert_events(events)
 
     actionable_codes = {101, 102, 201, 202}
@@ -1330,6 +1370,8 @@ def build_intraday_futures_daily_report(session_date=None):
         "engine": "intraday_futures_outcome_engine_v1_phase_4_report",
         "session_date": session_date,
         "timezone": str(MARKET_TZ),
+        "include_validation": include_validation,
+        "validation_summary": intraday_futures_validation_summary(all_session_events),
         "summary": summary,
         "actionable_events": len(actionable_events),
         "risk_context_events": len(risk_events),
@@ -1342,6 +1384,7 @@ def build_intraday_futures_daily_report(session_date=None):
         "latest_events": latest_events,
         "notes": [
             "Report reads Supabase durable storage first and runtime storage only as fallback.",
+            "Synthetic validation events are excluded unless include_validation=true.",
             "Runtime fallback may reset on Render redeploy.",
             "AUTO_EVALUATED outcomes are paper measurements, not trading instructions.",
         ],
@@ -1424,10 +1467,12 @@ def intraday_futures_dashboard_rows(events):
         state = event.get("decision_max_state") or event.get("construction_status") or "UNKNOWN"
         evaluation = event.get("evaluation_status") or "UNKNOWN"
         classification = event.get("classification") or "UNCLASSIFIED"
+        source = event.get("original_source") or event.get("source") or "UNKNOWN"
         rows.append(f"""
             <tr>
                 <td>{intraday_futures_dashboard_escape(event.get("received_at"))}</td>
                 <td class="strong">{intraday_futures_dashboard_escape(event.get("ticker"))}</td>
+                <td>{intraday_futures_dashboard_escape(source)}</td>
                 <td>{intraday_futures_dashboard_escape(event.get("event"))}</td>
                 <td>{intraday_futures_dashboard_escape(event.get("direction"))}</td>
                 <td>{intraday_futures_dashboard_number(event.get("price"))}</td>
@@ -1441,15 +1486,19 @@ def intraday_futures_dashboard_rows(events):
             </tr>
         """)
     return "\n".join(rows) or """
-        <tr><td colspan="12" class="empty">Sin eventos para la sesion seleccionada.</td></tr>
+        <tr><td colspan="13" class="empty">Sin eventos reales para la sesion seleccionada.</td></tr>
     """
 
 
-def build_intraday_futures_dashboard_html(session_date=None):
-    report = build_intraday_futures_daily_report(session_date=session_date)
+def build_intraday_futures_dashboard_html(session_date=None, include_validation=False):
+    report = build_intraday_futures_daily_report(
+        session_date=session_date,
+        include_validation=include_validation,
+    )
     events = report.get("latest_events") or []
     summary = report.get("summary") or {}
     metrics = report.get("metrics") or {}
+    validation = report.get("validation_summary") or {}
     operating = intraday_futures_dashboard_operating_read(events)
     generated_at = now_utc().isoformat()
 
@@ -1495,7 +1544,7 @@ def build_intraday_futures_dashboard_html(session_date=None):
     <body>
         <header>
             <h1>Stock Ultimus | Intraday Index Futures</h1>
-            <p class="meta">Sesion {intraday_futures_dashboard_escape(report.get("session_date"))} | Generado {intraday_futures_dashboard_escape(generated_at)} | Fuente: Supabase durable con fallback runtime</p>
+            <p class="meta">Sesion {intraday_futures_dashboard_escape(report.get("session_date"))} | Generado {intraday_futures_dashboard_escape(generated_at)} | Fuente: Supabase durable con fallback runtime | include_validation={intraday_futures_dashboard_escape(include_validation)}</p>
         </header>
         <main>
             <section class="grid">
@@ -1503,8 +1552,8 @@ def build_intraday_futures_dashboard_html(session_date=None):
                 <div class="card"><div class="label">Accionables</div><div class="value">{intraday_futures_dashboard_escape(report.get("actionable_events"))}</div></div>
                 <div class="card"><div class="label">Riesgo/contexto</div><div class="value">{intraday_futures_dashboard_escape(report.get("risk_context_events"))}</div></div>
                 <div class="card"><div class="label">Pendientes</div><div class="value">{intraday_futures_dashboard_escape(summary.get("pending_outcome"))}</div></div>
+                <div class="card"><div class="label">Validacion excluida</div><div class="value">{intraday_futures_dashboard_escape(validation.get("validation_events"))}</div></div>
                 <div class="card"><div class="label">MFE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mfe_points"))}</div></div>
-                <div class="card"><div class="label">MAE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mae_points"))}</div></div>
             </section>
 
             <section class="card read">
@@ -1519,6 +1568,7 @@ def build_intraday_futures_dashboard_html(session_date=None):
                         <tr>
                             <th>Hora</th>
                             <th>Ticker</th>
+                            <th>Fuente</th>
                             <th>Evento</th>
                             <th>Dir</th>
                             <th>Precio</th>
@@ -3744,11 +3794,15 @@ def outcomes():
 
 
 @app.get("/intraday_futures/events")
-def intraday_futures_events(limit: int = 100):
+def intraday_futures_events(limit: int = 100, include_validation: bool = False):
     limit = max(1, min(int(limit), 1000))
-    events = load_intraday_futures_alert_events(limit=limit)
+    events = filter_intraday_futures_validation_events(
+        load_intraday_futures_alert_events(limit=limit),
+        include_validation=include_validation,
+    )
     return {
         "engine": "intraday_futures_outcome_engine_v1_phase_3",
+        "include_validation": include_validation,
         "count": len(events),
         "events": events,
     }
@@ -3798,24 +3852,42 @@ def intraday_futures_evaluate_pending():
 
 
 @app.get("/intraday_futures/events/summary")
-def intraday_futures_events_summary(limit: int = 1000):
+def intraday_futures_events_summary(limit: int = 1000, include_validation: bool = False):
     limit = max(1, min(int(limit), 10000))
-    events = load_intraday_futures_alert_events(limit=limit)
+    all_events = load_intraday_futures_alert_events(limit=limit)
+    events = filter_intraday_futures_validation_events(
+        all_events,
+        include_validation=include_validation,
+    )
     return {
         "engine": "intraday_futures_outcome_engine_v1_phase_3",
+        "include_validation": include_validation,
+        "validation_summary": intraday_futures_validation_summary(all_events),
         "summary": summarize_intraday_futures_alert_events(events),
         "latest_event": events[-1] if events else None,
     }
 
 
 @app.get("/intraday_futures/report/daily")
-def intraday_futures_daily_report(session_date: Optional[str] = None):
-    return build_intraday_futures_daily_report(session_date=session_date)
+def intraday_futures_daily_report(
+    session_date: Optional[str] = None,
+    include_validation: bool = False,
+):
+    return build_intraday_futures_daily_report(
+        session_date=session_date,
+        include_validation=include_validation,
+    )
 
 
 @app.get("/intraday_futures/dashboard", response_class=HTMLResponse)
-def intraday_futures_dashboard(session_date: Optional[str] = None):
-    return build_intraday_futures_dashboard_html(session_date=session_date)
+def intraday_futures_dashboard(
+    session_date: Optional[str] = None,
+    include_validation: bool = False,
+):
+    return build_intraday_futures_dashboard_html(
+        session_date=session_date,
+        include_validation=include_validation,
+    )
 
 
 # ============================================================
@@ -7157,6 +7229,11 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
             "raw_preview": raw_text[:500],
         }
 
+    original_source = parsed.get("source")
+    is_validation = intraday_futures_is_validation_event({
+        "source": original_source,
+        "raw_payload_preview": raw_text,
+    })
     parsed = enrich_stock_ultimus_technical_payload(parsed)
 
     ticker = find_ticker(parsed, raw_text)
@@ -7168,6 +7245,8 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "received_at": now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
         "source": "TECHNICAL_SNAPSHOT",
+        "original_source": original_source,
+        "is_validation": is_validation,
         "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_1",
         "raw_payload_preview": raw_text[:500],
     })
@@ -7308,6 +7387,11 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "raw_preview": raw_text[:500],
         }
 
+    original_source = parsed.get("source")
+    is_validation = intraday_futures_is_validation_event({
+        "source": original_source,
+        "raw_payload_preview": raw_text,
+    })
     parsed = enrich_stock_ultimus_technical_payload(parsed)
 
     ticker = find_ticker(parsed, raw_text)
@@ -7319,6 +7403,8 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "received_at": now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
         "source": "TECHNICAL_SNAPSHOT",
+        "original_source": original_source,
+        "is_validation": is_validation,
         "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_2_FORCED",
         "raw_payload_preview": raw_text[:500],
     })
