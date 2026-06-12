@@ -573,6 +573,11 @@ def row_to_intraday_futures_alert_event(row):
         "decision_max_state",
         "warnings",
         "missing_fields",
+        "premarket_context_applied",
+        "premarket_context_found",
+        "premarket_session_date",
+        "premarket_blockers",
+        "premarket_context",
         "not_order_instruction",
         "evaluation_status",
         "paper_outcome",
@@ -1198,6 +1203,11 @@ def build_intraday_futures_alert_event(payload):
         "decision_max_state": payload.get("decision_max_state") or construction.get("decision_max_state"),
         "warnings": normalize_warning_list(payload.get("warnings") or construction.get("warnings")),
         "missing_fields": payload.get("missing_fields") or construction.get("missing_fields") or [],
+        "premarket_context_applied": payload.get("premarket_context_applied"),
+        "premarket_context_found": payload.get("premarket_context_found"),
+        "premarket_session_date": payload.get("premarket_session_date"),
+        "premarket_blockers": payload.get("premarket_blockers") or construction.get("premarket_blockers") or [],
+        "premarket_context": payload.get("premarket_context") or construction.get("premarket_context") or {},
         "not_order_instruction": payload.get("not_order_instruction"),
         "evaluation_status": "PENDING_OUTCOME",
         "paper_outcome": True,
@@ -1716,6 +1726,7 @@ def intraday_futures_dashboard_rows(events):
         evaluation = event.get("evaluation_status") or "UNKNOWN"
         classification = event.get("classification") or "UNCLASSIFIED"
         source = event.get("original_source") or event.get("source") or "UNKNOWN"
+        premarket_blockers = ", ".join(event.get("premarket_blockers") or [])
         rows.append(f"""
             <tr>
                 <td>{intraday_futures_dashboard_escape(event.get("received_at"))}</td>
@@ -1728,13 +1739,14 @@ def intraday_futures_dashboard_rows(events):
                 <td><span class="badge {intraday_futures_dashboard_badge_class(state)}">{intraday_futures_dashboard_escape(state)}</span></td>
                 <td><span class="badge {intraday_futures_dashboard_badge_class(evaluation)}">{intraday_futures_dashboard_escape(evaluation)}</span></td>
                 <td><span class="badge {intraday_futures_dashboard_badge_class(classification)}">{intraday_futures_dashboard_escape(classification)}</span></td>
+                <td>{intraday_futures_dashboard_escape(premarket_blockers)}</td>
                 <td>{intraday_futures_dashboard_window_metric(event, "mfe_points")}</td>
                 <td>{intraday_futures_dashboard_window_metric(event, "mae_points")}</td>
                 <td>{intraday_futures_dashboard_window_metric(event, "mfe_r")}</td>
             </tr>
         """)
     return "\n".join(rows) or """
-        <tr><td colspan="13" class="empty">Sin eventos reales para la sesion seleccionada.</td></tr>
+        <tr><td colspan="14" class="empty">Sin eventos reales para la sesion seleccionada.</td></tr>
     """
 
 
@@ -1831,6 +1843,7 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
                             <th>Decision</th>
                             <th>Evaluacion</th>
                             <th>Outcome</th>
+                            <th>Pre-market blockers</th>
                             <th>MFE</th>
                             <th>MAE</th>
                             <th>MFE R</th>
@@ -7356,6 +7369,108 @@ def normalize_warning_list(value):
     return [str(value).strip()]
 
 
+def intraday_futures_current_session_date(payload):
+    payload = dict(payload or {})
+    for key in ["received_at", "session_date", "timestamp", "time"]:
+        value = payload.get(key)
+        if not value:
+            continue
+        if key == "session_date":
+            return str(value)
+        parsed = session_date_from_iso(value)
+        if parsed:
+            return parsed
+    return now_utc().astimezone(MARKET_TZ).date().isoformat()
+
+
+def apply_premarket_context_to_intraday_futures_payload(payload):
+    payload = dict(payload or {})
+
+    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+        return payload
+
+    session_date = intraday_futures_current_session_date(payload)
+    context_result = get_intraday_futures_premarket_context(session_date=session_date)
+    context = context_result.get("context") or {}
+    blockers = []
+    warnings = normalize_warning_list(payload.get("warnings"))
+    risk_notes = normalize_warning_list(payload.get("risk_notes"))
+
+    if not context_result.get("found"):
+        blockers.append("PREMARKET_CONTEXT_MISSING")
+
+    if context.get("macro_status") == "MACRO_LOCKOUT":
+        blockers.append("MACRO_LOCKOUT")
+
+    if context.get("volatility_status") == "VOLATILITY_EXTREME":
+        blockers.append("VOLATILITY_EXTREME")
+
+    if context.get("risk_daily_status") == "RISK_BLOCKED":
+        blockers.append("DAILY_RISK_BLOCKED")
+
+    if context.get("portfolio_status") == "RISK_BLOCKED":
+        blockers.append("PORTFOLIO_RISK_BLOCKED")
+
+    if context.get("reference_alignment") in ["NEEDS_REVIEW", "CONTRADICTED", "NOT_ALIGNED"]:
+        blockers.append("REFERENCE_NEEDS_REVIEW")
+
+    context_decision = context.get("decision_max_state")
+    if context_decision == "RISK_BLOCKED":
+        blockers.append("PREMARKET_DECISION_RISK_BLOCKED")
+    elif context_decision in ["MANUAL_REVIEW", "NEEDS_REVIEW"]:
+        blockers.append("PREMARKET_DECISION_MANUAL_REVIEW")
+
+    if blockers:
+        for blocker in blockers:
+            if blocker not in warnings:
+                warnings.append(blocker)
+        risk_notes.append("Pre-market context applied: " + ", ".join(blockers))
+
+    hard_blockers = {
+        "MACRO_LOCKOUT",
+        "DAILY_RISK_BLOCKED",
+        "PORTFOLIO_RISK_BLOCKED",
+        "PREMARKET_DECISION_RISK_BLOCKED",
+    }
+
+    construction_status = payload.get("construction_status") or "NEEDS_REVIEW"
+    decision_max_state = payload.get("decision_max_state") or "MANUAL_REVIEW"
+
+    if hard_blockers.intersection(blockers):
+        construction_status = "REJECTED"
+        decision_max_state = "RISK_BLOCKED"
+    elif blockers:
+        if decision_max_state == "ENTRY_READY":
+            decision_max_state = "MANUAL_REVIEW"
+        if construction_status == "REVIEW_READY":
+            construction_status = "NEEDS_REVIEW"
+
+    payload["premarket_context_applied"] = True
+    payload["premarket_context_found"] = bool(context_result.get("found"))
+    payload["premarket_session_date"] = session_date
+    payload["premarket_context"] = context
+    payload["premarket_blockers"] = blockers
+    payload["warnings"] = warnings
+    payload["risk_notes"] = risk_notes
+    payload["construction_status"] = construction_status
+    payload["decision_max_state"] = decision_max_state
+
+    construction = payload.get("construction")
+    if isinstance(construction, dict):
+        construction["premarket_context_applied"] = payload["premarket_context_applied"]
+        construction["premarket_context_found"] = payload["premarket_context_found"]
+        construction["premarket_session_date"] = session_date
+        construction["premarket_blockers"] = blockers
+        construction["premarket_context"] = context
+        construction["warnings"] = warnings
+        construction["risk_notes"] = risk_notes
+        construction["construction_status"] = construction_status
+        construction["decision_max_state"] = decision_max_state
+        payload["construction"] = construction
+
+    return payload
+
+
 def build_intraday_futures_construction(payload):
     payload = dict(payload or {})
 
@@ -7490,6 +7605,7 @@ def build_intraday_futures_construction(payload):
     payload["warnings"] = warnings
     payload["missing_fields"] = missing_fields
     payload["construction_engine_version"] = construction["construction_engine_version"]
+    payload = apply_premarket_context_to_intraday_futures_payload(payload)
     return payload
 
 
