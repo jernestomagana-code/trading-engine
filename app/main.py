@@ -20,6 +20,7 @@ app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 
 SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
+INTRADAY_FUTURES_ALERT_EVENTS_FILE = "intraday_futures_alert_events.json"
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -465,6 +466,128 @@ def outcome_stats(outcomes):
         "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
         "by_strategy": by_strategy,
         "by_ticker": by_ticker,
+    }
+
+
+def load_intraday_futures_alert_events(limit=5000):
+    if os.path.exists(INTRADAY_FUTURES_ALERT_EVENTS_FILE):
+        try:
+            with open(INTRADAY_FUTURES_ALERT_EVENTS_FILE, "r") as f:
+                events = json.load(f)
+                if isinstance(events, list):
+                    return events[-limit:]
+        except Exception:
+            return []
+    return []
+
+
+def is_intraday_futures_signal(payload):
+    return str((payload or {}).get("strategy") or "").upper() == "INTRADAY_INDEX_FUTURES"
+
+
+def build_intraday_futures_alert_event(payload):
+    payload = dict(payload or {})
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    ticker = str(
+        payload.get("ticker")
+        or payload.get("symbol")
+        or construction.get("ticker")
+        or "UNKNOWN"
+    ).upper().strip()
+    received_at = payload.get("received_at") or now_utc().isoformat()
+    event_code = payload.get("event_code") or construction.get("event_code")
+    event = payload.get("event") or construction.get("event")
+
+    event_id = "IFEV-{ticker}-{timestamp}-{event_code}".format(
+        ticker=ticker or "UNKNOWN",
+        timestamp=int(now_utc().timestamp() * 1000),
+        event_code=event_code if event_code is not None else "NA",
+    )
+
+    return {
+        "event_id": event_id,
+        "received_at": received_at,
+        "saved_at": now_utc().isoformat(),
+        "strategy": "INTRADAY_INDEX_FUTURES",
+        "strategy_version": payload.get("strategy_version"),
+        "outcome_engine_version": "outcome_engine_v1_phase_1",
+        "source": payload.get("source"),
+        "engine_layer": payload.get("engine_layer"),
+        "ticker": ticker,
+        "symbol": payload.get("symbol"),
+        "timeframe": payload.get("timeframe"),
+        "price": payload.get("price") or payload.get("entry_price") or construction.get("entry_price"),
+        "event_code": event_code,
+        "event": event,
+        "direction_code": payload.get("direction_code"),
+        "direction": payload.get("direction") or construction.get("direction"),
+        "setup_type": payload.get("setup_type") or construction.get("setup_type"),
+        "instrument_family": payload.get("instrument_family") or construction.get("instrument_family"),
+        "target_instrument": payload.get("target_instrument") or construction.get("target_instrument"),
+        "range_used_percent": payload.get("range_used_percent"),
+        "vwap": payload.get("vwap"),
+        "previous_day_high": payload.get("previous_day_high"),
+        "previous_day_low": payload.get("previous_day_low"),
+        "previous_day_close": payload.get("previous_day_close"),
+        "construction_status": payload.get("construction_status") or construction.get("construction_status"),
+        "decision_max_state": payload.get("decision_max_state") or construction.get("decision_max_state"),
+        "warnings": normalize_warning_list(payload.get("warnings") or construction.get("warnings")),
+        "missing_fields": payload.get("missing_fields") or construction.get("missing_fields") or [],
+        "not_order_instruction": payload.get("not_order_instruction"),
+        "evaluation_status": "PENDING_OUTCOME",
+        "paper_outcome": True,
+    }
+
+
+def save_intraday_futures_alert_event(payload):
+    if not is_intraday_futures_signal(payload):
+        return {"saved": False, "reason": "NOT_INTRADAY_INDEX_FUTURES"}
+
+    event = build_intraday_futures_alert_event(payload)
+    events = load_intraday_futures_alert_events(limit=10000)
+    events.append(event)
+    events = events[-10000:]
+
+    with open(INTRADAY_FUTURES_ALERT_EVENTS_FILE, "w") as f:
+        json.dump(events, f, indent=2)
+
+    return {
+        "saved": True,
+        "event_id": event.get("event_id"),
+        "event_code": event.get("event_code"),
+        "event": event.get("event"),
+        "ticker": event.get("ticker"),
+        "evaluation_status": event.get("evaluation_status"),
+    }
+
+
+def summarize_intraday_futures_alert_events(events):
+    by_ticker = {}
+    by_event_code = {}
+    by_event = {}
+    by_decision_state = {}
+
+    for event in events:
+        ticker = str(event.get("ticker") or "UNKNOWN").upper()
+        event_code = str(event.get("event_code") if event.get("event_code") is not None else "NA")
+        event_name = str(event.get("event") or "UNKNOWN").upper()
+        decision_state = str(event.get("decision_max_state") or "UNKNOWN").upper()
+
+        by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
+        by_event_code[event_code] = by_event_code.get(event_code, 0) + 1
+        by_event[event_name] = by_event.get(event_name, 0) + 1
+        by_decision_state[decision_state] = by_decision_state.get(decision_state, 0) + 1
+
+    return {
+        "total_events": len(events),
+        "by_ticker": by_ticker,
+        "by_event_code": by_event_code,
+        "by_event": by_event,
+        "by_decision_state": by_decision_state,
+        "pending_outcome": len([
+            event for event in events
+            if event.get("evaluation_status") == "PENDING_OUTCOME"
+        ]),
     }
 
 
@@ -2668,6 +2791,28 @@ def outcomes():
         "engine": "v8.0",
         "outcomes": data[-500:],
         "stats": outcome_stats(data),
+    }
+
+
+@app.get("/intraday_futures/events")
+def intraday_futures_events(limit: int = 100):
+    limit = max(1, min(int(limit), 1000))
+    events = load_intraday_futures_alert_events(limit=limit)
+    return {
+        "engine": "intraday_futures_outcome_engine_v1_phase_1",
+        "count": len(events),
+        "events": events,
+    }
+
+
+@app.get("/intraday_futures/events/summary")
+def intraday_futures_events_summary(limit: int = 1000):
+    limit = max(1, min(int(limit), 10000))
+    events = load_intraday_futures_alert_events(limit=limit)
+    return {
+        "engine": "intraday_futures_outcome_engine_v1_phase_1",
+        "summary": summarize_intraday_futures_alert_events(events),
+        "latest_event": events[-1] if events else None,
     }
 
 
@@ -6045,6 +6190,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
     trade_store[ticker]["technical_snapshot"] = parsed
 
     storage_result, unified = safe_persist_and_context(ticker, parsed)
+    outcome_event_storage = save_intraday_futures_alert_event(parsed)
 
     return {
         "status": "ok",
@@ -6060,6 +6206,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
         "construction": parsed.get("construction"),
+        "outcome_event_storage": outcome_event_storage,
         "accepted": True,
     }
 
@@ -6192,6 +6339,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     trade_store[ticker]["technical_snapshot"] = parsed
 
     storage_result, unified = safe_persist_and_context(ticker, parsed)
+    outcome_event_storage = save_intraday_futures_alert_event(parsed)
 
     return {
         "status": "ok",
@@ -6207,6 +6355,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
         "construction": parsed.get("construction"),
+        "outcome_event_storage": outcome_event_storage,
         "accepted": True,
     }
 
