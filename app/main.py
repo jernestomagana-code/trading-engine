@@ -21,6 +21,16 @@ app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
 INTRADAY_FUTURES_ALERT_EVENTS_FILE = "intraday_futures_alert_events.json"
+INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS = [
+    "GOOD_SIGNAL",
+    "BAD_SIGNAL",
+    "FALSE_POSITIVE",
+    "FALSE_BLOCK",
+    "NO_TRADE_GOOD_FILTER",
+    "CHOP_SIGNAL",
+    "LATE_SIGNAL",
+    "INCONCLUSIVE",
+]
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
@@ -561,22 +571,90 @@ def save_intraday_futures_alert_event(payload):
     }
 
 
+def save_intraday_futures_events_file(events):
+    events = list(events or [])[-10000:]
+    with open(INTRADAY_FUTURES_ALERT_EVENTS_FILE, "w") as f:
+        json.dump(events, f, indent=2)
+    return True
+
+
+def update_intraday_futures_event_outcome(event_id, outcome_payload):
+    events = load_intraday_futures_alert_events(limit=10000)
+    event_id = str(event_id or "").strip()
+    outcome_payload = dict(outcome_payload or {})
+    classification = str(outcome_payload.get("classification") or "").upper().strip()
+
+    if classification not in INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS:
+        return {
+            "updated": False,
+            "reason": "INVALID_CLASSIFICATION",
+            "allowed_classifications": INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS,
+        }
+
+    for idx, event in enumerate(events):
+        if str(event.get("event_id")) != event_id:
+            continue
+
+        outcome = {
+            "classification": classification,
+            "notes": outcome_payload.get("notes"),
+            "mfe_points": outcome_payload.get("mfe_points"),
+            "mae_points": outcome_payload.get("mae_points"),
+            "mfe_r": outcome_payload.get("mfe_r"),
+            "mae_r": outcome_payload.get("mae_r"),
+            "hypothetical_result_r": outcome_payload.get("hypothetical_result_r"),
+            "real_trade_result_r": outcome_payload.get("real_trade_result_r"),
+            "paper_outcome": outcome_payload.get("paper_outcome", True),
+            "screenshot_url": outcome_payload.get("screenshot_url"),
+            "evaluated_by": outcome_payload.get("evaluated_by") or "manual",
+            "evaluated_at": now_utc().isoformat(),
+            "outcome_engine_version": "outcome_engine_v1_phase_2",
+        }
+
+        updated_event = dict(event)
+        updated_event["evaluation_status"] = "EVALUATED_MANUALLY"
+        updated_event["manual_outcome"] = outcome
+        updated_event["classification"] = classification
+        updated_event["paper_outcome"] = outcome["paper_outcome"]
+        updated_event["evaluated_at"] = outcome["evaluated_at"]
+        updated_event["outcome_engine_version"] = "outcome_engine_v1_phase_2"
+        events[idx] = updated_event
+        save_intraday_futures_events_file(events)
+
+        return {
+            "updated": True,
+            "event": updated_event,
+        }
+
+    return {
+        "updated": False,
+        "reason": "EVENT_NOT_FOUND",
+        "event_id": event_id,
+    }
+
+
 def summarize_intraday_futures_alert_events(events):
     by_ticker = {}
     by_event_code = {}
     by_event = {}
     by_decision_state = {}
+    by_classification = {}
+    by_evaluation_status = {}
 
     for event in events:
         ticker = str(event.get("ticker") or "UNKNOWN").upper()
         event_code = str(event.get("event_code") if event.get("event_code") is not None else "NA")
         event_name = str(event.get("event") or "UNKNOWN").upper()
         decision_state = str(event.get("decision_max_state") or "UNKNOWN").upper()
+        classification = str(event.get("classification") or "UNCLASSIFIED").upper()
+        evaluation_status = str(event.get("evaluation_status") or "UNKNOWN").upper()
 
         by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
         by_event_code[event_code] = by_event_code.get(event_code, 0) + 1
         by_event[event_name] = by_event.get(event_name, 0) + 1
         by_decision_state[decision_state] = by_decision_state.get(decision_state, 0) + 1
+        by_classification[classification] = by_classification.get(classification, 0) + 1
+        by_evaluation_status[evaluation_status] = by_evaluation_status.get(evaluation_status, 0) + 1
 
     return {
         "total_events": len(events),
@@ -584,9 +662,15 @@ def summarize_intraday_futures_alert_events(events):
         "by_event_code": by_event_code,
         "by_event": by_event,
         "by_decision_state": by_decision_state,
+        "by_classification": by_classification,
+        "by_evaluation_status": by_evaluation_status,
         "pending_outcome": len([
             event for event in events
             if event.get("evaluation_status") == "PENDING_OUTCOME"
+        ]),
+        "evaluated_manually": len([
+            event for event in events
+            if event.get("evaluation_status") == "EVALUATED_MANUALLY"
         ]),
     }
 
@@ -2802,6 +2886,28 @@ def intraday_futures_events(limit: int = 100):
         "engine": "intraday_futures_outcome_engine_v1_phase_1",
         "count": len(events),
         "events": events,
+    }
+
+
+@app.post("/intraday_futures/events/{event_id}/outcome")
+async def intraday_futures_event_outcome(event_id: str, request: Request):
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8", errors="ignore").strip()
+    parsed = extract_json_from_text(raw_text)
+
+    if not isinstance(parsed, dict):
+        return {
+            "status": "error",
+            "engine": "intraday_futures_outcome_engine_v1_phase_2",
+            "message": "Invalid outcome payload.",
+        }
+
+    result = update_intraday_futures_event_outcome(event_id, parsed)
+
+    return {
+        "status": "ok" if result.get("updated") else "error",
+        "engine": "intraday_futures_outcome_engine_v1_phase_2",
+        **result,
     }
 
 
