@@ -17,6 +17,10 @@ Use implementation agents only when there is code to inspect or change:
 - Nova (Cloud Worker): owns `app/main.py` and cloud/API/dashboard handling.
 - Atlas (Risk/Decision Worker): owns blocker priority and readiness logic.
 - Quinn (QA Worker): owns tests, fixtures, and verification commands.
+- Vega (TradingView Signal Guardian): owns TradingView payload contract,
+  freshness, parsing, and technical blocker review.
+- Ledger (IBKR Integration Guardian): owns IBKR integration safety, market-data
+  quality, snapshot serialization, and no-order-execution review.
 
 ## Recommended Workflow
 
@@ -25,10 +29,12 @@ Use implementation agents only when there is code to inspect or change:
    logging, runtime-data, dependency, and multi-user risks for security-sensitive
    work.
 3. Scout maps the real project files and identifies write scopes.
-4. Worker agents make scoped changes only in their owned areas.
-5. Quinn verifies fixtures, tests, and compile checks.
-6. Athena performs a final consistency pass.
-7. Morgan stays research-only unless a proposed rule becomes a documented implementation task.
+4. Vega reviews TradingView-sensitive changes; Ledger reviews IBKR-sensitive
+   changes.
+5. Worker agents make scoped changes only in their owned areas.
+6. Quinn verifies fixtures, tests, and compile checks.
+7. Athena performs a final consistency pass.
+8. Morgan stays research-only unless a proposed rule becomes a documented implementation task.
 
 ## Coordination Rules
 

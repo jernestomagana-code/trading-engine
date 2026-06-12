@@ -144,6 +144,10 @@ On-demand implementation roles:
 - Nova (Cloud Worker): update FastAPI schemas/endpoints/dashboard handling in `app/main.py`.
 - Atlas (Risk/Decision Worker): enforce `ENTRY_READY` gating and blocker priority.
 - Quinn (QA Worker): build fixtures/tests for snapshot states such as `WAIT_OPTIONS_DATA`, `WAIT_TECHNICAL`, and `ENTRY_READY`.
+- Vega (TradingView Signal Guardian): protect technical webhook payloads,
+  freshness, parsing, and `WAIT_TECHNICAL` behavior.
+- Ledger (IBKR Integration Guardian): protect IBKR data ingestion, option-chain
+  enrichment, snapshot serialization, and no-order-execution boundaries.
 
 Each worker should own a disjoint write scope to avoid conflicts.
 

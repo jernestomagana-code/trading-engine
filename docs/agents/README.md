@@ -22,6 +22,8 @@ See also:
 - Nova (`cloud-worker.md`): keeps FastAPI, runtime snapshots, dashboards, and GPT-facing endpoints aligned.
 - Atlas (`risk-decision-worker.md`): enforces blocker priority, risk gates, and readiness rules.
 - Quinn (`qa-worker.md`): owns fixtures, tests, compile checks, and scenario coverage.
+- Vega (`tradingview-signal-guardian.md`): protects TradingView webhook payloads, signal freshness, parsing, and technical blocker behavior.
+- Ledger (`ibkr-integration-guardian.md`): protects IBKR data ingestion, option-chain enrichment, snapshot serialization, and no-order-execution boundaries.
 
 ## Operating Model
 
@@ -32,10 +34,11 @@ Use `operating-model.md` as the coordination guide. In short:
    changes touch credentials, webhooks, endpoints, logs, runtime data, cloud
    config, or multi-user behavior.
 3. Scout maps the current code.
-4. Scoped workers change only their owned surfaces.
-5. Quinn verifies behavior.
-6. Athena checks consistency before merge.
-7. Morgan proposes market-driven changes only as research notes or testable implementation tasks.
+4. Vega or Ledger review external-interface changes when TradingView or IBKR behavior is touched.
+5. Scoped workers change only their owned surfaces.
+6. Quinn verifies behavior.
+7. Athena checks consistency before merge.
+8. Morgan proposes market-driven changes only as research notes or testable implementation tasks.
 
 ## Supporting Checklists
 
