@@ -916,6 +916,82 @@ def summarize_intraday_futures_alert_events(events):
     }
 
 
+def intraday_futures_event_session_date(event):
+    dt = parse_iso_datetime(event.get("received_at"))
+    if not dt:
+        return None
+    return dt.astimezone(MARKET_TZ).date().isoformat()
+
+
+def average_or_none(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
+
+
+def build_intraday_futures_daily_report(session_date=None):
+    session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
+    events = [
+        event for event in load_intraday_futures_alert_events(limit=10000)
+        if intraday_futures_event_session_date(event) == session_date
+    ]
+    summary = summarize_intraday_futures_alert_events(events)
+
+    actionable_codes = {101, 102, 201, 202}
+    risk_codes = {701, 801, 802, 901, 990}
+    actionable_events = [
+        event for event in events
+        if event.get("event_code") in actionable_codes
+    ]
+    risk_events = [
+        event for event in events
+        if event.get("event_code") in risk_codes
+    ]
+
+    mfe_values = []
+    mae_values = []
+    mfe_r_values = []
+    mae_r_values = []
+
+    for event in events:
+        windows = (event.get("auto_outcome") or {}).get("windows") or {}
+        window = windows.get("60m") or windows.get("30m") or windows.get("15m") or windows.get("5m")
+        if not isinstance(window, dict):
+            continue
+        mfe_values.append(coerce_float_or_none(window.get("mfe_points")))
+        mae_values.append(coerce_float_or_none(window.get("mae_points")))
+        mfe_r_values.append(coerce_float_or_none(window.get("mfe_r")))
+        mae_r_values.append(coerce_float_or_none(window.get("mae_r")))
+
+    latest_events = sorted(
+        events,
+        key=lambda event: str(event.get("received_at") or ""),
+        reverse=True,
+    )[:20]
+
+    return {
+        "engine": "intraday_futures_outcome_engine_v1_phase_4_report",
+        "session_date": session_date,
+        "timezone": str(MARKET_TZ),
+        "summary": summary,
+        "actionable_events": len(actionable_events),
+        "risk_context_events": len(risk_events),
+        "metrics": {
+            "avg_mfe_points": average_or_none(mfe_values),
+            "avg_mae_points": average_or_none(mae_values),
+            "avg_mfe_r": average_or_none(mfe_r_values),
+            "avg_mae_r": average_or_none(mae_r_values),
+        },
+        "latest_events": latest_events,
+        "notes": [
+            "Report uses current runtime storage.",
+            "Runtime storage may reset on Render redeploy until durable persistence is added.",
+            "AUTO_EVALUATED outcomes are paper measurements, not trading instructions.",
+        ],
+    }
+
+
 # ============================================================
 # MEMORY STORE
 # ============================================================
@@ -3182,6 +3258,11 @@ def intraday_futures_events_summary(limit: int = 1000):
         "summary": summarize_intraday_futures_alert_events(events),
         "latest_event": events[-1] if events else None,
     }
+
+
+@app.get("/intraday_futures/report/daily")
+def intraday_futures_daily_report(session_date: Optional[str] = None):
+    return build_intraday_futures_daily_report(session_date=session_date)
 
 
 # ============================================================
