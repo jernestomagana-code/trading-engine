@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import json
+import html
 import re
 import os
 import math
@@ -1345,6 +1346,198 @@ def build_intraday_futures_daily_report(session_date=None):
             "AUTO_EVALUATED outcomes are paper measurements, not trading instructions.",
         ],
     }
+
+
+def intraday_futures_dashboard_escape(value):
+    return html.escape("" if value is None else str(value))
+
+
+def intraday_futures_dashboard_number(value):
+    value = coerce_float_or_none(value)
+    if value is None:
+        return "-"
+    return str(round(value, 4))
+
+
+def intraday_futures_dashboard_badge_class(value):
+    value = str(value or "").upper()
+    if value in ["ENTRY_READY", "AUTO_EVALUATED", "GOOD_SIGNAL"]:
+        return "ok"
+    if value in ["MANUAL_REVIEW", "PENDING_OUTCOME", "PARTIALLY_AUTO_EVALUATED", "NEEDS_REVIEW"]:
+        return "warn"
+    if value in ["RISK_BLOCKED", "BAD_SIGNAL", "FALSE_POSITIVE", "WAIT_TECHNICAL", "WAIT_OPTIONS_DATA"]:
+        return "block"
+    return "neutral"
+
+
+def intraday_futures_dashboard_operating_read(events):
+    latest_actionable = [
+        event for event in events
+        if event.get("event_code") in [101, 102, 201, 202]
+    ]
+    pending = [
+        event for event in events
+        if event.get("evaluation_status") in ["PENDING_OUTCOME", "PARTIALLY_AUTO_EVALUATED"]
+    ]
+    blocked = [
+        event for event in events
+        if str(event.get("decision_max_state") or "").upper() in ["RISK_BLOCKED", "WAIT_TECHNICAL"]
+    ]
+
+    if latest_actionable:
+        event = sorted(latest_actionable, key=lambda item: str(item.get("received_at") or ""), reverse=True)[0]
+        return {
+            "state": "REVIEW_ACTIONABLE_SIGNAL",
+            "message": "{ticker} {direction} {event} requiere revision manual; no es orden automatica.".format(
+                ticker=event.get("ticker"),
+                direction=event.get("direction") or "NONE",
+                event=event.get("event"),
+            ),
+        }
+    if blocked:
+        return {
+            "state": "NO_TRADE",
+            "message": "Hay bloqueadores o contexto tecnico no confirmado. Mantener observacion.",
+        }
+    if pending:
+        return {
+            "state": "WAIT_OUTCOME",
+            "message": "Hay eventos pendientes de outcome. Ejecutar evaluacion automatica o clasificar manualmente.",
+        }
+    return {
+        "state": "OBSERVE",
+        "message": "No hay senal accionable vigente. Mantener radar en QQQ/SPY.",
+    }
+
+
+def intraday_futures_dashboard_window_metric(event, metric):
+    windows = (event.get("auto_outcome") or {}).get("windows") or {}
+    if not isinstance(windows, dict):
+        return "-"
+    window = windows.get("60m") or windows.get("30m") or windows.get("15m") or windows.get("5m") or {}
+    return intraday_futures_dashboard_number(window.get(metric))
+
+
+def intraday_futures_dashboard_rows(events):
+    rows = []
+    for event in sorted(events, key=lambda item: str(item.get("received_at") or ""), reverse=True)[:50]:
+        state = event.get("decision_max_state") or event.get("construction_status") or "UNKNOWN"
+        evaluation = event.get("evaluation_status") or "UNKNOWN"
+        classification = event.get("classification") or "UNCLASSIFIED"
+        rows.append(f"""
+            <tr>
+                <td>{intraday_futures_dashboard_escape(event.get("received_at"))}</td>
+                <td class="strong">{intraday_futures_dashboard_escape(event.get("ticker"))}</td>
+                <td>{intraday_futures_dashboard_escape(event.get("event"))}</td>
+                <td>{intraday_futures_dashboard_escape(event.get("direction"))}</td>
+                <td>{intraday_futures_dashboard_number(event.get("price"))}</td>
+                <td>{intraday_futures_dashboard_escape(event.get("target_instrument"))}</td>
+                <td><span class="badge {intraday_futures_dashboard_badge_class(state)}">{intraday_futures_dashboard_escape(state)}</span></td>
+                <td><span class="badge {intraday_futures_dashboard_badge_class(evaluation)}">{intraday_futures_dashboard_escape(evaluation)}</span></td>
+                <td><span class="badge {intraday_futures_dashboard_badge_class(classification)}">{intraday_futures_dashboard_escape(classification)}</span></td>
+                <td>{intraday_futures_dashboard_window_metric(event, "mfe_points")}</td>
+                <td>{intraday_futures_dashboard_window_metric(event, "mae_points")}</td>
+                <td>{intraday_futures_dashboard_window_metric(event, "mfe_r")}</td>
+            </tr>
+        """)
+    return "\n".join(rows) or """
+        <tr><td colspan="12" class="empty">Sin eventos para la sesion seleccionada.</td></tr>
+    """
+
+
+def build_intraday_futures_dashboard_html(session_date=None):
+    report = build_intraday_futures_daily_report(session_date=session_date)
+    events = report.get("latest_events") or []
+    summary = report.get("summary") or {}
+    metrics = report.get("metrics") or {}
+    operating = intraday_futures_dashboard_operating_read(events)
+    generated_at = now_utc().isoformat()
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Stock Ultimus Intraday Futures</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; margin: 0; background: #f5f7fb; color: #111827; }}
+            header {{ background: #111827; color: white; padding: 22px 28px; }}
+            h1 {{ margin: 0 0 6px 0; font-size: 24px; letter-spacing: 0; }}
+            h2 {{ margin: 0 0 14px 0; font-size: 16px; }}
+            p {{ margin: 0; }}
+            main {{ padding: 22px 28px 36px; }}
+            .meta {{ color: #cbd5e1; font-size: 13px; }}
+            .grid {{ display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 12px; margin: 18px 0; }}
+            .card {{ background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }}
+            .label {{ color: #6b7280; font-size: 12px; text-transform: uppercase; }}
+            .value {{ font-size: 24px; font-weight: 800; margin-top: 6px; }}
+            .read {{ border-left: 5px solid #f59e0b; }}
+            .read .value {{ font-size: 18px; }}
+            table {{ width: 100%; border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }}
+            th, td {{ padding: 10px 9px; border-bottom: 1px solid #eef2f7; text-align: left; font-size: 12px; vertical-align: top; }}
+            th {{ background: #f9fafb; color: #374151; font-weight: 800; }}
+            .strong {{ font-weight: 800; }}
+            .badge {{ display: inline-block; padding: 5px 8px; border-radius: 999px; color: white; font-size: 11px; font-weight: 800; white-space: nowrap; }}
+            .ok {{ background: #047857; }}
+            .warn {{ background: #b45309; }}
+            .block {{ background: #b91c1c; }}
+            .neutral {{ background: #4b5563; }}
+            .section {{ margin-top: 18px; }}
+            .empty {{ color: #6b7280; text-align: center; padding: 24px; }}
+            @media (max-width: 1000px) {{
+                .grid {{ grid-template-columns: repeat(2, minmax(120px, 1fr)); }}
+                main {{ padding: 16px; }}
+                table {{ display: block; overflow-x: auto; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Stock Ultimus | Intraday Index Futures</h1>
+            <p class="meta">Sesion {intraday_futures_dashboard_escape(report.get("session_date"))} | Generado {intraday_futures_dashboard_escape(generated_at)} | Fuente: Supabase durable con fallback runtime</p>
+        </header>
+        <main>
+            <section class="grid">
+                <div class="card"><div class="label">Eventos</div><div class="value">{intraday_futures_dashboard_escape(summary.get("total_events"))}</div></div>
+                <div class="card"><div class="label">Accionables</div><div class="value">{intraday_futures_dashboard_escape(report.get("actionable_events"))}</div></div>
+                <div class="card"><div class="label">Riesgo/contexto</div><div class="value">{intraday_futures_dashboard_escape(report.get("risk_context_events"))}</div></div>
+                <div class="card"><div class="label">Pendientes</div><div class="value">{intraday_futures_dashboard_escape(summary.get("pending_outcome"))}</div></div>
+                <div class="card"><div class="label">MFE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mfe_points"))}</div></div>
+                <div class="card"><div class="label">MAE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mae_points"))}</div></div>
+            </section>
+
+            <section class="card read">
+                <div class="label">{intraday_futures_dashboard_escape(operating.get("state"))}</div>
+                <div class="value">{intraday_futures_dashboard_escape(operating.get("message"))}</div>
+            </section>
+
+            <section class="section">
+                <h2>Ultimas senales</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Hora</th>
+                            <th>Ticker</th>
+                            <th>Evento</th>
+                            <th>Dir</th>
+                            <th>Precio</th>
+                            <th>Instrumento</th>
+                            <th>Decision</th>
+                            <th>Evaluacion</th>
+                            <th>Outcome</th>
+                            <th>MFE</th>
+                            <th>MAE</th>
+                            <th>MFE R</th>
+                        </tr>
+                    </thead>
+                    <tbody>{intraday_futures_dashboard_rows(events)}</tbody>
+                </table>
+            </section>
+        </main>
+    </body>
+    </html>
+    """
 
 
 # ============================================================
@@ -3618,6 +3811,11 @@ def intraday_futures_events_summary(limit: int = 1000):
 @app.get("/intraday_futures/report/daily")
 def intraday_futures_daily_report(session_date: Optional[str] = None):
     return build_intraday_futures_daily_report(session_date=session_date)
+
+
+@app.get("/intraday_futures/dashboard", response_class=HTMLResponse)
+def intraday_futures_dashboard(session_date: Optional[str] = None):
+    return build_intraday_futures_dashboard_html(session_date=session_date)
 
 
 # ============================================================
