@@ -23,6 +23,7 @@ SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
 INTRADAY_FUTURES_ALERT_EVENTS_FILE = "intraday_futures_alert_events.json"
 INTRADAY_FUTURES_PRICE_POINTS_FILE = "intraday_futures_price_points.json"
+INTRADAY_FUTURES_PREMARKET_CONTEXT_FILE = "intraday_futures_premarket_context.json"
 INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS = [
     "GOOD_SIGNAL",
     "BAD_SIGNAL",
@@ -663,6 +664,206 @@ def attach_intraday_futures_outcomes(events, outcome_rows):
             event["paper_outcome"] = row.get("paper_outcome")
 
     return events
+
+
+def normalize_intraday_futures_status(value, default="NEEDS_REVIEW"):
+    value = str(value or default).upper().strip()
+    value = re.sub(r"[^A-Z0-9_]+", "_", value)
+    return value or default
+
+
+def intraday_futures_premarket_context_row(context):
+    return {
+        "context_id": context.get("context_id"),
+        "session_date": context.get("session_date"),
+        "updated_at": context.get("updated_at"),
+        "updated_by": context.get("updated_by"),
+        "source": context.get("source"),
+        "checklist_version": context.get("checklist_version"),
+        "market_context_status": context.get("market_context_status"),
+        "macro_status": context.get("macro_status"),
+        "volatility_status": context.get("volatility_status"),
+        "reference_alignment": context.get("reference_alignment"),
+        "opening_range_status": context.get("opening_range_status"),
+        "range_used_status": context.get("range_used_status"),
+        "risk_daily_status": context.get("risk_daily_status"),
+        "portfolio_status": context.get("portfolio_status"),
+        "decision_max_state": context.get("decision_max_state"),
+        "notes": context.get("notes"),
+        "raw_payload": context,
+    }
+
+
+def supabase_persist_intraday_premarket_context(context):
+    return supabase_upsert_row(
+        "intraday_futures_premarket_context",
+        intraday_futures_premarket_context_row(context),
+        "context_id",
+    )
+
+
+def load_intraday_futures_premarket_contexts_from_file(limit=100):
+    if os.path.exists(INTRADAY_FUTURES_PREMARKET_CONTEXT_FILE):
+        try:
+            with open(INTRADAY_FUTURES_PREMARKET_CONTEXT_FILE, "r") as f:
+                contexts = json.load(f)
+                if isinstance(contexts, list):
+                    return contexts[-limit:]
+        except Exception:
+            return []
+    return []
+
+
+def save_intraday_futures_premarket_contexts_file(contexts):
+    contexts = list(contexts or [])[-500:]
+    with open(INTRADAY_FUTURES_PREMARKET_CONTEXT_FILE, "w") as f:
+        json.dump(contexts, f, indent=2)
+    return True
+
+
+def row_to_intraday_futures_premarket_context(row):
+    if not isinstance(row, dict):
+        return {}
+
+    raw_payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+    context = dict(raw_payload)
+
+    for key in [
+        "context_id",
+        "session_date",
+        "updated_at",
+        "updated_by",
+        "source",
+        "checklist_version",
+        "market_context_status",
+        "macro_status",
+        "volatility_status",
+        "reference_alignment",
+        "opening_range_status",
+        "range_used_status",
+        "risk_daily_status",
+        "portfolio_status",
+        "decision_max_state",
+        "notes",
+    ]:
+        if row.get(key) is not None:
+            context[key] = row.get(key)
+
+    return context
+
+
+def load_intraday_futures_premarket_contexts(limit=100):
+    rows = supabase_fetch_table_rows(
+        "intraday_futures_premarket_context",
+        order_column="updated_at",
+        limit=limit,
+    )
+    if rows:
+        return [row_to_intraday_futures_premarket_context(row) for row in rows][-limit:]
+
+    return load_intraday_futures_premarket_contexts_from_file(limit=limit)
+
+
+def build_intraday_futures_premarket_context(payload):
+    payload = dict(payload or {})
+    session_date = (
+        payload.get("session_date")
+        or now_utc().astimezone(MARKET_TZ).date().isoformat()
+    )
+
+    context = {
+        "context_id": "IFPM-{session_date}".format(session_date=session_date),
+        "session_date": session_date,
+        "updated_at": now_utc().isoformat(),
+        "updated_by": payload.get("updated_by") or "manual",
+        "source": payload.get("source") or "MANUAL_INPUT",
+        "checklist_version": "intraday_futures_premarket_checklist_v1",
+        "market_context_status": normalize_intraday_futures_status(payload.get("market_context_status"), "NEEDS_REVIEW"),
+        "macro_status": normalize_intraday_futures_status(payload.get("macro_status"), "NEEDS_REVIEW"),
+        "volatility_status": normalize_intraday_futures_status(payload.get("volatility_status"), "NEEDS_REVIEW"),
+        "reference_alignment": normalize_intraday_futures_status(payload.get("reference_alignment"), "NEEDS_REVIEW"),
+        "opening_range_status": normalize_intraday_futures_status(payload.get("opening_range_status"), "NEEDS_REVIEW"),
+        "range_used_status": normalize_intraday_futures_status(payload.get("range_used_status"), "NEEDS_REVIEW"),
+        "risk_daily_status": normalize_intraday_futures_status(payload.get("risk_daily_status"), "NEEDS_REVIEW"),
+        "portfolio_status": normalize_intraday_futures_status(payload.get("portfolio_status"), "NEEDS_REVIEW"),
+        "decision_max_state": normalize_intraday_futures_status(payload.get("decision_max_state"), "MANUAL_REVIEW"),
+        "notes": payload.get("notes"),
+        "raw_input": payload,
+    }
+
+    blocking_statuses = [
+        context.get("macro_status"),
+        context.get("volatility_status"),
+        context.get("risk_daily_status"),
+        context.get("portfolio_status"),
+    ]
+    if "RISK_BLOCKED" in blocking_statuses or "MACRO_LOCKOUT" in blocking_statuses:
+        context["decision_max_state"] = "RISK_BLOCKED"
+    elif "VOLATILITY_EXTREME" in blocking_statuses:
+        context["decision_max_state"] = "MANUAL_REVIEW"
+
+    return context
+
+
+def save_intraday_futures_premarket_context(payload):
+    context = build_intraday_futures_premarket_context(payload)
+    contexts = load_intraday_futures_premarket_contexts_from_file(limit=500)
+
+    replaced = False
+    for idx, existing in enumerate(contexts):
+        if existing.get("context_id") == context.get("context_id"):
+            contexts[idx] = context
+            replaced = True
+            break
+
+    if not replaced:
+        contexts.append(context)
+
+    save_intraday_futures_premarket_contexts_file(contexts)
+    supabase_result = supabase_persist_intraday_premarket_context(context)
+
+    return {
+        "saved": True,
+        "context": context,
+        "supabase": supabase_result,
+    }
+
+
+def get_intraday_futures_premarket_context(session_date=None):
+    session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
+    contexts = load_intraday_futures_premarket_contexts(limit=500)
+    matches = [
+        context for context in contexts
+        if str(context.get("session_date")) == str(session_date)
+    ]
+
+    if matches:
+        matches.sort(key=lambda item: str(item.get("updated_at") or ""))
+        return {
+            "found": True,
+            "session_date": session_date,
+            "context": matches[-1],
+        }
+
+    return {
+        "found": False,
+        "session_date": session_date,
+        "context": {
+            "context_id": "IFPM-{session_date}".format(session_date=session_date),
+            "session_date": session_date,
+            "checklist_version": "intraday_futures_premarket_checklist_v1",
+            "market_context_status": "NEEDS_REVIEW",
+            "macro_status": "NEEDS_REVIEW",
+            "volatility_status": "NEEDS_REVIEW",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "NEEDS_REVIEW",
+            "risk_daily_status": "NEEDS_REVIEW",
+            "portfolio_status": "NEEDS_REVIEW",
+            "decision_max_state": "MANUAL_REVIEW",
+            "notes": "No premarket context has been loaded for this session.",
+        },
+    }
 
 
 def load_intraday_futures_alert_events_from_file(limit=5000):
@@ -1336,6 +1537,7 @@ def intraday_futures_validation_summary(events):
 
 def build_intraday_futures_daily_report(session_date=None, include_validation=False):
     session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
+    premarket_context = get_intraday_futures_premarket_context(session_date=session_date)
     all_session_events = [
         event for event in load_intraday_futures_alert_events(limit=10000)
         if intraday_futures_event_session_date(event) == session_date
@@ -1383,6 +1585,7 @@ def build_intraday_futures_daily_report(session_date=None, include_validation=Fa
         "session_date": session_date,
         "timezone": str(MARKET_TZ),
         "include_validation": include_validation,
+        "premarket_context": premarket_context,
         "validation_summary": intraday_futures_validation_summary(all_session_events),
         "summary": summary,
         "actionable_events": len(actionable_events),
@@ -1416,13 +1619,46 @@ def intraday_futures_dashboard_number(value):
 
 def intraday_futures_dashboard_badge_class(value):
     value = str(value or "").upper()
-    if value in ["ENTRY_READY", "AUTO_EVALUATED", "GOOD_SIGNAL"]:
+    if value in ["ENTRY_READY", "AUTO_EVALUATED", "GOOD_SIGNAL", "CLEAR", "ALIGNED", "NORMAL", "READY"]:
         return "ok"
-    if value in ["MANUAL_REVIEW", "PENDING_OUTCOME", "PARTIALLY_AUTO_EVALUATED", "NEEDS_REVIEW"]:
+    if value in ["MANUAL_REVIEW", "PENDING_OUTCOME", "PARTIALLY_AUTO_EVALUATED", "NEEDS_REVIEW", "CLEAR_MANUAL_INPUT"]:
         return "warn"
-    if value in ["RISK_BLOCKED", "BAD_SIGNAL", "FALSE_POSITIVE", "WAIT_TECHNICAL", "WAIT_OPTIONS_DATA"]:
+    if value in ["RISK_BLOCKED", "BAD_SIGNAL", "FALSE_POSITIVE", "WAIT_TECHNICAL", "WAIT_OPTIONS_DATA", "MACRO_LOCKOUT", "VOLATILITY_EXTREME"]:
         return "block"
     return "neutral"
+
+
+def intraday_futures_dashboard_premarket_html(premarket_context):
+    context = (premarket_context or {}).get("context") or {}
+    found = (premarket_context or {}).get("found")
+    status_items = [
+        ("Mercado", context.get("market_context_status")),
+        ("Macro", context.get("macro_status")),
+        ("Volatilidad", context.get("volatility_status")),
+        ("Referencia", context.get("reference_alignment")),
+        ("OR", context.get("opening_range_status")),
+        ("Rango", context.get("range_used_status")),
+        ("Riesgo", context.get("risk_daily_status")),
+        ("Portfolio", context.get("portfolio_status")),
+        ("Max State", context.get("decision_max_state")),
+    ]
+    chips = "\n".join(
+        '<span class="chip"><b>{label}</b> <span class="badge {klass}">{value}</span></span>'.format(
+            label=intraday_futures_dashboard_escape(label),
+            klass=intraday_futures_dashboard_badge_class(value),
+            value=intraday_futures_dashboard_escape(value or "UNKNOWN"),
+        )
+        for label, value in status_items
+    )
+
+    return f"""
+        <section class="card premarket">
+            <div class="label">Pre-market context {'cargado' if found else 'pendiente'}</div>
+            <div class="premarket-grid">{chips}</div>
+            <p class="note">{intraday_futures_dashboard_escape(context.get("notes"))}</p>
+            <p class="note">Actualizado: {intraday_futures_dashboard_escape(context.get("updated_at"))} | Por: {intraday_futures_dashboard_escape(context.get("updated_by"))}</p>
+        </section>
+    """
 
 
 def intraday_futures_dashboard_operating_read(events):
@@ -1511,6 +1747,7 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
     summary = report.get("summary") or {}
     metrics = report.get("metrics") or {}
     validation = report.get("validation_summary") or {}
+    premarket_context = report.get("premarket_context") or {}
     operating = intraday_futures_dashboard_operating_read(events)
     generated_at = now_utc().isoformat()
 
@@ -1535,6 +1772,10 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
             .value {{ font-size: 24px; font-weight: 800; margin-top: 6px; }}
             .read {{ border-left: 5px solid #f59e0b; }}
             .read .value {{ font-size: 18px; }}
+            .premarket {{ margin-bottom: 18px; }}
+            .premarket-grid {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
+            .chip {{ display: inline-flex; align-items: center; gap: 7px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 7px 8px; background: #f9fafb; font-size: 12px; }}
+            .note {{ margin-top: 10px; color: #4b5563; font-size: 13px; }}
             table {{ width: 100%; border-collapse: collapse; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }}
             th, td {{ padding: 10px 9px; border-bottom: 1px solid #eef2f7; text-align: left; font-size: 12px; vertical-align: top; }}
             th {{ background: #f9fafb; color: #374151; font-weight: 800; }}
@@ -1559,6 +1800,8 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
             <p class="meta">Sesion {intraday_futures_dashboard_escape(report.get("session_date"))} | Generado {intraday_futures_dashboard_escape(generated_at)} | Fuente: Supabase durable con fallback runtime | include_validation={intraday_futures_dashboard_escape(include_validation)}</p>
         </header>
         <main>
+            {intraday_futures_dashboard_premarket_html(premarket_context)}
+
             <section class="grid">
                 <div class="card"><div class="label">Eventos</div><div class="value">{intraday_futures_dashboard_escape(summary.get("total_events"))}</div></div>
                 <div class="card"><div class="label">Accionables</div><div class="value">{intraday_futures_dashboard_escape(report.get("actionable_events"))}</div></div>
@@ -3817,6 +4060,36 @@ def intraday_futures_events(limit: int = 100, include_validation: bool = False):
         "include_validation": include_validation,
         "count": len(events),
         "events": events,
+    }
+
+
+@app.post("/intraday_futures/premarket_context")
+async def intraday_futures_save_premarket_context(request: Request):
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8", errors="ignore").strip()
+    parsed = extract_json_from_text(raw_text)
+
+    if not isinstance(parsed, dict):
+        return {
+            "status": "error",
+            "engine": "intraday_futures_premarket_context_v1",
+            "message": "Invalid premarket context payload.",
+        }
+
+    result = save_intraday_futures_premarket_context(parsed)
+    return {
+        "status": "ok",
+        "engine": "intraday_futures_premarket_context_v1",
+        **result,
+    }
+
+
+@app.get("/intraday_futures/premarket_context")
+def intraday_futures_get_premarket_context(session_date: Optional[str] = None):
+    return {
+        "status": "ok",
+        "engine": "intraday_futures_premarket_context_v1",
+        **get_intraday_futures_premarket_context(session_date=session_date),
     }
 
 
