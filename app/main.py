@@ -2168,7 +2168,7 @@ async def parse_request_payload(request: Request):
 
 def save_ingested_payload(parsed, raw_text, source_label):
     if source_label == "TRADINGVIEW":
-        parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
+        parsed = enrich_stock_ultimus_technical_payload(parsed)
 
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "unknown"))
@@ -5834,6 +5834,143 @@ def map_stock_ultimus_event_code(payload):
     return payload
 
 
+def build_intraday_futures_construction(payload):
+    payload = dict(payload or {})
+
+    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+        return None
+
+    event_code = payload.get("event_code")
+    event = payload.get("event")
+    direction = payload.get("direction") or "NONE"
+    warnings = list(payload.get("warnings") or [])
+    missing_fields = []
+    risk_notes = []
+
+    def has_value(key):
+        value = payload.get(key)
+        return value not in [None, "", "null", "None"]
+
+    ticker = str(payload.get("ticker") or "").upper().strip()
+    instrument_family = "S&P 500" if ticker in ["SPY", "SPX", "US500", "US500F"] else "Nasdaq"
+    target_instrument = "MES_OR_ES" if instrument_family == "S&P 500" else "MNQ_OR_NQ"
+
+    construction_status = payload.get("construction_status") or "NEEDS_REVIEW"
+    decision_max_state = payload.get("decision_max_state") or "MANUAL_REVIEW"
+
+    if payload.get("not_order_instruction") is not True:
+        construction_status = "REJECTED"
+        decision_max_state = "MANUAL_REVIEW"
+        if "MANUAL_REVIEW_REQUIRED" not in warnings:
+            warnings.append("MANUAL_REVIEW_REQUIRED")
+
+    if event_code in [801, 802, 901]:
+        construction_status = "REJECTED"
+        decision_max_state = "RISK_BLOCKED"
+
+    elif event_code == 990:
+        construction_status = "MANUAL_REVIEW"
+        decision_max_state = "MANUAL_REVIEW"
+
+    elif event_code in [101, 102]:
+        construction_status = "NEEDS_REVIEW"
+        decision_max_state = "NEEDS_REVIEW"
+        missing_fields.extend([
+            "trigger_confirmation",
+            "stop_price",
+            "rr_ratio",
+            "risk_engine_result",
+            "portfolio_engine_result",
+        ])
+
+    elif event_code in [201, 202]:
+        required_for_actionable = [
+            "stop_price",
+            "stop_points",
+            "tp1_price",
+            "tp2_price",
+            "rr_ratio",
+            "risk_per_trade",
+            "max_daily_loss",
+            "trades_taken_today",
+            "risk_engine_result",
+            "portfolio_engine_result",
+        ]
+
+        for key in required_for_actionable:
+            if not has_value(key):
+                missing_fields.append(key)
+
+        if missing_fields:
+            construction_status = "NEEDS_REVIEW"
+            decision_max_state = "MANUAL_REVIEW"
+            if "DATA_INCOMPLETE" not in warnings:
+                warnings.append("DATA_INCOMPLETE")
+        else:
+            construction_status = "REVIEW_READY"
+            decision_max_state = payload.get("decision_max_state") or "ENTRY_READY"
+
+    range_used = normalize_number_or_none(payload.get("range_used_percent"))
+    if range_used is not None:
+        if range_used >= 90:
+            construction_status = "REJECTED"
+            decision_max_state = "RISK_BLOCKED"
+            if "RANGE_90_USED" not in warnings:
+                warnings.append("RANGE_90_USED")
+        elif range_used >= 70 and "RANGE_70_USED" not in warnings:
+            warnings.append("RANGE_70_USED")
+            risk_notes.append("Range used >= 70%; require stronger entry quality.")
+
+    if payload.get("severity") == "CRITICAL":
+        risk_notes.append("Critical technical risk event received.")
+
+    construction = {
+        "strategy": "INTRADAY_INDEX_FUTURES",
+        "strategy_version": payload.get("strategy_version"),
+        "construction_engine_version": "intraday_futures_construction_v1",
+        "ticker": ticker,
+        "instrument_family": instrument_family,
+        "target_instrument": target_instrument,
+        "event_code": event_code,
+        "event": event,
+        "setup_type": payload.get("setup_type"),
+        "direction": direction,
+        "severity": payload.get("severity"),
+        "construction_status": construction_status,
+        "decision_max_state": decision_max_state,
+        "price": payload.get("price"),
+        "entry_price": payload.get("entry_price") or payload.get("price"),
+        "stop_price": payload.get("stop_price"),
+        "stop_points": payload.get("stop_points"),
+        "tp1_price": payload.get("tp1_price"),
+        "tp2_price": payload.get("tp2_price"),
+        "rr_ratio": payload.get("rr_ratio"),
+        "range_used_percent": payload.get("range_used_percent"),
+        "vwap": payload.get("vwap"),
+        "previous_day_high": payload.get("previous_day_high"),
+        "previous_day_low": payload.get("previous_day_low"),
+        "previous_day_close": payload.get("previous_day_close"),
+        "warnings": warnings,
+        "missing_fields": missing_fields,
+        "risk_notes": risk_notes,
+        "not_order_instruction": payload.get("not_order_instruction"),
+    }
+
+    payload["construction"] = construction
+    payload["construction_status"] = construction_status
+    payload["decision_max_state"] = decision_max_state
+    payload["warnings"] = warnings
+    payload["missing_fields"] = missing_fields
+    payload["construction_engine_version"] = construction["construction_engine_version"]
+    return payload
+
+
+def enrich_stock_ultimus_technical_payload(payload):
+    payload = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(payload))
+    constructed = build_intraday_futures_construction(payload)
+    return constructed if constructed is not None else payload
+
+
 # Preserve existing V13/V15 technical_snapshot endpoint logic
 @app.post("/technical_snapshot_v15_1")
 async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
@@ -5849,7 +5986,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
             "raw_preview": raw_text[:500],
         }
 
-    parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
+    parsed = enrich_stock_ultimus_technical_payload(parsed)
 
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
@@ -5898,6 +6035,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
+        "construction": parsed.get("construction"),
         "accepted": True,
     }
 
@@ -5995,7 +6133,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "raw_preview": raw_text[:500],
         }
 
-    parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
+    parsed = enrich_stock_ultimus_technical_payload(parsed)
 
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
@@ -6044,6 +6182,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
+        "construction": parsed.get("construction"),
         "accepted": True,
     }
 
