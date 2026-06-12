@@ -543,6 +543,8 @@ def row_to_intraday_futures_alert_event(row):
         "strategy",
         "strategy_version",
         "source",
+        "original_source",
+        "is_validation",
         "engine_layer",
         "ticker",
         "symbol",
@@ -573,6 +575,7 @@ def row_to_intraday_futures_alert_event(row):
         "not_order_instruction",
         "evaluation_status",
         "paper_outcome",
+        "raw_payload_preview",
     ]:
         if row.get(key) is not None:
             event[key] = row.get(key)
@@ -599,8 +602,11 @@ def row_to_intraday_futures_price_point(row):
         "strategy",
         "strategy_version",
         "source",
+        "original_source",
+        "is_validation",
         "event_code",
         "event",
+        "raw_payload_preview",
     ]:
         if row.get(key) is not None:
             point[key] = row.get(key)
@@ -903,8 +909,11 @@ def build_intraday_futures_price_point(payload):
         "strategy": payload.get("strategy"),
         "strategy_version": payload.get("strategy_version"),
         "source": payload.get("source"),
+        "original_source": payload.get("original_source"),
+        "is_validation": payload.get("is_validation"),
         "event_code": payload.get("event_code") or construction.get("event_code"),
         "event": payload.get("event") or construction.get("event"),
+        "raw_payload_preview": payload.get("raw_payload_preview"),
     }
 
 
@@ -959,6 +968,8 @@ def build_intraday_futures_alert_event(payload):
         "strategy_version": payload.get("strategy_version"),
         "outcome_engine_version": "outcome_engine_v1_phase_1",
         "source": payload.get("source"),
+        "original_source": payload.get("original_source"),
+        "is_validation": payload.get("is_validation"),
         "engine_layer": payload.get("engine_layer"),
         "ticker": ticker,
         "symbol": payload.get("symbol"),
@@ -989,6 +1000,7 @@ def build_intraday_futures_alert_event(payload):
         "not_order_instruction": payload.get("not_order_instruction"),
         "evaluation_status": "PENDING_OUTCOME",
         "paper_outcome": True,
+        "raw_payload_preview": payload.get("raw_payload_preview"),
     }
 
 
