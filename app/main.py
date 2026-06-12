@@ -2167,6 +2167,9 @@ async def parse_request_payload(request: Request):
 
 
 def save_ingested_payload(parsed, raw_text, source_label):
+    if source_label == "TRADINGVIEW":
+        parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
+
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "unknown"))
 
@@ -5708,6 +5711,129 @@ def normalize_technical_snapshot_payload(payload):
     return payload
 
 
+STOCK_ULTIMUS_EVENT_CODE_MAP = {
+    101: {
+        "event": "BREAK_BOUNCE_LONG_SETUP",
+        "direction": "LONG",
+        "setup_type": "BREAK_BOUNCE",
+        "severity": "INFO",
+        "construction_status": "NEEDS_REVIEW",
+        "decision_max_state": "NEEDS_REVIEW",
+        "warnings": [],
+    },
+    102: {
+        "event": "BREAK_BOUNCE_SHORT_SETUP",
+        "direction": "SHORT",
+        "setup_type": "BREAK_BOUNCE",
+        "severity": "INFO",
+        "construction_status": "NEEDS_REVIEW",
+        "decision_max_state": "NEEDS_REVIEW",
+        "warnings": [],
+    },
+    201: {
+        "event": "BREAK_BOUNCE_LONG",
+        "direction": "LONG",
+        "setup_type": "BREAK_BOUNCE",
+        "severity": "ACTIONABLE_REVIEW",
+        "construction_status": "REVIEW_READY",
+        "decision_max_state": "ENTRY_READY",
+        "warnings": [],
+    },
+    202: {
+        "event": "BREAK_BOUNCE_SHORT",
+        "direction": "SHORT",
+        "setup_type": "BREAK_BOUNCE",
+        "severity": "ACTIONABLE_REVIEW",
+        "construction_status": "REVIEW_READY",
+        "decision_max_state": "ENTRY_READY",
+        "warnings": [],
+    },
+    701: {
+        "event": "RANGE_70_USED",
+        "direction": "NONE",
+        "setup_type": "RISK_CONTEXT",
+        "severity": "WARNING",
+        "construction_status": "NEEDS_REVIEW",
+        "decision_max_state": "ENTRY_READY_WITH_WARNING",
+        "warnings": ["RANGE_70_USED"],
+    },
+    801: {
+        "event": "MACRO_LOCKOUT",
+        "direction": "NONE",
+        "setup_type": "RISK_CONTEXT",
+        "severity": "CRITICAL",
+        "construction_status": "REJECTED",
+        "decision_max_state": "RISK_BLOCKED",
+        "warnings": ["MACRO_EVENT_BLOCK"],
+    },
+    802: {
+        "event": "VOLATILITY_EXTREME",
+        "direction": "NONE",
+        "setup_type": "RISK_CONTEXT",
+        "severity": "CRITICAL",
+        "construction_status": "REJECTED",
+        "decision_max_state": "RISK_BLOCKED",
+        "warnings": ["VOLATILITY_EXTREME"],
+    },
+    901: {
+        "event": "RANGE_90_USED",
+        "direction": "NONE",
+        "setup_type": "RISK_CONTEXT",
+        "severity": "CRITICAL",
+        "construction_status": "REJECTED",
+        "decision_max_state": "RISK_BLOCKED",
+        "warnings": ["RANGE_90_USED"],
+    },
+    990: {
+        "event": "MANUAL_CLOSE_WARNING",
+        "direction": "NONE",
+        "setup_type": "EXIT_CONTEXT",
+        "severity": "OPERATIONAL",
+        "construction_status": "MANUAL_REVIEW",
+        "decision_max_state": "MANUAL_REVIEW",
+        "warnings": ["MANUAL_CLOSE_WARNING"],
+    },
+}
+
+
+def map_stock_ultimus_event_code(payload):
+    payload = dict(payload or {})
+    event_code = normalize_number_or_none(payload.get("event_code"))
+
+    if event_code is None:
+        return payload
+
+    event_code_int = int(event_code)
+    mapped = STOCK_ULTIMUS_EVENT_CODE_MAP.get(event_code_int)
+
+    if not mapped:
+        payload["event_code"] = event_code_int
+        payload["event"] = payload.get("event") or "UNKNOWN_EVENT_CODE"
+        payload["severity"] = payload.get("severity") or "UNKNOWN"
+        payload["construction_status"] = payload.get("construction_status") or "DATA_INCOMPLETE"
+        payload["decision_max_state"] = payload.get("decision_max_state") or "MANUAL_REVIEW"
+        payload["warnings"] = ["UNKNOWN_EVENT_CODE"]
+        return payload
+
+    payload["event_code"] = event_code_int
+    for key, value in mapped.items():
+        payload[key] = payload.get(key) or value
+
+    direction_code = normalize_number_or_none(payload.get("direction_code"))
+    if direction_code is not None:
+        payload["direction_code"] = int(direction_code)
+
+    if payload.get("not_order_instruction") is not True:
+        warnings = list(payload.get("warnings") or [])
+        if "MANUAL_REVIEW_REQUIRED" not in warnings:
+            warnings.append("MANUAL_REVIEW_REQUIRED")
+        payload["warnings"] = warnings
+        payload["decision_max_state"] = "MANUAL_REVIEW"
+
+    payload["event_mapper_version"] = "stock_ultimus_event_code_mapper_v1"
+    return payload
+
+
 # Preserve existing V13/V15 technical_snapshot endpoint logic
 @app.post("/technical_snapshot_v15_1")
 async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
@@ -5723,7 +5849,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
             "raw_preview": raw_text[:500],
         }
 
-    parsed = normalize_technical_snapshot_payload(parsed)
+    parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
 
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
@@ -5768,6 +5894,10 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "storage": storage_result,
         "classification_state": parsed.get("state"),
         "final_decision": parsed.get("final_decision"),
+        "event": parsed.get("event"),
+        "event_code": parsed.get("event_code"),
+        "decision_max_state": parsed.get("decision_max_state"),
+        "construction_status": parsed.get("construction_status"),
         "accepted": True,
     }
 
@@ -5865,7 +5995,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "raw_preview": raw_text[:500],
         }
 
-    parsed = normalize_technical_snapshot_payload(parsed)
+    parsed = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(parsed))
 
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
@@ -5910,6 +6040,10 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "storage": storage_result,
         "classification_state": parsed.get("state"),
         "final_decision": parsed.get("final_decision"),
+        "event": parsed.get("event"),
+        "event_code": parsed.get("event_code"),
+        "decision_max_state": parsed.get("decision_max_state"),
+        "construction_status": parsed.get("construction_status"),
         "accepted": True,
     }
 
