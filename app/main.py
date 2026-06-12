@@ -626,6 +626,12 @@ def build_intraday_futures_alert_event(payload):
         "symbol": payload.get("symbol"),
         "timeframe": payload.get("timeframe"),
         "price": payload.get("price") or payload.get("entry_price") or construction.get("entry_price"),
+        "entry_price": payload.get("entry_price") or construction.get("entry_price"),
+        "stop_price": payload.get("stop_price") or construction.get("stop_price"),
+        "stop_points": payload.get("stop_points") or construction.get("stop_points"),
+        "tp1_price": payload.get("tp1_price") or construction.get("tp1_price"),
+        "tp2_price": payload.get("tp2_price") or construction.get("tp2_price"),
+        "rr_ratio": payload.get("rr_ratio") or construction.get("rr_ratio"),
         "event_code": event_code,
         "event": event,
         "direction_code": payload.get("direction_code"),
@@ -767,11 +773,11 @@ def calculate_intraday_futures_window_outcome(event, points, window_minutes):
     direction = str(event.get("direction") or "").upper()
 
     if direction == "LONG":
-        mfe_points = high_price - alert_price
-        mae_points = alert_price - low_price
+        mfe_points = max(high_price - alert_price, 0)
+        mae_points = max(alert_price - low_price, 0)
     elif direction == "SHORT":
-        mfe_points = alert_price - low_price
-        mae_points = high_price - alert_price
+        mfe_points = max(alert_price - low_price, 0)
+        mae_points = max(high_price - alert_price, 0)
     else:
         mfe_points = None
         mae_points = None
