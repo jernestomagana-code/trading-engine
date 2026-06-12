@@ -5754,7 +5754,7 @@ STOCK_ULTIMUS_EVENT_CODE_MAP = {
         "setup_type": "RISK_CONTEXT",
         "severity": "WARNING",
         "construction_status": "NEEDS_REVIEW",
-        "decision_max_state": "ENTRY_READY_WITH_WARNING",
+        "decision_max_state": "MANUAL_REVIEW",
         "warnings": ["RANGE_70_USED"],
     },
     801: {
