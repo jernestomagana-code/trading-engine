@@ -2272,9 +2272,9 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
         "ticker": ticker,
         "timeframe": timeframe,
         "storage": storage_result,
-        "classification": classification,
-        "unified_context": unified,
-        "data": data,
+        "classification_state": classification.get("state") if isinstance(classification, dict) else None,
+        "final_decision": classification.get("final_decision") if isinstance(classification, dict) else None,
+        "accepted": True,
     }
 
 
@@ -5766,8 +5766,9 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "ticker": ticker,
         "timeframe": timeframe,
         "storage": storage_result,
-        "normalized_payload": parsed,
-        "unified_context": unified,
+        "classification_state": parsed.get("state"),
+        "final_decision": parsed.get("final_decision"),
+        "accepted": True,
     }
 
 
@@ -5907,8 +5908,9 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "ticker": ticker,
         "timeframe": timeframe,
         "storage": storage_result,
-        "normalized_payload": parsed,
-        "unified_context": unified,
+        "classification_state": parsed.get("state"),
+        "final_decision": parsed.get("final_decision"),
+        "accepted": True,
     }
 
 
