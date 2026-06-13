@@ -7572,7 +7572,12 @@ def apply_intraday_futures_risk_engine(payload):
     elif risk_warnings or any(field in missing_fields for field in ["nlv", "stop_points", "point_value", "stop_dollar_risk_per_contract"]):
         risk_status = "NEEDS_REVIEW"
 
-    missing_fields = [field for field in missing_fields if field != "risk_engine_result"]
+    resolved_risk_fields = {"risk_engine_result"}
+    if risk_per_trade_amount is not None:
+        resolved_risk_fields.add("risk_per_trade")
+    if max_daily_loss_amount is not None:
+        resolved_risk_fields.add("max_daily_loss")
+    missing_fields = [field for field in missing_fields if field not in resolved_risk_fields]
 
     current_decision = str(payload.get("decision_max_state") or construction.get("decision_max_state") or "MANUAL_REVIEW").upper()
     current_construction_status = str(payload.get("construction_status") or construction.get("construction_status") or "NEEDS_REVIEW").upper()
@@ -7589,6 +7594,8 @@ def apply_intraday_futures_risk_engine(payload):
     for item in risk_blockers + risk_warnings:
         if item not in warnings:
             warnings.append(item)
+    if not missing_fields and "DATA_INCOMPLETE" in warnings:
+        warnings.remove("DATA_INCOMPLETE")
 
     risk = {
         "risk_engine_version": "intraday_futures_risk_v1",
