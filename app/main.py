@@ -7383,6 +7383,278 @@ def intraday_futures_current_session_date(payload):
     return now_utc().astimezone(MARKET_TZ).date().isoformat()
 
 
+INTRADAY_FUTURES_POINT_VALUES = {
+    "MNQ": 2.0,
+    "NQ": 20.0,
+    "MES": 5.0,
+    "ES": 50.0,
+}
+
+
+def first_present_value(*values):
+    for value in values:
+        if value not in [None, "", "null", "None"]:
+            return value
+    return None
+
+
+def first_present_float(*values):
+    for value in values:
+        parsed = coerce_float_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def intraday_futures_target_instrument(payload, construction=None):
+    payload = dict(payload or {})
+    construction = construction if isinstance(construction, dict) else {}
+    raw = str(
+        first_present_value(
+            payload.get("proposed_instrument"),
+            payload.get("target_instrument"),
+            payload.get("instrument"),
+            construction.get("target_instrument"),
+        )
+        or ""
+    ).upper().strip()
+
+    if raw in INTRADAY_FUTURES_POINT_VALUES:
+        return raw
+    if raw == "MES_OR_ES":
+        return "MES"
+    if raw == "MNQ_OR_NQ":
+        return "MNQ"
+
+    ticker = str(
+        first_present_value(
+            payload.get("ticker"),
+            payload.get("symbol"),
+            construction.get("ticker"),
+        )
+        or ""
+    ).upper().strip()
+    if ticker in ["SPY", "SPX", "US500", "US500F", "MES", "ES"]:
+        return "MES"
+    return "MNQ"
+
+
+def intraday_futures_bool(value, default=False):
+    if value is None:
+        return default
+    return safe_bool(value, default=default)
+
+
+def apply_intraday_futures_risk_engine(payload):
+    payload = dict(payload or {})
+
+    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+        return payload
+
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    warnings = normalize_warning_list(payload.get("warnings"))
+    missing_fields = list(payload.get("missing_fields") or construction.get("missing_fields") or [])
+    risk_blockers = []
+    risk_warnings = []
+
+    target_instrument = intraday_futures_target_instrument(payload, construction)
+    point_value = first_present_float(
+        payload.get("point_value"),
+        payload.get("futures_point_value"),
+        construction.get("point_value"),
+        INTRADAY_FUTURES_POINT_VALUES.get(target_instrument),
+    )
+    nlv = first_present_float(
+        payload.get("nlv"),
+        payload.get("net_liquidation"),
+        payload.get("net_liquidation_value"),
+        payload.get("account_nlv"),
+    )
+    stop_points = first_present_float(
+        payload.get("stop_points"),
+        construction.get("stop_points"),
+    )
+    risk_per_trade_pct = first_present_float(payload.get("risk_per_trade_pct"), payload.get("risk_pct"), 0.50)
+    max_daily_loss_pct = first_present_float(payload.get("max_daily_loss_pct"), payload.get("daily_loss_limit_pct"), 1.00)
+    daily_loss_used = first_present_float(payload.get("daily_loss_used"), payload.get("realized_daily_loss"), 0.0)
+    trades_taken_today = first_present_float(payload.get("trades_taken_today"), payload.get("daily_trades_count"), 0.0)
+    consecutive_losses = first_present_float(payload.get("consecutive_losses"), 0.0)
+    rr_ratio = first_present_float(payload.get("rr_ratio"), construction.get("rr_ratio"))
+
+    stop_dollar_risk_per_contract = first_present_float(
+        payload.get("stop_dollar_risk_per_contract"),
+        construction.get("stop_dollar_risk_per_contract"),
+    )
+    if stop_dollar_risk_per_contract is None and stop_points is not None and point_value is not None:
+        stop_dollar_risk_per_contract = abs(stop_points * point_value)
+
+    risk_per_trade_amount = None
+    if nlv is not None and risk_per_trade_pct is not None:
+        risk_per_trade_amount = nlv * (risk_per_trade_pct / 100.0)
+
+    max_daily_loss_amount = None
+    if nlv is not None and max_daily_loss_pct is not None:
+        max_daily_loss_amount = nlv * (max_daily_loss_pct / 100.0)
+
+    daily_loss_remaining = None
+    if max_daily_loss_amount is not None and daily_loss_used is not None:
+        daily_loss_remaining = max_daily_loss_amount - abs(daily_loss_used)
+
+    contracts_allowed = None
+    if risk_per_trade_amount is not None and stop_dollar_risk_per_contract not in [None, 0]:
+        contracts_allowed = math.floor(risk_per_trade_amount / abs(stop_dollar_risk_per_contract))
+
+    if nlv is None:
+        missing_fields.append("nlv")
+        risk_warnings.append("RISK_NLV_MISSING")
+    if stop_points is None:
+        missing_fields.append("stop_points")
+        risk_warnings.append("RISK_STOP_POINTS_MISSING")
+    if point_value is None:
+        missing_fields.append("point_value")
+        risk_warnings.append("RISK_POINT_VALUE_MISSING")
+    if stop_dollar_risk_per_contract is None:
+        missing_fields.append("stop_dollar_risk_per_contract")
+        risk_warnings.append("RISK_STOP_DOLLAR_MISSING")
+
+    if payload.get("not_order_instruction") is not True:
+        risk_blockers.append("NOT_ORDER_INSTRUCTION_FALSE")
+
+    if stop_points is not None and stop_points <= 0:
+        risk_blockers.append("INVALID_STOP_POINTS")
+    if stop_dollar_risk_per_contract is not None and stop_dollar_risk_per_contract <= 0:
+        risk_blockers.append("INVALID_STOP_DOLLAR_RISK")
+
+    if rr_ratio is not None and rr_ratio < 1.5:
+        risk_warnings.append("RR_BELOW_1_5R")
+
+    if contracts_allowed is not None and contracts_allowed < 1:
+        risk_blockers.append("CONTRACTS_ALLOWED_BELOW_ONE")
+
+    if max_daily_loss_amount is not None and daily_loss_used is not None:
+        if abs(daily_loss_used) >= max_daily_loss_amount:
+            risk_blockers.append("DAILY_MAX_LOSS_REACHED")
+        elif abs(daily_loss_used) >= (max_daily_loss_amount * 0.75):
+            risk_warnings.append("DAILY_LOSS_75_USED")
+
+    if daily_loss_remaining is not None and stop_dollar_risk_per_contract is not None:
+        if daily_loss_remaining <= 0:
+            risk_blockers.append("DAILY_LOSS_REMAINING_EXHAUSTED")
+        elif stop_dollar_risk_per_contract > daily_loss_remaining:
+            risk_blockers.append("NEXT_TRADE_EXCEEDS_DAILY_LOSS_REMAINING")
+
+    if trades_taken_today is not None:
+        if trades_taken_today >= 5:
+            risk_blockers.append("MAX_TRADES_ABSOLUTE_REACHED")
+        elif trades_taken_today >= 3:
+            risk_warnings.append("STANDARD_MAX_TRADES_REACHED")
+
+    if consecutive_losses is not None:
+        if consecutive_losses >= 3:
+            risk_blockers.append("THREE_CONSECUTIVE_LOSSES")
+        elif consecutive_losses >= 2:
+            risk_warnings.append("TWO_CONSECUTIVE_LOSSES_COOLDOWN")
+
+    full_size_approved = (
+        intraday_futures_bool(payload.get("nq_es_approved"))
+        or intraday_futures_bool(payload.get("risk_engine_approved_for_full_size"))
+        or intraday_futures_bool(payload.get("full_size_futures_approved"))
+    )
+    if target_instrument in ["NQ", "ES"] and not full_size_approved:
+        risk_warnings.append("FULL_SIZE_FUTURES_NEEDS_EXPLICIT_APPROVAL")
+    if target_instrument in ["NQ", "ES"] and stop_dollar_risk_per_contract is not None and risk_per_trade_amount is not None:
+        if stop_dollar_risk_per_contract > risk_per_trade_amount:
+            risk_blockers.append("FULL_SIZE_ONE_CONTRACT_EXCEEDS_RISK")
+
+    risk_status = "CLEAR"
+    if risk_blockers:
+        risk_status = "RISK_BLOCKED"
+    elif risk_warnings or any(field in missing_fields for field in ["nlv", "stop_points", "point_value", "stop_dollar_risk_per_contract"]):
+        risk_status = "NEEDS_REVIEW"
+
+    missing_fields = [field for field in missing_fields if field != "risk_engine_result"]
+
+    current_decision = str(payload.get("decision_max_state") or construction.get("decision_max_state") or "MANUAL_REVIEW").upper()
+    current_construction_status = str(payload.get("construction_status") or construction.get("construction_status") or "NEEDS_REVIEW").upper()
+    if risk_status == "RISK_BLOCKED":
+        decision_max_state = "RISK_BLOCKED"
+        construction_status = "REJECTED"
+    elif risk_status == "NEEDS_REVIEW":
+        decision_max_state = "MANUAL_REVIEW" if current_decision == "ENTRY_READY" else current_decision
+        construction_status = "NEEDS_REVIEW" if current_construction_status == "REVIEW_READY" else current_construction_status
+    else:
+        decision_max_state = current_decision
+        construction_status = current_construction_status
+
+    for item in risk_blockers + risk_warnings:
+        if item not in warnings:
+            warnings.append(item)
+
+    risk = {
+        "risk_engine_version": "intraday_futures_risk_v1",
+        "risk_status": risk_status,
+        "decision_max_state": decision_max_state,
+        "target_instrument": target_instrument,
+        "point_value": point_value,
+        "nlv": nlv,
+        "risk_per_trade_pct": risk_per_trade_pct,
+        "risk_per_trade_amount": risk_per_trade_amount,
+        "max_daily_loss_pct": max_daily_loss_pct,
+        "max_daily_loss_amount": max_daily_loss_amount,
+        "daily_loss_used": daily_loss_used,
+        "daily_loss_remaining": daily_loss_remaining,
+        "trades_taken_today": trades_taken_today,
+        "consecutive_losses": consecutive_losses,
+        "stop_points": stop_points,
+        "stop_dollar_risk_per_contract": stop_dollar_risk_per_contract,
+        "contracts_allowed": contracts_allowed,
+        "risk_blockers": risk_blockers,
+        "risk_warnings": risk_warnings,
+        "requires_manual_review": risk_status == "NEEDS_REVIEW",
+        "not_order_instruction": payload.get("not_order_instruction"),
+    }
+
+    payload["risk"] = risk
+    payload["risk_engine_version"] = risk["risk_engine_version"]
+    payload["risk_engine_result"] = risk_status
+    payload["risk_status"] = risk_status
+    payload["risk_blockers"] = risk_blockers
+    payload["risk_warnings"] = risk_warnings
+    payload["contracts_allowed"] = contracts_allowed
+    payload["stop_dollar_risk_per_contract"] = stop_dollar_risk_per_contract
+    payload["risk_per_trade_amount"] = risk_per_trade_amount
+    payload["max_daily_loss_amount"] = max_daily_loss_amount
+    payload["daily_loss_remaining"] = daily_loss_remaining
+    payload["target_instrument"] = target_instrument
+    payload["point_value"] = point_value
+    payload["warnings"] = warnings
+    payload["missing_fields"] = sorted(set(missing_fields))
+    payload["construction_status"] = construction_status
+    payload["decision_max_state"] = decision_max_state
+
+    if isinstance(construction, dict):
+        construction["risk"] = risk
+        construction["risk_engine_version"] = risk["risk_engine_version"]
+        construction["risk_engine_result"] = risk_status
+        construction["risk_status"] = risk_status
+        construction["risk_blockers"] = risk_blockers
+        construction["risk_warnings"] = risk_warnings
+        construction["contracts_allowed"] = contracts_allowed
+        construction["stop_dollar_risk_per_contract"] = stop_dollar_risk_per_contract
+        construction["risk_per_trade_amount"] = risk_per_trade_amount
+        construction["max_daily_loss_amount"] = max_daily_loss_amount
+        construction["daily_loss_remaining"] = daily_loss_remaining
+        construction["target_instrument"] = target_instrument
+        construction["point_value"] = point_value
+        construction["warnings"] = warnings
+        construction["missing_fields"] = payload["missing_fields"]
+        construction["construction_status"] = construction_status
+        construction["decision_max_state"] = decision_max_state
+        payload["construction"] = construction
+
+    return payload
+
+
 def apply_premarket_context_to_intraday_futures_payload(payload):
     payload = dict(payload or {})
 
@@ -7605,6 +7877,7 @@ def build_intraday_futures_construction(payload):
     payload["warnings"] = warnings
     payload["missing_fields"] = missing_fields
     payload["construction_engine_version"] = construction["construction_engine_version"]
+    payload = apply_intraday_futures_risk_engine(payload)
     payload = apply_premarket_context_to_intraday_futures_payload(payload)
     return payload
 
@@ -7688,6 +7961,8 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
+        "risk_status": parsed.get("risk_status"),
+        "risk": parsed.get("risk"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
@@ -7846,6 +8121,8 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
         "construction_status": parsed.get("construction_status"),
+        "risk_status": parsed.get("risk_status"),
+        "risk": parsed.get("risk"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
