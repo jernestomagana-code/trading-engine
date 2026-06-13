@@ -822,6 +822,105 @@ def build_intraday_futures_premarket_context(payload):
     return context
 
 
+def intraday_futures_premarket_template(mode="base", session_date=None, updated_by="manual"):
+    mode = str(mode or "base").lower().strip()
+    session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
+    templates = {
+        "base": {
+            "market_context_status": "CLEAR_MANUAL_INPUT",
+            "macro_status": "CLEAR",
+            "volatility_status": "NORMAL",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "NORMAL",
+            "risk_daily_status": "CLEAR",
+            "portfolio_status": "CLEAR",
+            "decision_max_state": "MANUAL_REVIEW",
+            "notes": "Pre-market cargado manualmente. Validar QQQ/SPY, VIX, eventos macro, VWAP y OR15 antes de actuar.",
+        },
+        "clear": {
+            "market_context_status": "CLEAR",
+            "macro_status": "CLEAR",
+            "volatility_status": "NORMAL",
+            "reference_alignment": "ALIGNED",
+            "opening_range_status": "READY",
+            "range_used_status": "NORMAL",
+            "risk_daily_status": "CLEAR",
+            "portfolio_status": "CLEAR",
+            "decision_max_state": "ENTRY_READY",
+            "notes": "Contexto pre-market validado. Sin bloqueos conocidos. ENTRY_READY sigue significando revision manual, no ejecucion automatica.",
+        },
+        "manual_review": {
+            "market_context_status": "NEEDS_REVIEW",
+            "macro_status": "NEEDS_REVIEW",
+            "volatility_status": "ELEVATED",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "NORMAL",
+            "risk_daily_status": "CLEAR",
+            "portfolio_status": "CLEAR",
+            "decision_max_state": "MANUAL_REVIEW",
+            "notes": "Contexto ambiguo. Revisar referencia principal, VWAP, OR15, rango usado y calendario macro antes de validar cualquier alerta.",
+        },
+        "macro_lockout": {
+            "market_context_status": "MACRO_LOCKOUT",
+            "macro_status": "MACRO_LOCKOUT",
+            "volatility_status": "ELEVATED",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NOT_READY",
+            "range_used_status": "NORMAL",
+            "risk_daily_status": "CLEAR",
+            "portfolio_status": "CLEAR",
+            "decision_max_state": "RISK_BLOCKED",
+            "notes": "Bloqueo por evento macro o ventana posterior al evento. No revisar nuevas entradas hasta que termine la restriccion.",
+        },
+        "volatility_extreme": {
+            "market_context_status": "VOLATILITY_EXTREME",
+            "macro_status": "CLEAR",
+            "volatility_status": "VOLATILITY_EXTREME",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "RANGE_70_USED",
+            "risk_daily_status": "NEEDS_REVIEW",
+            "portfolio_status": "CLEAR",
+            "decision_max_state": "MANUAL_REVIEW",
+            "notes": "Volatilidad extrema. Solo revisar senales excepcionales con stop, RR y sizing claramente definidos.",
+        },
+        "risk_blocked": {
+            "market_context_status": "RISK_BLOCKED",
+            "macro_status": "CLEAR",
+            "volatility_status": "NORMAL",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "NORMAL",
+            "risk_daily_status": "RISK_BLOCKED",
+            "portfolio_status": "RISK_BLOCKED",
+            "decision_max_state": "RISK_BLOCKED",
+            "notes": "Riesgo diario o portafolio bloquea nuevas entradas. No construir nuevas operaciones intradia.",
+        },
+    }
+    if mode not in templates:
+        mode = "base"
+
+    payload = {
+        "session_date": session_date,
+        "updated_by": updated_by or "manual",
+        **templates[mode],
+    }
+
+    return {
+        "mode": mode,
+        "payload": payload,
+        "curl": (
+            "curl -X POST \"https://trading-engine-p097.onrender.com/intraday_futures/premarket_context\" "
+            "-H \"Content-Type: application/json\" "
+            "-d '{json_payload}'"
+        ).format(json_payload=json.dumps(payload, ensure_ascii=True)),
+        "allowed_modes": sorted(templates.keys()),
+        "not_order_instruction": True,
+    }
+
+
 def save_intraday_futures_premarket_context(payload):
     context = build_intraday_futures_premarket_context(payload)
     contexts = load_intraday_futures_premarket_contexts_from_file(limit=500)
@@ -4361,6 +4460,23 @@ def intraday_futures_get_premarket_context(session_date: Optional[str] = None):
         "status": "ok",
         "engine": "intraday_futures_premarket_context_v1",
         **get_intraday_futures_premarket_context(session_date=session_date),
+    }
+
+
+@app.get("/intraday_futures/premarket_context/template")
+def intraday_futures_get_premarket_context_template(
+    mode: str = "base",
+    session_date: Optional[str] = None,
+    updated_by: str = "manual",
+):
+    return {
+        "status": "ok",
+        "engine": "intraday_futures_premarket_context_template_v1",
+        **intraday_futures_premarket_template(
+            mode=mode,
+            session_date=session_date,
+            updated_by=updated_by,
+        ),
     }
 
 
