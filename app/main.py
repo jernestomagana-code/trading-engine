@@ -45,6 +45,10 @@ PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
 PREMARKET_EMAIL_FROM = os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
 PREMARKET_EMAIL_REPLY_TO = os.getenv("PREMARKET_EMAIL_REPLY_TO", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+if PUBLIC_BASE_URL.startswith("ttps://"):
+    PUBLIC_BASE_URL = "h" + PUBLIC_BASE_URL
+elif not PUBLIC_BASE_URL.startswith(("http://", "https://")):
+    PUBLIC_BASE_URL = "https://" + PUBLIC_BASE_URL.lstrip("/")
 
 EXPIRATION_MINUTES = {
     "5m": 25,
