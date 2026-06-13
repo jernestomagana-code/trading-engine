@@ -578,6 +578,11 @@ def row_to_intraday_futures_alert_event(row):
         "required_missing_fields",
         "decision_explanation",
         "decision",
+        "risk_status",
+        "risk",
+        "portfolio_status",
+        "portfolio",
+        "contracts_allowed",
         "warnings",
         "missing_fields",
         "premarket_context_applied",
@@ -1215,6 +1220,11 @@ def build_intraday_futures_alert_event(payload):
         "required_missing_fields": payload.get("required_missing_fields") or construction.get("required_missing_fields") or [],
         "decision_explanation": payload.get("decision_explanation") or construction.get("decision_explanation"),
         "decision": payload.get("decision") or construction.get("decision") or {},
+        "risk_status": payload.get("risk_status") or construction.get("risk_status"),
+        "risk": payload.get("risk") or construction.get("risk") or {},
+        "portfolio_status": payload.get("portfolio_status") or construction.get("portfolio_status"),
+        "portfolio": payload.get("portfolio") or construction.get("portfolio") or {},
+        "contracts_allowed": payload.get("contracts_allowed") or construction.get("contracts_allowed"),
         "warnings": normalize_warning_list(payload.get("warnings") or construction.get("warnings")),
         "missing_fields": payload.get("missing_fields") or construction.get("missing_fields") or [],
         "premarket_context_applied": payload.get("premarket_context_applied"),
@@ -1689,6 +1699,7 @@ def intraday_futures_dashboard_operating_read(events):
     latest_actionable = [
         event for event in events
         if event.get("event_code") in [101, 102, 201, 202]
+        and str(event.get("final_state") or event.get("decision_max_state") or "").upper() in ["ENTRY_READY", "MANUAL_REVIEW"]
     ]
     pending = [
         event for event in events
@@ -1696,7 +1707,7 @@ def intraday_futures_dashboard_operating_read(events):
     ]
     blocked = [
         event for event in events
-        if str(event.get("decision_max_state") or "").upper() in ["RISK_BLOCKED", "WAIT_TECHNICAL"]
+        if str(event.get("final_state") or event.get("decision_max_state") or "").upper() in ["RISK_BLOCKED", "WAIT_TECHNICAL"]
     ]
 
     if latest_actionable:
@@ -1733,26 +1744,48 @@ def intraday_futures_dashboard_window_metric(event, metric):
     return intraday_futures_dashboard_number(window.get(metric))
 
 
+def intraday_futures_dashboard_event_decision(event):
+    decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+    risk = event.get("risk") if isinstance(event.get("risk"), dict) else {}
+    portfolio = event.get("portfolio") if isinstance(event.get("portfolio"), dict) else {}
+    return {
+        "final_state": event.get("final_state") or decision.get("final_state") or event.get("decision_max_state") or event.get("construction_status") or "UNKNOWN",
+        "main_blocker": event.get("main_blocker") or decision.get("main_blocker") or "-",
+        "risk_status": event.get("risk_status") or decision.get("risk_status") or risk.get("risk_status"),
+        "portfolio_status": event.get("portfolio_status") or decision.get("portfolio_status") or portfolio.get("portfolio_status"),
+        "contracts_allowed": event.get("contracts_allowed") or risk.get("contracts_allowed"),
+    }
+
+
 def intraday_futures_dashboard_rows(events):
     rows = []
     for event in sorted(events, key=lambda item: str(item.get("received_at") or ""), reverse=True)[:50]:
-        state = event.get("decision_max_state") or event.get("construction_status") or "UNKNOWN"
+        decision = intraday_futures_dashboard_event_decision(event)
+        state = decision.get("final_state")
         evaluation = event.get("evaluation_status") or "UNKNOWN"
-        classification = event.get("classification") or "UNCLASSIFIED"
         source = event.get("original_source") or event.get("source") or "UNKNOWN"
+        premarket_found = event.get("premarket_context_found")
         premarket_blockers = ", ".join(event.get("premarket_blockers") or [])
         rows.append(f"""
             <tr>
                 <td>{intraday_futures_dashboard_escape(event.get("received_at"))}</td>
                 <td class="strong">{intraday_futures_dashboard_escape(event.get("ticker"))}</td>
-                <td>{intraday_futures_dashboard_escape(source)}</td>
+                <td class="source">{intraday_futures_dashboard_escape(source)}</td>
                 <td>{intraday_futures_dashboard_escape(event.get("event"))}</td>
                 <td>{intraday_futures_dashboard_escape(event.get("direction"))}</td>
                 <td>{intraday_futures_dashboard_number(event.get("price"))}</td>
+                <td>{intraday_futures_dashboard_number(event.get("entry_price"))}</td>
+                <td>{intraday_futures_dashboard_number(event.get("stop_price"))}</td>
+                <td>{intraday_futures_dashboard_number(event.get("tp1_price"))}</td>
+                <td>{intraday_futures_dashboard_number(event.get("tp2_price"))}</td>
                 <td>{intraday_futures_dashboard_escape(event.get("target_instrument"))}</td>
                 <td><span class="badge {intraday_futures_dashboard_badge_class(state)}">{intraday_futures_dashboard_escape(state)}</span></td>
+                <td>{intraday_futures_dashboard_escape(decision.get("main_blocker"))}</td>
+                <td><span class="badge {intraday_futures_dashboard_badge_class(decision.get("risk_status"))}">{intraday_futures_dashboard_escape(decision.get("risk_status") or "UNKNOWN")}</span></td>
+                <td><span class="badge {intraday_futures_dashboard_badge_class(decision.get("portfolio_status"))}">{intraday_futures_dashboard_escape(decision.get("portfolio_status") or "UNKNOWN")}</span></td>
+                <td>{intraday_futures_dashboard_escape(decision.get("contracts_allowed") if decision.get("contracts_allowed") is not None else "-")}</td>
+                <td>{intraday_futures_dashboard_escape("YES" if premarket_found else "NO")}</td>
                 <td><span class="badge {intraday_futures_dashboard_badge_class(evaluation)}">{intraday_futures_dashboard_escape(evaluation)}</span></td>
-                <td><span class="badge {intraday_futures_dashboard_badge_class(classification)}">{intraday_futures_dashboard_escape(classification)}</span></td>
                 <td>{intraday_futures_dashboard_escape(premarket_blockers)}</td>
                 <td>{intraday_futures_dashboard_window_metric(event, "mfe_points")}</td>
                 <td>{intraday_futures_dashboard_window_metric(event, "mae_points")}</td>
@@ -1760,7 +1793,7 @@ def intraday_futures_dashboard_rows(events):
             </tr>
         """)
     return "\n".join(rows) or """
-        <tr><td colspan="14" class="empty">Sin eventos reales para la sesion seleccionada.</td></tr>
+        <tr><td colspan="22" class="empty">Sin eventos reales para la sesion seleccionada.</td></tr>
     """
 
 
@@ -1776,6 +1809,10 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
     premarket_context = report.get("premarket_context") or {}
     operating = intraday_futures_dashboard_operating_read(events)
     generated_at = now_utc().isoformat()
+    final_state_counts = {}
+    for event in events:
+        state = intraday_futures_dashboard_event_decision(event).get("final_state") or "UNKNOWN"
+        final_state_counts[state] = final_state_counts.get(state, 0) + 1
 
     return f"""
     <!doctype html>
@@ -1806,6 +1843,7 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
             th, td {{ padding: 10px 9px; border-bottom: 1px solid #eef2f7; text-align: left; font-size: 12px; vertical-align: top; }}
             th {{ background: #f9fafb; color: #374151; font-weight: 800; }}
             .strong {{ font-weight: 800; }}
+            .source {{ max-width: 180px; word-break: break-word; color: #4b5563; }}
             .badge {{ display: inline-block; padding: 5px 8px; border-radius: 999px; color: white; font-size: 11px; font-weight: 800; white-space: nowrap; }}
             .ok {{ background: #047857; }}
             .warn {{ background: #b45309; }}
@@ -1831,10 +1869,19 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
             <section class="grid">
                 <div class="card"><div class="label">Eventos</div><div class="value">{intraday_futures_dashboard_escape(summary.get("total_events"))}</div></div>
                 <div class="card"><div class="label">Accionables</div><div class="value">{intraday_futures_dashboard_escape(report.get("actionable_events"))}</div></div>
-                <div class="card"><div class="label">Riesgo/contexto</div><div class="value">{intraday_futures_dashboard_escape(report.get("risk_context_events"))}</div></div>
-                <div class="card"><div class="label">Pendientes</div><div class="value">{intraday_futures_dashboard_escape(summary.get("pending_outcome"))}</div></div>
-                <div class="card"><div class="label">Validacion excluida</div><div class="value">{intraday_futures_dashboard_escape(validation.get("validation_events"))}</div></div>
+                <div class="card"><div class="label">Entry ready</div><div class="value">{intraday_futures_dashboard_escape(final_state_counts.get("ENTRY_READY", 0))}</div></div>
+                <div class="card"><div class="label">Manual review</div><div class="value">{intraday_futures_dashboard_escape(final_state_counts.get("MANUAL_REVIEW", 0))}</div></div>
+                <div class="card"><div class="label">Risk blocked</div><div class="value">{intraday_futures_dashboard_escape(final_state_counts.get("RISK_BLOCKED", 0))}</div></div>
                 <div class="card"><div class="label">MFE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mfe_points"))}</div></div>
+            </section>
+
+            <section class="grid">
+                <div class="card"><div class="label">Wait</div><div class="value">{intraday_futures_dashboard_escape(final_state_counts.get("WAIT", 0))}</div></div>
+                <div class="card"><div class="label">Pendientes outcome</div><div class="value">{intraday_futures_dashboard_escape(summary.get("pending_outcome"))}</div></div>
+                <div class="card"><div class="label">Riesgo/contexto</div><div class="value">{intraday_futures_dashboard_escape(report.get("risk_context_events"))}</div></div>
+                <div class="card"><div class="label">Validacion excluida</div><div class="value">{intraday_futures_dashboard_escape(validation.get("validation_events"))}</div></div>
+                <div class="card"><div class="label">MAE avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mae_points"))}</div></div>
+                <div class="card"><div class="label">MFE R avg</div><div class="value">{intraday_futures_dashboard_number(metrics.get("avg_mfe_r"))}</div></div>
             </section>
 
             <section class="card read">
@@ -1853,10 +1900,18 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
                             <th>Evento</th>
                             <th>Dir</th>
                             <th>Precio</th>
+                            <th>Entry</th>
+                            <th>Stop</th>
+                            <th>TP1</th>
+                            <th>TP2</th>
                             <th>Instrumento</th>
-                            <th>Decision</th>
+                            <th>Final</th>
+                            <th>Blocker</th>
+                            <th>Risk</th>
+                            <th>Portfolio</th>
+                            <th>Contratos</th>
+                            <th>Pre</th>
                             <th>Evaluacion</th>
-                            <th>Outcome</th>
                             <th>Pre-market blockers</th>
                             <th>MFE</th>
                             <th>MAE</th>
