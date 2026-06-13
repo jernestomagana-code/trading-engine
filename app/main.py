@@ -571,6 +571,13 @@ def row_to_intraday_futures_alert_event(row):
         "previous_day_close",
         "construction_status",
         "decision_max_state",
+        "decision_engine_version",
+        "final_state",
+        "main_blocker",
+        "blockers",
+        "required_missing_fields",
+        "decision_explanation",
+        "decision",
         "warnings",
         "missing_fields",
         "premarket_context_applied",
@@ -1201,6 +1208,13 @@ def build_intraday_futures_alert_event(payload):
         "previous_day_close": payload.get("previous_day_close"),
         "construction_status": payload.get("construction_status") or construction.get("construction_status"),
         "decision_max_state": payload.get("decision_max_state") or construction.get("decision_max_state"),
+        "decision_engine_version": payload.get("decision_engine_version") or construction.get("decision_engine_version"),
+        "final_state": payload.get("final_state") or construction.get("final_state"),
+        "main_blocker": payload.get("main_blocker") or construction.get("main_blocker"),
+        "blockers": payload.get("blockers") or construction.get("blockers") or [],
+        "required_missing_fields": payload.get("required_missing_fields") or construction.get("required_missing_fields") or [],
+        "decision_explanation": payload.get("decision_explanation") or construction.get("decision_explanation"),
+        "decision": payload.get("decision") or construction.get("decision") or {},
         "warnings": normalize_warning_list(payload.get("warnings") or construction.get("warnings")),
         "missing_fields": payload.get("missing_fields") or construction.get("missing_fields") or [],
         "premarket_context_applied": payload.get("premarket_context_applied"),
@@ -7968,6 +7982,162 @@ def apply_premarket_context_to_intraday_futures_payload(payload):
     return payload
 
 
+def apply_intraday_futures_decision_engine(payload):
+    payload = dict(payload or {})
+
+    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+        return payload
+
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    event_code = payload.get("event_code") or construction.get("event_code")
+    construction_status = str(payload.get("construction_status") or construction.get("construction_status") or "").upper()
+    risk_status = str(payload.get("risk_status") or "").upper()
+    portfolio_status = str(payload.get("portfolio_status") or "").upper()
+    current_state = str(payload.get("decision_max_state") or construction.get("decision_max_state") or "").upper()
+    missing_fields = sorted(set(payload.get("missing_fields") or construction.get("missing_fields") or []))
+    warnings = normalize_warning_list(payload.get("warnings") or construction.get("warnings"))
+    blockers = []
+    manual_review_reasons = []
+    wait_reasons = []
+
+    risk_blockers = normalize_warning_list(payload.get("risk_blockers"))
+    portfolio_blockers = normalize_warning_list(payload.get("portfolio_blockers"))
+    premarket_blockers = normalize_warning_list(payload.get("premarket_blockers"))
+
+    hard_premarket_blockers = {
+        "MACRO_LOCKOUT",
+        "DAILY_RISK_BLOCKED",
+        "PORTFOLIO_RISK_BLOCKED",
+        "PREMARKET_DECISION_RISK_BLOCKED",
+    }
+
+    if risk_status == "RISK_BLOCKED":
+        blockers.append("RISK_ENGINE_BLOCKED")
+    if portfolio_status == "RISK_BLOCKED":
+        blockers.append("PORTFOLIO_ENGINE_BLOCKED")
+    if current_state == "RISK_BLOCKED" or construction_status == "REJECTED":
+        blockers.append("CONSTRUCTION_OR_CONTEXT_BLOCKED")
+    for blocker in risk_blockers + portfolio_blockers:
+        if blocker not in blockers:
+            blockers.append(blocker)
+    for blocker in premarket_blockers:
+        if blocker in hard_premarket_blockers and blocker not in blockers:
+            blockers.append(blocker)
+
+    if event_code in [101, 102]:
+        wait_reasons.append("SETUP_WAITING_TRIGGER_CONFIRMATION")
+    elif event_code in [701]:
+        wait_reasons.append("RANGE_USED_WARNING_ONLY")
+    elif event_code in [None, "", 0, "0"]:
+        wait_reasons.append("NO_INTRADAY_EVENT")
+
+    if risk_status == "NEEDS_REVIEW":
+        manual_review_reasons.append("RISK_ENGINE_NEEDS_REVIEW")
+    if portfolio_status == "NEEDS_REVIEW":
+        manual_review_reasons.append("PORTFOLIO_ENGINE_NEEDS_REVIEW")
+    for blocker in premarket_blockers:
+        if blocker not in hard_premarket_blockers and blocker not in manual_review_reasons:
+            manual_review_reasons.append(blocker)
+    if missing_fields:
+        manual_review_reasons.append("REQUIRED_FIELDS_MISSING")
+    if construction_status in ["NEEDS_REVIEW", "MANUAL_REVIEW"] or current_state in ["NEEDS_REVIEW", "MANUAL_REVIEW"]:
+        manual_review_reasons.append("CONSTRUCTION_NEEDS_REVIEW")
+    if payload.get("not_order_instruction") is not True:
+        manual_review_reasons.append("MANUAL_REVIEW_REQUIRED")
+
+    entry_ready_conditions = [
+        event_code in [201, 202],
+        construction_status == "REVIEW_READY",
+        risk_status == "CLEAR",
+        portfolio_status == "CLEAR",
+        not premarket_blockers,
+        not missing_fields,
+        payload.get("not_order_instruction") is True,
+    ]
+
+    if blockers:
+        final_state = "RISK_BLOCKED"
+        main_blocker = blockers[0]
+    elif manual_review_reasons:
+        final_state = "MANUAL_REVIEW"
+        main_blocker = manual_review_reasons[0]
+    elif all(entry_ready_conditions):
+        final_state = "ENTRY_READY"
+        main_blocker = None
+    elif wait_reasons:
+        final_state = "WAIT"
+        main_blocker = wait_reasons[0]
+    else:
+        final_state = "WAIT"
+        main_blocker = "NO_ENTRY_READY_CONDITIONS"
+
+    all_blockers = blockers + [
+        reason for reason in manual_review_reasons + wait_reasons
+        if reason not in blockers
+    ]
+    if main_blocker and main_blocker not in all_blockers:
+        all_blockers.insert(0, main_blocker)
+
+    if final_state == "ENTRY_READY":
+        explanation = "Senal accionable lista para revision manual; no es autorizacion ni instruccion de orden."
+    elif final_state == "RISK_BLOCKED":
+        explanation = "Senal bloqueada por prioridad de riesgo, portfolio, construccion o contexto pre-market."
+    elif final_state == "MANUAL_REVIEW":
+        explanation = "Senal requiere revision manual antes de considerarse entrada."
+    else:
+        explanation = "Sin condiciones completas para entrada; mantener en observacion."
+
+    decision = {
+        "decision_engine_version": "intraday_futures_decision_v1",
+        "final_state": final_state,
+        "main_blocker": main_blocker,
+        "blockers": all_blockers,
+        "required_missing_fields": missing_fields,
+        "risk_status": risk_status or None,
+        "portfolio_status": portfolio_status or None,
+        "construction_status": construction_status or None,
+        "premarket_blockers": premarket_blockers,
+        "explanation": explanation,
+        "not_order_instruction": payload.get("not_order_instruction"),
+    }
+
+    payload["decision"] = decision
+    payload["decision_engine_version"] = decision["decision_engine_version"]
+    payload["final_state"] = final_state
+    payload["main_blocker"] = main_blocker
+    payload["blockers"] = all_blockers
+    payload["required_missing_fields"] = missing_fields
+    payload["decision_explanation"] = explanation
+    payload["decision_max_state"] = final_state
+
+    if final_state == "RISK_BLOCKED":
+        payload["construction_status"] = "REJECTED"
+    elif final_state == "ENTRY_READY":
+        payload["construction_status"] = "REVIEW_READY"
+    elif final_state == "WAIT" and construction_status not in ["NEEDS_REVIEW", "MANUAL_REVIEW", "REJECTED"]:
+        payload["construction_status"] = "NEEDS_REVIEW"
+
+    for item in all_blockers:
+        if item and item not in warnings:
+            warnings.append(item)
+    payload["warnings"] = warnings
+
+    if isinstance(construction, dict):
+        construction["decision"] = decision
+        construction["decision_engine_version"] = decision["decision_engine_version"]
+        construction["final_state"] = final_state
+        construction["main_blocker"] = main_blocker
+        construction["blockers"] = all_blockers
+        construction["required_missing_fields"] = missing_fields
+        construction["decision_explanation"] = explanation
+        construction["decision_max_state"] = final_state
+        construction["construction_status"] = payload.get("construction_status")
+        construction["warnings"] = warnings
+        payload["construction"] = construction
+
+    return payload
+
+
 def build_intraday_futures_construction(payload):
     payload = dict(payload or {})
 
@@ -8105,6 +8275,7 @@ def build_intraday_futures_construction(payload):
     payload = apply_intraday_futures_risk_engine(payload)
     payload = apply_intraday_futures_portfolio_engine(payload)
     payload = apply_premarket_context_to_intraday_futures_payload(payload)
+    payload = apply_intraday_futures_decision_engine(payload)
     return payload
 
 
@@ -8186,6 +8357,13 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "event": parsed.get("event"),
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
+        "decision_engine_version": parsed.get("decision_engine_version"),
+        "final_state": parsed.get("final_state"),
+        "main_blocker": parsed.get("main_blocker"),
+        "blockers": parsed.get("blockers"),
+        "required_missing_fields": parsed.get("required_missing_fields"),
+        "decision_explanation": parsed.get("decision_explanation"),
+        "decision": parsed.get("decision"),
         "construction_status": parsed.get("construction_status"),
         "risk_status": parsed.get("risk_status"),
         "risk": parsed.get("risk"),
@@ -8348,6 +8526,13 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "event": parsed.get("event"),
         "event_code": parsed.get("event_code"),
         "decision_max_state": parsed.get("decision_max_state"),
+        "decision_engine_version": parsed.get("decision_engine_version"),
+        "final_state": parsed.get("final_state"),
+        "main_blocker": parsed.get("main_blocker"),
+        "blockers": parsed.get("blockers"),
+        "required_missing_fields": parsed.get("required_missing_fields"),
+        "decision_explanation": parsed.get("decision_explanation"),
+        "decision": parsed.get("decision"),
         "construction_status": parsed.get("construction_status"),
         "risk_status": parsed.get("risk_status"),
         "risk": parsed.get("risk"),
