@@ -15318,6 +15318,8 @@ def _v25_make_decision(ticker):
             "final_state": "NO_DATA",
             "decision": "NO_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
             "severity": "red",
             "main_blocker": "NO_V25_MASTER_SNAPSHOT",
             "action": f"{t}: no hay v25_master_snapshot.json todavía. Ejecutar ibkr_bridge.py o enviar POST /v25_ingest_snapshot.",
@@ -18177,7 +18179,7 @@ def _v29_decide_ticker(ticker):
             "main_blocker": "NO_OPTIONS_ROWS_FOR_TICKER",
             "action": f"{ticker}: no hay filas de opciones detectadas.",
             "executive_summary": f"{ticker}: NO_DATA. No hay datos de opciones para evaluar operación.",
-            "risk_note": "No ejecutar sin validar manualmente datos, liquidez, spread, evento, capital y tolerancia de riesgo.",
+            "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
             "best_row": None,
             "rows_found_for_ticker": 0,
             "total_rows_found": len(rows),
@@ -18198,14 +18200,16 @@ def _v29_decide_ticker(ticker):
     if market_ok and technical_ok and options_ok:
         final_state = "ENTRY_READY"
         decision = "ENTRY_READY"
-        can_operate = True
+        can_operate = False
+        manual_review_ready = True
         severity = "green"
         blocker = None
-        action = f"{ticker}: entrada potencial lista. Validar tamaño, spread, liquidez, evento y riesgo final antes de ejecutar."
+        action = f"{ticker}: senal lista para revision manual. Validar tamano, spread, liquidez, evento y riesgo final antes de cualquier decision."
     elif not market_ok:
         final_state = "WAIT_MARKET_OPEN"
         decision = "WAIT_MARKET_OPEN"
         can_operate = False
+        manual_review_ready = False
         severity = "gray"
         blocker = "MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE"
         action = f"{ticker}: setup detectado, pero esperar ventana confiable de mercado/opciones."
@@ -18213,6 +18217,7 @@ def _v29_decide_ticker(ticker):
         final_state = "WAIT_OPTIONS_DATA"
         decision = "WAIT_OPTIONS_DATA"
         can_operate = False
+        manual_review_ready = False
         severity = "yellow"
         blocker = "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"
         action = f"{ticker}: técnico detectado, pero falta contrato ejecutable con bid/ask/spread/spread_pct/delta/DTE/expiration/strike completos."
@@ -18220,6 +18225,7 @@ def _v29_decide_ticker(ticker):
         final_state = "WAIT_TECHNICAL"
         decision = "WAIT_TECHNICAL"
         can_operate = False
+        manual_review_ready = False
         severity = "yellow"
         blocker = "TECHNICAL_NOT_CONFIRMED"
         action = f"{ticker}: opciones completas, pero falta confirmación técnica."
@@ -18227,6 +18233,7 @@ def _v29_decide_ticker(ticker):
         final_state = "RADAR"
         decision = "RADAR"
         can_operate = False
+        manual_review_ready = False
         severity = "yellow"
         blocker = "UNKNOWN_CONFIRMATION_GAP"
         action = f"{ticker}: mantener en radar. Confirmaciones incompletas."
@@ -18248,6 +18255,8 @@ def _v29_decide_ticker(ticker):
         "final_state": final_state,
         "decision": decision,
         "can_operate": can_operate,
+        "manual_review_ready": manual_review_ready,
+        "not_order_instruction": True,
         "severity": severity,
         "strategy": strategy,
         "technical_bias": tech_state["trend"],
@@ -18258,7 +18267,7 @@ def _v29_decide_ticker(ticker):
         "main_blocker": blocker,
         "action": action,
         "executive_summary": executive_summary,
-        "risk_note": "No ejecutar sin validar manualmente tamaño, liquidez, spread, evento, capital disponible y tolerancia de riesgo.",
+        "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
         "best_row": best,
         "best_row_quality": q,
         "rows_found_for_ticker": len(ticker_rows),
@@ -18342,7 +18351,7 @@ def _v29_dashboard_html(tickers=None):
             <td>{_v29_html_escape(q.get('mid'))}</td>
             <td>{_v29_html_escape(q.get('spread'))}</td>
             <td>{_v29_html_escape(q.get('spread_pct'))}</td>
-            <td>{'Sí' if d.get('can_operate') else 'No'}</td>
+            <td>{'Sí' if d.get('manual_review_ready') else 'No'}</td>
             <td>{_v29_html_escape(d.get('main_blocker'))}</td>
             <td>{_v29_html_escape(d.get('action'))}</td>
         </tr>
@@ -18431,13 +18440,13 @@ def _v29_dashboard_html(tickers=None):
         <h1>V29 — Final Decision Quality Engine</h1>
 
         <div class="hero">
-            <h2>Execution Guard activo</h2>
-            <p>Selecciona únicamente contratos realmente ejecutables: bid/ask/spread/delta/DTE/strike + técnico + mercado.</p>
+            <h2>Decision Support Guard activo</h2>
+            <p>Identifica contratos evaluables para revision manual: bid/ask/spread/delta/DTE/strike + tecnico + mercado.</p>
             <p>Generado: {generated}</p>
         </div>
 
         <div class="cards">
-            <div class="card"><div class="label">Entry Ready</div><div class="num">{counts["ENTRY_READY"]}</div></div>
+            <div class="card"><div class="label">Manual Review Ready</div><div class="num">{counts["ENTRY_READY"]}</div></div>
             <div class="card"><div class="label">Wait Technical</div><div class="num">{counts["WAIT_TECHNICAL"]}</div></div>
             <div class="card"><div class="label">Wait Options</div><div class="num">{counts["WAIT_OPTIONS"]}</div></div>
             <div class="card"><div class="label">Wait Market</div><div class="num">{counts["WAIT_MARKET"]}</div></div>
@@ -18462,7 +18471,7 @@ def _v29_dashboard_html(tickers=None):
                     <th>Mid</th>
                     <th>Spread</th>
                     <th>Spread %</th>
-                    <th>Operable</th>
+                    <th>Revision manual</th>
                     <th>Bloqueador</th>
                     <th>Acción</th>
                 </tr>
@@ -18524,7 +18533,9 @@ async def gpt_v29_trade_decision(ticker: str):
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
-        "can_operate": d.get("can_operate"),
+        "can_operate": False,
+        "manual_review_ready": d.get("manual_review_ready"),
+        "not_order_instruction": True,
         "strategy": d.get("strategy"),
         "technical_bias": d.get("technical_bias"),
         "technical_score": d.get("technical_score"),
@@ -18548,7 +18559,9 @@ async def gpt_v29_trade_decision(ticker: str):
             "volume": (d.get("best_row_quality") or {}).get("volume"),
             "open_interest": (d.get("best_row_quality") or {}).get("open_interest"),
             "data_quality": (d.get("best_row") or {}).get("data_quality"),
-            "can_operate": d.get("can_operate"),
+            "can_operate": False,
+            "manual_review_ready": d.get("manual_review_ready"),
+            "not_order_instruction": True,
             "missing_confirmations": (d.get("best_row") or {}).get("missing_confirmations") or (d.get("best_row_quality") or {}).get("missing"),
             "recommendation": (d.get("best_row") or {}).get("recommendation"),
             "reason": (d.get("best_row") or {}).get("reason"),

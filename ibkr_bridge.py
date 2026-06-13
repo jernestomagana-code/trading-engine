@@ -2017,7 +2017,7 @@ def send_options_intelligence():
                         for key, value in required_execution_fields.items()
                         if value is None
                     ]
-                    execution_ready = (
+                    manual_review_ready = (
                         len(missing_confirmations) == 0
                         and decision in ["OPERAR", "ENTRY", "ENTRY_READY"]
                     )
@@ -2038,8 +2038,8 @@ def send_options_intelligence():
                         "integration_ready_for_tradingview": True,
                         "data_quality": data_quality,
                         "decision_cap": decision_cap,
-                        "decision": "ENTRY_READY" if execution_ready else decision,
-                        "final_decision": "ENTRY_READY" if execution_ready else decision,
+                        "decision": "ENTRY_READY" if manual_review_ready else decision,
+                        "final_decision": "ENTRY_READY" if manual_review_ready else decision,
                         "option_symbol": contract.localSymbol,
                         "local_symbol": contract.localSymbol,
                         "option_type": option_type,
@@ -2065,9 +2065,11 @@ def send_options_intelligence():
                         "vega": greeks["vega"],
                         "volume": volume,
                         "open_interest": open_interest,
-                        "can_operate": execution_ready,
+                        "can_operate": False,
+                        "manual_review_ready": manual_review_ready,
+                        "not_order_instruction": True,
                         "missing_confirmations": missing_confirmations,
-                        "recommendation": "VALIDAR_MANUALMENTE_ANTES_DE_OPERAR" if execution_ready else "ESPERAR_DATOS_EJECUTABLES",
+                        "recommendation": "LISTO_PARA_REVISION_MANUAL" if manual_review_ready else "ESPERAR_DATOS_EJECUTABLES",
                         "reason": reason,
                         "v30_contract_enrichment": True,
                         "v30_required_fields_complete": len(missing_confirmations) == 0,
@@ -2348,7 +2350,7 @@ def v18_recommendation(row):
     can_operate = v18_can_operate(row)
 
     if can_operate:
-        return "Posible operación. Validar tamaño, riesgo y confirmación final antes de ejecutar."
+        return "Listo para revision manual. Validar tamano, riesgo y confirmacion final antes de cualquier decision."
 
     if decision == "MANAGE_POSITION":
         return "Prioridad de gestión. Revisar posición abierta antes de abrir nuevas operaciones."
@@ -3495,5 +3497,3 @@ def _v28_publish_master_snapshot(extra_payload=None):
 # ============================================================
 # END V28 REMOTE MASTER SNAPSHOT AUTO PUBLISHER
 # ============================================================
-
-
