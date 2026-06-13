@@ -7662,6 +7662,224 @@ def apply_intraday_futures_risk_engine(payload):
     return payload
 
 
+def normalize_intraday_futures_positions(value):
+    if value in [None, "", "null", "None"]:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def intraday_futures_instrument_family_from_value(value):
+    value = str(value or "").upper().strip()
+    if value in ["MNQ", "NQ", "QQQ", "NASDAQ"]:
+        return "Nasdaq"
+    if value in ["MES", "ES", "SPY", "SPX", "US500", "US500F", "S&P 500", "SP500"]:
+        return "S&P 500"
+    return None
+
+
+def intraday_futures_position_family(position):
+    if not isinstance(position, dict):
+        return None
+    return (
+        intraday_futures_instrument_family_from_value(position.get("instrument"))
+        or intraday_futures_instrument_family_from_value(position.get("target_instrument"))
+        or intraday_futures_instrument_family_from_value(position.get("ticker"))
+        or intraday_futures_instrument_family_from_value(position.get("symbol"))
+        or str(position.get("instrument_family") or "").strip()
+        or None
+    )
+
+
+def intraday_futures_position_direction(position):
+    if not isinstance(position, dict):
+        return None
+    direction = str(position.get("direction") or position.get("side") or "").upper().strip()
+    if direction in ["LONG", "BUY", "BULLISH"]:
+        return "LONG"
+    if direction in ["SHORT", "SELL", "BEARISH"]:
+        return "SHORT"
+    qty = first_present_float(position.get("quantity"), position.get("qty"), position.get("contracts"))
+    if qty is not None:
+        if qty > 0:
+            return "LONG"
+        if qty < 0:
+            return "SHORT"
+    return None
+
+
+def apply_intraday_futures_portfolio_engine(payload):
+    payload = dict(payload or {})
+
+    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+        return payload
+
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    warnings = normalize_warning_list(payload.get("warnings"))
+    missing_fields = list(payload.get("missing_fields") or construction.get("missing_fields") or [])
+    portfolio_blockers = []
+    portfolio_warnings = []
+
+    target_instrument = intraday_futures_target_instrument(payload, construction)
+    proposed_family = (
+        str(payload.get("instrument_family") or construction.get("instrument_family") or "").strip()
+        or intraday_futures_instrument_family_from_value(target_instrument)
+        or "Nasdaq"
+    )
+    proposed_direction = str(
+        first_present_value(payload.get("direction"), construction.get("direction"), "NONE")
+    ).upper().strip()
+
+    open_positions = normalize_intraday_futures_positions(
+        first_present_value(payload.get("open_intraday_positions"), payload.get("open_positions"))
+    )
+    correlated_positions = normalize_intraday_futures_positions(payload.get("correlated_positions"))
+    qqq_exposure = first_present_float(payload.get("qqq_exposure"))
+    spy_exposure = first_present_float(payload.get("spy_exposure"))
+    futures_exposure = first_present_float(payload.get("futures_exposure"))
+    current_net_exposure = first_present_float(payload.get("current_net_exposure"))
+    current_gross_exposure = first_present_float(payload.get("current_gross_exposure"))
+    proposed_notional_exposure = first_present_float(payload.get("proposed_notional_exposure"))
+    proposed_risk = first_present_float(payload.get("proposed_risk"), payload.get("risk_per_trade_amount"))
+
+    explicit_portfolio_result = normalize_intraday_futures_status(
+        first_present_value(payload.get("portfolio_engine_result"), payload.get("portfolio_status")),
+        "",
+    )
+    explicit_block = explicit_portfolio_result == "RISK_BLOCKED"
+    explicit_clear = explicit_portfolio_result == "CLEAR"
+
+    duplicate_beta_risk = intraday_futures_bool(payload.get("duplicate_beta_risk"), default=False)
+    same_family_positions = []
+    opposite_family_positions = []
+
+    for position in open_positions:
+        family = intraday_futures_position_family(position)
+        direction = intraday_futures_position_direction(position)
+        if family != proposed_family:
+            continue
+        if direction and direction == proposed_direction:
+            same_family_positions.append(position)
+        elif direction and proposed_direction in ["LONG", "SHORT"]:
+            opposite_family_positions.append(position)
+
+    if same_family_positions:
+        duplicate_beta_risk = True
+        portfolio_warnings.append("SAME_FAMILY_SAME_DIRECTION_EXPOSURE")
+    if opposite_family_positions:
+        portfolio_warnings.append("SAME_FAMILY_OPPOSITE_DIRECTION_EXPOSURE")
+    if correlated_positions:
+        portfolio_warnings.append("CORRELATED_POSITIONS_PRESENT")
+
+    qqq_spy_same_direction = intraday_futures_bool(payload.get("qqq_spy_same_direction"), default=False)
+    if qqq_spy_same_direction:
+        duplicate_beta_risk = True
+        portfolio_warnings.append("QQQ_SPY_SAME_DIRECTION_DUPLICATION")
+
+    if payload.get("not_order_instruction") is not True:
+        portfolio_blockers.append("NOT_ORDER_INSTRUCTION_FALSE")
+    if explicit_block:
+        portfolio_blockers.append("PORTFOLIO_ENGINE_VETO")
+    if intraday_futures_bool(payload.get("duplicate_beta_blocked"), default=False):
+        portfolio_blockers.append("DUPLICATE_BETA_BLOCKED")
+    if str(payload.get("risk_status") or "").upper() == "RISK_BLOCKED":
+        portfolio_blockers.append("RISK_ENGINE_VETO")
+
+    has_portfolio_context = any([
+        explicit_portfolio_result,
+        open_positions,
+        correlated_positions,
+        qqq_exposure is not None,
+        spy_exposure is not None,
+        futures_exposure is not None,
+        current_net_exposure is not None,
+        current_gross_exposure is not None,
+    ])
+    if not has_portfolio_context:
+        portfolio_warnings.append("PORTFOLIO_CONTEXT_MISSING")
+        missing_fields.append("portfolio_context")
+
+    portfolio_status = "CLEAR"
+    if portfolio_blockers:
+        portfolio_status = "RISK_BLOCKED"
+    elif portfolio_warnings or duplicate_beta_risk or not explicit_clear:
+        portfolio_status = "NEEDS_REVIEW"
+
+    missing_fields = [field for field in missing_fields if field != "portfolio_engine_result"]
+
+    current_decision = str(payload.get("decision_max_state") or construction.get("decision_max_state") or "MANUAL_REVIEW").upper()
+    current_construction_status = str(payload.get("construction_status") or construction.get("construction_status") or "NEEDS_REVIEW").upper()
+    if portfolio_status == "RISK_BLOCKED":
+        decision_max_state = "RISK_BLOCKED"
+        construction_status = "REJECTED"
+    elif portfolio_status == "NEEDS_REVIEW":
+        decision_max_state = "MANUAL_REVIEW" if current_decision == "ENTRY_READY" else current_decision
+        construction_status = "NEEDS_REVIEW" if current_construction_status == "REVIEW_READY" else current_construction_status
+    else:
+        decision_max_state = current_decision
+        construction_status = current_construction_status
+
+    for item in portfolio_blockers + portfolio_warnings:
+        if item not in warnings:
+            warnings.append(item)
+    if not missing_fields and "DATA_INCOMPLETE" in warnings:
+        warnings.remove("DATA_INCOMPLETE")
+
+    portfolio = {
+        "portfolio_engine_version": "intraday_futures_portfolio_v1",
+        "portfolio_status": portfolio_status,
+        "decision_max_state": decision_max_state,
+        "proposed_instrument": target_instrument,
+        "proposed_direction": proposed_direction,
+        "proposed_family": proposed_family,
+        "open_intraday_positions": open_positions,
+        "correlated_positions": correlated_positions,
+        "qqq_exposure": qqq_exposure,
+        "spy_exposure": spy_exposure,
+        "futures_exposure": futures_exposure,
+        "current_net_exposure": current_net_exposure,
+        "current_gross_exposure": current_gross_exposure,
+        "proposed_notional_exposure": proposed_notional_exposure,
+        "proposed_risk": proposed_risk,
+        "duplicate_beta_risk": duplicate_beta_risk,
+        "portfolio_blockers": portfolio_blockers,
+        "portfolio_warnings": portfolio_warnings,
+        "requires_manual_review": portfolio_status == "NEEDS_REVIEW",
+        "not_order_instruction": payload.get("not_order_instruction"),
+    }
+
+    payload["portfolio"] = portfolio
+    payload["portfolio_engine_version"] = portfolio["portfolio_engine_version"]
+    payload["portfolio_engine_result"] = portfolio_status
+    payload["portfolio_status"] = portfolio_status
+    payload["portfolio_blockers"] = portfolio_blockers
+    payload["portfolio_warnings"] = portfolio_warnings
+    payload["duplicate_beta_risk"] = duplicate_beta_risk
+    payload["warnings"] = warnings
+    payload["missing_fields"] = sorted(set(missing_fields))
+    payload["construction_status"] = construction_status
+    payload["decision_max_state"] = decision_max_state
+
+    if isinstance(construction, dict):
+        construction["portfolio"] = portfolio
+        construction["portfolio_engine_version"] = portfolio["portfolio_engine_version"]
+        construction["portfolio_engine_result"] = portfolio_status
+        construction["portfolio_status"] = portfolio_status
+        construction["portfolio_blockers"] = portfolio_blockers
+        construction["portfolio_warnings"] = portfolio_warnings
+        construction["duplicate_beta_risk"] = duplicate_beta_risk
+        construction["warnings"] = warnings
+        construction["missing_fields"] = payload["missing_fields"]
+        construction["construction_status"] = construction_status
+        construction["decision_max_state"] = decision_max_state
+        payload["construction"] = construction
+
+    return payload
+
+
 def apply_premarket_context_to_intraday_futures_payload(payload):
     payload = dict(payload or {})
 
@@ -7885,6 +8103,7 @@ def build_intraday_futures_construction(payload):
     payload["missing_fields"] = missing_fields
     payload["construction_engine_version"] = construction["construction_engine_version"]
     payload = apply_intraday_futures_risk_engine(payload)
+    payload = apply_intraday_futures_portfolio_engine(payload)
     payload = apply_premarket_context_to_intraday_futures_payload(payload)
     return payload
 
@@ -7970,6 +8189,8 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "construction_status": parsed.get("construction_status"),
         "risk_status": parsed.get("risk_status"),
         "risk": parsed.get("risk"),
+        "portfolio_status": parsed.get("portfolio_status"),
+        "portfolio": parsed.get("portfolio"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
@@ -8130,6 +8351,8 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "construction_status": parsed.get("construction_status"),
         "risk_status": parsed.get("risk_status"),
         "risk": parsed.get("risk"),
+        "portfolio_status": parsed.get("portfolio_status"),
+        "portfolio": parsed.get("portfolio"),
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
