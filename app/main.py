@@ -4480,6 +4480,144 @@ def intraday_futures_get_premarket_context_template(
     }
 
 
+def intraday_futures_premarket_page_html(mode="base", session_date=None, updated_by="manual", saved_result=None):
+    template = intraday_futures_premarket_template(
+        mode=mode,
+        session_date=session_date,
+        updated_by=updated_by,
+    )
+    payload = template.get("payload") or {}
+    current = get_intraday_futures_premarket_context(session_date=payload.get("session_date"))
+    modes = template.get("allowed_modes") or []
+    mode_buttons = "\n".join(
+        '<a class="mode {active}" href="/intraday_futures/premarket?mode={mode}&session_date={session_date}&updated_by={updated_by}">{label}</a>'.format(
+            active="active" if item == template.get("mode") else "",
+            mode=html.escape(item),
+            session_date=html.escape(payload.get("session_date") or ""),
+            updated_by=html.escape(payload.get("updated_by") or "manual"),
+            label=html.escape(item.replace("_", " ").title()),
+        )
+        for item in modes
+    )
+    payload_json = json.dumps(payload, indent=2, ensure_ascii=True)
+    current_context = (current or {}).get("context") or {}
+    saved_html = ""
+    if saved_result:
+        saved_html = '<section class="notice"><b>Contexto cargado.</b> Supabase saved: {saved}</section>'.format(
+            saved=html.escape(str(((saved_result.get("supabase") or {}).get("saved"))))
+        )
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Stock Ultimus Pre-market</title>
+        <style>
+            body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; color:#111827; background:#f5f7fb; }}
+            header {{ background:#111827; color:white; padding:22px 28px; }}
+            h1 {{ margin:0 0 6px 0; font-size:24px; letter-spacing:0; }}
+            main {{ padding:22px 28px 36px; max-width:1180px; }}
+            .grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:16px; align-items:start; }}
+            .card, .notice {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; }}
+            .notice {{ border-left:5px solid #047857; margin-bottom:16px; }}
+            .label {{ color:#6b7280; font-size:12px; text-transform:uppercase; margin-bottom:8px; }}
+            .modes {{ display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }}
+            .mode, button {{ border:1px solid #d1d5db; background:white; border-radius:8px; padding:9px 11px; text-decoration:none; color:#111827; font-weight:700; font-size:13px; }}
+            .mode.active {{ background:#111827; color:white; border-color:#111827; }}
+            button {{ background:#047857; color:white; border-color:#047857; cursor:pointer; }}
+            pre {{ background:#0f172a; color:#e5e7eb; border-radius:8px; padding:14px; overflow:auto; font-size:12px; line-height:1.45; }}
+            table {{ width:100%; border-collapse:collapse; }}
+            td {{ padding:8px 6px; border-bottom:1px solid #eef2f7; font-size:13px; vertical-align:top; }}
+            td:first-child {{ color:#6b7280; width:42%; }}
+            .warn {{ color:#92400e; }}
+            .small {{ color:#6b7280; font-size:13px; margin-top:10px; }}
+            @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} main {{ padding:16px; }} }}
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Stock Ultimus | Pre-market Intraday Futures</h1>
+            <div>Sesion {html.escape(payload.get("session_date") or "")} | Modo {html.escape(template.get("mode") or "")}</div>
+        </header>
+        <main>
+            {saved_html}
+            <section class="card">
+                <div class="label">Seleccionar modo</div>
+                <div class="modes">{mode_buttons}</div>
+                <form method="get" action="/intraday_futures/premarket/load">
+                    <input type="hidden" name="mode" value="{html.escape(template.get("mode") or "base")}">
+                    <input type="hidden" name="session_date" value="{html.escape(payload.get("session_date") or "")}">
+                    <input type="hidden" name="updated_by" value="{html.escape(payload.get("updated_by") or "manual")}">
+                    <button type="submit">Cargar contexto seleccionado</button>
+                </form>
+                <p class="small warn">Carga contexto para decision support. No coloca ordenes y no autoriza ejecucion automatica.</p>
+            </section>
+            <section class="grid" style="margin-top:16px;">
+                <div class="card">
+                    <div class="label">Payload a cargar</div>
+                    <pre>{html.escape(payload_json)}</pre>
+                </div>
+                <div class="card">
+                    <div class="label">Contexto actualmente guardado</div>
+                    <table>
+                        <tr><td>Encontrado</td><td>{html.escape(str(current.get("found")))}</td></tr>
+                        <tr><td>Market</td><td>{html.escape(str(current_context.get("market_context_status") or ""))}</td></tr>
+                        <tr><td>Macro</td><td>{html.escape(str(current_context.get("macro_status") or ""))}</td></tr>
+                        <tr><td>Volatilidad</td><td>{html.escape(str(current_context.get("volatility_status") or ""))}</td></tr>
+                        <tr><td>Referencia</td><td>{html.escape(str(current_context.get("reference_alignment") or ""))}</td></tr>
+                        <tr><td>OR</td><td>{html.escape(str(current_context.get("opening_range_status") or ""))}</td></tr>
+                        <tr><td>Riesgo</td><td>{html.escape(str(current_context.get("risk_daily_status") or ""))}</td></tr>
+                        <tr><td>Portfolio</td><td>{html.escape(str(current_context.get("portfolio_status") or ""))}</td></tr>
+                        <tr><td>Max State</td><td>{html.escape(str(current_context.get("decision_max_state") or ""))}</td></tr>
+                        <tr><td>Notas</td><td>{html.escape(str(current_context.get("notes") or ""))}</td></tr>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </body>
+    </html>
+    """
+
+
+@app.get("/intraday_futures/premarket", response_class=HTMLResponse)
+def intraday_futures_premarket_page(
+    mode: str = "base",
+    session_date: Optional[str] = None,
+    updated_by: str = "manual",
+):
+    return HTMLResponse(
+        intraday_futures_premarket_page_html(
+            mode=mode,
+            session_date=session_date,
+            updated_by=updated_by,
+        )
+    )
+
+
+@app.get("/intraday_futures/premarket/load", response_class=HTMLResponse)
+def intraday_futures_premarket_load(
+    mode: str = "base",
+    session_date: Optional[str] = None,
+    updated_by: str = "manual",
+):
+    template = intraday_futures_premarket_template(
+        mode=mode,
+        session_date=session_date,
+        updated_by=updated_by,
+    )
+    result = save_intraday_futures_premarket_context(template.get("payload") or {})
+    return HTMLResponse(
+        intraday_futures_premarket_page_html(
+            mode=template.get("mode"),
+            session_date=(template.get("payload") or {}).get("session_date"),
+            updated_by=(template.get("payload") or {}).get("updated_by"),
+            saved_result=result,
+        )
+    )
+
+
 @app.get("/intraday_futures/price_points")
 def intraday_futures_price_points(limit: int = 100):
     limit = max(1, min(int(limit), 1000))
