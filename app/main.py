@@ -1626,6 +1626,41 @@ def intraday_futures_validation_summary(events):
     }
 
 
+def intraday_futures_event_final_state(event):
+    decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+    return str(
+        event.get("final_state")
+        or decision.get("final_state")
+        or event.get("decision_max_state")
+        or event.get("construction_status")
+        or "UNKNOWN"
+    ).upper()
+
+
+def intraday_futures_event_main_blocker(event):
+    decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+    return str(event.get("main_blocker") or decision.get("main_blocker") or "NONE").upper()
+
+
+def intraday_futures_selected_outcome_window(event):
+    windows = (event.get("auto_outcome") or {}).get("windows") or {}
+    if not isinstance(windows, dict):
+        return {}
+    return windows.get("60m") or windows.get("30m") or windows.get("15m") or windows.get("5m") or {}
+
+
+def increment_counter(counter, key):
+    key = str(key or "UNKNOWN").upper()
+    counter[key] = counter.get(key, 0) + 1
+
+
+def top_counter_items(counter, limit=10):
+    return [
+        {"key": key, "count": count}
+        for key, count in sorted(counter.items(), key=lambda item: item[1], reverse=True)[:limit]
+    ]
+
+
 def build_intraday_futures_daily_report(session_date=None, include_validation=False):
     session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
     premarket_context = get_intraday_futures_premarket_context(session_date=session_date)
@@ -1654,22 +1689,99 @@ def build_intraday_futures_daily_report(session_date=None, include_validation=Fa
     mae_values = []
     mfe_r_values = []
     mae_r_values = []
+    by_final_state = {}
+    by_main_blocker = {}
+    by_risk_status = {}
+    by_portfolio_status = {}
+    by_premarket_found = {"true": 0, "false": 0}
+    outcome_ranked_events = []
 
     for event in events:
-        windows = (event.get("auto_outcome") or {}).get("windows") or {}
-        window = windows.get("60m") or windows.get("30m") or windows.get("15m") or windows.get("5m")
+        final_state = intraday_futures_event_final_state(event)
+        main_blocker = intraday_futures_event_main_blocker(event)
+        decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+        risk = event.get("risk") if isinstance(event.get("risk"), dict) else {}
+        portfolio = event.get("portfolio") if isinstance(event.get("portfolio"), dict) else {}
+
+        increment_counter(by_final_state, final_state)
+        increment_counter(by_main_blocker, main_blocker)
+        increment_counter(by_risk_status, event.get("risk_status") or decision.get("risk_status") or risk.get("risk_status") or "UNKNOWN")
+        increment_counter(by_portfolio_status, event.get("portfolio_status") or decision.get("portfolio_status") or portfolio.get("portfolio_status") or "UNKNOWN")
+        by_premarket_found["true" if event.get("premarket_context_found") else "false"] += 1
+
+        window = intraday_futures_selected_outcome_window(event)
         if not isinstance(window, dict):
             continue
-        mfe_values.append(coerce_float_or_none(window.get("mfe_points")))
-        mae_values.append(coerce_float_or_none(window.get("mae_points")))
-        mfe_r_values.append(coerce_float_or_none(window.get("mfe_r")))
-        mae_r_values.append(coerce_float_or_none(window.get("mae_r")))
+        mfe_points = coerce_float_or_none(window.get("mfe_points"))
+        mae_points = coerce_float_or_none(window.get("mae_points"))
+        mfe_r = coerce_float_or_none(window.get("mfe_r"))
+        mae_r = coerce_float_or_none(window.get("mae_r"))
+        mfe_values.append(mfe_points)
+        mae_values.append(mae_points)
+        mfe_r_values.append(mfe_r)
+        mae_r_values.append(mae_r)
+        if mfe_r is not None:
+            outcome_ranked_events.append({
+                "event_id": event.get("event_id"),
+                "received_at": event.get("received_at"),
+                "ticker": event.get("ticker"),
+                "event": event.get("event"),
+                "direction": event.get("direction"),
+                "final_state": final_state,
+                "main_blocker": main_blocker,
+                "entry_price": event.get("entry_price"),
+                "stop_price": event.get("stop_price"),
+                "tp1_price": event.get("tp1_price"),
+                "tp2_price": event.get("tp2_price"),
+                "mfe_points": mfe_points,
+                "mae_points": mae_points,
+                "mfe_r": mfe_r,
+                "mae_r": mae_r,
+                "evaluation_status": event.get("evaluation_status"),
+            })
 
     latest_events = sorted(
         events,
         key=lambda event: str(event.get("received_at") or ""),
         reverse=True,
     )[:20]
+    best_signals = sorted(
+        outcome_ranked_events,
+        key=lambda event: coerce_float_or_none(event.get("mfe_r")) or -999,
+        reverse=True,
+    )[:5]
+    worst_signals = sorted(
+        outcome_ranked_events,
+        key=lambda event: coerce_float_or_none(event.get("mae_r")) or -999,
+        reverse=True,
+    )[:5]
+
+    entry_ready_count = by_final_state.get("ENTRY_READY", 0)
+    manual_review_count = by_final_state.get("MANUAL_REVIEW", 0)
+    risk_blocked_count = by_final_state.get("RISK_BLOCKED", 0)
+    pending_count = summary.get("pending_outcome", 0)
+    evaluated_count = summary.get("auto_evaluated", 0) + summary.get("partially_auto_evaluated", 0) + summary.get("evaluated_manually", 0)
+    avg_mfe_r = average_or_none(mfe_r_values)
+    avg_mae_r = average_or_none(mae_r_values)
+
+    if len(events) == 0:
+        operating_assessment = "NO_REAL_SIGNALS"
+        next_session_focus = "Mantener monitoreo; no hay evidencia real para ajustar parametros."
+    elif pending_count > evaluated_count:
+        operating_assessment = "OUTCOMES_PENDING"
+        next_session_focus = "Completar evaluacion de outcomes antes de ajustar reglas."
+    elif risk_blocked_count > max(entry_ready_count + manual_review_count, 0):
+        operating_assessment = "RISK_FILTER_DOMINANT"
+        next_session_focus = "Revisar si los bloqueos principales son deseados o demasiado restrictivos."
+    elif entry_ready_count == 0 and manual_review_count > 0:
+        operating_assessment = "MANUAL_REVIEW_DOMINANT"
+        next_session_focus = "Revisar blockers de pre-market, portfolio y datos antes de buscar mas senales."
+    elif avg_mfe_r is not None and avg_mfe_r >= 1:
+        operating_assessment = "SIGNALS_SHOW_FORWARD_EDGE"
+        next_session_focus = "Mantener reglas; seguir midiendo MFE/MAE antes de relajar filtros."
+    else:
+        operating_assessment = "OBSERVE_MORE_DATA"
+        next_session_focus = "Acumular mas sesiones reales; no cambiar parametros con muestra limitada."
 
     return {
         "engine": "intraday_futures_outcome_engine_v1_phase_4_report",
@@ -1681,11 +1793,31 @@ def build_intraday_futures_daily_report(session_date=None, include_validation=Fa
         "summary": summary,
         "actionable_events": len(actionable_events),
         "risk_context_events": len(risk_events),
+        "decision_analysis": {
+            "by_final_state": by_final_state,
+            "top_main_blockers": top_counter_items(by_main_blocker),
+            "by_risk_status": by_risk_status,
+            "by_portfolio_status": by_portfolio_status,
+            "premarket_context_found": by_premarket_found,
+        },
         "metrics": {
             "avg_mfe_points": average_or_none(mfe_values),
             "avg_mae_points": average_or_none(mae_values),
-            "avg_mfe_r": average_or_none(mfe_r_values),
-            "avg_mae_r": average_or_none(mae_r_values),
+            "avg_mfe_r": avg_mfe_r,
+            "avg_mae_r": avg_mae_r,
+            "evaluated_signal_count": len(outcome_ranked_events),
+        },
+        "best_signals_by_mfe_r": best_signals,
+        "worst_signals_by_mae_r": worst_signals,
+        "operational_read": {
+            "assessment": operating_assessment,
+            "entry_ready_count": entry_ready_count,
+            "manual_review_count": manual_review_count,
+            "risk_blocked_count": risk_blocked_count,
+            "pending_outcome_count": pending_count,
+            "evaluated_count": evaluated_count,
+            "next_session_focus": next_session_focus,
+            "not_order_instruction": True,
         },
         "latest_events": latest_events,
         "notes": [
