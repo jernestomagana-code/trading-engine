@@ -40,6 +40,11 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
+PREMARKET_EMAIL_FROM = os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
+PREMARKET_EMAIL_REPLY_TO = os.getenv("PREMARKET_EMAIL_REPLY_TO", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -4581,6 +4586,146 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     """
 
 
+def intraday_futures_premarket_email_content(mode="base", session_date=None, updated_by="manual"):
+    template = intraday_futures_premarket_template(
+        mode=mode,
+        session_date=session_date,
+        updated_by=updated_by,
+    )
+    payload = template.get("payload") or {}
+    session_date = payload.get("session_date")
+    mode = template.get("mode")
+    premarket_url = "{base}/intraday_futures/premarket?mode={mode}&session_date={session_date}&updated_by={updated_by}".format(
+        base=PUBLIC_BASE_URL,
+        mode=mode,
+        session_date=session_date,
+        updated_by=payload.get("updated_by") or "manual",
+    )
+    dashboard_url = "{base}/intraday_futures/dashboard?session_date={session_date}".format(
+        base=PUBLIC_BASE_URL,
+        session_date=session_date,
+    )
+    report_url = "{base}/intraday_futures/report/daily?session_date={session_date}".format(
+        base=PUBLIC_BASE_URL,
+        session_date=session_date,
+    )
+    subject = "Stock Ultimus pre-market {session_date} - {mode}".format(
+        session_date=session_date,
+        mode=str(mode).replace("_", " ").title(),
+    )
+    text = "\n".join([
+        subject,
+        "",
+        "Modo sugerido inicial: {mode}".format(mode=mode),
+        "Max state: {state}".format(state=payload.get("decision_max_state")),
+        "",
+        "Abrir pantalla pre-market:",
+        premarket_url,
+        "",
+        "Dashboard intradia:",
+        dashboard_url,
+        "",
+        "Reporte diario:",
+        report_url,
+        "",
+        "Checklist breve:",
+        "- Validar macro/eventos.",
+        "- Validar volatilidad/VIX.",
+        "- Validar QQQ/SPY y referencia primaria.",
+        "- Validar VWAP y OR15.",
+        "- Validar riesgo diario y portfolio.",
+        "",
+        "Decision support solamente. No coloca ordenes ni autoriza ejecucion automatica.",
+    ])
+    html_body = f"""
+    <div style="font-family:Arial,sans-serif;color:#111827;line-height:1.45">
+      <h2>Stock Ultimus pre-market {html.escape(str(session_date))}</h2>
+      <p><b>Modo sugerido inicial:</b> {html.escape(str(mode))}</p>
+      <p><b>Max state:</b> {html.escape(str(payload.get("decision_max_state")))}</p>
+      <p>
+        <a href="{html.escape(premarket_url)}" style="display:inline-block;background:#047857;color:white;padding:10px 14px;border-radius:6px;text-decoration:none;font-weight:bold">Abrir pantalla pre-market</a>
+      </p>
+      <p><a href="{html.escape(dashboard_url)}">Dashboard intradia</a> | <a href="{html.escape(report_url)}">Reporte diario</a></p>
+      <h3>Checklist breve</h3>
+      <ul>
+        <li>Validar macro/eventos.</li>
+        <li>Validar volatilidad/VIX.</li>
+        <li>Validar QQQ/SPY y referencia primaria.</li>
+        <li>Validar VWAP y OR15.</li>
+        <li>Validar riesgo diario y portfolio.</li>
+      </ul>
+      <p style="color:#92400e"><b>Decision support solamente.</b> No coloca ordenes ni autoriza ejecucion automatica.</p>
+    </div>
+    """
+    return {
+        "subject": subject,
+        "text": text,
+        "html": html_body,
+        "links": {
+            "premarket": premarket_url,
+            "dashboard": dashboard_url,
+            "daily_report": report_url,
+        },
+        "template": template,
+    }
+
+
+def send_resend_email(to_email, subject, text, html_body):
+    missing = []
+    if not RESEND_API_KEY:
+        missing.append("RESEND_API_KEY")
+    if not to_email:
+        missing.append("PREMARKET_EMAIL_TO")
+    if not PREMARKET_EMAIL_FROM:
+        missing.append("PREMARKET_EMAIL_FROM")
+    if missing:
+        return {
+            "email_sent": False,
+            "reason": "EMAIL_CONFIG_MISSING",
+            "missing": missing,
+        }
+
+    payload = {
+        "from": PREMARKET_EMAIL_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "text": text,
+        "html": html_body,
+    }
+    if PREMARKET_EMAIL_REPLY_TO:
+        payload["reply_to"] = PREMARKET_EMAIL_REPLY_TO
+
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": "Bearer {key}".format(key=RESEND_API_KEY),
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+        if response.status_code in [200, 201, 202]:
+            return {
+                "email_sent": True,
+                "status_code": response.status_code,
+                "provider": "resend",
+                "response": response.json() if response.text else {},
+            }
+        return {
+            "email_sent": False,
+            "status_code": response.status_code,
+            "provider": "resend",
+            "error": response.text[:800],
+        }
+    except Exception as e:
+        return {
+            "email_sent": False,
+            "provider": "resend",
+            "error": str(e),
+        }
+
+
 @app.get("/intraday_futures/premarket", response_class=HTMLResponse)
 def intraday_futures_premarket_page(
     mode: str = "base",
@@ -4616,6 +4761,62 @@ def intraday_futures_premarket_load(
             saved_result=result,
         )
     )
+
+
+@app.get("/intraday_futures/premarket/email/preview")
+def intraday_futures_premarket_email_preview(
+    mode: str = "base",
+    session_date: Optional[str] = None,
+    updated_by: str = "manual",
+):
+    content = intraday_futures_premarket_email_content(
+        mode=mode,
+        session_date=session_date,
+        updated_by=updated_by,
+    )
+    return {
+        "status": "ok",
+        "engine": "intraday_futures_premarket_email_v1",
+        "email_config": {
+            "resend_api_key_present": bool(RESEND_API_KEY),
+            "to_present": bool(PREMARKET_EMAIL_TO),
+            "from": PREMARKET_EMAIL_FROM,
+            "public_base_url": PUBLIC_BASE_URL,
+        },
+        "subject": content.get("subject"),
+        "text": content.get("text"),
+        "links": content.get("links"),
+        "template": content.get("template"),
+        "not_order_instruction": True,
+    }
+
+
+@app.post("/intraday_futures/premarket/email")
+def intraday_futures_premarket_email(
+    mode: str = "base",
+    session_date: Optional[str] = None,
+    updated_by: str = "manual",
+    to_email: Optional[str] = None,
+):
+    content = intraday_futures_premarket_email_content(
+        mode=mode,
+        session_date=session_date,
+        updated_by=updated_by,
+    )
+    result = send_resend_email(
+        to_email or PREMARKET_EMAIL_TO,
+        content.get("subject"),
+        content.get("text"),
+        content.get("html"),
+    )
+    return {
+        "status": "ok" if result.get("email_sent") else "needs_config",
+        "engine": "intraday_futures_premarket_email_v1",
+        **result,
+        "subject": content.get("subject"),
+        "links": content.get("links"),
+        "not_order_instruction": True,
+    }
 
 
 @app.get("/intraday_futures/price_points")
