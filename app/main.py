@@ -974,6 +974,9 @@ def coerce_float_or_none(value):
 
 
 def supabase_alert_event_row(event):
+    decision = event.get("decision") if isinstance(event.get("decision"), dict) else {}
+    risk = event.get("risk") if isinstance(event.get("risk"), dict) else {}
+    portfolio = event.get("portfolio") if isinstance(event.get("portfolio"), dict) else {}
     return {
         "event_id": event.get("event_id"),
         "received_at": event.get("received_at"),
@@ -1007,6 +1010,23 @@ def supabase_alert_event_row(event):
         "previous_day_close": coerce_float_or_none(event.get("previous_day_close")),
         "construction_status": event.get("construction_status"),
         "decision_max_state": event.get("decision_max_state"),
+        "decision_engine_version": event.get("decision_engine_version") or decision.get("decision_engine_version"),
+        "final_state": event.get("final_state") or decision.get("final_state"),
+        "main_blocker": event.get("main_blocker") or decision.get("main_blocker"),
+        "blockers": event.get("blockers") or decision.get("blockers") or [],
+        "required_missing_fields": event.get("required_missing_fields") or decision.get("required_missing_fields") or [],
+        "decision_explanation": event.get("decision_explanation") or decision.get("explanation"),
+        "decision": decision or event.get("decision") or {},
+        "risk_status": event.get("risk_status") or risk.get("risk_status"),
+        "risk": risk or event.get("risk") or {},
+        "portfolio_status": event.get("portfolio_status") or portfolio.get("portfolio_status"),
+        "portfolio": portfolio or event.get("portfolio") or {},
+        "contracts_allowed": event.get("contracts_allowed") or risk.get("contracts_allowed"),
+        "premarket_context_applied": event.get("premarket_context_applied"),
+        "premarket_context_found": event.get("premarket_context_found"),
+        "premarket_session_date": event.get("premarket_session_date"),
+        "premarket_blockers": event.get("premarket_blockers") or [],
+        "premarket_context": event.get("premarket_context") or {},
         "warnings": event.get("warnings") or [],
         "missing_fields": event.get("missing_fields") or [],
         "not_order_instruction": event.get("not_order_instruction"),
@@ -1067,11 +1087,48 @@ def supabase_outcome_row(event, outcome, evaluation_type):
 
 
 def supabase_persist_intraday_alert_event(event):
-    return supabase_upsert_row(
+    result = supabase_upsert_row(
         "intraday_futures_alert_events",
         supabase_alert_event_row(event),
         "event_id",
     )
+    if result.get("saved"):
+        return result
+
+    error_text = str(result.get("error") or "")
+    if "Could not find" not in error_text and "schema cache" not in error_text:
+        return result
+
+    legacy_row = dict(supabase_alert_event_row(event))
+    for key in [
+        "decision_engine_version",
+        "final_state",
+        "main_blocker",
+        "blockers",
+        "required_missing_fields",
+        "decision_explanation",
+        "decision",
+        "risk_status",
+        "risk",
+        "portfolio_status",
+        "portfolio",
+        "contracts_allowed",
+        "premarket_context_applied",
+        "premarket_context_found",
+        "premarket_session_date",
+        "premarket_blockers",
+        "premarket_context",
+    ]:
+        legacy_row.pop(key, None)
+
+    fallback_result = supabase_upsert_row(
+        "intraday_futures_alert_events",
+        legacy_row,
+        "event_id",
+    )
+    fallback_result["structured_fields_saved"] = False
+    fallback_result["structured_fields_error"] = error_text[:300]
+    return fallback_result
 
 
 def supabase_persist_intraday_price_point(point):
