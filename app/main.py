@@ -18719,6 +18719,183 @@ async def gpt_v29_trade_decision(ticker: str):
     }
 
 
+_V31_DECISION_VERSION = "v31_canonical_decision_engine"
+_V31_RULESET_VERSION = "v31.0_manual_review_only"
+_V31_SNAPSHOT_VERSION = "v30_options_executable_contract"
+
+
+def _v31_normalize_state(state):
+    state = _v29_safe_upper(state, "NO_DATA")
+    aliases = {
+        "WAIT_MARKET_OPEN": "WAIT_MARKET",
+        "MARKET_CLOSED_OR_NOT_LIQUID_YET": "WAIT_MARKET",
+        "WAIT_LIQUIDITY": "WAIT_MARKET",
+        "WAIT_TECHNICAL_DATA": "WAIT_TECHNICAL",
+        "WAIT_TECHNICAL_CONFIRMATION": "WAIT_TECHNICAL",
+        "ENTRY_READY_WITH_MARKET_CHECK": "MANUAL_REVIEW",
+        "RADAR": "MANUAL_REVIEW",
+    }
+    return aliases.get(state, state)
+
+
+def _v31_status_from_v29(d, key):
+    state = _v31_normalize_state(d.get("final_state"))
+
+    if key == "risk":
+        if state == "RISK_BLOCKED":
+            return "RISK_BLOCKED"
+        return "PASS"
+
+    if key == "portfolio":
+        return "PASS"
+
+    if key == "technical":
+        if state == "WAIT_TECHNICAL":
+            return "WAIT_TECHNICAL"
+        if (d.get("technical") or {}).get("confirmed") is True:
+            return "CONFIRMED"
+        if (d.get("technical") or {}).get("available") is True:
+            return "AVAILABLE_NOT_CONFIRMED"
+        return "MISSING"
+
+    if key == "construction":
+        if state == "WAIT_OPTIONS_DATA":
+            return "WAIT_OPTIONS_DATA"
+        if d.get("selected_contract"):
+            return "CONTRACT_SELECTED"
+        return "MISSING"
+
+    return "UNKNOWN"
+
+
+def _v31_blockers_from_v29(d):
+    state = _v31_normalize_state(d.get("final_state"))
+    blockers = []
+
+    primary = d.get("main_blocker")
+    if primary:
+        blockers.append(primary)
+
+    if state == "NO_DATA":
+        blockers.append("NO_DATA")
+    elif state == "WAIT_MARKET":
+        blockers.append("WAIT_MARKET")
+    elif state == "WAIT_ACCOUNT_CONTEXT":
+        blockers.append("WAIT_ACCOUNT_CONTEXT")
+    elif state == "WAIT_OPTIONS_DATA":
+        blockers.append("WAIT_OPTIONS_DATA")
+        for field in d.get("required_missing_fields") or []:
+            blockers.append(f"MISSING_{str(field).upper()}")
+    elif state == "WAIT_TECHNICAL":
+        blockers.append("WAIT_TECHNICAL")
+    elif state == "RISK_BLOCKED":
+        blockers.append("RISK_BLOCKED")
+    elif state == "MANUAL_REVIEW":
+        blockers.append("MANUAL_REVIEW")
+
+    if state == "ENTRY_READY":
+        return []
+
+    deduped = []
+    for blocker in blockers:
+        if blocker and blocker not in deduped:
+            deduped.append(blocker)
+    return deduped
+
+
+def _v31_main_blocker(state, blockers):
+    if state == "ENTRY_READY":
+        return None
+
+    priority = [
+        "NO_DATA",
+        "RISK_BLOCKED",
+        "WAIT_ACCOUNT_CONTEXT",
+        "WAIT_MARKET",
+        "WAIT_OPTIONS_DATA",
+        "WAIT_TECHNICAL",
+        "MANUAL_REVIEW",
+    ]
+
+    for item in priority:
+        if item == state or item in blockers:
+            return item
+
+    return blockers[0] if blockers else state
+
+
+def _v31_strategy_version(d):
+    strategy = _v29_safe_upper(d.get("strategy"), "UNKNOWN")
+    if "COVERED" in strategy and "CALL" in strategy:
+        return "covered_calls_v31_manual_review"
+    if "PUT" in strategy:
+        return "cash_secured_puts_v31_manual_review"
+    if "INTRADAY" in strategy or "FUTURES" in strategy:
+        return "intraday_index_futures_v31_manual_review"
+    return "strategy_v31_manual_review"
+
+
+def _v31_canonical_decision(ticker):
+    d = _v29_decide_ticker(ticker)
+    state = _v31_normalize_state(d.get("final_state"))
+    blockers = _v31_blockers_from_v29(d)
+    main_blocker = _v31_main_blocker(state, blockers)
+    manual_review_ready = state == "ENTRY_READY"
+
+    return {
+        "engine": "V31_CANONICAL_DECISION_ENGINE",
+        "decision_version": _V31_DECISION_VERSION,
+        "strategy_version": _v31_strategy_version(d),
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "generated_at": _v29_now(),
+        "ticker": d.get("ticker"),
+        "strategy": d.get("strategy"),
+        "asset_class": "OPTIONS",
+        "final_state": state,
+        "decision": state,
+        "main_blocker": main_blocker,
+        "blockers": blockers,
+        "warnings": [
+            "DECISION_SUPPORT_ONLY",
+            "MANUAL_REVIEW_REQUIRED",
+            "NOT_AN_ORDER_INSTRUCTION",
+        ],
+        "required_missing_fields": d.get("required_missing_fields") or [],
+        "manual_review_ready": manual_review_ready,
+        "can_operate": False,
+        "not_order_instruction": True,
+        "risk_status": _v31_status_from_v29(d, "risk"),
+        "portfolio_status": _v31_status_from_v29(d, "portfolio"),
+        "technical_status": _v31_status_from_v29(d, "technical"),
+        "construction_status": _v31_status_from_v29(d, "construction"),
+        "selected_contract": d.get("selected_contract"),
+        "selected_structure": None,
+        "source_decision": {
+            "engine": d.get("engine"),
+            "final_state": d.get("final_state"),
+            "main_blocker": d.get("main_blocker"),
+            "manual_review_ready": d.get("manual_review_ready"),
+            "can_operate": False,
+        },
+        "technical": d.get("technical"),
+        "market": d.get("market"),
+        "explanation": d.get("executive_summary") or d.get("action"),
+        "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
+        "master_source": d.get("master_source"),
+    }
+
+
+@app.get("/v31_decision/{ticker}")
+async def v31_decision(ticker: str):
+    return _v31_canonical_decision(ticker)
+
+
+@app.get("/gpt_v31_trade_decision/{ticker}")
+async def gpt_v31_trade_decision(ticker: str):
+    return _v31_canonical_decision(ticker)
+
+
 @app.get("/v29_dashboard", response_class=_V29HTMLResponse)
 async def v29_dashboard():
     return _v29_dashboard_html()

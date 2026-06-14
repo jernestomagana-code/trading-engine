@@ -153,5 +153,104 @@ class V29V30ContractGatingTests(unittest.TestCase):
         self.assertFalse(decision["selected_contract"]["can_operate"])
 
 
+class V31CanonicalDecisionTests(unittest.TestCase):
+    def test_v31_incomplete_option_data_uses_wait_options_blocker(self):
+        incomplete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": None,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([incomplete_row])):
+            decision = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(decision["engine"], "V31_CANONICAL_DECISION_ENGINE")
+        self.assertEqual(decision["decision_version"], "v31_canonical_decision_engine")
+        self.assertEqual(decision["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(decision["main_blocker"], "WAIT_OPTIONS_DATA")
+        self.assertIn("WAIT_OPTIONS_DATA", decision["blockers"])
+        self.assertIn("MISSING_DELTA", decision["blockers"])
+        self.assertIn("delta", decision["required_missing_fields"])
+        self.assertEqual(decision["construction_status"], "WAIT_OPTIONS_DATA")
+        self.assertFalse(decision["manual_review_ready"])
+        self.assertFalse(decision["can_operate"])
+        self.assertTrue(decision["not_order_instruction"])
+
+    def test_v31_complete_option_data_is_manual_review_only_entry_ready(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
+            decision = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(decision["final_state"], "ENTRY_READY")
+        self.assertEqual(decision["blockers"], [])
+        self.assertIsNone(decision["main_blocker"])
+        self.assertTrue(decision["manual_review_ready"])
+        self.assertFalse(decision["can_operate"])
+        self.assertTrue(decision["not_order_instruction"])
+        self.assertEqual(decision["risk_status"], "PASS")
+        self.assertEqual(decision["portfolio_status"], "PASS")
+        self.assertEqual(decision["technical_status"], "CONFIRMED")
+        self.assertEqual(decision["construction_status"], "CONTRACT_SELECTED")
+        self.assertEqual(decision["selected_contract"]["delta"], -0.20)
+
+    def test_v31_normalizes_wait_market_open_to_wait_market(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        market_closed = _master_snapshot([complete_row])
+        market_closed["data"]["market"] = {
+            "is_regular_market_open": False,
+            "options_bidask_expected": False,
+            "label": "CLOSED",
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=market_closed):
+            decision = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(decision["source_decision"]["final_state"], "WAIT_MARKET_OPEN")
+        self.assertEqual(decision["final_state"], "WAIT_MARKET")
+        self.assertEqual(decision["main_blocker"], "WAIT_MARKET")
+        self.assertIn("WAIT_MARKET", decision["blockers"])
+        self.assertFalse(decision["manual_review_ready"])
+        self.assertFalse(decision["can_operate"])
+
+
 if __name__ == "__main__":
     unittest.main()
