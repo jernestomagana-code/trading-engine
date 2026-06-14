@@ -182,6 +182,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("MISSING_DELTA", decision["blockers"])
         self.assertIn("delta", decision["required_missing_fields"])
         self.assertEqual(decision["construction_status"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(decision["risk_status"], "NOT_EVALUATED")
+        self.assertEqual(decision["portfolio_status"], "NOT_EVALUATED")
         self.assertFalse(decision["manual_review_ready"])
         self.assertFalse(decision["can_operate"])
         self.assertTrue(decision["not_order_instruction"])

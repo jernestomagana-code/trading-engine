@@ -18744,9 +18744,13 @@ def _v31_status_from_v29(d, key):
     if key == "risk":
         if state == "RISK_BLOCKED":
             return "RISK_BLOCKED"
+        if state in ["NO_DATA", "WAIT_ACCOUNT_CONTEXT", "WAIT_MARKET", "WAIT_OPTIONS_DATA", "WAIT_TECHNICAL"]:
+            return "NOT_EVALUATED"
         return "PASS"
 
     if key == "portfolio":
+        if state in ["NO_DATA", "WAIT_ACCOUNT_CONTEXT", "WAIT_MARKET", "WAIT_OPTIONS_DATA", "WAIT_TECHNICAL"]:
+            return "NOT_EVALUATED"
         return "PASS"
 
     if key == "technical":
