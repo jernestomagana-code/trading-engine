@@ -117,6 +117,9 @@ class V29V30ContractGatingTests(unittest.TestCase):
         self.assertFalse(decision["can_operate"])
         self.assertFalse(decision["manual_review_ready"])
         self.assertIn("delta", decision["best_row_quality"]["missing"])
+        self.assertIn("delta", decision["required_missing_fields"])
+        self.assertEqual(decision["selected_contract"]["delta"], None)
+        self.assertFalse(decision["selected_contract"]["manual_review_ready"])
 
     def test_complete_option_data_can_only_become_manual_review_ready(self):
         complete_row = {
@@ -143,6 +146,11 @@ class V29V30ContractGatingTests(unittest.TestCase):
         self.assertTrue(decision["manual_review_ready"])
         self.assertTrue(decision["not_order_instruction"])
         self.assertEqual(decision["best_row_quality"]["missing"], [])
+        self.assertEqual(decision["required_missing_fields"], [])
+        self.assertEqual(decision["selected_contract"]["strike"], 710)
+        self.assertEqual(decision["selected_contract"]["delta"], -0.20)
+        self.assertTrue(decision["selected_contract"]["manual_review_ready"])
+        self.assertFalse(decision["selected_contract"]["can_operate"])
 
 
 if __name__ == "__main__":

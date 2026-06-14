@@ -18288,6 +18288,8 @@ def _v29_decide_ticker(ticker):
             "action": f"{ticker}: no hay filas de opciones detectadas.",
             "executive_summary": f"{ticker}: NO_DATA. No hay datos de opciones para evaluar operación.",
             "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
+            "required_missing_fields": ["options_rows"],
+            "selected_contract": None,
             "best_row": None,
             "rows_found_for_ticker": 0,
             "total_rows_found": len(rows),
@@ -18300,6 +18302,31 @@ def _v29_decide_ticker(ticker):
     q = _v29_quality_gate(best)
     strategy = _v29_safe_upper(best.get("strategy"), "UNKNOWN")
     options_score = _v29_safe_float(best.get("score"), 0)
+    selected_contract = {
+        "ticker": ticker,
+        "strategy": strategy,
+        "strike": q.get("strike"),
+        "expiration": q.get("expiration"),
+        "dte": q.get("dte"),
+        "bid": q.get("bid"),
+        "ask": q.get("ask"),
+        "mid": q.get("mid"),
+        "spread": q.get("spread"),
+        "spread_pct": q.get("spread_pct"),
+        "delta": q.get("delta"),
+        "gamma": q.get("gamma"),
+        "theta": q.get("theta"),
+        "vega": q.get("vega"),
+        "iv": q.get("iv"),
+        "volume": q.get("volume"),
+        "open_interest": q.get("open_interest"),
+        "data_quality": best.get("data_quality"),
+        "quality": q.get("quality"),
+        "missing": q.get("missing"),
+        "can_operate": False,
+        "manual_review_ready": False,
+        "not_order_instruction": True,
+    }
 
     market_ok = bool(market.get("is_regular_market_open")) and bool(market.get("options_bidask_expected"))
     technical_ok = tech_state["confirmed"]
@@ -18376,6 +18403,11 @@ def _v29_decide_ticker(ticker):
         "action": action,
         "executive_summary": executive_summary,
         "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
+        "required_missing_fields": q["missing"],
+        "selected_contract": {
+            **selected_contract,
+            "manual_review_ready": manual_review_ready,
+        },
         "best_row": best,
         "best_row_quality": q,
         "rows_found_for_ticker": len(ticker_rows),
@@ -18650,6 +18682,8 @@ async def gpt_v29_trade_decision(ticker: str):
         "technical_fit": d.get("technical_fit"),
         "options_score": d.get("options_score"),
         "options_fit": d.get("options_fit"),
+        "required_missing_fields": d.get("required_missing_fields") or [],
+        "selected_contract": d.get("selected_contract"),
         "best_contract": {
             "strike": (d.get("best_row") or {}).get("strike"),
             "expiration": (d.get("best_row") or {}).get("expiration"),
