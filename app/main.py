@@ -19,6 +19,32 @@ import requests
 
 app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 
+LEGACY_OFFICIAL_FLOW = "/intraday_futures/*"
+LEGACY_DECISION_SUPPORT_NOTE = (
+    "LEGACY endpoint. Decision support manual solamente. "
+    "No coloca ordenes ni autoriza ejecucion."
+)
+
+
+def legacy_endpoint_meta(version=None):
+    return {
+        "legacy_endpoint": True,
+        "legacy_version": version,
+        "official_flow": LEGACY_OFFICIAL_FLOW,
+        "not_order_instruction": True,
+        "decision_support_note": LEGACY_DECISION_SUPPORT_NOTE,
+    }
+
+
+def legacy_dashboard_banner(version=None):
+    label = f"Legacy {version}" if version else "Legacy"
+    return f"""
+        <div style="border:1px solid #f59e0b;background:#fffbeb;color:#92400e;border-radius:8px;padding:12px 14px;margin:0 0 18px 0;font-size:13px;line-height:1.4;">
+            <b>{html.escape(label)}.</b> Decision support manual solamente. No coloca ordenes ni autoriza ejecucion.
+            Flujo oficial actual: <code>{html.escape(LEGACY_OFFICIAL_FLOW)}</code>.
+        </div>
+    """
+
 SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
 INTRADAY_FUTURES_ALERT_EVENTS_FILE = "intraday_futures_alert_events.json"
@@ -9954,8 +9980,9 @@ def dashboard_decision():
       {_v19_css()}
     </head>
     <body>
-      <div class="page">
-        <div class="header">
+	      <div class="page">
+	        {legacy_dashboard_banner("V19")}
+	        <div class="header">
           <div>
             <h1>Super Engine Bolsa — Operational Trading Dashboard</h1>
             <div class="muted">
@@ -10004,7 +10031,7 @@ def dashboard_decision():
                 <th class="num">Prima/Precio</th>
                 <th>Calidad</th>
                 <th>Falta</th>
-                <th>Operable</th>
+	                <th>Revision manual</th>
                 <th>Acción</th>
               </tr>
             </thead>
@@ -10119,8 +10146,9 @@ def dashboard_ticker(ticker: str):
       {_v19_css()}
     </head>
     <body>
-      <div class="page">
-        <div class="header">
+	      <div class="page">
+	        {legacy_dashboard_banner("V19")}
+	        <div class="header">
           <div>
             <h1>{_v19_escape(title)}</h1>
             <div class="muted">Generated: {_v19_escape(data.get("generated_at"))}</div>
@@ -10162,7 +10190,7 @@ def dashboard_ticker(ticker: str):
                 <th class="num">Prima/Precio</th>
                 <th>Calidad</th>
                 <th>Falta</th>
-                <th>Operable</th>
+	                <th>Revision manual</th>
                 <th>Acción</th>
               </tr>
             </thead>
@@ -13619,7 +13647,9 @@ def _v23_build_trade_readiness(ticker: str):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": can_operate,
+        "can_operate": False,
+        "manual_review_ready": bool(can_operate),
+        "not_order_instruction": True,
         "severity": severity,
         "strategy": strategy,
         "technical_bias": technical_bias,
@@ -13645,12 +13675,16 @@ def _v23_build_trade_readiness(ticker: str):
 
 @app.get("/v23_trade_readiness/{ticker}")
 async def v23_trade_readiness(ticker: str):
-    return _v23_build_trade_readiness(ticker)
+    d = _v23_build_trade_readiness(ticker)
+    d.update(legacy_endpoint_meta("V23"))
+    return d
 
 
 @app.get("/v23_trade_decision/{ticker}")
 async def v23_trade_decision(ticker: str):
-    return _v23_build_trade_readiness(ticker)
+    d = _v23_build_trade_readiness(ticker)
+    d.update(legacy_endpoint_meta("V23"))
+    return d
 
 
 @app.get("/v23_system_status")
@@ -13676,6 +13710,7 @@ async def v23_system_status():
 
     return {
         "engine": "V23_TRADE_READINESS_EXECUTION_GUARD",
+        **legacy_endpoint_meta("V23"),
         "generated_at": _v23_now(),
         "status": "OK",
         "decision_rows_found": len(rows),
@@ -13787,6 +13822,7 @@ async def v23_dashboard_ticker(ticker: str):
         </style>
     </head>
     <body>
+        {legacy_dashboard_banner("V23")}
         <h1>V23 Trade Readiness — {_v23_html_escape(ticker).upper()}</h1>
         <div class="hero">
             <div class="label">Estado operativo</div>
@@ -13796,7 +13832,7 @@ async def v23_dashboard_ticker(ticker: str):
         </div>
 
         <div class="grid">
-            <div class="card"><div class="label">Operable</div><div class="value">{'Sí' if d.get("can_operate") else 'No'}</div></div>
+            <div class="card"><div class="label">Revision manual</div><div class="value">{'Sí' if d.get("manual_review_ready") else 'No'}</div></div>
             <div class="card"><div class="label">Estrategia</div><div class="value">{_v23_html_escape(d.get("strategy"))}</div></div>
             <div class="card"><div class="label">Sesgo técnico</div><div class="value">{_v23_html_escape(d.get("technical_bias"))}</div></div>
             <div class="card"><div class="label">Alineación</div><div class="value">{_v23_html_escape(d.get("strategy_alignment"))}</div></div>
@@ -13856,7 +13892,7 @@ async def v23_dashboard():
             <td>{_v23_badge(d.get("final_state"))}</td>
             <td>{_v23_html_escape(d.get("strategy"))}</td>
             <td>{_v23_html_escape(d.get("technical_bias"))}</td>
-            <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+            <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
             <td>{_v23_html_escape(d.get("action"))}</td>
         </tr>
         """
@@ -13901,11 +13937,12 @@ async def v23_dashboard():
             }}
         </style>
     </head>
-    <body>
+        <body>
+        {legacy_dashboard_banner("V23")}
         <h1>V23 — Trade Readiness Dashboard</h1>
         <div class="hero">
-            <h2>Execution Guard activo</h2>
-            <p>Este dashboard consolida técnico + opciones + estado de mercado para evitar operar sin confirmaciones críticas.</p>
+            <h2>Decision Support Guard legacy</h2>
+            <p>Este dashboard consolida técnico + opciones + estado de mercado para revision manual historica.</p>
             <p>Generado: {_v23_html_escape(_v23_now())}</p>
         </div>
         <table>
@@ -13914,7 +13951,7 @@ async def v23_dashboard():
                 <th>Estado</th>
                 <th>Estrategia</th>
                 <th>Sesgo técnico</th>
-                <th>Operable</th>
+                <th>Revision manual</th>
                 <th>Acción</th>
             </tr>
             {cards}
@@ -14248,7 +14285,9 @@ def _v24_decision_for_ticker(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": final_state,
-        "can_operate": can_operate,
+        "can_operate": False,
+        "manual_review_ready": bool(can_operate),
+        "not_order_instruction": True,
         "severity": severity,
         "main_blocker": main_blocker,
         "action": action,
@@ -14276,7 +14315,9 @@ def _v24_decision_for_ticker(ticker):
 
 @app.get("/v24_trade_decision/{ticker}")
 async def v24_trade_decision(ticker: str):
-    return _v24_decision_for_ticker(ticker)
+    d = _v24_decision_for_ticker(ticker)
+    d.update(legacy_endpoint_meta("V24"))
+    return d
 
 @app.get("/v24_system_status")
 async def v24_system_status():
@@ -14294,6 +14335,7 @@ async def v24_system_status():
 
     return {
         "engine": "V24_UNIFIED_DATA_RESOLVER",
+        **legacy_endpoint_meta("V24"),
         "generated_at": _v24_now(),
         "status": "OK",
         "decision_rows_found": decision_ctx.get("rows_found", 0),
@@ -14369,14 +14411,14 @@ def _v24_render_dashboard(ticker=None):
             <td>{_v24_html_escape(d.get("strategy"))}</td>
             <td>{_v24_html_escape(d.get("technical", {}).get("bias"))}</td>
             <td>{_v24_html_escape(d.get("score"))}</td>
-            <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+            <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
             <td>{_v24_html_escape(d.get("action"))}</td>
         </tr>
         """
         cards.append(d)
 
-    headline = "Execution Guard activo"
-    if any(c.get("can_operate") for c in cards):
+    headline = "Decision Support Guard legacy"
+    if any(c.get("manual_review_ready") for c in cards):
         headline = "Entrada potencial detectada"
     elif any(c.get("final_state") == "RADAR" for c in cards):
         headline = "Oportunidades en radar"
@@ -14464,6 +14506,7 @@ def _v24_render_dashboard(ticker=None):
         </style>
     </head>
     <body>
+        {legacy_dashboard_banner("V24")}
         <h1>V24 — Unified Data Resolver</h1>
         <div class="hero">
             <h2>{_v24_html_escape(headline)}</h2>
@@ -14475,7 +14518,7 @@ def _v24_render_dashboard(ticker=None):
             <div class="card"><div>Tickers detectados</div><div class="num">{len(tickers)}</div></div>
             <div class="card"><div>Technical disponibles</div><div class="num">{sum(1 for c in cards if c.get("technical", {}).get("available"))}</div></div>
             <div class="card"><div>Options disponibles</div><div class="num">{sum(1 for c in cards if c.get("options", {}).get("available"))}</div></div>
-            <div class="card"><div>Operables</div><div class="num">{sum(1 for c in cards if c.get("can_operate"))}</div></div>
+            <div class="card"><div>Revision manual</div><div class="num">{sum(1 for c in cards if c.get("manual_review_ready"))}</div></div>
         </div>
 
         <table>
@@ -14486,7 +14529,7 @@ def _v24_render_dashboard(ticker=None):
                     <th>Estrategia</th>
                     <th>Sesgo técnico</th>
                     <th>Score</th>
-                    <th>Operable</th>
+                    <th>Revision manual</th>
                     <th>Acción</th>
                 </tr>
             </thead>
@@ -14824,7 +14867,9 @@ def _v241_trade_decision(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": final_state,
-        "can_operate": can_operate,
+        "can_operate": False,
+        "manual_review_ready": bool(can_operate),
+        "not_order_instruction": True,
         "severity": severity,
         "main_blocker": blocker,
         "action": action,
@@ -14854,6 +14899,7 @@ async def v24_1_runtime_inventory():
     ctx = _v241_load_all_runtime_context()
     return {
         "engine": "V24_1_RUNTIME_DISCOVERY_SAFE_DASHBOARD",
+        **legacy_endpoint_meta("V24.1"),
         "generated_at": _v241_now(),
         "status": "OK",
         "runtime_files": ctx["files"],
@@ -14865,7 +14911,9 @@ async def v24_1_runtime_inventory():
 
 @app.get("/v24_1_trade_decision/{ticker}")
 async def v24_1_trade_decision(ticker: str):
-    return _v241_trade_decision(ticker)
+    d = _v241_trade_decision(ticker)
+    d.update(legacy_endpoint_meta("V24.1"))
+    return d
 
 def _v241_escape(x):
     import html
@@ -14908,14 +14956,14 @@ def _v241_dashboard_html(ticker=None):
                 <td>{_v241_escape(d.get("strategy"))}</td>
                 <td>{_v241_escape(d.get("technical", {}).get("bias"))}</td>
                 <td>{_v241_escape(d.get("score"))}</td>
-                <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+                <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
                 <td>{_v241_escape(d.get("main_blocker"))}</td>
                 <td>{_v241_escape(d.get("action"))}</td>
             </tr>
             """
 
-        headline = "Execution Guard activo"
-        if any(d.get("can_operate") for d in decisions):
+        headline = "Decision Support Guard legacy"
+        if any(d.get("manual_review_ready") for d in decisions):
             headline = "Entrada potencial detectada"
         elif any(d.get("final_state") == "RADAR" for d in decisions):
             headline = "Oportunidades en radar"
@@ -14992,6 +15040,7 @@ def _v241_dashboard_html(ticker=None):
             </style>
         </head>
         <body>
+            {legacy_dashboard_banner("V24.1")}
             <h1>V24.1 — Runtime Discovery Dashboard</h1>
             <div class="hero">
                 <h2>{_v241_escape(headline)}</h2>
@@ -15014,7 +15063,7 @@ def _v241_dashboard_html(ticker=None):
                         <th>Estrategia</th>
                         <th>Sesgo técnico</th>
                         <th>Score</th>
-                        <th>Operable</th>
+                        <th>Revision manual</th>
                         <th>Bloqueador</th>
                         <th>Acción</th>
                     </tr>
@@ -15320,6 +15369,7 @@ def _v25_make_decision(ticker):
             "can_operate": False,
             "manual_review_ready": False,
             "not_order_instruction": True,
+            **legacy_endpoint_meta("V25"),
             "severity": "red",
             "main_blocker": "NO_V25_MASTER_SNAPSHOT",
             "action": f"{t}: no hay v25_master_snapshot.json todavía. Ejecutar ibkr_bridge.py o enviar POST /v25_ingest_snapshot.",
@@ -15334,6 +15384,9 @@ def _v25_make_decision(ticker):
             "final_state": "NO_DATA",
             "decision": "NO_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V25"),
             "severity": "red",
             "main_blocker": "NO_OPTIONS_ROWS_FOR_TICKER",
             "action": f"{t}: hay snapshot maestro, pero no hay rows de opciones para este ticker.",
@@ -15399,7 +15452,10 @@ def _v25_make_decision(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": can_operate,
+        "can_operate": False,
+        "manual_review_ready": final_state == "ENTRY_READY",
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V25"),
         "severity": severity,
         "main_blocker": main_blocker,
         "action": action,
@@ -15468,6 +15524,7 @@ async def v25_ingest_snapshot(payload: dict):
     return {
         "engine": "V25_REMOTE_SNAPSHOT_STORE",
         "status": "OK",
+        **legacy_endpoint_meta("V25"),
         "stored_file": path,
         "rows_found": len(rows),
         "technical_available": bool(technical),
@@ -15497,6 +15554,7 @@ async def v25_system_status():
     return {
         "engine": "V25_REMOTE_SNAPSHOT_STORE",
         "status": "OK" if bool(master) else "NO_MASTER_SNAPSHOT",
+        **legacy_endpoint_meta("V25"),
         "master_snapshot_available": bool(master),
         "master_file": str(_V25_MASTER_FILE),
         "rows_found": len(rows),
@@ -15520,7 +15578,9 @@ async def v25_system_status():
 
 @app.get("/v25_trade_decision/{ticker}")
 async def v25_trade_decision(ticker: str):
-    return _v25_make_decision(ticker)
+    d = _v25_make_decision(ticker)
+    d.update(legacy_endpoint_meta("V25"))
+    return d
 
 
 @app.get("/v25_dashboard")
@@ -15557,7 +15617,7 @@ async def v25_dashboard():
           <td>{_v25_html_escape(d.get('strategy'))}</td>
           <td>{_v25_html_escape(d.get('technical_fit'))}</td>
           <td>{_v25_html_escape(d.get('rows_found_for_ticker'))}</td>
-          <td>{'Sí' if d.get('can_operate') else 'No'}</td>
+          <td>{'Sí' if d.get('manual_review_ready') else 'No'}</td>
           <td>{_v25_html_escape(d.get('main_blocker'))}</td>
           <td>{_v25_html_escape(d.get('action'))}</td>
         </tr>
@@ -15583,6 +15643,7 @@ async def v25_dashboard():
       </style>
     </head>
     <body>
+      {legacy_dashboard_banner("V25")}
       <h1>V25 — Remote Snapshot Store Dashboard</h1>
       <div class="hero">
         <h2>Fuente única maestra activa</h2>
@@ -15603,7 +15664,7 @@ async def v25_dashboard():
             <th>Estrategia</th>
             <th>Técnico</th>
             <th>Rows</th>
-            <th>Operable</th>
+            <th>Revisión manual</th>
             <th>Bloqueador</th>
             <th>Acción</th>
           </tr>
@@ -15642,6 +15703,7 @@ async def v25_dashboard_ticker(ticker: str):
       </style>
     </head>
     <body>
+      {legacy_dashboard_banner("V25")}
       <h1>V25 — {_v25_html_escape(ticker)}</h1>
       <div class="hero">
         <div class="pill">{_v25_html_escape(d.get('final_state'))}</div>
@@ -15651,7 +15713,7 @@ async def v25_dashboard_ticker(ticker: str):
       <div class="grid">
         <div class="card">
           <h3>Resumen</h3>
-          <p><b>Can operate:</b> {'Sí' if d.get('can_operate') else 'No'}</p>
+          <p><b>Revisión manual:</b> {'Sí' if d.get('manual_review_ready') else 'No'}</p>
           <p><b>Estrategia:</b> {_v25_html_escape(d.get('strategy'))}</p>
           <p><b>Technical fit:</b> {_v25_html_escape(d.get('technical_fit'))}</p>
           <p><b>Rows ticker:</b> {_v25_html_escape(d.get('rows_found_for_ticker'))}</p>
@@ -16041,6 +16103,9 @@ def _v27_decide_for_ticker(ticker):
             "final_state": "NO_DATA",
             "decision": "NO_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V27"),
             "severity": "red",
             "main_blocker": "NO_OPTIONS_OR_TECHNICAL_DATA",
             "action": f"{ticker}: no hay datos técnicos ni opciones disponibles.",
@@ -16070,6 +16135,9 @@ def _v27_decide_for_ticker(ticker):
             "final_state": "WAIT_OPTIONS_DATA",
             "decision": "WAIT_OPTIONS_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V27"),
             "severity": "yellow",
             "main_blocker": "NO_OPTIONS_ROW_FOR_TICKER",
             "action": f"{ticker}: técnico disponible, pero falta oportunidad de opciones.",
@@ -16146,7 +16214,10 @@ def _v27_decide_for_ticker(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": final_state == "ENTRY_READY",
+        "can_operate": False,
+        "manual_review_ready": final_state == "ENTRY_READY",
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V27"),
         "severity": severity,
         "main_blocker": blocker,
         "action": action,
@@ -16214,7 +16285,7 @@ def _v27_dashboard_html(tickers=None):
           <td>{_v27_html_escape(d.get("technical_bias"))}</td>
           <td>{_v27_html_escape(d.get("technical_score"))}</td>
           <td>{_v27_html_escape(d.get("options_score"))}</td>
-          <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+          <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
           <td>{_v27_html_escape(d.get("main_blocker"))}</td>
           <td>{_v27_html_escape(d.get("action"))}</td>
         </tr>
@@ -16296,10 +16367,11 @@ def _v27_dashboard_html(tickers=None):
       </style>
     </head>
     <body>
+      {legacy_dashboard_banner("V27")}
       <h1>V27 — Technical Resolver + Unified Decision Dashboard</h1>
       <div class="hero">
-        <h2>Execution Guard activo</h2>
-        <p>Consolida técnico real + opciones + mercado para evitar entradas sin confirmación crítica.</p>
+        <h2>Decision Support Guard legacy</h2>
+        <p>Consolida técnico real + opciones + mercado para revisión manual histórica.</p>
         <p>Generado: {_v27_html_escape(_v27_now())}</p>
       </div>
 
@@ -16319,7 +16391,7 @@ def _v27_dashboard_html(tickers=None):
             <th>Sesgo técnico</th>
             <th>Score técnico</th>
             <th>Score opciones</th>
-            <th>Operable</th>
+            <th>Revisión manual</th>
             <th>Bloqueador</th>
             <th>Acción</th>
           </tr>
@@ -16342,6 +16414,7 @@ async def v27_technical_resolver():
         "engine": "V27_TECHNICAL_RESOLVER",
         "generated_at": _v27_now(),
         "status": "OK",
+        **legacy_endpoint_meta("V27"),
         "technical_available": bool(tech_map),
         "technical_tickers": sorted(list(tech_map.keys())),
         "technical_count": len(tech_map),
@@ -16362,6 +16435,7 @@ async def v27_system_status():
         "engine": "V27_TECHNICAL_RESOLVER_DECISION",
         "generated_at": _v27_now(),
         "status": "OK",
+        **legacy_endpoint_meta("V27"),
         "master_snapshot_available": bool(master),
         "master_file": str(_V27_MASTER_FILE),
         "options_rows_found": len(rows),
@@ -16391,7 +16465,10 @@ async def gpt_v27_trade_decision(ticker: str):
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
-        "can_operate": d.get("can_operate"),
+        "can_operate": False,
+        "manual_review_ready": d.get("manual_review_ready"),
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V27"),
         "strategy": d.get("strategy"),
         "technical_bias": d.get("technical_bias"),
         "technical_score": d.get("technical_score"),
@@ -16724,6 +16801,9 @@ def _v271_decide_for_ticker(ticker):
             "final_state": "NO_DATA",
             "decision": "NO_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V27.1"),
             "severity": "red",
             "main_blocker": "NO_OPTIONS_OR_TECHNICAL_DATA",
             "action": f"{ticker}: no hay datos técnicos ni opciones disponibles en runtime.",
@@ -16749,6 +16829,9 @@ def _v271_decide_for_ticker(ticker):
             "final_state": "WAIT_OPTIONS_DATA",
             "decision": "WAIT_OPTIONS_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V27.1"),
             "severity": "yellow",
             "main_blocker": "NO_OPTIONS_ROW_FOR_TICKER",
             "action": f"{ticker}: técnico disponible, pero falta fila de opciones.",
@@ -16818,7 +16901,10 @@ def _v271_decide_for_ticker(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": final_state == "ENTRY_READY",
+        "can_operate": False,
+        "manual_review_ready": final_state == "ENTRY_READY",
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V27.1"),
         "severity": severity,
         "main_blocker": blocker,
         "action": action,
@@ -16863,7 +16949,7 @@ def _v271_dashboard_html(tickers=None):
           <td>{_v27_html_escape(d.get("technical_bias"))}</td>
           <td>{_v27_html_escape(d.get("technical_score"))}</td>
           <td>{_v27_html_escape(d.get("options_score"))}</td>
-          <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+          <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
           <td>{_v27_html_escape(d.get("main_blocker"))}</td>
           <td>{_v27_html_escape(d.get("action"))}</td>
         </tr>
@@ -16945,10 +17031,11 @@ def _v271_dashboard_html(tickers=None):
       </style>
     </head>
     <body>
+      {legacy_dashboard_banner("V27.1")}
       <h1>V27.1 — Runtime Data Resolver Dashboard</h1>
       <div class="hero">
-        <h2>Execution Guard activo</h2>
-        <p>Busca automáticamente snapshots runtime y consolida técnico + opciones + mercado.</p>
+        <h2>Decision Support Guard legacy</h2>
+        <p>Busca snapshots runtime y consolida técnico + opciones + mercado para revisión manual histórica.</p>
         <p>Generado: {_v27_html_escape(_v271_now())}</p>
       </div>
 
@@ -16968,7 +17055,7 @@ def _v271_dashboard_html(tickers=None):
             <th>Sesgo técnico</th>
             <th>Score técnico</th>
             <th>Score opciones</th>
-            <th>Operable</th>
+            <th>Revisión manual</th>
             <th>Bloqueador</th>
             <th>Acción</th>
           </tr>
@@ -16986,7 +17073,9 @@ def _v271_dashboard_html(tickers=None):
 
 @app.get("/v27_1_runtime_inventory")
 async def v27_1_runtime_inventory():
-    return _v271_runtime_inventory_payload()
+    data = _v271_runtime_inventory_payload()
+    data.update(legacy_endpoint_meta("V27.1"))
+    return data
 
 @app.get("/v27_1_system_status")
 async def v27_1_system_status():
@@ -16998,6 +17087,7 @@ async def v27_1_system_status():
         "engine": "V27_1_RUNTIME_DATA_RESOLVER",
         "generated_at": _v271_now(),
         "status": "OK",
+        **legacy_endpoint_meta("V27.1"),
         "best_runtime_source": source_item,
         "rows_found": len(rows),
         "technical_available": bool(technical),
@@ -17024,7 +17114,10 @@ async def gpt_v27_1_trade_decision(ticker: str):
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
-        "can_operate": d.get("can_operate"),
+        "can_operate": False,
+        "manual_review_ready": d.get("manual_review_ready"),
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V27.1"),
         "strategy": d.get("strategy"),
         "technical_bias": d.get("technical_bias"),
         "technical_score": d.get("technical_score"),
@@ -17316,6 +17409,9 @@ def _v28_decide(ticker):
             "final_state": "NO_DATA",
             "decision": "NO_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V28"),
             "severity": "red",
             "main_blocker": "NO_OPTIONS_OR_TECHNICAL_DATA",
             "strategy": "UNKNOWN",
@@ -17341,6 +17437,9 @@ def _v28_decide(ticker):
             "final_state": "WAIT_OPTIONS_DATA",
             "decision": "WAIT_OPTIONS_DATA",
             "can_operate": False,
+            "manual_review_ready": False,
+            "not_order_instruction": True,
+            **legacy_endpoint_meta("V28"),
             "severity": "yellow",
             "main_blocker": "NO_OPTIONS_ROW_FOR_TICKER",
             "strategy": "UNKNOWN",
@@ -17403,7 +17502,10 @@ def _v28_decide(ticker):
         "status": "OK",
         "final_state": state,
         "decision": state,
-        "can_operate": can_operate,
+        "can_operate": False,
+        "manual_review_ready": bool(can_operate),
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V28"),
         "severity": severity,
         "main_blocker": blocker,
         "strategy": strategy,
@@ -17471,7 +17573,7 @@ def _v28_dashboard_html(tickers=None):
           <td>{_v28_escape(d.get("technical_bias"))}</td>
           <td>{_v28_escape(d.get("technical_score"))}</td>
           <td>{_v28_escape(d.get("options_score"))}</td>
-          <td>{'Sí' if d.get("can_operate") else 'No'}</td>
+          <td>{'Sí' if d.get("manual_review_ready") else 'No'}</td>
           <td>{_v28_escape(d.get("main_blocker"))}</td>
           <td>{_v28_escape(d.get("action"))}</td>
         </tr>
@@ -17559,10 +17661,11 @@ def _v28_dashboard_html(tickers=None):
       </style>
     </head>
     <body>
+      {legacy_dashboard_banner("V28")}
       <h1>V28 — Trade Command Center</h1>
       <div class="hero">
-        <h2>Execution Guard activo</h2>
-        <p>Consolida publicación automática del bridge + técnico + opciones + mercado.</p>
+        <h2>Decision Support Guard legacy</h2>
+        <p>Consolida publicación automática del bridge + técnico + opciones + mercado para revisión manual histórica.</p>
         <p>Generado: {_v28_escape(_v28_now())}</p>
       </div>
 
@@ -17582,7 +17685,7 @@ def _v28_dashboard_html(tickers=None):
             <th>Sesgo técnico</th>
             <th>Score técnico</th>
             <th>Score opciones</th>
-            <th>Operable</th>
+            <th>Revisión manual</th>
             <th>Bloqueador</th>
             <th>Acción</th>
           </tr>
@@ -17604,6 +17707,7 @@ async def v28_ingest_snapshot(payload: dict):
     return {
         "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
         "status": "OK",
+        **legacy_endpoint_meta("V28"),
         "stored_file": str(_V28_MASTER_FILE),
         "alias_file": str(_V28_ALIAS_V25_FILE),
         "rows_found": saved.get("rows_found"),
@@ -17622,6 +17726,7 @@ async def v28_system_status():
         "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
         "generated_at": _v28_now(),
         "status": "OK",
+        **legacy_endpoint_meta("V28"),
         "master_snapshot_available": bool(data),
         "master_source": source,
         "rows_found": len(rows),
@@ -17654,7 +17759,10 @@ async def gpt_v28_trade_decision(ticker: str):
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
-        "can_operate": d.get("can_operate"),
+        "can_operate": False,
+        "manual_review_ready": d.get("manual_review_ready"),
+        "not_order_instruction": True,
+        **legacy_endpoint_meta("V28"),
         "strategy": d.get("strategy"),
         "technical_bias": d.get("technical_bias"),
         "technical_score": d.get("technical_score"),
