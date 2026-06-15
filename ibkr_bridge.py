@@ -33,7 +33,14 @@ _V283_REMOTE_BASE_URL = _v283_os.environ.get(
     "https://trading-engine-p097.onrender.com"
 ).rstrip("/")
 
-_V283_INGEST_URL = _V283_REMOTE_BASE_URL + "/v28_ingest_snapshot"
+_V283_REMOTE_INGEST_PATH = _v283_os.environ.get(
+    "TRADING_ENGINE_INGEST_PATH",
+    "/v31_ingest_snapshot"
+)
+if not _V283_REMOTE_INGEST_PATH.startswith("/"):
+    _V283_REMOTE_INGEST_PATH = "/" + _V283_REMOTE_INGEST_PATH
+
+_V283_INGEST_URL = _V283_REMOTE_BASE_URL + _V283_REMOTE_INGEST_PATH
 
 def _v283_now():
     return _v283_datetime.now(_v283_timezone.utc).isoformat()
@@ -208,7 +215,7 @@ def _v283_publish_to_v28():
     tech = _v283_extract_technical(runtime_data)
 
     payload = {
-        "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26",
+        "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
         "generated_at": _v283_now(),
         "options_rows": rows,
         "technical_snapshot": tech,
@@ -217,7 +224,7 @@ def _v283_publish_to_v28():
             "label": "Mercado abierto: opciones en ventana operable",
             "is_regular_market_open": True,
             "options_bidask_expected": True,
-            "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26",
+            "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
             "generated_at": _v283_now()
         },
         "bridge_status": "LIVE_IBKR_AFTER_V26_PUBLISH",
@@ -228,11 +235,12 @@ def _v283_publish_to_v28():
         resp = _v283_requests.post(_V283_INGEST_URL, json=payload, timeout=20)
         ok = 200 <= resp.status_code < 300
         print(
-            "V28.3 OFFICIAL V28 SNAPSHOT PUBLISHED"
+            "V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED"
             f" | ok:{ok}"
             f" | status:{resp.status_code}"
             f" | rows:{len(rows)}"
             f" | technical:{len(tech)}"
+            f" | url:{_V283_INGEST_URL}"
         )
     except Exception as e:
         print(f"V28.3 OFFICIAL V28 SNAPSHOT ERROR | {e}")
