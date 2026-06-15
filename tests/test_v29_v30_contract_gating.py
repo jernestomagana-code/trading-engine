@@ -279,6 +279,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["summary"]["wait_options_data"], 1)
         self.assertEqual(status["summary"]["manual_review_ready"], 0)
         self.assertEqual(status["summary"]["can_operate"], 0)
+        self.assertEqual(status["endpoints"]["ingest"], "/v31_ingest_snapshot")
+        self.assertEqual(status["endpoints"]["pipeline_status"], "/v31_data_pipeline_status")
         self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
         self.assertTrue(status["not_order_instruction"])
@@ -309,6 +311,51 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("/v31_decision/QQQ", html)
         self.assertIn("Can Operate", html)
         self.assertIn("ENTRY_READY", html)
+
+    def test_v31_ingest_snapshot_reuses_master_storage_contract(self):
+        saved = {
+            "rows_found": 1,
+            "technical_available": True,
+            "tickers_detected": ["QQQ"],
+            "received_at": "2026-06-14T00:00:00+00:00",
+            "source": "UNIT_TEST",
+        }
+
+        with patch.object(main, "_v28_write_master", return_value=saved):
+            result = main._v31_ingest_snapshot_payload({
+                "source": "UNIT_TEST",
+                "options_rows": [],
+                "technical_snapshot": {},
+            })
+
+        self.assertEqual(result["engine"], "V31_CANONICAL_SNAPSHOT_INGEST")
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["rows_found"], 1)
+        self.assertTrue(result["technical_available"])
+        self.assertEqual(result["tickers_detected"], ["QQQ"])
+        self.assertEqual(result["v31_status"], "/v31_system_status")
+        self.assertEqual(result["v31_pipeline_status"], "/v31_data_pipeline_status")
+        self.assertTrue(result["not_order_instruction"])
+
+    def test_v31_pipeline_status_explains_missing_master_snapshot(self):
+        empty_master = {
+            "path": None,
+            "data": {},
+            "rows": [],
+            "technical": {},
+            "score": 0,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=empty_master):
+            status = main._v31_data_pipeline_status_payload()
+
+        self.assertEqual(status["engine"], "V31_DATA_PIPELINE_STATUS")
+        self.assertEqual(status["status"], "NO_MASTER_SNAPSHOT")
+        self.assertEqual(status["canonical_ingest"], "/v31_ingest_snapshot")
+        self.assertEqual(status["legacy_ingest_supported"], "/v28_ingest_snapshot")
+        self.assertFalse(status["master_snapshot_available"])
+        self.assertIn("ibkr_bridge.py", status["next_required_action"])
+        self.assertTrue(status["not_order_instruction"])
 
 
 if __name__ == "__main__":

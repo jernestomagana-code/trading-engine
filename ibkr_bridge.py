@@ -3329,7 +3329,14 @@ _V28_REMOTE_BASE_URL = _v28_os.environ.get(
     "https://trading-engine-p097.onrender.com"
 ).rstrip("/")
 
-_V28_REMOTE_INGEST_URL = _V28_REMOTE_BASE_URL + "/v28_ingest_snapshot"
+_V28_REMOTE_INGEST_PATH = _v28_os.environ.get(
+    "TRADING_ENGINE_INGEST_PATH",
+    "/v31_ingest_snapshot"
+)
+if not _V28_REMOTE_INGEST_PATH.startswith("/"):
+    _V28_REMOTE_INGEST_PATH = "/" + _V28_REMOTE_INGEST_PATH
+
+_V28_REMOTE_INGEST_URL = _V28_REMOTE_BASE_URL + _V28_REMOTE_INGEST_PATH
 
 def _v28_bridge_now():
     return _v28_bridge_datetime.now(_v28_bridge_timezone.utc).isoformat()
@@ -3475,7 +3482,7 @@ def _v28_publish_master_snapshot(extra_payload=None):
         resp = _v28_requests.post(_V28_REMOTE_INGEST_URL, json=payload, timeout=15)
         ok = 200 <= resp.status_code < 300
         print(
-            "V28 REMOTE MASTER SNAPSHOT PUBLISHED"
+            "V31 REMOTE MASTER SNAPSHOT PUBLISHED"
             f" | ok:{ok}"
             f" | status:{resp.status_code}"
             f" | rows:{len(options_rows)}"

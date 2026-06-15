@@ -18935,6 +18935,8 @@ def _v31_system_status_payload(tickers=None):
             "total": len(decisions),
         },
         "endpoints": {
+            "ingest": "/v31_ingest_snapshot",
+            "pipeline_status": "/v31_data_pipeline_status",
             "canonical_decision_example": "/v31_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "dashboard": "/v31_dashboard",
@@ -18942,6 +18944,82 @@ def _v31_system_status_payload(tickers=None):
             "legacy_v29_dashboard": "/v29_dashboard",
         },
         "decisions": decisions,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_runtime_file_status():
+    files = []
+    seen = set()
+    for name in ["v28_master_snapshot.json", "v25_master_snapshot.json", *_V29_MASTER_FILES]:
+        if name in seen:
+            continue
+        seen.add(name)
+        path = _V29_RUNTIME_DIR / name
+        item = {
+            "path": str(path),
+            "exists": path.exists(),
+            "rows_found": 0,
+            "technical_count": 0,
+            "received_at": None,
+            "generated_at": None,
+            "source": None,
+        }
+        data = _v29_load_json_file(path)
+        if isinstance(data, dict):
+            item["rows_found"] = len(_v29_extract_options_rows_from_obj(data))
+            item["technical_count"] = len(_v29_extract_technical_from_obj(data))
+            item["received_at"] = data.get("received_at")
+            item["generated_at"] = data.get("generated_at")
+            item["source"] = data.get("source")
+        files.append(item)
+    return files
+
+
+def _v31_data_pipeline_status_payload():
+    status = _v31_system_status_payload()
+    files = _v31_runtime_file_status()
+    has_data = bool(status.get("master_snapshot_available"))
+    return {
+        "engine": "V31_DATA_PIPELINE_STATUS",
+        "generated_at": _v29_now(),
+        "status": "OK" if has_data else "NO_MASTER_SNAPSHOT",
+        "canonical_ingest": "/v31_ingest_snapshot",
+        "legacy_ingest_supported": "/v28_ingest_snapshot",
+        "expected_bridge_target": "https://trading-engine-p097.onrender.com/v31_ingest_snapshot",
+        "master_snapshot_available": has_data,
+        "master_source": status.get("master_source"),
+        "rows_found": status.get("rows_found"),
+        "technical_count": status.get("technical_count"),
+        "runtime_files": files,
+        "diagnosis": (
+            "Pipeline listo. Falta que ibkr_bridge.py publique un snapshot maestro."
+            if not has_data else
+            "Pipeline con snapshot maestro disponible para V31."
+        ),
+        "next_required_action": (
+            "Ejecutar ibkr_bridge.py durante mercado o publicar POST /v31_ingest_snapshot con options_rows/technical_snapshot."
+            if not has_data else
+            "Validar decisiones V31 por ticker."
+        ),
+        "not_order_instruction": True,
+    }
+
+
+def _v31_ingest_snapshot_payload(payload):
+    saved = _v28_write_master(payload)
+    return {
+        "engine": "V31_CANONICAL_SNAPSHOT_INGEST",
+        "status": "OK",
+        "stored_file": str(_V28_MASTER_FILE),
+        "alias_file": str(_V28_ALIAS_V25_FILE),
+        "rows_found": saved.get("rows_found"),
+        "technical_available": saved.get("technical_available"),
+        "tickers_detected": saved.get("tickers_detected"),
+        "received_at": saved.get("received_at"),
+        "source": saved.get("source"),
+        "v31_status": "/v31_system_status",
+        "v31_pipeline_status": "/v31_data_pipeline_status",
         "not_order_instruction": True,
     }
 
@@ -19137,6 +19215,16 @@ async def gpt_v31_trade_decision(ticker: str):
 @app.get("/v31_system_status")
 async def v31_system_status():
     return _v31_system_status_payload()
+
+
+@app.get("/v31_data_pipeline_status")
+async def v31_data_pipeline_status():
+    return _v31_data_pipeline_status_payload()
+
+
+@app.post("/v31_ingest_snapshot")
+async def v31_ingest_snapshot(payload: dict):
+    return _v31_ingest_snapshot_payload(payload)
 
 
 @app.get("/v31_dashboard", response_class=_V29HTMLResponse)
