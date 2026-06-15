@@ -18890,6 +18890,240 @@ def _v31_canonical_decision(ticker):
     }
 
 
+def _v31_all_decisions(tickers=None):
+    if not tickers:
+        tickers = _V29_DEFAULT_TICKERS
+    return [_v31_canonical_decision(t) for t in tickers]
+
+
+def _v31_system_status_payload(tickers=None):
+    master = _v29_discover_master_snapshot()
+    market = _v29_market_state(master)
+    decisions = _v31_all_decisions(tickers)
+    states = [
+        "ENTRY_READY",
+        "MANUAL_REVIEW",
+        "RISK_BLOCKED",
+        "WAIT_OPTIONS_DATA",
+        "WAIT_TECHNICAL",
+        "WAIT_MARKET",
+        "WAIT_ACCOUNT_CONTEXT",
+        "NO_DATA",
+    ]
+
+    summary = {state.lower(): sum(1 for d in decisions if d.get("final_state") == state) for state in states}
+
+    return {
+        "engine": "V31_CANONICAL_DECISION_ENGINE",
+        "decision_version": _V31_DECISION_VERSION,
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "generated_at": _v29_now(),
+        "status": "OK",
+        "canonical_source": "V31",
+        "legacy_source": "V29_FINAL_DECISION_QUALITY_ENGINE",
+        "master_snapshot_available": bool(master.get("path")),
+        "master_source": master.get("path"),
+        "rows_found": len(master.get("rows", [])),
+        "technical_count": len(master.get("technical", {})),
+        "technical_tickers": sorted(list(master.get("technical", {}).keys())),
+        "market": market,
+        "summary": {
+            **summary,
+            "manual_review_ready": sum(1 for d in decisions if d.get("manual_review_ready") is True),
+            "can_operate": 0,
+            "total": len(decisions),
+        },
+        "endpoints": {
+            "canonical_decision_example": "/v31_decision/QQQ",
+            "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
+            "dashboard": "/v31_dashboard",
+            "dashboard_ticker_example": "/v31_dashboard/QQQ",
+            "legacy_v29_dashboard": "/v29_dashboard",
+        },
+        "decisions": decisions,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_badge(state):
+    color = "#64748b"
+    if state == "ENTRY_READY":
+        color = "#16a34a"
+    elif state == "RISK_BLOCKED":
+        color = "#dc2626"
+    elif state in ["NO_DATA"]:
+        color = "#991b1b"
+    elif str(state or "").startswith("WAIT"):
+        color = "#ca8a04"
+    elif state == "MANUAL_REVIEW":
+        color = "#2563eb"
+
+    return f'<span style="background:{color};color:white;padding:7px 12px;border-radius:999px;font-weight:800;font-size:12px;">{_v29_html_escape(state)}</span>'
+
+
+def _v31_dashboard_html(tickers=None):
+    status = _v31_system_status_payload(tickers)
+    decisions = status["decisions"]
+    summary = status["summary"]
+    rows_html = ""
+
+    for d in decisions:
+        contract = d.get("selected_contract") or {}
+        rows_html += f"""
+        <tr>
+            <td><a href="/v31_decision/{_v29_html_escape(d.get('ticker'))}">{_v29_html_escape(d.get('ticker'))}</a></td>
+            <td>{_v31_badge(d.get('final_state'))}</td>
+            <td>{_v29_html_escape(d.get('strategy'))}</td>
+            <td>{_v29_html_escape(d.get('technical_status'))}</td>
+            <td>{_v29_html_escape(d.get('construction_status'))}</td>
+            <td>{_v29_html_escape(d.get('risk_status'))}</td>
+            <td>{_v29_html_escape(d.get('portfolio_status'))}</td>
+            <td>{_v29_html_escape(contract.get('strike'))}</td>
+            <td>{_v29_html_escape(contract.get('expiration'))}</td>
+            <td>{_v29_html_escape(contract.get('dte'))}</td>
+            <td>{_v29_html_escape(contract.get('bid'))}</td>
+            <td>{_v29_html_escape(contract.get('ask'))}</td>
+            <td>{_v29_html_escape(contract.get('mid'))}</td>
+            <td>{_v29_html_escape(contract.get('spread_pct'))}</td>
+            <td>{'Sí' if d.get('manual_review_ready') else 'No'}</td>
+            <td>{_v29_html_escape(d.get('main_blocker'))}</td>
+            <td>{_v29_html_escape(', '.join(d.get('blockers') or []))}</td>
+        </tr>
+        """
+
+    generated = status["generated_at"]
+
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+        <title>V31 Canonical Decision Engine</title>
+        <style>
+            body {{
+                font-family: Inter, Arial, sans-serif;
+                background:#f8fafc;
+                color:#0f172a;
+                margin:0;
+                padding:32px;
+            }}
+            h1 {{font-size:34px; margin-bottom:22px;}}
+            .hero {{
+                background:#111827;
+                color:white;
+                border-radius:18px;
+                padding:30px;
+                margin-bottom:24px;
+            }}
+            .hero h2 {{margin:0 0 12px 0; font-size:24px;}}
+            .cards {{
+                display:grid;
+                grid-template-columns: repeat(7, 1fr);
+                gap:14px;
+                margin-bottom:24px;
+            }}
+            .card {{
+                background:white;
+                border-radius:8px;
+                padding:18px;
+                border:1px solid #e2e8f0;
+            }}
+            .label {{
+                color:#64748b;
+                font-size:11px;
+                text-transform:uppercase;
+                font-weight:800;
+            }}
+            .num {{
+                font-size:30px;
+                font-weight:900;
+                margin-top:8px;
+            }}
+            table {{
+                width:100%;
+                border-collapse:collapse;
+                background:white;
+                border:1px solid #e2e8f0;
+                border-radius:8px;
+                overflow:hidden;
+                font-size:13px;
+            }}
+            th {{
+                text-align:left;
+                padding:12px;
+                color:#64748b;
+                font-size:11px;
+                text-transform:uppercase;
+                border-bottom:1px solid #e2e8f0;
+            }}
+            td {{
+                padding:12px;
+                border-bottom:1px solid #e2e8f0;
+                vertical-align:top;
+            }}
+            .foot {{
+                color:#64748b;
+                margin-top:18px;
+                font-size:14px;
+            }}
+            a {{color:#2563eb; font-weight:800;}}
+        </style>
+    </head>
+    <body>
+        <h1>V31 Canonical Decision Engine</h1>
+
+        <div class="hero">
+            <h2>Fuente oficial para GPT, dashboards y reportes</h2>
+            <p>Decision support solamente. ENTRY_READY significa listo para revision manual, no autorizacion de ejecucion.</p>
+            <p>Generado: {generated}</p>
+        </div>
+
+        <div class="cards">
+            <div class="card"><div class="label">Manual Ready</div><div class="num">{summary["manual_review_ready"]}</div></div>
+            <div class="card"><div class="label">Wait Options</div><div class="num">{summary["wait_options_data"]}</div></div>
+            <div class="card"><div class="label">Wait Technical</div><div class="num">{summary["wait_technical"]}</div></div>
+            <div class="card"><div class="label">Wait Market</div><div class="num">{summary["wait_market"]}</div></div>
+            <div class="card"><div class="label">Risk Blocked</div><div class="num">{summary["risk_blocked"]}</div></div>
+            <div class="card"><div class="label">No Data</div><div class="num">{summary["no_data"]}</div></div>
+            <div class="card"><div class="label">Can Operate</div><div class="num">{summary["can_operate"]}</div></div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Ticker</th>
+                    <th>Estado V31</th>
+                    <th>Estrategia</th>
+                    <th>Técnico</th>
+                    <th>Construction</th>
+                    <th>Risk</th>
+                    <th>Portfolio</th>
+                    <th>Strike</th>
+                    <th>Exp</th>
+                    <th>DTE</th>
+                    <th>Bid</th>
+                    <th>Ask</th>
+                    <th>Mid</th>
+                    <th>Spread %</th>
+                    <th>Revision manual</th>
+                    <th>Main blocker</th>
+                    <th>Blockers</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+
+        <div class="foot">
+            Endpoints oficiales: /v31_system_status · /v31_decision/QQQ · /gpt_v31_trade_decision/QQQ · /v31_dashboard
+            <br>Legacy disponible: /v29_dashboard
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.get("/v31_decision/{ticker}")
 async def v31_decision(ticker: str):
     return _v31_canonical_decision(ticker)
@@ -18898,6 +19132,21 @@ async def v31_decision(ticker: str):
 @app.get("/gpt_v31_trade_decision/{ticker}")
 async def gpt_v31_trade_decision(ticker: str):
     return _v31_canonical_decision(ticker)
+
+
+@app.get("/v31_system_status")
+async def v31_system_status():
+    return _v31_system_status_payload()
+
+
+@app.get("/v31_dashboard", response_class=_V29HTMLResponse)
+async def v31_dashboard():
+    return _v31_dashboard_html()
+
+
+@app.get("/v31_dashboard/{ticker}", response_class=_V29HTMLResponse)
+async def v31_dashboard_ticker(ticker: str):
+    return _v31_dashboard_html([ticker])
 
 
 @app.get("/v29_dashboard", response_class=_V29HTMLResponse)

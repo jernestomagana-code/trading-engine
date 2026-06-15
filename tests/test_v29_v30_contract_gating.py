@@ -253,6 +253,63 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(decision["manual_review_ready"])
         self.assertFalse(decision["can_operate"])
 
+    def test_v31_system_status_uses_canonical_summary_and_endpoints(self):
+        incomplete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": None,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([incomplete_row])):
+            status = main._v31_system_status_payload(["QQQ"])
+
+        self.assertEqual(status["engine"], "V31_CANONICAL_DECISION_ENGINE")
+        self.assertEqual(status["canonical_source"], "V31")
+        self.assertEqual(status["legacy_source"], "V29_FINAL_DECISION_QUALITY_ENGINE")
+        self.assertEqual(status["summary"]["wait_options_data"], 1)
+        self.assertEqual(status["summary"]["manual_review_ready"], 0)
+        self.assertEqual(status["summary"]["can_operate"], 0)
+        self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
+        self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertTrue(status["not_order_instruction"])
+
+    def test_v31_dashboard_points_to_canonical_routes(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
+            html = main._v31_dashboard_html(["QQQ"])
+
+        self.assertIn("V31 Canonical Decision Engine", html)
+        self.assertIn("/v31_system_status", html)
+        self.assertIn("/gpt_v31_trade_decision/QQQ", html)
+        self.assertIn("/v31_decision/QQQ", html)
+        self.assertIn("Can Operate", html)
+        self.assertIn("ENTRY_READY", html)
+
 
 if __name__ == "__main__":
     unittest.main()
