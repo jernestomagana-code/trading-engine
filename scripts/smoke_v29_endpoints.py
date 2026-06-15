@@ -90,6 +90,9 @@ def assert_routes(app_module):
         "/gpt_v29_trade_decision/{ticker}",
         "/v29_dashboard",
         "/v29_dashboard/{ticker}",
+        "/v30_monitor_status",
+        "/v30_monitor_notify/preview",
+        "/v30_monitor_notify",
     }
     missing = sorted(required - paths)
     if missing:
@@ -163,6 +166,69 @@ async def smoke() -> None:
         rendered = str(body)
     if "AAPL" not in rendered:
         raise AssertionError("dashboard ticker endpoint did not render AAPL")
+
+    monitor = await app_module.v30_monitor_status()
+    if monitor.get("not_order_instruction") is not True:
+        raise AssertionError("monitor must preserve not_order_instruction")
+
+    preview = await app_module.v30_monitor_notify_preview()
+    if preview.get("status") != "preview":
+        raise AssertionError("monitor preview did not return preview status")
+    if preview.get("email_sent") is True:
+        raise AssertionError("monitor preview must not send email")
+
+    original_send = app_module._v30_send_resend_email
+    try:
+        app_module._v30_send_resend_email = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("non-actionable monitor notification attempted to send email")
+        )
+        original_status = app_module._v30_monitor_status_payload
+        app_module._v30_monitor_status_payload = lambda: {
+            "engine": "V30_PASSIVE_PIPELINE_MONITOR",
+            "generated_at": "2026-06-11T00:00:00+00:00",
+            "alert_level": "INFO",
+            "summary": {"entry_ready": 0},
+            "message": "informational only",
+            "not_order_instruction": True,
+        }
+        skipped = app_module._v30_monitor_notify_payload()
+        if skipped.get("status") != "skipped":
+            raise AssertionError("non-actionable monitor notification should be skipped")
+    finally:
+        app_module._v30_send_resend_email = original_send
+        app_module._v30_monitor_status_payload = original_status
+
+    sent_calls = []
+    try:
+        app_module._v30_send_resend_email = lambda *args, **kwargs: sent_calls.append(args) or {
+            "email_sent": True,
+            "provider": "test",
+        }
+        app_module._v30_monitor_status_payload = lambda: {
+            "engine": "V30_PASSIVE_PIPELINE_MONITOR",
+            "generated_at": "2026-06-11T00:00:00+00:00",
+            "alert_level": "ACTION_REQUIRED",
+            "summary": {"entry_ready": 1},
+            "entry_ready_tickers": ["AAPL"],
+            "risk_blocked_tickers": [],
+            "wait_options_tickers": [],
+            "message": "actionable",
+            "next_required_action": "manual review",
+            "market_context": "REGULAR_MARKET_HOURS",
+            "master_snapshot_available": True,
+            "master_source": "test",
+            "rows_found": 1,
+            "technical_count": 1,
+            "not_order_instruction": True,
+        }
+        sent = app_module._v30_monitor_notify_payload()
+        if sent.get("status") != "sent" or sent.get("email_sent") is not True:
+            raise AssertionError("actionable monitor notification should send email")
+        if not sent_calls:
+            raise AssertionError("actionable monitor notification did not call email helper")
+    finally:
+        app_module._v30_send_resend_email = original_send
+        app_module._v30_monitor_status_payload = original_status
 
 
 def main() -> int:

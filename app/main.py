@@ -26,6 +26,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+MONITOR_EMAIL_TO = os.getenv("MONITOR_EMAIL_TO") or os.getenv("PREMARKET_EMAIL_TO", "")
+MONITOR_EMAIL_FROM = os.getenv("MONITOR_EMAIL_FROM") or os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -15324,6 +15328,260 @@ async def v29_dashboard():
 @app.get("/v29_dashboard/{ticker}", response_class=_V29HTMLResponse)
 async def v29_dashboard_ticker(ticker: str):
     return _v29_dashboard_html([ticker])
+
+
+# ============================================================
+# V30 PASSIVE MONITOR + MANUAL EMAIL NOTIFICATION
+# ============================================================
+
+def _v30_monitor_base_url():
+    return PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
+
+
+def _v30_send_resend_email(to_email, subject, text_body, html_body=None):
+    missing = []
+    if not RESEND_API_KEY:
+        missing.append("RESEND_API_KEY")
+    if not to_email:
+        missing.append("MONITOR_EMAIL_TO or PREMARKET_EMAIL_TO")
+    if not MONITOR_EMAIL_FROM:
+        missing.append("MONITOR_EMAIL_FROM or PREMARKET_EMAIL_FROM")
+
+    if missing:
+        return {
+            "email_sent": False,
+            "provider": "resend",
+            "reason": "EMAIL_CONFIG_MISSING",
+            "missing": missing,
+        }
+
+    payload = {
+        "from": MONITOR_EMAIL_FROM,
+        "to": [to_email],
+        "subject": subject,
+        "text": text_body,
+    }
+    if html_body:
+        payload["html"] = html_body
+
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=12,
+        )
+        ok = 200 <= response.status_code < 300
+        return {
+            "email_sent": ok,
+            "provider": "resend",
+            "status_code": response.status_code,
+            "reason": None if ok else "EMAIL_PROVIDER_REJECTED",
+            "response": response.text[:500],
+        }
+    except Exception as exc:
+        return {
+            "email_sent": False,
+            "provider": "resend",
+            "reason": "EMAIL_SEND_ERROR",
+            "error": str(exc),
+        }
+
+
+def _v30_monitor_status_payload():
+    master = _v29_discover_master_snapshot()
+    market = _v29_market_state(master)
+    decisions = _v29_all_decisions()
+    summary = {
+        "entry_ready": sum(1 for d in decisions if d.get("final_state") == "ENTRY_READY"),
+        "manual_review_blocked": sum(1 for d in decisions if d.get("final_state") == "MANUAL_REVIEW_BLOCKED"),
+        "risk_blocked": sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED"),
+        "wait_options": sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"),
+        "wait_technical": sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL"),
+        "wait_market": sum(1 for d in decisions if d.get("final_state") == "WAIT_MARKET_OPEN"),
+        "no_data": sum(1 for d in decisions if d.get("final_state") == "NO_DATA"),
+    }
+
+    entry_ready = [d for d in decisions if d.get("final_state") == "ENTRY_READY"]
+    risk_blocked = [d for d in decisions if d.get("final_state") == "RISK_BLOCKED"]
+    wait_options = [d for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"]
+    no_data = [d for d in decisions if d.get("final_state") == "NO_DATA"]
+
+    market_open = bool(market.get("is_regular_market_open"))
+    market_context = "REGULAR_MARKET_HOURS" if market_open else "OUTSIDE_MARKET_HOURS_OR_UNKNOWN"
+    snapshot_available = bool(master.get("path"))
+
+    if entry_ready:
+        alert_level = "ACTION_REQUIRED"
+        message = "Hay setups ENTRY_READY para revision manual. No es instruccion de operar."
+        next_action = "Abrir el dashboard, revisar contrato, spread, liquidez, evento, sizing y riesgo antes de cualquier decision manual."
+    elif not snapshot_available and market_open:
+        alert_level = "ACTION_REQUIRED"
+        message = "No hay snapshot maestro durante horario regular. Revisar bridge/publicador."
+        next_action = "Validar que ibkr_bridge.py publique snapshot reciente y que Render lo reciba."
+    elif risk_blocked:
+        alert_level = "WARNING"
+        message = "Hay setups bloqueados por riesgo. No intentar entrada hasta resolver blockers."
+        next_action = "Revisar main_blocker y risk_gate por ticker."
+    elif wait_options:
+        alert_level = "WARNING"
+        message = "Hay tecnico confirmado o candidatos, pero faltan datos ejecutables de opciones."
+        next_action = "Confirmar bid/ask/mid/spread/spread_pct/strike/expiration/dte/delta desde IBKR."
+    elif not snapshot_available:
+        alert_level = "INFO"
+        message = "No hay snapshot maestro; fuera de mercado no requiere accion inmediata."
+        next_action = "Esperar siguiente ventana operativa o publicar snapshot manual si estas probando."
+    elif no_data and len(no_data) == len(decisions):
+        alert_level = "INFO"
+        message = "El motor no encontro datos suficientes para tickers monitoreados."
+        next_action = "Verificar universo, snapshot y technical_snapshot."
+    else:
+        alert_level = "OK"
+        message = "Monitor activo sin setups listos para revision manual."
+        next_action = "No hacer nada; seguir monitoreando."
+
+    return {
+        "engine": "V30_PASSIVE_PIPELINE_MONITOR",
+        "generated_at": _v29_now(),
+        "alert_level": alert_level,
+        "market_context": market_context,
+        "master_snapshot_available": snapshot_available,
+        "master_source": master.get("path"),
+        "rows_found": len(master.get("rows", [])),
+        "technical_count": len(master.get("technical", {})),
+        "technical_tickers": sorted(list(master.get("technical", {}).keys())),
+        "summary": summary,
+        "entry_ready_tickers": [d.get("ticker") for d in entry_ready],
+        "risk_blocked_tickers": [d.get("ticker") for d in risk_blocked],
+        "wait_options_tickers": [d.get("ticker") for d in wait_options],
+        "message": message,
+        "next_required_action": next_action,
+        "notification_sent": False,
+        "notification_channel": None,
+        "not_order_instruction": True,
+    }
+
+
+def _v30_monitor_should_notify(monitor, force=False):
+    if force:
+        return True, "FORCED"
+    if monitor.get("alert_level") == "ACTION_REQUIRED":
+        return True, "ACTION_REQUIRED"
+    if int(monitor.get("summary", {}).get("entry_ready") or 0) > 0:
+        return True, "ENTRY_READY"
+    return False, "NO_ACTIONABLE_ALERT"
+
+
+def _v30_monitor_email_content(monitor):
+    base = _v30_monitor_base_url()
+    subject = f"Stock Ultimus V30 Monitor: {monitor.get('alert_level')}"
+    lines = [
+        "Stock Ultimus V30 Monitor",
+        "",
+        f"Alerta: {monitor.get('alert_level')}",
+        f"Mensaje: {monitor.get('message')}",
+        f"Accion requerida: {monitor.get('next_required_action')}",
+        "",
+        f"Mercado: {monitor.get('market_context')}",
+        f"Snapshot maestro: {monitor.get('master_snapshot_available')}",
+        f"Fuente: {monitor.get('master_source')}",
+        f"Filas opciones: {monitor.get('rows_found')}",
+        f"Snapshots tecnicos: {monitor.get('technical_count')}",
+        f"ENTRY_READY: {monitor.get('entry_ready_tickers')}",
+        f"RISK_BLOCKED: {monitor.get('risk_blocked_tickers')}",
+        f"WAIT_OPTIONS_DATA: {monitor.get('wait_options_tickers')}",
+        "",
+        f"Dashboard: {base}/v29_dashboard",
+        f"Estado monitor: {base}/v30_monitor_status",
+        "",
+        "Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.",
+    ]
+    text = "\n".join(lines)
+    html_body = f"""
+    <h2>Stock Ultimus V30 Monitor</h2>
+    <p><strong>Alerta:</strong> {_v29_html_escape(monitor.get('alert_level'))}</p>
+    <p><strong>Mensaje:</strong> {_v29_html_escape(monitor.get('message'))}</p>
+    <p><strong>Accion requerida:</strong> {_v29_html_escape(monitor.get('next_required_action'))}</p>
+    <ul>
+      <li>Mercado: {_v29_html_escape(monitor.get('market_context'))}</li>
+      <li>Snapshot maestro: {_v29_html_escape(monitor.get('master_snapshot_available'))}</li>
+      <li>Filas opciones: {_v29_html_escape(monitor.get('rows_found'))}</li>
+      <li>Snapshots tecnicos: {_v29_html_escape(monitor.get('technical_count'))}</li>
+      <li>ENTRY_READY: {_v29_html_escape(monitor.get('entry_ready_tickers'))}</li>
+      <li>RISK_BLOCKED: {_v29_html_escape(monitor.get('risk_blocked_tickers'))}</li>
+      <li>WAIT_OPTIONS_DATA: {_v29_html_escape(monitor.get('wait_options_tickers'))}</li>
+    </ul>
+    <p><a href="{_v29_html_escape(base)}/v29_dashboard">Abrir dashboard</a></p>
+    <p><a href="{_v29_html_escape(base)}/v30_monitor_status">Abrir estado del monitor</a></p>
+    <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
+    """
+    return subject, text, html_body
+
+
+def _v30_monitor_notify_payload(force=False, to_email=None, dry_run=False):
+    monitor = _v30_monitor_status_payload()
+    should_notify, reason = _v30_monitor_should_notify(monitor, force=force)
+    subject, text_body, html_body = _v30_monitor_email_content(monitor)
+
+    base_payload = {
+        "engine": "V30_PASSIVE_PIPELINE_MONITOR",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "notify_reason": reason,
+        "subject": subject,
+        "monitor": monitor,
+        "notification_channel": "email",
+        "not_order_instruction": True,
+    }
+
+    if dry_run:
+        return {
+            **base_payload,
+            "status": "preview",
+            "email_sent": False,
+            "text": text_body,
+            "html": html_body,
+        }
+
+    if not should_notify:
+        return {
+            **base_payload,
+            "status": "skipped",
+            "email_sent": False,
+            "reason": reason,
+        }
+
+    email_result = _v30_send_resend_email(
+        to_email or MONITOR_EMAIL_TO,
+        subject,
+        text_body,
+        html_body,
+    )
+
+    return {
+        **base_payload,
+        "status": "sent" if email_result.get("email_sent") else "not_sent",
+        "email_sent": bool(email_result.get("email_sent")),
+        "email_result": email_result,
+    }
+
+
+@app.get("/v30_monitor_status")
+async def v30_monitor_status():
+    return _v30_monitor_status_payload()
+
+
+@app.get("/v30_monitor_notify/preview")
+async def v30_monitor_notify_preview(force: bool = False):
+    return _v30_monitor_notify_payload(force=force, dry_run=True)
+
+
+@app.post("/v30_monitor_notify")
+async def v30_monitor_notify(force: bool = False, to_email: Optional[str] = None):
+    return _v30_monitor_notify_payload(force=force, to_email=to_email, dry_run=False)
 
 
 # ============================================================
