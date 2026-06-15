@@ -357,6 +357,78 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("ibkr_bridge.py", status["next_required_action"])
         self.assertTrue(status["not_order_instruction"])
 
+    def test_v31_monitor_reports_info_when_pipeline_missing_outside_market(self):
+        empty_master = {
+            "path": None,
+            "data": {},
+            "rows": [],
+            "technical": {},
+            "score": 0,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=empty_master):
+            monitor = main._v31_monitor_status_payload()
+
+        self.assertEqual(monitor["engine"], "V31_PIPELINE_MONITOR")
+        self.assertEqual(monitor["alert_level"], "INFO")
+        self.assertEqual(monitor["pipeline_status"], "NO_MASTER_SNAPSHOT")
+        self.assertEqual(monitor["market_context"], "OUTSIDE_MARKET_HOURS_OR_UNKNOWN")
+        self.assertFalse(monitor["notification_sent"])
+        self.assertTrue(monitor["not_order_instruction"])
+
+    def test_v31_monitor_flags_entry_ready_for_manual_review(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
+            monitor = main._v31_monitor_status_payload()
+
+        self.assertEqual(monitor["alert_level"], "ACTION_REQUIRED")
+        self.assertEqual(monitor["pipeline_status"], "OK")
+        self.assertEqual(monitor["manual_review_ready_count"], 1)
+        self.assertEqual(monitor["entry_ready_tickers"], ["QQQ"])
+        self.assertIn("revision manual", monitor["message"])
+        self.assertFalse(monitor["notification_sent"])
+        self.assertTrue(monitor["not_order_instruction"])
+
+    def test_v31_monitor_flags_missing_pipeline_during_market(self):
+        empty_open_master = {
+            "path": None,
+            "data": {
+                "market": {
+                    "is_regular_market_open": True,
+                    "options_bidask_expected": True,
+                    "label": "REGULAR_OPTIONS_SESSION",
+                }
+            },
+            "rows": [],
+            "technical": {},
+            "score": 0,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=empty_open_master):
+            monitor = main._v31_monitor_status_payload()
+
+        self.assertEqual(monitor["alert_level"], "ACTION_REQUIRED")
+        self.assertEqual(monitor["pipeline_status"], "NO_MASTER_SNAPSHOT")
+        self.assertEqual(monitor["market_context"], "REGULAR_MARKET_HOURS")
+        self.assertIn("bridge", monitor["message"])
+        self.assertFalse(monitor["notification_sent"])
+        self.assertTrue(monitor["not_order_instruction"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19024,6 +19024,64 @@ def _v31_ingest_snapshot_payload(payload):
     }
 
 
+def _v31_monitor_status_payload():
+    pipeline = _v31_data_pipeline_status_payload()
+    status = _v31_system_status_payload()
+    decisions = status.get("decisions") or []
+    summary = status.get("summary") or {}
+    market = status.get("market") or {}
+
+    entry_ready = [d for d in decisions if d.get("final_state") == "ENTRY_READY"]
+    manual_ready = [d for d in decisions if d.get("manual_review_ready") is True]
+    risk_blocked = [d for d in decisions if d.get("final_state") == "RISK_BLOCKED"]
+    wait_options = [d for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"]
+
+    market_context = "REGULAR_MARKET_HOURS" if market.get("is_regular_market_open") else "OUTSIDE_MARKET_HOURS_OR_UNKNOWN"
+    pipeline_status = pipeline.get("status")
+
+    if entry_ready:
+        alert_level = "ACTION_REQUIRED"
+        message = "Hay setups ENTRY_READY para revision manual. No es instruccion de operar."
+    elif risk_blocked:
+        alert_level = "WARNING"
+        message = "Hay setups bloqueados por riesgo. Revisar blockers antes de cualquier decision."
+    elif pipeline_status != "OK" and market_context == "REGULAR_MARKET_HOURS":
+        alert_level = "ACTION_REQUIRED"
+        message = "Pipeline V31 sin snapshot maestro durante horario de mercado. Revisar bridge/publicador."
+    elif pipeline_status != "OK":
+        alert_level = "INFO"
+        message = "Pipeline V31 sin snapshot maestro; no requiere accion inmediata fuera de mercado."
+    elif wait_options:
+        alert_level = "WARNING"
+        message = "Pipeline V31 activo, pero faltan datos ejecutables de opciones en uno o mas tickers."
+    else:
+        alert_level = "OK"
+        message = "Pipeline V31 activo sin setups listos para revision manual."
+
+    return {
+        "engine": "V31_PIPELINE_MONITOR",
+        "generated_at": _v29_now(),
+        "alert_level": alert_level,
+        "pipeline_status": pipeline_status,
+        "market_context": market_context,
+        "master_snapshot_available": pipeline.get("master_snapshot_available"),
+        "master_source": pipeline.get("master_source"),
+        "rows_found": pipeline.get("rows_found"),
+        "technical_count": pipeline.get("technical_count"),
+        "manual_review_ready_count": len(manual_ready),
+        "entry_ready_tickers": [d.get("ticker") for d in entry_ready],
+        "manual_review_ready_tickers": [d.get("ticker") for d in manual_ready],
+        "risk_blocked_tickers": [d.get("ticker") for d in risk_blocked],
+        "wait_options_tickers": [d.get("ticker") for d in wait_options],
+        "summary": summary,
+        "message": message,
+        "next_required_action": pipeline.get("next_required_action"),
+        "notification_sent": False,
+        "notification_channel": None,
+        "not_order_instruction": True,
+    }
+
+
 def _v31_badge(state):
     color = "#64748b"
     if state == "ENTRY_READY":
@@ -19225,6 +19283,11 @@ async def v31_data_pipeline_status():
 @app.post("/v31_ingest_snapshot")
 async def v31_ingest_snapshot(payload: dict):
     return _v31_ingest_snapshot_payload(payload)
+
+
+@app.get("/v31_monitor_status")
+async def v31_monitor_status():
+    return _v31_monitor_status_payload()
 
 
 @app.get("/v31_dashboard", response_class=_V29HTMLResponse)
