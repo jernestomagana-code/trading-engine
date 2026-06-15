@@ -19,6 +19,7 @@ from urllib import request, error
 
 DEFAULT_REMOTE_URL = "https://trading-engine-p097.onrender.com"
 DEFAULT_INGEST_PATH = "/v31_ingest_snapshot"
+DEFAULT_MAX_AGE_MINUTES = 90
 
 
 def now_iso() -> str:
@@ -51,6 +52,27 @@ def load_runtime_json(runtime_dir: Path) -> dict[str, Any]:
         except Exception as exc:
             out[path.name] = {"_load_error": str(exc)}
     return out
+
+
+def runtime_freshness(runtime_dir: Path) -> dict[str, Any]:
+    files = [p for p in runtime_dir.glob("*.json")] if runtime_dir.exists() else []
+    if not files:
+        return {
+            "newest_file": None,
+            "newest_mtime": None,
+            "age_minutes": None,
+            "file_count": 0,
+        }
+
+    newest = max(files, key=lambda p: p.stat().st_mtime)
+    newest_dt = datetime.fromtimestamp(newest.stat().st_mtime, tz=timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - newest_dt).total_seconds() / 60
+    return {
+        "newest_file": str(newest),
+        "newest_mtime": newest_dt.isoformat(),
+        "age_minutes": round(age_minutes, 2),
+        "file_count": len(files),
+    }
 
 
 def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -220,17 +242,26 @@ def main() -> int:
     parser.add_argument("--remote-url", default=os.environ.get("TRADING_ENGINE_REMOTE_URL", DEFAULT_REMOTE_URL))
     parser.add_argument("--ingest-path", default=os.environ.get("TRADING_ENGINE_INGEST_PATH", DEFAULT_INGEST_PATH))
     parser.add_argument("--publish", action="store_true", help="POST snapshot to remote V31 ingest.")
+    parser.add_argument("--max-age-minutes", type=int, default=DEFAULT_MAX_AGE_MINUTES)
+    parser.add_argument("--allow-stale", action="store_true", help="Allow publish even if runtime files are stale.")
     parser.add_argument("--timeout", type=int, default=15)
     args = parser.parse_args()
 
     ingest_path = args.ingest_path if args.ingest_path.startswith("/") else f"/{args.ingest_path}"
     url = args.remote_url.rstrip("/") + ingest_path
-    payload = build_payload(Path(args.runtime_dir))
+    runtime_dir = Path(args.runtime_dir)
+    freshness = runtime_freshness(runtime_dir)
+    payload = build_payload(runtime_dir)
+    age = freshness.get("age_minutes")
+    stale = bool(age is None or age > args.max_age_minutes)
 
     result = {
         "mode": "publish" if args.publish else "dry_run",
         "target": url,
         "runtime_dir": args.runtime_dir,
+        "freshness": freshness,
+        "max_age_minutes": args.max_age_minutes,
+        "stale": stale,
         "runtime_files_seen": payload["runtime_files_seen"],
         "rows_found": len(payload["options_rows"]),
         "technical_count": len(payload["technical_snapshot"]),
@@ -244,6 +275,14 @@ def main() -> int:
     }
 
     if args.publish:
+        if stale and not args.allow_stale:
+            result["publish_result"] = {
+                "ok": False,
+                "blocked": "STALE_RUNTIME_SNAPSHOT",
+                "message": "Refusing to publish stale or missing runtime files. Use --allow-stale only for explicit historical testing.",
+            }
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 2
         result["publish_result"] = post_json(url, payload, args.timeout)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))

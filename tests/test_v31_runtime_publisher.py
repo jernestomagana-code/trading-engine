@@ -7,6 +7,27 @@ from tools import publish_v31_snapshot_from_runtime as publisher
 
 
 class V31RuntimePublisherTests(unittest.TestCase):
+    def test_runtime_freshness_handles_empty_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            freshness = publisher.runtime_freshness(Path(tmp))
+
+        self.assertIsNone(freshness["newest_file"])
+        self.assertIsNone(freshness["newest_mtime"])
+        self.assertIsNone(freshness["age_minutes"])
+        self.assertEqual(freshness["file_count"], 0)
+
+    def test_runtime_freshness_reports_newest_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            path = runtime / "sample.json"
+            path.write_text("{}")
+            freshness = publisher.runtime_freshness(runtime)
+
+        self.assertTrue(freshness["newest_file"].endswith("sample.json"))
+        self.assertIsNotNone(freshness["newest_mtime"])
+        self.assertGreaterEqual(freshness["age_minutes"], 0)
+        self.assertEqual(freshness["file_count"], 1)
+
     def test_build_payload_extracts_options_and_technical_without_ibkr(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
