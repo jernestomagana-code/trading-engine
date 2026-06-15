@@ -429,6 +429,74 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(monitor["notification_sent"])
         self.assertTrue(monitor["not_order_instruction"])
 
+    def test_v31_monitor_notify_preview_never_sends_email(self):
+        with patch.object(main, "send_resend_email") as send_email:
+            preview = main._v31_monitor_notify_payload(dry_run=True)
+
+        self.assertEqual(preview["engine"], "V31_PIPELINE_MONITOR_EMAIL")
+        self.assertEqual(preview["status"], "preview")
+        self.assertFalse(preview["email_sent"])
+        self.assertIn("Stock Ultimus V31 Monitor", preview["subject"])
+        self.assertTrue(preview["not_order_instruction"])
+        send_email.assert_not_called()
+
+    def test_v31_monitor_notify_skips_non_actionable_status(self):
+        monitor = {
+            "engine": "V31_PIPELINE_MONITOR",
+            "generated_at": "2026-06-12T00:00:00+00:00",
+            "alert_level": "INFO",
+            "pipeline_status": "NO_MASTER_SNAPSHOT",
+            "market_context": "OUTSIDE_MARKET_HOURS_OR_UNKNOWN",
+            "master_snapshot_available": False,
+            "manual_review_ready_count": 0,
+            "entry_ready_tickers": [],
+            "risk_blocked_tickers": [],
+            "wait_options_tickers": [],
+            "message": "Informativo",
+            "next_required_action": "No hacer nada.",
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
+            with patch.object(main, "send_resend_email") as send_email:
+                result = main._v31_monitor_notify_payload()
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["notify_reason"], "NO_ACTIONABLE_ALERT")
+        self.assertFalse(result["email_sent"])
+        self.assertTrue(result["not_order_instruction"])
+        send_email.assert_not_called()
+
+    def test_v31_monitor_notify_sends_actionable_status(self):
+        monitor = {
+            "engine": "V31_PIPELINE_MONITOR",
+            "generated_at": "2026-06-12T00:00:00+00:00",
+            "alert_level": "ACTION_REQUIRED",
+            "pipeline_status": "OK",
+            "market_context": "REGULAR_MARKET_HOURS",
+            "master_snapshot_available": True,
+            "master_source": "runtime/v28_master_snapshot.json",
+            "rows_found": 1,
+            "technical_count": 1,
+            "manual_review_ready_count": 1,
+            "entry_ready_tickers": ["QQQ"],
+            "risk_blocked_tickers": [],
+            "wait_options_tickers": [],
+            "message": "Hay setups ENTRY_READY para revision manual.",
+            "next_required_action": "Abrir dashboard.",
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
+            with patch.object(main, "send_resend_email", return_value={"email_sent": True, "provider": "test"}) as send_email:
+                result = main._v31_monitor_notify_payload(to_email="test@example.com")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["notify_reason"], "ACTION_REQUIRED")
+        self.assertTrue(result["email_sent"])
+        self.assertTrue(result["not_order_instruction"])
+        send_email.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

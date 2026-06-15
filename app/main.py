@@ -19082,6 +19082,137 @@ def _v31_monitor_status_payload():
     }
 
 
+def _v31_monitor_should_notify(monitor, force=False):
+    if force:
+        return True, "FORCED"
+    if monitor.get("alert_level") == "ACTION_REQUIRED":
+        return True, "ACTION_REQUIRED"
+    if int(monitor.get("manual_review_ready_count") or 0) > 0:
+        return True, "MANUAL_REVIEW_READY"
+    return False, "NO_ACTIONABLE_ALERT"
+
+
+def _v31_monitor_email_content(monitor):
+    base_url = PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
+    subject = "Stock Ultimus V31 Monitor: {level}".format(
+        level=monitor.get("alert_level")
+    )
+    text = "\n".join([
+        "Stock Ultimus V31 Monitor",
+        "",
+        "Alerta: {level}".format(level=monitor.get("alert_level")),
+        "Mensaje: {message}".format(message=monitor.get("message")),
+        "Accion requerida: {action}".format(action=monitor.get("next_required_action")),
+        "",
+        "Pipeline: {status}".format(status=monitor.get("pipeline_status")),
+        "Mercado: {context}".format(context=monitor.get("market_context")),
+        "Snapshot maestro: {available}".format(available=monitor.get("master_snapshot_available")),
+        "Fuente: {source}".format(source=monitor.get("master_source")),
+        "Filas opciones: {rows}".format(rows=monitor.get("rows_found")),
+        "Snapshots tecnicos: {count}".format(count=monitor.get("technical_count")),
+        "Manual review ready: {count}".format(count=monitor.get("manual_review_ready_count")),
+        "ENTRY_READY: {tickers}".format(tickers=monitor.get("entry_ready_tickers")),
+        "RISK_BLOCKED: {tickers}".format(tickers=monitor.get("risk_blocked_tickers")),
+        "WAIT_OPTIONS_DATA: {tickers}".format(tickers=monitor.get("wait_options_tickers")),
+        "",
+        "Dashboard: {base}/v31_dashboard".format(base=base_url),
+        "Estado monitor: {base}/v31_monitor_status".format(base=base_url),
+        "",
+        "Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.",
+    ])
+    html_body = """
+    <h2>Stock Ultimus V31 Monitor</h2>
+    <p><strong>Alerta:</strong> {level}</p>
+    <p><strong>Mensaje:</strong> {message}</p>
+    <p><strong>Accion requerida:</strong> {action}</p>
+    <ul>
+      <li>Pipeline: {pipeline}</li>
+      <li>Mercado: {market}</li>
+      <li>Snapshot maestro: {snapshot}</li>
+      <li>Filas opciones: {rows}</li>
+      <li>Snapshots tecnicos: {technical}</li>
+      <li>Manual review ready: {manual_count}</li>
+      <li>ENTRY_READY: {entry_ready}</li>
+      <li>RISK_BLOCKED: {risk_blocked}</li>
+      <li>WAIT_OPTIONS_DATA: {wait_options}</li>
+    </ul>
+    <p><a href="{base}/v31_dashboard">Abrir dashboard V31</a></p>
+    <p><a href="{base}/v31_monitor_status">Abrir estado del monitor</a></p>
+    <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
+    """.format(
+        level=_v29_html_escape(monitor.get("alert_level")),
+        message=_v29_html_escape(monitor.get("message")),
+        action=_v29_html_escape(monitor.get("next_required_action")),
+        pipeline=_v29_html_escape(monitor.get("pipeline_status")),
+        market=_v29_html_escape(monitor.get("market_context")),
+        snapshot=_v29_html_escape(monitor.get("master_snapshot_available")),
+        rows=_v29_html_escape(monitor.get("rows_found")),
+        technical=_v29_html_escape(monitor.get("technical_count")),
+        manual_count=_v29_html_escape(monitor.get("manual_review_ready_count")),
+        entry_ready=_v29_html_escape(monitor.get("entry_ready_tickers")),
+        risk_blocked=_v29_html_escape(monitor.get("risk_blocked_tickers")),
+        wait_options=_v29_html_escape(monitor.get("wait_options_tickers")),
+        base=_v29_html_escape(base_url),
+    )
+    return {
+        "subject": subject,
+        "text": text,
+        "html": html_body,
+        "links": {
+            "dashboard": "{base}/v31_dashboard".format(base=base_url),
+            "monitor_status": "{base}/v31_monitor_status".format(base=base_url),
+        },
+    }
+
+
+def _v31_monitor_notify_payload(force=False, to_email=None, dry_run=False):
+    monitor = _v31_monitor_status_payload()
+    should_notify, reason = _v31_monitor_should_notify(monitor, force=force)
+    content = _v31_monitor_email_content(monitor)
+
+    base_payload = {
+        "engine": "V31_PIPELINE_MONITOR_EMAIL",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "notify_reason": reason,
+        "subject": content.get("subject"),
+        "links": content.get("links"),
+        "monitor": monitor,
+        "notification_channel": "email",
+        "not_order_instruction": True,
+    }
+
+    if dry_run:
+        return {
+            **base_payload,
+            "status": "preview",
+            "email_sent": False,
+            "text": content.get("text"),
+            "html": content.get("html"),
+        }
+
+    if not should_notify:
+        return {
+            **base_payload,
+            "status": "skipped",
+            "email_sent": False,
+            "reason": reason,
+        }
+
+    result = send_resend_email(
+        to_email or PREMARKET_EMAIL_TO,
+        content.get("subject"),
+        content.get("text"),
+        content.get("html"),
+    )
+    return {
+        **base_payload,
+        "status": "sent" if result.get("email_sent") else "not_sent",
+        "email_sent": bool(result.get("email_sent")),
+        "email_result": result,
+    }
+
+
 def _v31_badge(state):
     color = "#64748b"
     if state == "ENTRY_READY":
@@ -19288,6 +19419,16 @@ async def v31_ingest_snapshot(payload: dict):
 @app.get("/v31_monitor_status")
 async def v31_monitor_status():
     return _v31_monitor_status_payload()
+
+
+@app.get("/v31_monitor_notify/preview")
+async def v31_monitor_notify_preview(force: bool = False):
+    return _v31_monitor_notify_payload(force=force, dry_run=True)
+
+
+@app.post("/v31_monitor_notify")
+async def v31_monitor_notify(force: bool = False, to_email: Optional[str] = None):
+    return _v31_monitor_notify_payload(force=force, to_email=to_email, dry_run=False)
 
 
 @app.get("/v31_dashboard", response_class=_V29HTMLResponse)
