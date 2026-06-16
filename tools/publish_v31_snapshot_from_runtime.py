@@ -78,6 +78,30 @@ def runtime_freshness(runtime_dir: Path) -> dict[str, Any]:
 def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
+    execution_fields = [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+    ]
+
+    def completeness_score(row: dict[str, Any]) -> tuple[int, float]:
+        complete = sum(
+            1
+            for field in execution_fields
+            if row.get(field) not in [None, "", "None"]
+        )
+        try:
+            score = float(row.get("score") or 0)
+        except Exception:
+            score = 0.0
+        return complete, score
+
     def add_from(obj: Any) -> None:
         if isinstance(obj, list):
             for item in obj:
@@ -105,8 +129,7 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     for data in runtime_data.values():
         add_from(data)
 
-    cleaned: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str]] = set()
+    best_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
         if not ticker:
@@ -119,20 +142,18 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
         row["price"] = row.get("price") or row.get("premium") or row.get("option_price") or row.get("mid")
         row["data_quality"] = row.get("data_quality") or row.get("quality") or "UNKNOWN"
 
-        key = (
-            str(row.get("ticker")),
-            str(row.get("strategy")),
-            str(row.get("decision")),
-            str(row.get("strike")),
-            str(row.get("expiration") or row.get("expiry") or row.get("exp")),
-            str(row.get("price")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(row)
+        row["expiration"] = row.get("expiration") or row.get("expiry") or row.get("exp")
 
-    return cleaned
+        key = (str(row.get("ticker")), str(row.get("strategy")), str(row.get("decision")))
+        current = best_by_key.get(key)
+        if current is None or completeness_score(row) > completeness_score(current):
+            best_by_key[key] = row
+
+    return sorted(
+        best_by_key.values(),
+        key=lambda row: completeness_score(row),
+        reverse=True,
+    )
 
 
 def extract_technical_snapshot(runtime_data: dict[str, Any]) -> dict[str, dict[str, Any]]:

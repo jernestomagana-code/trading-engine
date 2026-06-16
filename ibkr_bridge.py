@@ -68,6 +68,29 @@ def _v283_load_runtime_jsons():
 
 def _v283_extract_options_rows(data):
     rows = []
+    execution_fields = [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+    ]
+
+    def completeness_score(row):
+        complete = sum(
+            1
+            for field in execution_fields
+            if row.get(field) not in [None, "", "None"]
+        )
+        try:
+            score = float(row.get("score") or 0)
+        except Exception:
+            score = 0.0
+        return complete, score
 
     def scan(obj):
         if isinstance(obj, dict):
@@ -122,8 +145,7 @@ def _v283_extract_options_rows(data):
     for v in data.values():
         scan(v)
 
-    cleaned = []
-    seen = set()
+    best_by_key = {}
 
     for r in rows:
         ticker = str(r.get("ticker") or r.get("symbol") or "").upper().strip()
@@ -139,24 +161,18 @@ def _v283_extract_options_rows(data):
         r["score"] = _v283_float(r.get("score") or r.get("combined_score") or r.get("master_score") or r.get("options_score"), 0)
         r["price"] = _v283_float(r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid"), None)
         r["data_quality"] = r.get("data_quality") or r.get("quality") or "UNKNOWN"
+        r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
 
         if "can_operate" not in r:
             r["can_operate"] = decision in ["ENTRY", "ENTRY_READY", "OPERAR"]
 
-        key = (
-            ticker,
-            strategy,
-            decision,
-            str(r.get("price")),
-            str(r.get("strike")),
-            str(r.get("expiration")),
-        )
+        key = (ticker, strategy, decision)
 
-        if key not in seen:
-            seen.add(key)
-            cleaned.append(r)
+        current = best_by_key.get(key)
+        if current is None or completeness_score(r) > completeness_score(current):
+            best_by_key[key] = r
 
-    return cleaned
+    return sorted(best_by_key.values(), key=completeness_score, reverse=True)
 
 def _v283_extract_technical(data):
     tech = {}
@@ -309,6 +325,29 @@ def _v26_extract_options_rows_from_context(ctx):
     Try to recover options rows from known snapshot formats.
     """
     rows = []
+    execution_fields = [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+    ]
+
+    def completeness_score(row):
+        complete = sum(
+            1
+            for field in execution_fields
+            if row.get(field) not in [None, "", "None"]
+        )
+        try:
+            score = float(row.get("score") or 0)
+        except Exception:
+            score = 0.0
+        return complete, score
 
     for _, data in ctx.items():
         if not isinstance(data, dict):
@@ -326,23 +365,23 @@ def _v26_extract_options_rows_from_context(ctx):
                 if isinstance(val, list):
                     rows.extend([x for x in val if isinstance(x, dict)])
 
-    # Deduplicate lightly
-    clean = []
-    seen = set()
+    best_by_key = {}
     for r in rows:
-        sig = (
-            str(r.get("ticker")),
-            str(r.get("strategy")),
-            str(r.get("decision")),
-            str(r.get("price")),
-            str(r.get("strike")),
-            str(r.get("expiration")),
-        )
-        if sig not in seen:
-            seen.add(sig)
-            clean.append(r)
+        ticker = str(r.get("ticker") or r.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        strategy = str(r.get("strategy") or r.get("strategy_hint") or r.get("best_strategy") or "UNKNOWN").upper()
+        decision = str(r.get("decision") or r.get("final_decision") or r.get("state") or "RADAR").upper()
+        r["ticker"] = ticker
+        r["strategy"] = strategy
+        r["decision"] = decision
+        r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
+        sig = (ticker, strategy, decision)
+        current = best_by_key.get(sig)
+        if current is None or completeness_score(r) > completeness_score(current):
+            best_by_key[sig] = r
 
-    return clean
+    return sorted(best_by_key.values(), key=completeness_score, reverse=True)
 
 
 def _v26_extract_technical_snapshot_from_context(ctx):
@@ -3383,6 +3422,29 @@ def _v28_bridge_collect_runtime_json():
 
 def _v28_bridge_extract_options_rows(runtime_data):
     rows = []
+    execution_fields = [
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+    ]
+
+    def completeness_score(row):
+        complete = sum(
+            1
+            for field in execution_fields
+            if row.get(field) not in [None, "", "None"]
+        )
+        try:
+            score = float(row.get("score") or 0)
+        except Exception:
+            score = 0.0
+        return complete, score
 
     def add_from(x):
         if isinstance(x, list):
@@ -3405,8 +3467,7 @@ def _v28_bridge_extract_options_rows(runtime_data):
     for _name, data in runtime_data.items():
         add_from(data)
 
-    cleaned = []
-    seen = set()
+    best_by_key = {}
     for r in rows:
         ticker = str(r.get("ticker") or "").upper().strip()
         if not ticker:
@@ -3417,11 +3478,12 @@ def _v28_bridge_extract_options_rows(runtime_data):
         r["score"] = r.get("score") or r.get("combined_score") or r.get("master_score") or r.get("options_score")
         r["price"] = r.get("price") or r.get("premium") or r.get("option_price") or r.get("mid")
         r["data_quality"] = r.get("data_quality") or r.get("quality") or "UNKNOWN"
-        key = (r.get("ticker"), r.get("strategy"), r.get("decision"), str(r.get("price")))
-        if key not in seen:
-            seen.add(key)
-            cleaned.append(r)
-    return cleaned
+        r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
+        key = (r.get("ticker"), r.get("strategy"), r.get("decision"))
+        current = best_by_key.get(key)
+        if current is None or completeness_score(r) > completeness_score(current):
+            best_by_key[key] = r
+    return sorted(best_by_key.values(), key=completeness_score, reverse=True)
 
 def _v28_bridge_extract_technical_snapshot(runtime_data):
     tech = {}
