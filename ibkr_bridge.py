@@ -2124,7 +2124,9 @@ try:
     ib.connect(
         IB_HOST,
         IB_PORT,
-        clientId=CLIENT_ID
+        clientId=CLIENT_ID,
+        timeout=20,
+        readonly=True
     )
 
     print("IBKR conectado correctamente")
