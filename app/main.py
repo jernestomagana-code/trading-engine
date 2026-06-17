@@ -65,6 +65,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
+ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
@@ -4978,7 +4979,10 @@ def stats_ticker(ticker: str, limit: int = 1000):
 
 
 @app.get("/debug/supabase")
-def debug_supabase():
+def debug_supabase(x_admin_debug_token: Optional[str] = Header(default=None)):
+    if not ADMIN_DEBUG_TOKEN or x_admin_debug_token != ADMIN_DEBUG_TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+
     return {
         "engine": "v8.0",
         "supabase_enabled": supabase_enabled(),
