@@ -1,0 +1,67 @@
+"""Shared strategy thresholds and rule helpers for Stock Ultimus."""
+
+from __future__ import annotations
+
+
+MIN_PRICE_FOR_THETA = 100
+
+OPTION_SPREAD_PCT_READY_MAX = 18.0
+OPTION_SPREAD_PCT_RADAR_MAX = 35.0
+
+OPTION_MIN_VOLUME_READY = 50
+OPTION_MIN_OPEN_INTEREST_READY = 200
+
+NAKED_PUT_READY_DTE_MIN = 30
+NAKED_PUT_READY_DTE_MAX = 60
+NAKED_PUT_REVIEW_DTE_MIN = 25
+NAKED_PUT_REVIEW_DTE_MAX = 65
+NAKED_PUT_READY_DELTA_MIN = 0.14
+NAKED_PUT_READY_DELTA_MAX = 0.22
+NAKED_PUT_REVIEW_DELTA_MIN = 0.10
+NAKED_PUT_REVIEW_DELTA_MAX = 0.28
+
+COVERED_CALL_READY_DTE_MIN = 25
+COVERED_CALL_READY_DTE_MAX = 65
+COVERED_CALL_READY_DELTA_MIN = 0.15
+COVERED_CALL_READY_DELTA_MAX = 0.25
+COVERED_CALL_REVIEW_DELTA_MIN = 0.10
+COVERED_CALL_REVIEW_DELTA_MAX = 0.35
+
+IRON_CONDOR_ALLOWED_TICKERS = ["SPY", "QQQ", "IWM", "DIA"]
+IRON_CONDOR_DTE_MIN = 35
+IRON_CONDOR_DTE_MAX = 45
+IRON_CONDOR_IVR_MIN = 40
+IRON_CONDOR_IVR_MAX = 70
+IRON_CONDOR_VIX_RADAR_MIN = 14
+IRON_CONDOR_VIX_READY_MIN = 16
+IRON_CONDOR_VIX_MAX = 24
+IRON_CONDOR_VIX_IDEAL_MIN = 18
+IRON_CONDOR_VIX_IDEAL_MAX = 22
+IRON_CONDOR_RSI_MIN = 45
+IRON_CONDOR_RSI_MAX = 55
+IRON_CONDOR_ADX_MAX = 22
+IRON_CONDOR_SHORT_DELTA_MIN = 0.15
+IRON_CONDOR_SHORT_DELTA_MAX = 0.20
+IRON_CONDOR_CREDIT_WIDTH_MIN = 0.25
+
+
+def liquidity_blockers(volume=None, open_interest=None) -> list[str]:
+    blockers: list[str] = []
+
+    if volume is not None and volume < OPTION_MIN_VOLUME_READY:
+        blockers.append("LOW_OPTION_VOLUME")
+    if open_interest is not None and open_interest < OPTION_MIN_OPEN_INTEREST_READY:
+        blockers.append("LOW_OPEN_INTEREST")
+
+    return blockers
+
+
+def technical_event_blockers(event_risk=False, earnings_soon=False) -> list[str]:
+    blockers: list[str] = []
+
+    if event_risk:
+        blockers.append("EVENT_RISK_ACTIVE")
+    if earnings_soon:
+        blockers.append("EARNINGS_SOON")
+
+    return blockers

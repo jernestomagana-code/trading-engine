@@ -5,6 +5,8 @@ import math
 import logging
 from datetime import datetime, timezone
 import nest_asyncio
+import sys
+from pathlib import Path
 
 
 # === V26 REMOTE MASTER SNAPSHOT PUBLISHER ===
@@ -22,6 +24,44 @@ from pathlib import Path as _v283_Path
 from datetime import datetime as _v283_datetime, timezone as _v283_timezone
 import os as _v283_os
 import json as _v283_json
+
+try:
+    from strategy_rules import (
+        OPTION_SPREAD_PCT_READY_MAX,
+        OPTION_SPREAD_PCT_RADAR_MAX,
+        NAKED_PUT_READY_DTE_MIN,
+        NAKED_PUT_READY_DTE_MAX,
+        NAKED_PUT_REVIEW_DTE_MIN,
+        NAKED_PUT_REVIEW_DTE_MAX,
+        NAKED_PUT_READY_DELTA_MIN,
+        NAKED_PUT_READY_DELTA_MAX,
+        NAKED_PUT_REVIEW_DELTA_MIN,
+        NAKED_PUT_REVIEW_DELTA_MAX,
+        COVERED_CALL_READY_DELTA_MIN,
+        COVERED_CALL_READY_DELTA_MAX,
+        COVERED_CALL_REVIEW_DELTA_MIN,
+        COVERED_CALL_REVIEW_DELTA_MAX,
+    )
+except ModuleNotFoundError:
+    repo_root = Path(__file__).resolve().parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from strategy_rules import (
+        OPTION_SPREAD_PCT_READY_MAX,
+        OPTION_SPREAD_PCT_RADAR_MAX,
+        NAKED_PUT_READY_DTE_MIN,
+        NAKED_PUT_READY_DTE_MAX,
+        NAKED_PUT_REVIEW_DTE_MIN,
+        NAKED_PUT_REVIEW_DTE_MAX,
+        NAKED_PUT_READY_DELTA_MIN,
+        NAKED_PUT_READY_DELTA_MAX,
+        NAKED_PUT_REVIEW_DELTA_MIN,
+        NAKED_PUT_REVIEW_DELTA_MAX,
+        COVERED_CALL_READY_DELTA_MIN,
+        COVERED_CALL_READY_DELTA_MAX,
+        COVERED_CALL_REVIEW_DELTA_MIN,
+        COVERED_CALL_REVIEW_DELTA_MAX,
+    )
 
 try:
     import requests as _v283_requests
@@ -244,7 +284,8 @@ def _v283_publish_to_v28():
             "generated_at": _v283_now()
         },
         "bridge_status": "LIVE_IBKR_AFTER_V26_PUBLISH",
-        "runtime_files_seen": sorted(list(runtime_data.keys()))
+        "runtime_files_seen": sorted(list(runtime_data.keys())),
+        "not_order_instruction": True,
     }
 
     try:
@@ -259,14 +300,14 @@ def _v283_publish_to_v28():
             f" | url:{_V283_INGEST_URL}"
         )
     except Exception as e:
-        print(f"V28.3 OFFICIAL V28 SNAPSHOT ERROR | {e}")
+        print(f"V28.3 OFFICIAL V31 SNAPSHOT ERROR | {e}")
 
 # ============================================================
 # END V28.3 OFFICIAL PUBLISHER HOOKED AFTER V26
 # ============================================================
 
 
-_V26_RENDER_INGEST_URL = "https://trading-engine-p097.onrender.com/v25_ingest_snapshot"
+_V26_RENDER_INGEST_URL = "https://trading-engine-p097.onrender.com/v28_ingest_snapshot"
 _V26_RUNTIME_DIR = _v26_Path("runtime")
 _V26_RUNTIME_DIR.mkdir(exist_ok=True)
 _V26_LOCAL_MASTER_SNAPSHOT = _V26_RUNTIME_DIR / "v26_local_master_snapshot.json"
@@ -534,9 +575,9 @@ nest_asyncio.apply()
 # FULL FILE VERSION
 # ============================================================
 
-IB_HOST = "127.0.0.1"
-IB_PORT = 7496
-CLIENT_ID = 10
+IB_HOST = _v283_os.environ.get("IBKR_HOST", "127.0.0.1")
+IB_PORT = int(_v283_os.environ.get("IBKR_PORT", "7496"))
+CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "10"))
 
 ENGINE_URL = "https://trading-engine-p097.onrender.com/webhook/ibkr"
 
@@ -587,8 +628,9 @@ STOCK_MARKET_DATA_WAIT_SECONDS = 2.0
 SEND_OPTIONS_WITHOUT_GREEKS = True
 
 # Control de liquidez / spread
-MAX_ACCEPTABLE_SPREAD_PCT_FOR_OPERAR = 0.18
-MAX_ACCEPTABLE_SPREAD_PCT_FOR_RADAR = 0.35
+# spread_pct is published as a percentage (e.g. 11.76), not a fraction.
+MAX_ACCEPTABLE_SPREAD_PCT_FOR_OPERAR = OPTION_SPREAD_PCT_READY_MAX
+MAX_ACCEPTABLE_SPREAD_PCT_FOR_RADAR = OPTION_SPREAD_PCT_RADAR_MAX
 
 # Prima mínima para considerar una opción razonable
 MIN_OPTION_MID_FOR_RADAR = 0.10
@@ -856,7 +898,7 @@ def calculate_spread_pct(bid, ask, mid):
         if spread < 0:
             return None
 
-        return safe_round(spread / mid, 4)
+        return safe_round((spread / mid) * 100, 2)
 
     except Exception:
         return None
@@ -1870,15 +1912,15 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
         if delta is not None:
             abs_delta = abs(delta)
 
-            if 0.12 <= abs_delta <= 0.25:
+            if NAKED_PUT_READY_DELTA_MIN <= abs_delta <= NAKED_PUT_READY_DELTA_MAX:
                 score += 25
                 reason.append("delta favorable naked put")
 
-            elif 0.08 <= abs_delta < 0.12:
+            elif NAKED_PUT_REVIEW_DELTA_MIN <= abs_delta <= NAKED_PUT_REVIEW_DELTA_MAX:
                 score += 10
-                reason.append("delta conservador naked put")
+                reason.append("delta util pero fuera de readiness naked put")
 
-            elif abs_delta < 0.08:
+            elif abs_delta < NAKED_PUT_REVIEW_DELTA_MIN:
                 score -= 5
                 reason.append("delta muy bajo, prima probablemente baja")
 
@@ -1901,15 +1943,15 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
         if delta is not None:
             abs_delta = abs(delta)
 
-            if 0.15 <= abs_delta <= 0.35:
+            if COVERED_CALL_READY_DELTA_MIN <= abs_delta <= COVERED_CALL_READY_DELTA_MAX:
                 score += 25
                 reason.append("delta favorable covered call")
 
-            elif 0.08 <= abs_delta < 0.15:
+            elif COVERED_CALL_REVIEW_DELTA_MIN <= abs_delta <= COVERED_CALL_REVIEW_DELTA_MAX:
                 score += 10
-                reason.append("delta conservador covered call")
+                reason.append("delta util pero fuera de readiness covered call")
 
-            elif abs_delta < 0.08:
+            elif abs_delta < COVERED_CALL_REVIEW_DELTA_MIN:
                 score -= 5
                 reason.append("delta muy bajo, prima probablemente baja")
 
@@ -1944,9 +1986,13 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
         score -= 15
         reason.append("IV no disponible")
 
-    if dte is not None and TARGET_DTE_MIN <= dte <= TARGET_DTE_MAX:
+    if dte is not None and NAKED_PUT_READY_DTE_MIN <= dte <= NAKED_PUT_READY_DTE_MAX:
         score += 10
-        reason.append("DTE adecuado")
+        reason.append("DTE adecuado para readiness")
+
+    elif dte is not None and NAKED_PUT_REVIEW_DTE_MIN <= dte <= NAKED_PUT_REVIEW_DTE_MAX:
+        score += 3
+        reason.append("DTE util pero fuera de readiness")
 
     elif dte is not None:
         score -= 10
