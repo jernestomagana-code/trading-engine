@@ -18941,6 +18941,7 @@ def _v31_system_status_payload(tickers=None):
         "endpoints": {
             "ingest": "/v31_ingest_snapshot",
             "pipeline_status": "/v31_data_pipeline_status",
+            "trade_decision_example": "/v31_trade_decision/QQQ",
             "canonical_decision_example": "/v31_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "dashboard": "/v31_dashboard",
@@ -19243,7 +19244,7 @@ def _v31_dashboard_html(tickers=None):
         contract = d.get("selected_contract") or {}
         rows_html += f"""
         <tr>
-            <td><a href="/v31_decision/{_v29_html_escape(d.get('ticker'))}">{_v29_html_escape(d.get('ticker'))}</a></td>
+            <td><a href="/v31_trade_decision/{_v29_html_escape(d.get('ticker'))}">{_v29_html_escape(d.get('ticker'))}</a></td>
             <td>{_v31_badge(d.get('final_state'))}</td>
             <td>{_v29_html_escape(d.get('strategy'))}</td>
             <td>{_v29_html_escape(d.get('technical_status'))}</td>
@@ -19387,8 +19388,8 @@ def _v31_dashboard_html(tickers=None):
         </table>
 
         <div class="foot">
-            Endpoints oficiales: /v31_system_status · /v31_decision/QQQ · /gpt_v31_trade_decision/QQQ · /v31_dashboard
-            <br>Legacy disponible: /v29_dashboard
+            Endpoints oficiales: /v31_system_status · /v31_trade_decision/QQQ · /gpt_v31_trade_decision/QQQ · /v31_dashboard
+            <br>Aliases disponibles: /v31_decision/QQQ · /v29_dashboard
         </div>
     </body>
     </html>
@@ -19397,6 +19398,11 @@ def _v31_dashboard_html(tickers=None):
 
 @app.get("/v31_decision/{ticker}")
 async def v31_decision(ticker: str):
+    return _v31_canonical_decision(ticker)
+
+
+@app.get("/v31_trade_decision/{ticker}")
+async def v31_trade_decision(ticker: str):
     return _v31_canonical_decision(ticker)
 
 
