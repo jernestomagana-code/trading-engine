@@ -274,6 +274,20 @@ class V29V30ContractGatingTests(unittest.TestCase):
 
 
 class V31CanonicalDecisionTests(unittest.TestCase):
+    def test_snapshot_ingest_requires_matching_configured_token(self):
+        with patch.object(main, "REQUIRE_SNAPSHOT_INGEST_TOKEN", True), \
+                patch.object(main, "SNAPSHOT_INGEST_TOKEN", "test-token"):
+            with self.assertRaises(main.HTTPException) as rejected:
+                main.verify_snapshot_ingest_token(None)
+            self.assertEqual(rejected.exception.status_code, 401)
+            self.assertIsNone(main.verify_snapshot_ingest_token("test-token"))
+
+        with patch.object(main, "REQUIRE_SNAPSHOT_INGEST_TOKEN", True), \
+                patch.object(main, "SNAPSHOT_INGEST_TOKEN", ""):
+            with self.assertRaises(main.HTTPException) as unavailable:
+                main.verify_snapshot_ingest_token("anything")
+            self.assertEqual(unavailable.exception.status_code, 503)
+
     def test_v31_incomplete_option_data_uses_wait_options_blocker(self):
         incomplete_row = {
             "ticker": "QQQ",
