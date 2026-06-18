@@ -1,0 +1,123 @@
+//@version=5
+indicator("Stock Ultimus Futures Signal Pro V2", overlay=true, max_labels_count=200)
+
+sendAlerts = input.bool(true, "Send webhook alerts")
+alertOnlyWhenQualified = input.bool(true, "Alert only when pro score >= threshold")
+scoreThreshold = input.float(72.0, "Minimum alert score", minval=0, maxval=100, step=1)
+canonicalTicker = input.string("MNQ", "Stock Ultimus ticker (MNQ/NQ/MES/ES)")
+
+tradeSession = input.session("0930-1600", "Regular session")
+openingRangeSession = input.session("0930-1000", "Opening range")
+macroBlackout = input.bool(false, "Macro/news blackout")
+htf = input.timeframe("60", "Higher timeframe")
+
+fastEmaLen = input.int(9, "Fast EMA", minval=2)
+slowEmaLen = input.int(21, "Slow EMA", minval=3)
+trendEmaLen = input.int(50, "Trend EMA", minval=5)
+rsiLen = input.int(14, "RSI length", minval=2)
+adxLen = input.int(14, "DMI length", minval=2)
+adxSmooth = input.int(14, "ADX smoothing", minval=2)
+atrLen = input.int(14, "ATR length", minval=2)
+volumeLen = input.int(20, "Relative volume length", minval=5)
+maxVwapDistanceAtr = input.float(1.8, "Max VWAP distance in ATR", minval=0.2, maxval=5.0, step=0.1)
+
+inSession = not na(time(timeframe.period, tradeSession))
+inOpeningRange = not na(time(timeframe.period, openingRangeSession))
+newDay = ta.change(time("D")) != 0
+
+var float orHigh = na
+var float orLow = na
+if newDay
+    orHigh := na
+    orLow := na
+if inOpeningRange
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow := na(orLow) ? low : math.min(orLow, low)
+
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+trendEma = ta.ema(close, trendEmaLen)
+rsiValue = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+atrValue = ta.atr(atrLen)
+vwapValue = ta.vwap(hlc3)
+volAvg = ta.sma(volume, volumeLen)
+volumeRelative = volAvg > 0 ? volume / volAvg : na
+vwapDistanceAtr = atrValue > 0 ? math.abs(close - vwapValue) / atrValue : na
+
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfFast = request.security(syminfo.tickerid, htf, ta.ema(close, fastEmaLen))
+htfSlow = request.security(syminfo.tickerid, htf, ta.ema(close, slowEmaLen))
+
+htfBull = htfClose > htfFast and htfFast > htfSlow
+htfBear = htfClose < htfFast and htfFast < htfSlow
+localBull = close > vwapValue and fastEma > slowEma and close > trendEma and diPlus >= diMinus
+localBear = close < vwapValue and fastEma < slowEma and close < trendEma and diMinus > diPlus
+orbBull = not na(orHigh) and close > orHigh
+orbBear = not na(orLow) and close < orLow
+rangeBreakout = orbBull or orbBear
+trendText = htfBull and localBull ? "bullish" : htfBear and localBear ? "bearish" : "neutral"
+vwapPosition = close > vwapValue ? "above" : close < vwapValue ? "below" : "near"
+
+score = 0.0
+score += inSession ? 10 : 0
+score += not macroBlackout ? 12 : 0
+score += (htfBull and localBull) or (htfBear and localBear) ? 20 : 0
+score += rangeBreakout ? 16 : 0
+score += adxValue >= 18 and adxValue <= 38 ? 14 : 0
+score += rsiValue >= 42 and rsiValue <= 68 ? 10 : 0
+score += na(volumeRelative) ? 5 : volumeRelative >= 1.0 ? 10 : 3
+score += na(vwapDistanceAtr) ? 5 : vwapDistanceAtr <= maxVwapDistanceAtr ? 10 : 0
+score += fastEma != slowEma ? 8 : 0
+score := macroBlackout or not inSession ? math.min(score, 59) : score
+score := math.max(0, math.min(100, score))
+
+boolText(value) =>
+    value ? "true" : "false"
+
+numText(value) =>
+    na(value) ? "null" : str.tostring(value, "#.##")
+
+string payload = "{"
+payload := payload + "\"ticker\":\"" + canonicalTicker + "\","
+payload := payload + "\"chart_ticker\":\"" + syminfo.ticker + "\","
+payload := payload + "\"timeframe\":\"" + timeframe.period + "\","
+payload := payload + "\"strategy_context\":\"FUTURES\","
+payload := payload + "\"trend\":\"" + trendText + "\","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"rsi\":" + numText(rsiValue) + ","
+payload := payload + "\"adx\":" + numText(adxValue) + ","
+payload := payload + "\"support_near\":false,"
+payload := payload + "\"resistance_near\":false,"
+payload := payload + "\"range_20d\":false,"
+payload := payload + "\"range_breakout\":" + boolText(rangeBreakout) + ","
+payload := payload + "\"vwap_position\":\"" + vwapPosition + "\","
+payload := payload + "\"volume_relative\":" + numText(volumeRelative) + ","
+payload := payload + "\"earnings_soon\":false,"
+payload := payload + "\"event_risk\":" + boolText(macroBlackout) + ","
+payload := payload + "\"opening_range_high\":" + numText(orHigh) + ","
+payload := payload + "\"opening_range_low\":" + numText(orLow) + ","
+payload := payload + "\"vwap_distance_atr\":" + numText(vwapDistanceAtr) + ","
+payload := payload + "\"source\":\"TRADINGVIEW_FUTURES_SIGNAL_PRO_V2\","
+payload := payload + "\"contract_version\":\"strategy_signal_contract_v1\""
+payload := payload + "}"
+
+shouldAlert = sendAlerts and barstate.isconfirmed and (not alertOnlyWhenQualified or score >= scoreThreshold)
+if shouldAlert
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(fastEma, "Fast EMA", color=color.new(color.green, 0))
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0))
+plot(trendEma, "Trend EMA", color=color.new(color.gray, 20))
+plot(vwapValue, "VWAP", color=color.new(color.blue, 0))
+plot(orHigh, "Opening Range High", color=color.new(color.green, 35), style=plot.style_linebr)
+plot(orLow, "Opening Range Low", color=color.new(color.red, 35), style=plot.style_linebr)
+
+plotshape(orbBull and trendText == "bullish", title="Qualified Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(orbBear and trendText == "bearish", title="Qualified Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plot(score, title="TechScore", display=display.none)
+plot(rsiValue, title="RSI", display=display.none)
+plot(adxValue, title="ADX", display=display.none)
+plot(rangeBreakout ? 1 : 0, title="RangeBreakout", display=display.none)
+plot(volumeRelative, title="VolumeRelative", display=display.none)

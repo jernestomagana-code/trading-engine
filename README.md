@@ -7,7 +7,7 @@ decision platform: data ingestion, normalization, strategy scoring, risk
 gating, explanation, outcome tracking, and governance for possible future
 commercial use.
 
-This workspace is currently a documentation and implementation staging area. Bring the project code here before starting V30 implementation.
+This workspace now contains the active local/cloud implementation for Stock Ultimus.
 
 Expected key files:
 
@@ -18,7 +18,7 @@ Expected key files:
 
 See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 
-## V30 Workspace Map
+## Workspace Map
 
 - `AGENTS.md`: project context, non-negotiables, and agent workflow.
 - `docs/agents/`: ready-to-use briefs for named agents such as Athena, Sentinel, Morgan, Scout, Bridge, Nova, Atlas, Quinn, Vega, and Ledger.
@@ -30,20 +30,18 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 - `docs/v30/acceptance-checklist.md`: release checklist for V30.
 - `fixtures/v30/`: example decision fixtures for incomplete and complete option-data states.
 - `fixtures/runtime/v28_master_snapshot_sanitized.json`: sanitized production-style runtime snapshot for multi-ticker V29/V30 decision validation.
-- `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, Python compile checks, V29 engine checks, and endpoint smoke checks.
-- `scripts/smoke_v29_endpoints.py`: direct FastAPI handler smoke test for V29 trade, GPT, and dashboard endpoints with controlled snapshots.
+- `scripts/check_v30_integrity.py`: local integrity gate for V30 fixtures, no-auto-order guardrails, Python compile checks, V29/V31 engine checks, and endpoint smoke checks.
+- `scripts/smoke_v29_endpoints.py`: direct FastAPI handler smoke test for V29/V31 trade and GPT endpoints plus dashboard/monitor handlers with controlled snapshots.
 - `scripts/sanitize_runtime_snapshot.py`: sanitizes real runtime snapshots before they are committed as fixtures.
 - `scripts/validate_runtime_privacy.py`: blocks obvious account, token, secret, balance, local-path, and private URL leaks in runtime fixtures.
 
-## V30 Integrity Check
+## Integrity Check
 
-Run this before and after V30 code changes:
+Run this before and after decision, risk, bridge, dashboard, or GPT-facing changes:
 
 ```bash
 PYTHONPYCACHEPREFIX=/private/tmp/stock_ultimus_pycache python3 scripts/check_v30_integrity.py
 ```
-
-While this workspace is still staging-only, the check compiles the available V30 patch files under `tmp_v30_patch/` and reports missing production files. Once `ibkr_bridge.py` and `app/main.py` are present in the root, the same command will include them automatically.
 
 Before adding a real runtime snapshot, sanitize it outside the repo:
 
@@ -52,6 +50,6 @@ python3 scripts/sanitize_runtime_snapshot.py path/to/raw.json fixtures/runtime/r
 python3 scripts/validate_runtime_privacy.py
 ```
 
-## Next Step
+## Current Next Step
 
-Copy or clone the current project code into this folder. Once the real files are present, Codex can spawn focused agents and start implementing V30.
+V31 is active as a versioned canonical API contract over the validated V29 engine. Next, extract shared decision schemas and blocker helpers out of `app/main.py` so API, GPT, dashboard, and monitor surfaces consume one contract instead of duplicating shape logic.

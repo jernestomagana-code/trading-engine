@@ -23,8 +23,16 @@ COMPILE_CANDIDATES = [
     ROOT / "app" / "main.py",
     ROOT / "tmp_v30_patch" / "ibkr_bridge.py",
     ROOT / "tmp_v30_patch" / "app" / "main.py",
+    ROOT / "strategy_rules.py",
     ROOT / "scripts" / "validate_v30_fixtures.py",
     ROOT / "scripts" / "smoke_v29_endpoints.py",
+    ROOT / "scripts" / "check_strategy_research_rules.py",
+    ROOT / "scripts" / "check_legacy_compat_endpoints.py",
+    ROOT / "scripts" / "check_v32_outcomes_tracking.py",
+    ROOT / "scripts" / "check_v31_canonical_paths.py",
+    ROOT / "scripts" / "validate_strategy_signal_contract.py",
+    ROOT / "scripts" / "validate_tradingview_pine_scripts.py",
+    ROOT / "scripts" / "check_strategy_signal_contexts.py",
     ROOT / "scripts" / "sanitize_runtime_snapshot.py",
     ROOT / "scripts" / "validate_runtime_privacy.py",
 ]
@@ -79,6 +87,74 @@ def run_endpoint_smoke() -> list[str]:
     return [output or "endpoint smoke failed without output"]
 
 
+def run_strategy_rule_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_strategy_research_rules.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "strategy rule guard failed without output"]
+
+
+def run_v31_canonical_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_v31_canonical_paths.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "v31 canonical guard failed without output"]
+
+
+def run_legacy_compatibility_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_legacy_compat_endpoints.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "legacy compatibility guard failed without output"]
+
+
+def run_v32_outcomes_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_v32_outcomes_tracking.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "v32 outcomes guard failed without output"]
+
+
 def run_runtime_privacy_guard() -> list[str]:
     script = ROOT / "scripts" / "validate_runtime_privacy.py"
     result = subprocess.run(
@@ -94,6 +170,57 @@ def run_runtime_privacy_guard() -> list[str]:
 
     output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
     return [output or "runtime privacy guard failed without output"]
+
+
+def run_strategy_signal_contract_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_strategy_signal_contract.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "strategy signal contract guard failed without output"]
+
+
+def run_tradingview_pine_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_tradingview_pine_scripts.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "TradingView Pine guard failed without output"]
+
+
+def run_strategy_signal_context_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_strategy_signal_contexts.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "strategy signal context guard failed without output"]
 
 
 def compile_available_files() -> list[str]:
@@ -149,18 +276,22 @@ def option_row(**overrides):
     return row
 
 
-def master_snapshot(row, *, technical_score=85, market_open=True, options_expected=True):
+def master_snapshot(row, *, technical_score=85, market_open=True, options_expected=True, technical_overrides=None):
+    technical = {
+        "ticker": "AAPL",
+        "trend": "BULLISH",
+        "score": technical_score,
+        "technical_score": technical_score,
+    }
+    if technical_overrides:
+        technical.update(technical_overrides)
+
     return {
         "source": "V30_INTEGRITY_TEST",
         "generated_at": "2026-06-09T00:00:00+00:00",
         "options_rows": [row],
         "technical_snapshot": {
-            "AAPL": {
-                "ticker": "AAPL",
-                "trend": "BULLISH",
-                "score": technical_score,
-                "technical_score": technical_score,
-            }
+            "AAPL": technical
         },
         "market": {
             "is_regular_market_open": market_open,
@@ -224,6 +355,36 @@ def run_v29_engine_guard() -> list[str]:
                 master_snapshot(option_row(), technical_score=40),
                 "WAIT_TECHNICAL",
                 "TECHNICAL_NOT_CONFIRMED",
+            ),
+            (
+                "event_risk_blocked",
+                master_snapshot(option_row(), technical_overrides={"event_risk": True}),
+                "RISK_BLOCKED",
+                "EVENT_RISK_ACTIVE",
+            ),
+            (
+                "earnings_blocked",
+                master_snapshot(option_row(), technical_overrides={"earnings_soon": True}),
+                "RISK_BLOCKED",
+                "EARNINGS_SOON",
+            ),
+            (
+                "liquidity_blocked_volume",
+                master_snapshot(option_row(volume=10, open_interest=400)),
+                "RISK_BLOCKED",
+                "LOW_OPTION_VOLUME",
+            ),
+            (
+                "liquidity_blocked_open_interest",
+                master_snapshot(option_row(volume=100, open_interest=50)),
+                "RISK_BLOCKED",
+                "LOW_OPEN_INTEREST",
+            ),
+            (
+                "canslim_blocked",
+                master_snapshot(option_row(), technical_overrides={"canslim": {"passes": False, "score": 42}}),
+                "RISK_BLOCKED",
+                "CANSLIM_BLOCKED",
             ),
             (
                 "manual_review_blocked",
@@ -308,6 +469,13 @@ def main() -> int:
     failures.extend(run_fixture_guard())
     failures.extend(compile_available_files())
     failures.extend(run_runtime_privacy_guard())
+    failures.extend(run_strategy_signal_contract_guard())
+    failures.extend(run_tradingview_pine_guard())
+    failures.extend(run_strategy_signal_context_guard())
+    failures.extend(run_strategy_rule_guard())
+    failures.extend(run_legacy_compatibility_guard())
+    failures.extend(run_v32_outcomes_guard())
+    failures.extend(run_v31_canonical_guard())
     failures.extend(run_v29_engine_guard())
     failures.extend(run_sanitized_runtime_fixture_guard())
     failures.extend(run_endpoint_smoke())

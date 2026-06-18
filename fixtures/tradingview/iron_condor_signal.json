@@ -1,0 +1,20 @@
+{
+  "ticker": "QQQ",
+  "timeframe": "1h",
+  "strategy_context": "IRON_CONDOR",
+  "trend": "neutral",
+  "score": 76,
+  "rsi": 51,
+  "adx": 16,
+  "support_near": false,
+  "resistance_near": false,
+  "range_20d": true,
+  "range_breakout": false,
+  "vwap_position": "near",
+  "volume_relative": 0.88,
+  "iv_rank": 51,
+  "earnings_soon": false,
+  "event_risk": false,
+  "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+  "contract_version": "strategy_signal_contract_v1"
+}

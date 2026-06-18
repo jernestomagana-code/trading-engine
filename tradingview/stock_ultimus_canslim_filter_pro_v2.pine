@@ -1,0 +1,78 @@
+//@version=5
+indicator("Stock Ultimus CANSLIM Filter Pro V2", overlay=false, max_labels_count=100)
+
+sendAlerts = input.bool(true, "Send webhook alerts")
+scoreThreshold = input.float(75.0, "CANSLIM pass score", minval=0, maxval=100, step=1)
+marketSymbol = input.symbol("AMEX:SPY", "Market proxy")
+marketTf = input.timeframe("D", "Market timeframe")
+
+currentQuarterGrowth = input.bool(false, "C: Current quarterly EPS/sales growth")
+annualGrowth = input.bool(false, "A: Annual growth quality")
+newHighOrCatalyst = input.bool(false, "N: New high, product, service, or catalyst")
+supplyDemand = input.bool(false, "S: Supply/demand and accumulation")
+leader = input.bool(false, "L: Leader or strong relative strength")
+institutionalSupport = input.bool(false, "I: Institutional support")
+marketDirectionManual = input.bool(false, "M: Market direction manually passes")
+
+rsLookback = input.int(63, "Relative strength lookback", minval=10)
+minRsRatio = input.float(1.0, "Minimum RS ratio", minval=0.1, maxval=3.0, step=0.05)
+eventRisk = input.bool(false, "Event risk")
+baseTrend = input.string("bullish", "Technical trend", options=["bullish", "neutral", "bearish"])
+
+marketClose = request.security(marketSymbol, marketTf, close)
+marketSlow = request.security(marketSymbol, marketTf, ta.ema(close, 50))
+symbolReturn = close[rsLookback] != 0 ? close / close[rsLookback] : na
+marketReturn = marketClose[rsLookback] != 0 ? marketClose / marketClose[rsLookback] : na
+rsRatio = not na(symbolReturn) and not na(marketReturn) and marketReturn != 0 ? symbolReturn / marketReturn : na
+rsPasses = na(rsRatio) ? leader : rsRatio >= minRsRatio
+marketDirectionAuto = marketClose > marketSlow
+marketDirection = marketDirectionManual or marketDirectionAuto
+
+score = 0.0
+score += currentQuarterGrowth ? 15 : 0
+score += annualGrowth ? 15 : 0
+score += newHighOrCatalyst ? 15 : 0
+score += supplyDemand ? 10 : 0
+score += rsPasses ? 15 : 0
+score += institutionalSupport ? 10 : 0
+score += marketDirection ? 20 : 0
+score := eventRisk ? math.min(score, 59) : score
+score := math.max(0, math.min(100, score))
+passes = score >= scoreThreshold and not eventRisk
+
+boolText(value) =>
+    value ? "true" : "false"
+
+numText(value) =>
+    na(value) ? "null" : str.tostring(value, "#.##")
+
+string payload = "{"
+payload := payload + "\"ticker\":\"" + syminfo.ticker + "\","
+payload := payload + "\"timeframe\":\"" + timeframe.period + "\","
+payload := payload + "\"strategy_context\":\"CANSLIM_FILTER\","
+payload := payload + "\"trend\":\"" + baseTrend + "\","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"event_risk\":" + boolText(eventRisk) + ","
+payload := payload + "\"relative_strength_ratio\":" + numText(rsRatio) + ","
+payload := payload + "\"market_direction_auto\":" + boolText(marketDirectionAuto) + ","
+payload := payload + "\"canslim\":{\"passes\":" + boolText(passes) + ","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"rating\":\"" + (passes ? "PASS" : "FAIL") + "\","
+payload := payload + "\"current_quarter_growth\":" + boolText(currentQuarterGrowth) + ","
+payload := payload + "\"annual_growth\":" + boolText(annualGrowth) + ","
+payload := payload + "\"new_high_or_catalyst\":" + boolText(newHighOrCatalyst) + ","
+payload := payload + "\"supply_demand\":" + boolText(supplyDemand) + ","
+payload := payload + "\"leader\":" + boolText(rsPasses) + ","
+payload := payload + "\"institutional_support\":" + boolText(institutionalSupport) + ","
+payload := payload + "\"market_direction\":" + boolText(marketDirection) + "},"
+payload := payload + "\"source\":\"TRADINGVIEW_CANSLIM_FILTER_PRO_V2\","
+payload := payload + "\"contract_version\":\"strategy_signal_contract_v1\""
+payload := payload + "}"
+
+if sendAlerts and barstate.isconfirmed
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(score, "CANSLIM Score", color=passes ? color.new(color.green, 0) : color.new(color.red, 0), linewidth=2)
+plot(rsRatio, "Relative Strength Ratio", color=color.new(color.blue, 0))
+hline(scoreThreshold, "Pass Threshold", color=color.new(color.gray, 0))
+hline(minRsRatio, "RS Minimum", color=color.new(color.gray, 60))

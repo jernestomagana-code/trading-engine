@@ -1,0 +1,113 @@
+//@version=5
+indicator("Stock Ultimus Options Signal V1", overlay=true)
+
+strategyContext = input.string("NAKED_PUT", "Strategy context", options=["NAKED_PUT", "CASH_SECURED_PUT", "COVERED_CALL", "IRON_CONDOR"])
+sendAlerts = input.bool(true, "Send webhook alerts")
+alertOnlyWhenConfirmed = input.bool(true, "Alert only when score >= threshold")
+scoreThreshold = input.float(65.0, "Minimum alert score", minval=0, maxval=100, step=1)
+
+rsiLen = input.int(14, "RSI length", minval=2)
+adxLen = input.int(14, "DMI length", minval=2)
+adxSmooth = input.int(14, "ADX smoothing", minval=2)
+rangeLen = input.int(20, "Range length", minval=5)
+volumeLen = input.int(20, "Relative volume length", minval=5)
+nearPct = input.float(1.0, "Support/resistance near %", minval=0.1, maxval=10.0, step=0.1)
+manualIvRank = input.float(45.0, "Manual IV rank", minval=0, maxval=100, step=1)
+earningsSoon = input.bool(false, "Earnings soon")
+eventRisk = input.bool(false, "Event risk")
+
+rsiValue = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+rangeHigh = ta.highest(high, rangeLen)
+rangeLow = ta.lowest(low, rangeLen)
+rangeMid = (rangeHigh + rangeLow) / 2.0
+rangeSize = rangeHigh - rangeLow
+insideRange = close <= rangeHigh and close >= rangeLow
+rangeBreakout = close > rangeHigh or close < rangeLow
+supportNear = rangeSize > 0 ? math.abs(close - rangeLow) / close <= nearPct / 100.0 : false
+resistanceNear = rangeSize > 0 ? math.abs(close - rangeHigh) / close <= nearPct / 100.0 : false
+vwapValue = ta.vwap(hlc3)
+volAvg = ta.sma(volume, volumeLen)
+volumeRelative = volAvg > 0 ? volume / volAvg : na
+
+bullishTrend = close > rangeMid and diPlus >= diMinus
+bearishTrend = close < rangeMid and diMinus > diPlus
+neutralTrend = not bullishTrend and not bearishTrend
+trendText = bullishTrend ? "bullish" : bearishTrend ? "bearish" : "neutral"
+
+neutralRsi = rsiValue >= 45 and rsiValue <= 55
+lowAdx = adxValue <= 22
+constructiveAdx = adxValue <= 28
+volumeOk = na(volumeRelative) ? true : volumeRelative <= 1.5
+
+score = 0.0
+if strategyContext == "NAKED_PUT" or strategyContext == "CASH_SECURED_PUT"
+    score += bullishTrend ? 25 : neutralTrend ? 10 : 0
+    score += supportNear ? 25 : 0
+    score += constructiveAdx ? 15 : 0
+    score += rsiValue >= 45 and rsiValue <= 65 ? 15 : 0
+    score += volumeOk ? 10 : 0
+    score += eventRisk or earningsSoon ? 0 : 10
+else if strategyContext == "COVERED_CALL"
+    score += resistanceNear ? 25 : 0
+    score += bearishTrend or neutralTrend ? 20 : 8
+    score += rsiValue >= 50 ? 15 : 0
+    score += constructiveAdx ? 15 : 0
+    score += volumeOk ? 10 : 0
+    score += eventRisk or earningsSoon ? 0 : 15
+else
+    score += neutralTrend ? 20 : 0
+    score += insideRange and not rangeBreakout ? 25 : 0
+    score += neutralRsi ? 20 : 0
+    score += lowAdx ? 20 : 0
+    score += manualIvRank >= 40 and manualIvRank <= 70 ? 15 : 0
+
+score := math.max(0, math.min(100, score))
+
+boolText(value) =>
+    value ? "true" : "false"
+
+numText(value) =>
+    na(value) ? "null" : str.tostring(value, "#.##")
+
+vwapPosition = close > vwapValue ? "above" : close < vwapValue ? "below" : "near"
+
+string payload = "{"
+payload := payload + "\"ticker\":\"" + syminfo.ticker + "\","
+payload := payload + "\"timeframe\":\"" + timeframe.period + "\","
+payload := payload + "\"strategy_context\":\"" + strategyContext + "\","
+payload := payload + "\"trend\":\"" + trendText + "\","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"rsi\":" + numText(rsiValue) + ","
+payload := payload + "\"adx\":" + numText(adxValue) + ","
+payload := payload + "\"support_near\":" + boolText(supportNear) + ","
+payload := payload + "\"resistance_near\":" + boolText(resistanceNear) + ","
+payload := payload + "\"range_20d\":" + boolText(insideRange) + ","
+payload := payload + "\"range_breakout\":" + boolText(rangeBreakout) + ","
+payload := payload + "\"vwap_position\":\"" + vwapPosition + "\","
+payload := payload + "\"volume_relative\":" + numText(volumeRelative) + ","
+payload := payload + "\"iv_rank\":" + numText(manualIvRank) + ","
+payload := payload + "\"earnings_soon\":" + boolText(earningsSoon) + ","
+payload := payload + "\"event_risk\":" + boolText(eventRisk) + ","
+payload := payload + "\"source\":\"TRADINGVIEW_STRATEGY_SIGNAL\","
+payload := payload + "\"contract_version\":\"strategy_signal_contract_v1\""
+payload := payload + "}"
+
+shouldAlert = sendAlerts and barstate.isconfirmed and (not alertOnlyWhenConfirmed or score >= scoreThreshold)
+if shouldAlert
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(rangeHigh, "Range High", color=color.new(color.gray, 45))
+plot(rangeLow, "Range Low", color=color.new(color.gray, 45))
+plot(vwapValue, "VWAP", color=color.new(color.blue, 0))
+plotshape(supportNear, title="Support Near", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(resistanceNear, title="Resistance Near", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plot(rsiValue, title="RSI", display=display.none)
+plot(adxValue, title="ADX", display=display.none)
+plot(insideRange ? 1 : 0, title="Range20D", display=display.none)
+plot(rangeBreakout ? 1 : 0, title="RangeBreakout", display=display.none)
+plot(supportNear ? 1 : 0, title="SupportNear", display=display.none)
+plot(resistanceNear ? 1 : 0, title="ResistanceNear", display=display.none)
+plot(volumeRelative, title="VolumeRelative", display=display.none)
+plot(score, title="TechScore", display=display.none)

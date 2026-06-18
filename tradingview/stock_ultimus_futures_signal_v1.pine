@@ -1,0 +1,82 @@
+//@version=5
+indicator("Stock Ultimus Futures Signal V1", overlay=true)
+
+sendAlerts = input.bool(true, "Send webhook alerts")
+alertOnlyWhenConfirmed = input.bool(true, "Alert only when score >= threshold")
+scoreThreshold = input.float(65.0, "Minimum alert score", minval=0, maxval=100, step=1)
+
+fastEmaLen = input.int(9, "Fast EMA", minval=2)
+slowEmaLen = input.int(21, "Slow EMA", minval=3)
+rsiLen = input.int(14, "RSI length", minval=2)
+adxLen = input.int(14, "DMI length", minval=2)
+adxSmooth = input.int(14, "ADX smoothing", minval=2)
+rangeLen = input.int(20, "Intraday range length", minval=5)
+volumeLen = input.int(20, "Relative volume length", minval=5)
+eventRisk = input.bool(false, "Event risk")
+
+fastEma = ta.ema(close, fastEmaLen)
+slowEma = ta.ema(close, slowEmaLen)
+rsiValue = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+vwapValue = ta.vwap(hlc3)
+rangeHigh = ta.highest(high, rangeLen)
+rangeLow = ta.lowest(low, rangeLen)
+rangeBreakout = close > rangeHigh[1] or close < rangeLow[1]
+volAvg = ta.sma(volume, volumeLen)
+volumeRelative = volAvg > 0 ? volume / volAvg : na
+
+bullishTrend = fastEma > slowEma and close > vwapValue and diPlus >= diMinus
+bearishTrend = fastEma < slowEma and close < vwapValue and diMinus > diPlus
+trendText = bullishTrend ? "bullish" : bearishTrend ? "bearish" : "neutral"
+vwapPosition = close > vwapValue ? "above" : close < vwapValue ? "below" : "near"
+
+score = 0.0
+score += bullishTrend or bearishTrend ? 25 : 5
+score += rangeBreakout ? 20 : 0
+score += adxValue >= 18 and adxValue <= 35 ? 20 : 0
+score += rsiValue >= 45 and rsiValue <= 65 ? 15 : 0
+score += na(volumeRelative) ? 10 : volumeRelative >= 1.0 ? 15 : 5
+score += eventRisk ? 0 : 5
+score := math.max(0, math.min(100, score))
+
+boolText(value) =>
+    value ? "true" : "false"
+
+numText(value) =>
+    na(value) ? "null" : str.tostring(value, "#.##")
+
+string payload = "{"
+payload := payload + "\"ticker\":\"" + syminfo.ticker + "\","
+payload := payload + "\"timeframe\":\"" + timeframe.period + "\","
+payload := payload + "\"strategy_context\":\"FUTURES\","
+payload := payload + "\"trend\":\"" + trendText + "\","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"rsi\":" + numText(rsiValue) + ","
+payload := payload + "\"adx\":" + numText(adxValue) + ","
+payload := payload + "\"support_near\":false,"
+payload := payload + "\"resistance_near\":false,"
+payload := payload + "\"range_20d\":false,"
+payload := payload + "\"range_breakout\":" + boolText(rangeBreakout) + ","
+payload := payload + "\"vwap_position\":\"" + vwapPosition + "\","
+payload := payload + "\"volume_relative\":" + numText(volumeRelative) + ","
+payload := payload + "\"earnings_soon\":false,"
+payload := payload + "\"event_risk\":" + boolText(eventRisk) + ","
+payload := payload + "\"source\":\"TRADINGVIEW_STRATEGY_SIGNAL\","
+payload := payload + "\"contract_version\":\"strategy_signal_contract_v1\""
+payload := payload + "}"
+
+shouldAlert = sendAlerts and barstate.isconfirmed and (not alertOnlyWhenConfirmed or score >= scoreThreshold)
+if shouldAlert
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(fastEma, "Fast EMA", color=color.new(color.green, 0))
+plot(slowEma, "Slow EMA", color=color.new(color.orange, 0))
+plot(vwapValue, "VWAP", color=color.new(color.blue, 0))
+plotshape(rangeBreakout and bullishTrend, title="Bullish Breakout", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(rangeBreakout and bearishTrend, title="Bearish Breakout", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plot(rsiValue, title="RSI", display=display.none)
+plot(adxValue, title="ADX", display=display.none)
+plot(rangeBreakout ? 1 : 0, title="RangeBreakout", display=display.none)
+plot(volumeRelative, title="VolumeRelative", display=display.none)
+plot(score, title="TechScore", display=display.none)

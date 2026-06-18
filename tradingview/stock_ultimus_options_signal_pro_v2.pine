@@ -1,0 +1,170 @@
+//@version=5
+indicator("Stock Ultimus Options Signal Pro V2", overlay=true, max_labels_count=200)
+
+strategyContext = input.string("NAKED_PUT", "Strategy context", options=["NAKED_PUT", "CASH_SECURED_PUT", "COVERED_CALL", "IRON_CONDOR"])
+sendAlerts = input.bool(true, "Send webhook alerts")
+alertOnlyWhenQualified = input.bool(true, "Alert only when pro score >= threshold")
+scoreThreshold = input.float(70.0, "Minimum alert score", minval=0, maxval=100, step=1)
+
+benchmarkSymbol = input.symbol("AMEX:SPY", "Benchmark")
+growthBenchmarkSymbol = input.symbol("NASDAQ:QQQ", "Growth benchmark")
+vixSymbol = input.symbol("CBOE:VIX", "VIX")
+dailyTf = input.timeframe("D", "Daily regime timeframe")
+setupTf = input.timeframe("60", "Setup timeframe")
+
+emaFastLen = input.int(21, "Fast EMA", minval=2)
+emaSlowLen = input.int(50, "Slow EMA", minval=3)
+rsiLen = input.int(14, "RSI length", minval=2)
+adxLen = input.int(14, "DMI length", minval=2)
+adxSmooth = input.int(14, "ADX smoothing", minval=2)
+atrLen = input.int(14, "ATR length", minval=2)
+rangeLen = input.int(20, "Range length", minval=5)
+volumeLen = input.int(20, "Relative volume length", minval=5)
+nearPct = input.float(1.0, "Support/resistance near %", minval=0.1, maxval=10.0, step=0.1)
+maxAtrPct = input.float(5.0, "Max ATR % for option entry", minval=0.2, maxval=20.0, step=0.1)
+manualIvRank = input.float(45.0, "Manual IV rank", minval=0, maxval=100, step=1)
+vixMaxForBullishPremium = input.float(28.0, "Max VIX for put readiness", minval=5, maxval=80, step=1)
+vixMinForCondor = input.float(16.0, "Min VIX for iron condor", minval=5, maxval=80, step=1)
+vixMaxForCondor = input.float(24.0, "Max VIX for iron condor", minval=5, maxval=80, step=1)
+earningsSoon = input.bool(false, "Earnings soon")
+eventRisk = input.bool(false, "Event risk")
+canslimPasses = input.bool(true, "CANSLIM passes")
+canslimScore = input.float(75.0, "CANSLIM score", minval=0, maxval=100, step=1)
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsiValue = ta.rsi(close, rsiLen)
+[diPlus, diMinus, adxValue] = ta.dmi(adxLen, adxSmooth)
+atrValue = ta.atr(atrLen)
+atrPct = close > 0 ? atrValue / close * 100.0 : na
+rangeHigh = ta.highest(high, rangeLen)
+rangeLow = ta.lowest(low, rangeLen)
+rangeMid = (rangeHigh + rangeLow) / 2.0
+rangeSize = rangeHigh - rangeLow
+insideRange = close <= rangeHigh and close >= rangeLow
+rangeBreakout = close > rangeHigh[1] or close < rangeLow[1]
+supportNear = rangeSize > 0 ? math.abs(close - rangeLow) / close <= nearPct / 100.0 : false
+resistanceNear = rangeSize > 0 ? math.abs(close - rangeHigh) / close <= nearPct / 100.0 : false
+vwapValue = ta.vwap(hlc3)
+volAvg = ta.sma(volume, volumeLen)
+volumeRelative = volAvg > 0 ? volume / volAvg : na
+
+dailyClose = request.security(syminfo.tickerid, dailyTf, close)
+dailyFast = request.security(syminfo.tickerid, dailyTf, ta.ema(close, emaFastLen))
+dailySlow = request.security(syminfo.tickerid, dailyTf, ta.ema(close, emaSlowLen))
+setupClose = request.security(syminfo.tickerid, setupTf, close)
+setupFast = request.security(syminfo.tickerid, setupTf, ta.ema(close, emaFastLen))
+setupSlow = request.security(syminfo.tickerid, setupTf, ta.ema(close, emaSlowLen))
+
+benchClose = request.security(benchmarkSymbol, dailyTf, close)
+benchSlow = request.security(benchmarkSymbol, dailyTf, ta.ema(close, emaSlowLen))
+growthClose = request.security(growthBenchmarkSymbol, dailyTf, close)
+growthSlow = request.security(growthBenchmarkSymbol, dailyTf, ta.ema(close, emaSlowLen))
+vixClose = request.security(vixSymbol, dailyTf, close)
+
+dailyBull = dailyClose > dailyFast and dailyFast > dailySlow
+setupBull = setupClose > setupFast and setupFast >= setupSlow
+dailyBear = dailyClose < dailyFast and dailyFast < dailySlow
+setupBear = setupClose < setupFast and setupFast <= setupSlow
+marketConstructive = benchClose > benchSlow and growthClose > growthSlow
+marketDefensive = benchClose < benchSlow or growthClose < growthSlow
+atrOk = na(atrPct) ? true : atrPct <= maxAtrPct
+volumeOk = na(volumeRelative) ? true : volumeRelative <= 1.6
+vixPutOk = vixClose <= vixMaxForBullishPremium
+vixCondorOk = vixClose >= vixMinForCondor and vixClose <= vixMaxForCondor
+ivCondorOk = manualIvRank >= 40 and manualIvRank <= 70
+
+trendText = dailyBull and setupBull ? "bullish" : dailyBear and setupBear ? "bearish" : "neutral"
+vwapPosition = close > vwapValue ? "above" : close < vwapValue ? "below" : "near"
+
+score = 0.0
+if strategyContext == "NAKED_PUT" or strategyContext == "CASH_SECURED_PUT"
+    score += dailyBull ? 15 : 0
+    score += setupBull ? 15 : 0
+    score += marketConstructive ? 15 : 0
+    score += supportNear ? 15 : 0
+    score += rsiValue >= 42 and rsiValue <= 65 ? 10 : 0
+    score += adxValue >= 12 and adxValue <= 30 ? 10 : 0
+    score += atrOk ? 8 : 0
+    score += volumeOk ? 5 : 0
+    score += vixPutOk ? 5 : 0
+    score += manualIvRank >= 25 ? 4 : 0
+    score += canslimPasses and canslimScore >= 70 ? 3 : 0
+else if strategyContext == "COVERED_CALL"
+    extendedFromFast = close > emaFast and close / emaFast - 1.0 >= 0.02
+    score += resistanceNear ? 18 : 0
+    score += extendedFromFast ? 12 : 0
+    score += trendText == "neutral" or trendText == "bearish" ? 15 : 8
+    score += rsiValue >= 52 and rsiValue <= 75 ? 12 : 0
+    score += adxValue <= 28 ? 10 : 0
+    score += manualIvRank >= 25 ? 10 : 0
+    score += atrOk ? 8 : 0
+    score += volumeOk ? 5 : 0
+    score += not marketDefensive ? 5 : 0
+    score += not earningsSoon and not eventRisk ? 5 : 0
+else
+    neutralTrend = trendText == "neutral"
+    score += neutralTrend ? 18 : 0
+    score += insideRange and not rangeBreakout ? 18 : 0
+    score += rsiValue >= 45 and rsiValue <= 55 ? 15 : 0
+    score += adxValue <= 22 ? 15 : 0
+    score += vixCondorOk ? 12 : 0
+    score += ivCondorOk ? 10 : 0
+    score += atrOk ? 5 : 0
+    score += volumeOk ? 4 : 0
+    score += not earningsSoon and not eventRisk ? 3 : 0
+
+score := eventRisk or earningsSoon ? math.min(score, 59) : score
+score := math.max(0, math.min(100, score))
+
+boolText(value) =>
+    value ? "true" : "false"
+
+numText(value) =>
+    na(value) ? "null" : str.tostring(value, "#.##")
+
+string payload = "{"
+payload := payload + "\"ticker\":\"" + syminfo.ticker + "\","
+payload := payload + "\"timeframe\":\"" + timeframe.period + "\","
+payload := payload + "\"strategy_context\":\"" + strategyContext + "\","
+payload := payload + "\"trend\":\"" + trendText + "\","
+payload := payload + "\"score\":" + numText(score) + ","
+payload := payload + "\"rsi\":" + numText(rsiValue) + ","
+payload := payload + "\"adx\":" + numText(adxValue) + ","
+payload := payload + "\"support_near\":" + boolText(supportNear) + ","
+payload := payload + "\"resistance_near\":" + boolText(resistanceNear) + ","
+payload := payload + "\"range_20d\":" + boolText(insideRange) + ","
+payload := payload + "\"range_breakout\":" + boolText(rangeBreakout) + ","
+payload := payload + "\"vwap_position\":\"" + vwapPosition + "\","
+payload := payload + "\"volume_relative\":" + numText(volumeRelative) + ","
+payload := payload + "\"iv_rank\":" + numText(manualIvRank) + ","
+payload := payload + "\"earnings_soon\":" + boolText(earningsSoon) + ","
+payload := payload + "\"event_risk\":" + boolText(eventRisk) + ","
+payload := payload + "\"market_regime\":\"" + (marketConstructive ? "constructive" : marketDefensive ? "defensive" : "mixed") + "\","
+payload := payload + "\"vix\":" + numText(vixClose) + ","
+payload := payload + "\"atr_pct\":" + numText(atrPct) + ","
+payload := payload + "\"canslim\":{\"passes\":" + boolText(canslimPasses) + ",\"score\":" + numText(canslimScore) + ",\"rating\":\"" + (canslimPasses and canslimScore >= 70 ? "PASS" : "FAIL") + "\"},"
+payload := payload + "\"source\":\"TRADINGVIEW_OPTIONS_SIGNAL_PRO_V2\","
+payload := payload + "\"contract_version\":\"strategy_signal_contract_v1\""
+payload := payload + "}"
+
+shouldAlert = sendAlerts and barstate.isconfirmed and (not alertOnlyWhenQualified or score >= scoreThreshold)
+if shouldAlert
+    alert(payload, alert.freq_once_per_bar_close)
+
+plot(emaFast, "Fast EMA", color=color.new(color.green, 0))
+plot(emaSlow, "Slow EMA", color=color.new(color.orange, 0))
+plot(vwapValue, "VWAP", color=color.new(color.blue, 0))
+plot(rangeHigh, "Range High", color=color.new(color.gray, 45))
+plot(rangeLow, "Range Low", color=color.new(color.gray, 45))
+plotshape(supportNear, title="Support Near", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(resistanceNear, title="Resistance Near", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plot(score, title="TechScore", display=display.none)
+plot(rsiValue, title="RSI", display=display.none)
+plot(adxValue, title="ADX", display=display.none)
+plot(insideRange ? 1 : 0, title="Range20D", display=display.none)
+plot(rangeBreakout ? 1 : 0, title="RangeBreakout", display=display.none)
+plot(supportNear ? 1 : 0, title="SupportNear", display=display.none)
+plot(resistanceNear ? 1 : 0, title="ResistanceNear", display=display.none)
+plot(volumeRelative, title="VolumeRelative", display=display.none)

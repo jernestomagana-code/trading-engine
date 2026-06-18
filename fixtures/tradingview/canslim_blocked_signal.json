@@ -1,0 +1,23 @@
+{
+  "ticker": "META",
+  "timeframe": "1d",
+  "strategy_context": "CANSLIM_FILTER",
+  "trend": "bullish",
+  "score": 72,
+  "rsi": 53,
+  "adx": 18,
+  "support_near": true,
+  "range_20d": true,
+  "range_breakout": false,
+  "earnings_soon": false,
+  "event_risk": false,
+  "canslim": {
+    "passes": false,
+    "score": 42,
+    "rating": "FAIL",
+    "notes": "Fixture demonstrating fundamental filter block."
+  },
+  "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+  "contract_version": "strategy_signal_contract_v1",
+  "expected_blocker": "CANSLIM_BLOCKED"
+}

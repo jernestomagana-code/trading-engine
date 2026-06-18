@@ -1,8 +1,8 @@
 # Stock Ultimus Roadmap
 
-## Immediate Priority: V30 Contract Enrichment
+## V30: Contract Enrichment Foundation
 
-V30 remains the active implementation priority.
+V30 is validated locally and remains the safety foundation for later versions.
 
 Objective:
 
@@ -17,6 +17,16 @@ V30 is the foundation for everything that follows.
 ## V31: Canonical Decision Engine
 
 Purpose: replace overlapping historical decision paths with one source of truth.
+
+Current status:
+
+- V31 has started as an explicit versioned API contract backed by the validated
+  V29 engine.
+- Available surfaces: `/v31_system_status`, `/v31_trade_decision/{ticker}`,
+  and `/gpt_v31_trade_decision/{ticker}`.
+- Runtime publishing and canonical-state guards are available locally.
+- Next implementation step: move schema and blocker-contract helpers out of
+  `app/main.py` into shared modules.
 
 Expected work:
 
@@ -39,6 +49,14 @@ Success criteria:
 ## V32: Outcome Tracking And Learning Loop
 
 Purpose: measure whether the engine is actually improving decisions.
+
+Current status:
+
+- Decision journaling uses stable IDs and deduplicates repeated reads.
+- Follow-ups track observation count, MFE, and MAE.
+- Outcomes can be recorded and summarized through V32 endpoints.
+- The flow passes local guards but still needs durable, isolated, auditable
+  storage before production or multi-user use.
 
 Expected work:
 

@@ -1,0 +1,22 @@
+{
+  "ticker": "MSFT",
+  "timeframe": "1d",
+  "strategy_context": "CASH_SECURED_PUT",
+  "trend": "bullish",
+  "score": 71,
+  "rsi": 50,
+  "adx": 17,
+  "support_near": true,
+  "resistance_near": false,
+  "range_20d": true,
+  "range_breakout": false,
+  "vwap_position": "above",
+  "volume_relative": 0.95,
+  "iv_rank": 42,
+  "earnings_soon": false,
+  "event_risk": false,
+  "canslim_passes": true,
+  "canslim_score": 82,
+  "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+  "contract_version": "strategy_signal_contract_v1"
+}

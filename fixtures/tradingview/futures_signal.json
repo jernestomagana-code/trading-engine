@@ -1,0 +1,19 @@
+{
+  "ticker": "MNQ",
+  "timeframe": "15m",
+  "strategy_context": "FUTURES",
+  "trend": "bullish",
+  "score": 73,
+  "rsi": 54,
+  "adx": 24,
+  "support_near": false,
+  "resistance_near": false,
+  "range_20d": false,
+  "range_breakout": true,
+  "vwap_position": "above",
+  "volume_relative": 1.35,
+  "earnings_soon": false,
+  "event_risk": false,
+  "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+  "contract_version": "strategy_signal_contract_v1"
+}

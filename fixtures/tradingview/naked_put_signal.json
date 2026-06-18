@@ -1,0 +1,25 @@
+{
+  "ticker": "AAPL",
+  "timeframe": "1h",
+  "strategy_context": "NAKED_PUT",
+  "trend": "bullish",
+  "score": 74,
+  "rsi": 52,
+  "adx": 18,
+  "support_near": true,
+  "resistance_near": false,
+  "range_20d": false,
+  "range_breakout": false,
+  "vwap_position": "near",
+  "volume_relative": 1.05,
+  "iv_rank": 48,
+  "earnings_soon": false,
+  "event_risk": false,
+  "canslim": {
+    "passes": true,
+    "score": 78,
+    "rating": "PASS"
+  },
+  "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+  "contract_version": "strategy_signal_contract_v1"
+}

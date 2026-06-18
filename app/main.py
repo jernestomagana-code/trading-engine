@@ -8,7 +8,84 @@ import json
 import re
 import os
 import math
+import sys
+import hashlib
+from pathlib import Path
 import requests
+
+try:
+    from strategy_rules import (
+        MIN_PRICE_FOR_THETA,
+        OPTION_SPREAD_PCT_READY_MAX,
+        OPTION_MIN_VOLUME_READY,
+        OPTION_MIN_OPEN_INTEREST_READY,
+        NAKED_PUT_READY_DTE_MIN,
+        NAKED_PUT_READY_DTE_MAX,
+        NAKED_PUT_REVIEW_DELTA_MIN,
+        NAKED_PUT_REVIEW_DELTA_MAX,
+        NAKED_PUT_READY_DELTA_MIN,
+        NAKED_PUT_READY_DELTA_MAX,
+        COVERED_CALL_READY_DELTA_MIN,
+        COVERED_CALL_READY_DELTA_MAX,
+        COVERED_CALL_REVIEW_DELTA_MIN,
+        COVERED_CALL_REVIEW_DELTA_MAX,
+        IRON_CONDOR_ALLOWED_TICKERS,
+        IRON_CONDOR_DTE_MIN,
+        IRON_CONDOR_DTE_MAX,
+        IRON_CONDOR_IVR_MIN,
+        IRON_CONDOR_IVR_MAX,
+        IRON_CONDOR_VIX_RADAR_MIN,
+        IRON_CONDOR_VIX_READY_MIN,
+        IRON_CONDOR_VIX_MAX,
+        IRON_CONDOR_VIX_IDEAL_MIN,
+        IRON_CONDOR_VIX_IDEAL_MAX,
+        IRON_CONDOR_RSI_MIN,
+        IRON_CONDOR_RSI_MAX,
+        IRON_CONDOR_ADX_MAX,
+        IRON_CONDOR_SHORT_DELTA_MIN,
+        IRON_CONDOR_SHORT_DELTA_MAX,
+        IRON_CONDOR_CREDIT_WIDTH_MIN,
+        liquidity_blockers as shared_liquidity_blockers,
+        technical_event_blockers as shared_technical_event_blockers,
+    )
+except ModuleNotFoundError:
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from strategy_rules import (
+        MIN_PRICE_FOR_THETA,
+        OPTION_SPREAD_PCT_READY_MAX,
+        OPTION_MIN_VOLUME_READY,
+        OPTION_MIN_OPEN_INTEREST_READY,
+        NAKED_PUT_READY_DTE_MIN,
+        NAKED_PUT_READY_DTE_MAX,
+        NAKED_PUT_REVIEW_DELTA_MIN,
+        NAKED_PUT_REVIEW_DELTA_MAX,
+        NAKED_PUT_READY_DELTA_MIN,
+        NAKED_PUT_READY_DELTA_MAX,
+        COVERED_CALL_READY_DELTA_MIN,
+        COVERED_CALL_READY_DELTA_MAX,
+        COVERED_CALL_REVIEW_DELTA_MIN,
+        COVERED_CALL_REVIEW_DELTA_MAX,
+        IRON_CONDOR_ALLOWED_TICKERS,
+        IRON_CONDOR_DTE_MIN,
+        IRON_CONDOR_DTE_MAX,
+        IRON_CONDOR_IVR_MIN,
+        IRON_CONDOR_IVR_MAX,
+        IRON_CONDOR_VIX_RADAR_MIN,
+        IRON_CONDOR_VIX_READY_MIN,
+        IRON_CONDOR_VIX_MAX,
+        IRON_CONDOR_VIX_IDEAL_MIN,
+        IRON_CONDOR_VIX_IDEAL_MAX,
+        IRON_CONDOR_RSI_MIN,
+        IRON_CONDOR_RSI_MAX,
+        IRON_CONDOR_ADX_MAX,
+        IRON_CONDOR_SHORT_DELTA_MIN,
+        IRON_CONDOR_SHORT_DELTA_MAX,
+        IRON_CONDOR_CREDIT_WIDTH_MIN,
+        liquidity_blockers as shared_liquidity_blockers,
+        technical_event_blockers as shared_technical_event_blockers,
+    )
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -18,6 +95,196 @@ import requests
 
 app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 
+_CANONICAL_DECISION_ENGINES = [
+    {
+        "engine": "V27_TECHNICAL_RESOLVER",
+        "status": "active",
+        "primary_endpoints": [
+            "/v27_system_status",
+            "/v27_trade_decision/{ticker}",
+        ],
+        "scope": "Technical resolver baseline.",
+    },
+    {
+        "engine": "V27_1_CANONICAL_RUNTIME_INVENTORY",
+        "status": "active",
+        "primary_endpoints": [
+            "/v27_1_runtime_inventory",
+            "/v27_1_system_status",
+            "/v27_1_trade_decision/{ticker}",
+        ],
+        "scope": "Canonical runtime inventory and normalized trade decision.",
+    },
+    {
+        "engine": "V28_REMOTE_SNAPSHOT_CANONICAL",
+        "status": "active",
+        "primary_endpoints": [
+            "/v28_ingest_snapshot",
+            "/v28_system_status",
+            "/v28_trade_decision/{ticker}",
+        ],
+        "scope": "Canonical remote snapshot ingest and normalized decision path.",
+    },
+    {
+        "engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
+        "status": "active_primary",
+        "primary_endpoints": [
+            "/v29_system_status",
+            "/v29_trade_decision/{ticker}",
+            "/v29_dashboard",
+        ],
+        "scope": "Primary source of truth for decision readiness and blocker priority.",
+    },
+    {
+        "engine": "V31_CANONICAL_DECISION_CONTRACT",
+        "status": "active_contract",
+        "primary_endpoints": [
+            "/v31_system_status",
+            "/v31_trade_decision/{ticker}",
+            "/gpt_v31_trade_decision/{ticker}",
+        ],
+        "scope": "Versioned canonical decision contract backed by the V29 decision engine.",
+    },
+    {
+        "engine": "V32_OUTCOMES_TRACKING",
+        "status": "active_learning",
+        "primary_endpoints": [
+            "/v32_decision_history",
+            "/v32_record_followup",
+            "/v32_record_outcome",
+            "/v32_outcomes_summary",
+        ],
+        "scope": "Persistent decision journal and post-signal outcome tracking for forward evaluation.",
+    },
+    {
+        "engine": "shared_strategy_rules",
+        "status": "active_shared_rules",
+        "primary_endpoints": [
+            "/decision_engine_inventory",
+        ],
+        "scope": "Shared thresholds in strategy_rules.py used by bridge and cloud evaluators.",
+    },
+]
+
+_LEGACY_COMPATIBILITY_ENGINES = [
+    {
+        "engine": "V22_UNIFIED_TRADING_DECISION_ENGINE",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v29_trade_decision/{ticker}",
+            "/v29_system_status",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V22_1_SNAPSHOT_NORMALIZER_UNIFIED_READER",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v29_trade_decision/{ticker}",
+            "/v29_system_status",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v28_ingest_snapshot",
+            "/v29_trade_decision/{ticker}",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V23_TRADE_READINESS_EXECUTION_GUARD",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v29_trade_decision/{ticker}",
+            "/v29_system_status",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V24_UNIFIED_DATA_RESOLVER",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v27_1_runtime_inventory",
+            "/v29_trade_decision/{ticker}",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V24_1_RUNTIME_DISCOVERY_SAFE_DASHBOARD",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v27_1_runtime_inventory",
+            "/v29_trade_decision/{ticker}",
+            "/decision_engine_inventory",
+        ],
+    },
+    {
+        "engine": "V25_REMOTE_SNAPSHOT_STORE",
+        "status": "legacy_compatibility_only",
+        "replacement_endpoints": [
+            "/v28_ingest_snapshot",
+            "/v29_trade_decision/{ticker}",
+            "/decision_engine_inventory",
+        ],
+    },
+]
+
+
+def _legacy_replacement_endpoints(engine_name: str) -> List[str]:
+    for engine in _LEGACY_COMPATIBILITY_ENGINES:
+        if engine.get("engine") == engine_name:
+            return list(engine.get("replacement_endpoints") or [])
+    return ["/v29_trade_decision/{ticker}", "/decision_engine_inventory"]
+
+
+def _legacy_compatibility_metadata(
+    engine_name: str,
+    endpoints: Optional[List[str]] = None,
+    replacements: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    return {
+        "engine": engine_name,
+        "lifecycle": "legacy_compatibility_only",
+        "canonical_source_of_truth": False,
+        "rule_change_policy": "Do not add new strategy or blocker rules here. Route new rules through V27-V29 and shared helpers.",
+        "legacy_endpoints": endpoints or [],
+        "replacement_endpoints": replacements or _legacy_replacement_endpoints(engine_name),
+    }
+
+
+def _annotate_legacy_response(
+    payload: Dict[str, Any],
+    engine_name: str,
+    endpoints: Optional[List[str]] = None,
+    replacements: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return payload
+
+    annotated = dict(payload)
+    annotated["engine_lifecycle"] = "legacy_compatibility_only"
+    annotated["canonical_source_of_truth"] = False
+    annotated["legacy_compatibility"] = _legacy_compatibility_metadata(
+        engine_name,
+        endpoints=endpoints,
+        replacements=replacements,
+    )
+    return annotated
+
+
+@app.get("/decision_engine_inventory")
+def decision_engine_inventory():
+    return {
+        "generated_at": now_utc().isoformat(),
+        "status": "OK",
+        "policy": "Add new decision rules only to canonical engines and shared helpers. Keep V22-V25 stable for compatibility.",
+        "canonical_source_of_truth": _CANONICAL_DECISION_ENGINES,
+        "legacy_compatibility_only": _LEGACY_COMPATIBILITY_ENGINES,
+    }
+
 SIGNALS_FILE = "signals_history.json"
 OUTCOMES_FILE = "trade_outcomes.json"
 
@@ -25,6 +292,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
+ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 MONITOR_EMAIL_TO = os.getenv("MONITOR_EMAIL_TO") or os.getenv("PREMARKET_EMAIL_TO", "")
@@ -47,25 +315,6 @@ MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 0
 INITIAL_WINDOW_MINUTES = 150
-MIN_PRICE_FOR_THETA = 100
-
-# Iron Condor PRO rules
-IRON_CONDOR_ALLOWED_TICKERS = ["SPY", "QQQ", "IWM", "DIA"]
-IRON_CONDOR_DTE_MIN = 35
-IRON_CONDOR_DTE_MAX = 45
-IRON_CONDOR_IVR_MIN = 40
-IRON_CONDOR_IVR_MAX = 70
-IRON_CONDOR_VIX_MIN = 16
-IRON_CONDOR_VIX_MAX = 24
-IRON_CONDOR_VIX_IDEAL_MIN = 18
-IRON_CONDOR_VIX_IDEAL_MAX = 22
-IRON_CONDOR_RSI_MIN = 45
-IRON_CONDOR_RSI_MAX = 55
-IRON_CONDOR_ADX_MAX = 22
-IRON_CONDOR_SHORT_DELTA_MIN = 0.15
-IRON_CONDOR_SHORT_DELTA_MAX = 0.20
-IRON_CONDOR_CREDIT_WIDTH_MIN = 0.25
-
 trade_store: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
@@ -906,7 +1155,7 @@ def get_ibkr_context(ticker: str):
         "option_data_quality": (options or {}).get("data_quality") if options else None,
         "option_dte": safe_float((options or {}).get("dte"), None) if options else None,
         "option_delta": safe_float((options or {}).get("delta"), None) if options else None,
-        "option_iv": safe_float((options or {}).get("implied_volatility"), None) if options else None,
+        "option_iv": safe_float((options or {}).get("implied_volatility") or (options or {}).get("iv"), None) if options else None,
         "option_mid": safe_float((options or {}).get("mid"), None) if options else None,
         "option_spread_pct": safe_float((options or {}).get("spread_pct"), None) if options else None,
         "option_strike": safe_float((options or {}).get("strike"), None) if options else None,
@@ -1431,8 +1680,11 @@ def evaluate_naked_put_pro(ticker, technical, ibkr, market):
     if dte is None:
         missing.append("dte")
         score -= 10
+    elif NAKED_PUT_READY_DTE_MIN <= dte <= NAKED_PUT_READY_DTE_MAX:
+        score += 12
     elif 25 <= dte <= 65:
-        score += 10
+        score += 3
+        blockers.append("DTE fuera del rango de readiness 30–60 para Naked Put.")
     else:
         score -= 10
         blockers.append("DTE fuera del rango ideal para Naked Put.")
@@ -1442,10 +1694,11 @@ def evaluate_naked_put_pro(ticker, technical, ibkr, market):
         score -= 15
     else:
         abs_delta = abs(delta)
-        if 0.12 <= abs_delta <= 0.25:
-            score += 20
-        elif 0.08 <= abs_delta < 0.12:
-            score += 8
+        if NAKED_PUT_READY_DELTA_MIN <= abs_delta <= NAKED_PUT_READY_DELTA_MAX:
+            score += 22
+        elif NAKED_PUT_REVIEW_DELTA_MIN <= abs_delta <= NAKED_PUT_REVIEW_DELTA_MAX:
+            score += 6
+            blockers.append("Delta fuera del rango de readiness 0.14–0.22 para Naked Put.")
         else:
             score -= 15
             blockers.append("Delta fuera del rango ideal para Naked Put.")
@@ -1483,6 +1736,9 @@ def evaluate_naked_put_pro(ticker, technical, ibkr, market):
 
     if alignment in ["bullish", "bullish_context", "partial_bullish"]:
         score += 8
+    elif alignment in ["neutral", "mixed", "range", "sideways"]:
+        score += 2
+        blockers.append("Contexto técnico no es alcista confirmado para Naked Put.")
     elif alignment in ["bearish", "bearish_context", "partial_bearish"]:
         score -= 15
         blockers.append("Contexto técnico bajista.")
@@ -1541,6 +1797,8 @@ def evaluate_covered_call_pro(ticker, technical, ibkr, market):
     state = c.get("state", "NO_DATA")
     alignment = c.get("alignment", "mixed")
     priority = safe_float(c.get("priority_score"), 0)
+    event_risk = safe_bool(latest.get("event_risk"), False)
+    earnings = safe_bool(latest.get("earnings_soon"), False)
 
     dte = ibkr.get("option_dte")
     delta = ibkr.get("option_delta")
@@ -1579,10 +1837,11 @@ def evaluate_covered_call_pro(ticker, technical, ibkr, market):
         score -= 15
     else:
         abs_delta = abs(delta)
-        if 0.15 <= abs_delta <= 0.35:
-            score += 20
-        elif 0.08 <= abs_delta < 0.15:
-            score += 8
+        if COVERED_CALL_READY_DELTA_MIN <= abs_delta <= COVERED_CALL_READY_DELTA_MAX:
+            score += 22
+        elif COVERED_CALL_REVIEW_DELTA_MIN <= abs_delta <= COVERED_CALL_REVIEW_DELTA_MAX:
+            score += 6
+            blockers.append("Delta de call fuera del rango de readiness 0.15–0.25.")
         else:
             score -= 10
             blockers.append("Delta de call fuera del rango ideal.")
@@ -1614,6 +1873,14 @@ def evaluate_covered_call_pro(ticker, technical, ibkr, market):
 
     if ibkr_decision in ["WAIT_FOR_GREEKS", "NO_OPERAR_SIN_PRECIO"]:
         blockers.append(f"IBKR bloquea operación: {ibkr_decision}")
+
+    if event_risk:
+        blockers.append("Event risk activo.")
+        score -= 15
+
+    if earnings:
+        blockers.append("Earnings próximos.")
+        score -= 15
 
     if priority >= 70:
         score += 5
@@ -1701,10 +1968,13 @@ def evaluate_iron_condor_pro(ticker, technical, ibkr, market):
     if vix is None:
         missing.append("vix")
         score -= 5
-    elif IRON_CONDOR_VIX_MIN <= vix <= IRON_CONDOR_VIX_MAX:
+    elif IRON_CONDOR_VIX_READY_MIN <= vix <= IRON_CONDOR_VIX_MAX:
         score += 10
         if IRON_CONDOR_VIX_IDEAL_MIN <= vix <= IRON_CONDOR_VIX_IDEAL_MAX:
             score += 5
+    elif IRON_CONDOR_VIX_RADAR_MIN <= vix < IRON_CONDOR_VIX_READY_MIN:
+        score += 2
+        blockers.append("VIX por debajo del rango de readiness; dejar en radar.")
     else:
         blockers.append("VIX fuera del rango ideal 16–24.")
         score -= 10
@@ -2719,7 +2989,10 @@ def stats_ticker(ticker: str, limit: int = 1000):
 
 
 @app.get("/debug/supabase")
-def debug_supabase():
+def debug_supabase(x_admin_debug_token: Optional[str] = Header(default=None)):
+    if not ADMIN_DEBUG_TOKEN or x_admin_debug_token != ADMIN_DEBUG_TOKEN:
+        raise HTTPException(status_code=404, detail="Not found")
+
     return {
         "engine": "v8.0",
         "supabase_enabled": supabase_enabled(),
@@ -3560,8 +3833,10 @@ def compact_option(option):
         "mid": option.get("mid"),
         "bid": option.get("bid"),
         "ask": option.get("ask"),
+        "spread_pct": option.get("spread_pct"),
         "delta": option.get("delta"),
-        "iv": option.get("implied_volatility"),
+        "iv": option.get("implied_volatility") or option.get("iv"),
+        "implied_volatility": option.get("implied_volatility") or option.get("iv"),
         "score": option.get("score"),
         "decision": option.get("strategy_decision"),
         "data_quality": option.get("data_quality"),
@@ -5067,7 +5342,7 @@ def option_has_greeks(option):
 
     return (
         option.get("delta") is not None
-        and option.get("implied_volatility") is not None
+        and (option.get("implied_volatility") is not None or option.get("iv") is not None)
     )
 
 
@@ -5092,7 +5367,7 @@ def option_has_bidask(option):
     return bool(bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid)
 
 
-def option_spread_ok(option, max_spread_pct=0.18):
+def option_spread_ok(option, max_spread_pct=OPTION_SPREAD_PCT_READY_MAX):
     if not option:
         return False
 
@@ -5199,6 +5474,10 @@ def iron_condor_quality_gate(structure):
         missing.append("put_price")
     if call_leg and not call_quality["has_price"]:
         missing.append("call_price")
+    if put_leg and put_quality["has_bidask"] and not put_quality["spread_ok"]:
+        blockers.append("Put spread supera el máximo permitido para OPERAR.")
+    if call_leg and call_quality["has_bidask"] and not call_quality["spread_ok"]:
+        blockers.append("Call spread supera el máximo permitido para OPERAR.")
 
     if put_leg and put_quality["delta_zone"] == "OUT_OF_RANGE":
         blockers.append("Put delta fuera de rango aceptable 0.10–0.30.")
@@ -5226,11 +5505,15 @@ def iron_condor_quality_gate(structure):
     can_operar = (
         put_quality["can_operar"]
         and call_quality["can_operar"]
+        and put_quality["has_bidask"]
+        and call_quality["has_bidask"]
+        and put_quality["spread_ok"]
+        and call_quality["spread_ok"]
         and put_quality["delta_zone"] == "IDEAL"
         and call_quality["delta_zone"] == "IDEAL"
         and structure.get("dte_match") is True
         and credit is not None
-        and credit > 0
+        and credit >= IRON_CONDOR_CREDIT_WIDTH_MIN
         and not blockers
         and not missing
     )
@@ -5827,6 +6110,107 @@ def debug_routes_v15_1():
 # Removes older duplicate routes registered earlier in the file.
 # ============================================================
 
+_STRATEGY_SIGNAL_CONTEXT_FILE = Path("runtime/strategy_signal_by_ticker_context.json")
+_STRATEGY_SIGNAL_CONTEXTS = {
+    "NAKED_PUT",
+    "CASH_SECURED_PUT",
+    "COVERED_CALL",
+    "IRON_CONDOR",
+    "FUTURES",
+    "CANSLIM_FILTER",
+    "GENERAL_TECHNICAL",
+}
+
+
+def _strategy_signal_context(payload):
+    context = str((payload or {}).get("strategy_context") or "GENERAL_TECHNICAL").upper().strip()
+    return context if context in _STRATEGY_SIGNAL_CONTEXTS else "GENERAL_TECHNICAL"
+
+
+def _strategy_signal_read_store():
+    try:
+        if not _STRATEGY_SIGNAL_CONTEXT_FILE.exists():
+            return {}
+        data = json.loads(_STRATEGY_SIGNAL_CONTEXT_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _strategy_signal_merge_contexts(ticker, contexts):
+    ticker = str(ticker or "").upper().strip()
+    contexts = {
+        str(k).upper().strip(): dict(v)
+        for k, v in (contexts or {}).items()
+        if isinstance(v, dict)
+    }
+    technical_candidates = [value for key, value in contexts.items() if key != "CANSLIM_FILTER"]
+    technical_candidates.sort(
+        key=lambda value: str(value.get("received_at") or value.get("saved_at") or ""),
+        reverse=True,
+    )
+
+    if technical_candidates:
+        merged = dict(technical_candidates[0])
+    else:
+        merged = {
+            "ticker": ticker,
+            "trend": "UNKNOWN",
+            "score": None,
+            "source": "STRATEGY_SIGNAL_CONTEXT_STORE",
+        }
+
+    canslim_snapshot = contexts.get("CANSLIM_FILTER")
+    if isinstance(canslim_snapshot, dict):
+        canslim = canslim_snapshot.get("canslim")
+        if isinstance(canslim, dict):
+            merged["canslim"] = dict(canslim)
+        else:
+            merged["canslim"] = {
+                "passes": canslim_snapshot.get("canslim_passes"),
+                "score": canslim_snapshot.get("canslim_score") or canslim_snapshot.get("score"),
+                "rating": canslim_snapshot.get("canslim_rating"),
+            }
+        merged["canslim_received_at"] = canslim_snapshot.get("received_at")
+
+    merged["ticker"] = ticker
+    merged["strategy_context"] = merged.get("strategy_context") or "GENERAL_TECHNICAL"
+    merged["available_strategy_contexts"] = sorted(contexts.keys())
+    merged["by_strategy_context"] = contexts
+    merged["context_store_version"] = "strategy_context_store_v1"
+    return merged
+
+
+def _strategy_signal_store_snapshot(payload):
+    ticker = str((payload or {}).get("ticker") or "").upper().strip()
+    context = _strategy_signal_context(payload)
+    store = _strategy_signal_read_store()
+    ticker_contexts = store.get(ticker) if isinstance(store.get(ticker), dict) else {}
+
+    clean_snapshot = dict(payload or {})
+    clean_snapshot.pop("raw_payload_preview", None)
+    clean_snapshot["ticker"] = ticker
+    clean_snapshot["strategy_context"] = context
+    ticker_contexts[context] = clean_snapshot
+    store[ticker] = ticker_contexts
+
+    _STRATEGY_SIGNAL_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _STRATEGY_SIGNAL_CONTEXT_FILE.write_text(json.dumps(store, indent=2, ensure_ascii=False, default=str))
+
+    merged = _strategy_signal_merge_contexts(ticker, ticker_contexts)
+    canonical_sync = globals().get("_v22_2_sync_technical_to_canonical")
+    if callable(canonical_sync):
+        canonical_sync(ticker, merged)
+
+    return {
+        "ticker": ticker,
+        "strategy_context": context,
+        "available_strategy_contexts": merged.get("available_strategy_contexts", []),
+        "merged_snapshot": merged,
+        "path": str(_STRATEGY_SIGNAL_CONTEXT_FILE),
+    }
+
+
 async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
     verify_webhook_secret(x_webhook_secret)
 
@@ -5845,19 +6229,24 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     ticker = find_ticker(parsed, raw_text)
     timeframe = normalize_timeframe(parsed.get("timeframe", "1h"))
 
+    original_source = parsed.get("source")
     parsed.update({
         "ticker": ticker,
         "timeframe": timeframe,
+        "strategy_context": _strategy_signal_context(parsed),
         "received_at": now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
-        "source": "TECHNICAL_SNAPSHOT",
+        "source": original_source or "TECHNICAL_SNAPSHOT",
         "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_2_FORCED",
         "raw_payload_preview": raw_text[:500],
     })
 
     trade_store.setdefault(ticker, {})
+    context_storage = _strategy_signal_store_snapshot(parsed)
+    merged_snapshot = context_storage["merged_snapshot"]
     trade_store[ticker][timeframe] = parsed
-    trade_store[ticker]["technical_snapshot"] = parsed
+    trade_store[ticker]["technical_snapshot"] = merged_snapshot
+    trade_store[ticker]["technical_snapshots_by_context"] = merged_snapshot.get("by_strategy_context", {})
 
     classification = classify_asset(trade_store[ticker])
 
@@ -5883,8 +6272,15 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "message": f"Normalized technical snapshot received for {ticker} {timeframe}",
         "ticker": ticker,
         "timeframe": timeframe,
+        "strategy_context": parsed.get("strategy_context"),
+        "available_strategy_contexts": context_storage.get("available_strategy_contexts"),
+        "context_storage": {
+            "path": context_storage.get("path"),
+            "version": "strategy_context_store_v1",
+        },
         "storage": storage_result,
         "normalized_payload": parsed,
+        "merged_snapshot": merged_snapshot,
         "unified_context": unified,
     }
 
@@ -8354,11 +8750,14 @@ def _v212_latest_technical_snapshot_store():
     }
 
 # Sobrescribimos aliases usados por V21 fusion.
-def get_latest_technical_snapshot():
-    return _v212_latest_technical_snapshot_store()
+def get_latest_technical_snapshot(ticker=None):
+    store = _v212_latest_technical_snapshot_store()
+    if ticker is None:
+        return store
+    return dict((store.get("by_ticker") or {}).get(str(ticker or "").upper().strip()) or {})
 
-def _get_latest_technical_snapshot():
-    return _v212_latest_technical_snapshot_store()
+def _get_latest_technical_snapshot(ticker=None):
+    return get_latest_technical_snapshot(ticker)
 
 def _load_technical_snapshot():
     return _v212_latest_technical_snapshot_store()
@@ -8916,14 +9315,19 @@ def _v22_default_tickers():
 
     return sorted(list(tickers))
 
+# LEGACY COMPATIBILITY ONLY: keep V22 routes stable for older clients.
 @app.get("/v22_trade_decision/{ticker}")
 def v22_trade_decision(ticker: str):
-    return _v22_build_trade_decision(ticker)
+    return _annotate_legacy_response(
+        _v22_build_trade_decision(ticker),
+        "V22_UNIFIED_TRADING_DECISION_ENGINE",
+        endpoints=["/v22_trade_decision/{ticker}"],
+    )
 
 @app.get("/gpt_trade_decision/{ticker}")
 def gpt_trade_decision(ticker: str):
     d = _v22_build_trade_decision(ticker)
-    return {
+    return _annotate_legacy_response({
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
@@ -8940,7 +9344,7 @@ def gpt_trade_decision(ticker: str):
         "market_hours": d.get("market_hours"),
         "engine": d.get("engine"),
         "generated_at": d.get("generated_at"),
-    }
+    }, "V22_UNIFIED_TRADING_DECISION_ENGINE", endpoints=["/gpt_trade_decision/{ticker}"])
 
 @app.get("/v22_trade_summary")
 def v22_trade_summary():
@@ -8971,7 +9375,7 @@ def v22_trade_summary():
     ranked = sorted(decisions, key=rank, reverse=True)
     best = ranked[0] if ranked else None
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V22_UNIFIED_TRADING_DECISION_ENGINE",
         "generated_at": _v22_now(),
         "status": "OK",
@@ -9002,7 +9406,7 @@ def v22_trade_summary():
             for d in ranked[:10]
         ],
         "market_hours": _v22_get_market_hours(),
-    }
+    }, "V22_UNIFIED_TRADING_DECISION_ENGINE", endpoints=["/v22_trade_summary", "/gpt_trade_summary"])
 
 @app.get("/gpt_trade_summary")
 def gpt_trade_summary():
@@ -9015,7 +9419,7 @@ def v22_system_status():
     rows = _v22_extract_rows_from_snapshot(decision_snapshot)
     mh = _v22_get_market_hours()
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V22_UNIFIED_TRADING_DECISION_ENGINE",
         "generated_at": _v22_now(),
         "status": "OK",
@@ -9031,7 +9435,7 @@ def v22_system_status():
             "gpt_trade_summary": "/gpt_trade_summary",
             "gpt_trade_decision_example": "/gpt_trade_decision/QQQ",
         }
-    }
+    }, "V22_UNIFIED_TRADING_DECISION_ENGINE", endpoints=["/v22_system_status"])
 
 
 # === V22.1 SNAPSHOT NORMALIZER + UNIFIED DECISION READER ===
@@ -9455,10 +9859,14 @@ def _v22_unified_decision(ticker: str):
         },
     }
 
-
+# LEGACY COMPATIBILITY ONLY: keep V22.1 routes stable for older clients.
 @app.get("/v22_1_trade_decision/{ticker}")
 def v22_1_trade_decision(ticker: str):
-    return _v22_unified_decision(ticker)
+    return _annotate_legacy_response(
+        _v22_unified_decision(ticker),
+        "V22_1_SNAPSHOT_NORMALIZER_UNIFIED_READER",
+        endpoints=["/v22_1_trade_decision/{ticker}"],
+    )
 
 
 @app.get("/v22_1_system_status")
@@ -9471,7 +9879,7 @@ def v22_1_system_status():
     if isinstance(tech_data, dict):
         technical_tickers = list(tech_data.keys())
 
-    return {
+    return _annotate_legacy_response({
         "engine": V22_1_ENGINE,
         "status": "OK",
         "generated_at": _v22_dt.utcnow().isoformat() + "+00:00",
@@ -9486,7 +9894,7 @@ def v22_1_system_status():
             "v22_1_trade_decision_example": "/v22_1_trade_decision/QQQ",
             "v22_1_system_status": "/v22_1_system_status",
         },
-    }
+    }, "V22_1_SNAPSHOT_NORMALIZER_UNIFIED_READER", endpoints=["/v22_1_system_status"])
 # === END V22.1 SNAPSHOT NORMALIZER + UNIFIED DECISION READER ===
 
 
@@ -9567,6 +9975,7 @@ def v22_2_ingest_technical_snapshot(payload: dict):
 
     store[ticker] = snapshot
     ok = _v22_2_safe_write_json(_V22_2_TECH_FILE, store)
+    canonical_saved = _v22_2_sync_technical_to_canonical(ticker, snapshot)
 
     return {
         "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
@@ -9577,12 +9986,17 @@ def v22_2_ingest_technical_snapshot(payload: dict):
         "technical_tickers": sorted(list(store.keys())),
         "path": str(_V22_2_TECH_FILE),
         "received_at": snapshot.get("received_at"),
+        "canonical_stored_file": str(_V28_MASTER_FILE),
+        "canonical_alias_file": str(_V28_ALIAS_V25_FILE),
+        "canonical_technical_available": canonical_saved.get("technical_available"),
+        "canonical_tickers_detected": canonical_saved.get("tickers_detected"),
     }
 
 @app.post("/v22_2_ingest_decision_snapshot")
 def v22_2_ingest_decision_snapshot(payload: dict):
     data = _v22_2_normalize_decision_payload(payload)
     ok = _v22_2_safe_write_json(_V22_2_DECISION_FILE, data)
+    canonical_saved = _v22_2_sync_decision_to_canonical(data)
 
     return {
         "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
@@ -9592,6 +10006,10 @@ def v22_2_ingest_decision_snapshot(payload: dict):
         "rows_found": len(data.get("rows") or data.get("top") or []),
         "path": str(_V22_2_DECISION_FILE),
         "received_at": data.get("received_at"),
+        "canonical_stored_file": str(_V28_MASTER_FILE),
+        "canonical_alias_file": str(_V28_ALIAS_V25_FILE),
+        "canonical_rows_found": canonical_saved.get("rows_found"),
+        "canonical_tickers_detected": canonical_saved.get("tickers_detected"),
     }
 
 @app.post("/v22_2_ingest_unified_snapshot")
@@ -9600,6 +10018,11 @@ def v22_2_ingest_unified_snapshot(payload: dict):
     data["received_at"] = _v22_2_now_iso()
     data["source"] = data.get("source") or "REMOTE_V22_2_UNIFIED"
     ok = _v22_2_safe_write_json(_V22_2_UNIFIED_FILE, data)
+    canonical_saved = _v28_ingest_payload(
+        data,
+        ingest_engine="V22_2_REMOTE_SNAPSHOT_SYNC",
+        ingest_path="/v22_2_ingest_unified_snapshot",
+    )
 
     return {
         "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
@@ -9611,8 +10034,12 @@ def v22_2_ingest_unified_snapshot(payload: dict):
         "can_operate": data.get("can_operate"),
         "path": str(_V22_2_UNIFIED_FILE),
         "received_at": data.get("received_at"),
+        "canonical_stored_file": str(_V28_MASTER_FILE),
+        "canonical_alias_file": str(_V28_ALIAS_V25_FILE),
+        "canonical_rows_found": canonical_saved.get("rows_found"),
     }
 
+# LEGACY COMPATIBILITY ONLY: keep V22.2 routes stable for older clients.
 @app.get("/v22_2_snapshot_status")
 def v22_2_snapshot_status():
     technical = _v22_2_safe_read_json(_V22_2_TECH_FILE, {})
@@ -9626,7 +10053,7 @@ def v22_2_snapshot_status():
     if not isinstance(unified, dict):
         unified = {}
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
         "status": "OK",
         "technical_snapshot_available": bool(technical),
@@ -9639,7 +10066,7 @@ def v22_2_snapshot_status():
             "decision": str(_V22_2_DECISION_FILE),
             "unified": str(_V22_2_UNIFIED_FILE),
         },
-    }
+    }, "V22_2_REMOTE_SNAPSHOT_SYNC", endpoints=["/v22_2_snapshot_status"])
 
 @app.get("/v22_2_technical_snapshot/{ticker}")
 def v22_2_technical_snapshot(ticker: str):
@@ -9735,7 +10162,7 @@ def v22_2_trade_decision(ticker: str):
             main_blocker = best.get("main_blocker") or "NOT_ENTRY_CONFIRMED"
             decision_text = best.get("recommendation") or best.get("action") or f"{ticker}: mantener en observación."
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V22_2_REMOTE_SNAPSHOT_SYNC",
         "ticker": ticker,
         "status": "OK",
@@ -9751,7 +10178,7 @@ def v22_2_trade_decision(ticker: str):
         "best_row": best,
         "market_hours": decision.get("market_hours") if isinstance(decision, dict) else None,
         "generated_at": _v22_2_now_iso(),
-    }
+    }, "V22_2_REMOTE_SNAPSHOT_SYNC", endpoints=["/v22_2_trade_decision/{ticker}"])
 
 
 # === V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
@@ -10283,15 +10710,23 @@ def _v23_build_trade_readiness(ticker: str):
         },
     }
 
-
+# LEGACY COMPATIBILITY ONLY: keep V23 routes stable for older clients.
 @app.get("/v23_trade_readiness/{ticker}")
 async def v23_trade_readiness(ticker: str):
-    return _v23_build_trade_readiness(ticker)
+    return _annotate_legacy_response(
+        _v23_build_trade_readiness(ticker),
+        "V23_TRADE_READINESS_EXECUTION_GUARD",
+        endpoints=["/v23_trade_readiness/{ticker}"],
+    )
 
 
 @app.get("/v23_trade_decision/{ticker}")
 async def v23_trade_decision(ticker: str):
-    return _v23_build_trade_readiness(ticker)
+    return _annotate_legacy_response(
+        _v23_build_trade_readiness(ticker),
+        "V23_TRADE_READINESS_EXECUTION_GUARD",
+        endpoints=["/v23_trade_decision/{ticker}"],
+    )
 
 
 @app.get("/v23_system_status")
@@ -10315,7 +10750,7 @@ async def v23_system_status():
         else:
             technical_tickers = sorted([str(x).upper() for x in tech_data.keys() if isinstance(x, str)])
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V23_TRADE_READINESS_EXECUTION_GUARD",
         "generated_at": _v23_now(),
         "status": "OK",
@@ -10329,7 +10764,7 @@ async def v23_system_status():
             "v23_dashboard": "/v23_dashboard",
             "v23_dashboard_ticker_example": "/v23_dashboard/QQQ",
         },
-    }
+    }, "V23_TRADE_READINESS_EXECUTION_GUARD", endpoints=["/v23_system_status"])
 
 
 def _v23_html_escape(x):
@@ -10915,9 +11350,14 @@ def _v24_decision_for_ticker(ticker):
         },
     }
 
+# LEGACY COMPATIBILITY ONLY: keep V24 routes stable for older clients.
 @app.get("/v24_trade_decision/{ticker}")
 async def v24_trade_decision(ticker: str):
-    return _v24_decision_for_ticker(ticker)
+    return _annotate_legacy_response(
+        _v24_decision_for_ticker(ticker),
+        "V24_UNIFIED_DATA_RESOLVER",
+        endpoints=["/v24_trade_decision/{ticker}"],
+    )
 
 @app.get("/v24_system_status")
 async def v24_system_status():
@@ -10933,7 +11373,7 @@ async def v24_system_status():
     for t in tech_ctx.get("available_tickers", []):
         tickers.add(t)
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V24_UNIFIED_DATA_RESOLVER",
         "generated_at": _v24_now(),
         "status": "OK",
@@ -10952,7 +11392,7 @@ async def v24_system_status():
             "decision_files_seen": decision_ctx.get("files_seen", []),
             "technical_files_seen": tech_ctx.get("files_seen", []),
         },
-    }
+    }, "V24_UNIFIED_DATA_RESOLVER", endpoints=["/v24_system_status"])
 
 def _v24_html_escape(x):
     import html
@@ -11490,10 +11930,11 @@ def _v241_trade_decision(ticker):
         }
     }
 
+# LEGACY COMPATIBILITY ONLY: keep V24.1 routes stable for older clients.
 @app.get("/v24_1_runtime_inventory")
 async def v24_1_runtime_inventory():
     ctx = _v241_load_all_runtime_context()
-    return {
+    return _annotate_legacy_response({
         "engine": "V24_1_RUNTIME_DISCOVERY_SAFE_DASHBOARD",
         "generated_at": _v241_now(),
         "status": "OK",
@@ -11502,11 +11943,15 @@ async def v24_1_runtime_inventory():
         "rows_found_total": ctx["rows_found"],
         "technical_tickers": ctx["technical_tickers"],
         "tickers_detected": ctx["tickers"],
-    }
+    }, "V24_1_RUNTIME_DISCOVERY_SAFE_DASHBOARD", endpoints=["/v24_1_runtime_inventory"])
 
 @app.get("/v24_1_trade_decision/{ticker}")
 async def v24_1_trade_decision(ticker: str):
-    return _v241_trade_decision(ticker)
+    return _annotate_legacy_response(
+        _v241_trade_decision(ticker),
+        "V24_1_RUNTIME_DISCOVERY_SAFE_DASHBOARD",
+        endpoints=["/v24_1_trade_decision/{ticker}"],
+    )
 
 def _v241_escape(x):
     import html
@@ -11961,7 +12406,7 @@ def _v25_make_decision(ticker):
             "can_operate": False,
             "severity": "red",
             "main_blocker": "NO_V25_MASTER_SNAPSHOT",
-            "action": f"{t}: no hay v25_master_snapshot.json todavía. Ejecutar ibkr_bridge.py o enviar POST /v25_ingest_snapshot.",
+            "action": f"{t}: no hay v25_master_snapshot.json todavía. Ejecutar ibkr_bridge.py o enviar POST /v28_ingest_snapshot.",
             "generated_at": _v25_now_iso(),
         }
 
@@ -12071,50 +12516,25 @@ def _v25_html_escape(x):
 
 @app.post("/v25_ingest_snapshot")
 async def v25_ingest_snapshot(payload: dict):
-    now = _v25_now_iso()
-
-    if not isinstance(payload, dict):
-        payload = {"raw_payload": payload}
-
-    normalized = dict(payload)
-    normalized["received_at"] = now
-    normalized["engine"] = "V25_REMOTE_SNAPSHOT_STORE"
-
-    rows = _v25_extract_rows(normalized)
-    technical = _v25_extract_technical(normalized)
-
-    tickers = set()
-    for r in rows:
-        if isinstance(r, dict):
-            tk = _v25_ticker_upper(r.get("ticker") or r.get("symbol") or r.get("underlying"))
-            if tk:
-                tickers.add(tk)
-
-    if isinstance(technical, dict):
-        for k in technical.keys():
-            if isinstance(k, str) and len(k) <= 8 and k.upper() == k:
-                tickers.add(k)
-
-    normalized["v25_diagnostics"] = {
-        "rows_found": len(rows),
-        "technical_available": bool(technical),
-        "tickers_detected": sorted(tickers),
-        "stored_at": now,
-    }
-
-    path = _v25_safe_write_json(_V25_MASTER_FILE, normalized)
+    saved = _v28_ingest_payload(
+        payload,
+        ingest_engine="V25_REMOTE_SNAPSHOT_STORE",
+        ingest_path="/v25_ingest_snapshot",
+    )
 
     return {
         "engine": "V25_REMOTE_SNAPSHOT_STORE",
         "status": "OK",
-        "stored_file": path,
-        "rows_found": len(rows),
-        "technical_available": bool(technical),
-        "tickers_detected": sorted(tickers),
-        "received_at": now,
+        "stored_file": str(_V25_MASTER_FILE),
+        "canonical_stored_file": str(_V28_MASTER_FILE),
+        "rows_found": saved.get("rows_found"),
+        "technical_available": saved.get("technical_available"),
+        "tickers_detected": saved.get("tickers_detected"),
+        "received_at": saved.get("received_at"),
+        "delegated_to": "/v28_ingest_snapshot",
     }
 
-
+# LEGACY COMPATIBILITY ONLY: keep V25 routes stable for older clients.
 @app.get("/v25_system_status")
 async def v25_system_status():
     master = _v25_load_master()
@@ -12133,7 +12553,7 @@ async def v25_system_status():
             if isinstance(k, str) and len(k) <= 8 and k.upper() == k:
                 tickers.add(k)
 
-    return {
+    return _annotate_legacy_response({
         "engine": "V25_REMOTE_SNAPSHOT_STORE",
         "status": "OK" if bool(master) else "NO_MASTER_SNAPSHOT",
         "master_snapshot_available": bool(master),
@@ -12148,18 +12568,23 @@ async def v25_system_status():
         },
         "endpoints": {
             "ingest": "/v25_ingest_snapshot",
+            "canonical_ingest": "/v28_ingest_snapshot",
             "status": "/v25_system_status",
             "decision_example": "/v25_trade_decision/QQQ",
             "dashboard": "/v25_dashboard",
             "dashboard_ticker_example": "/v25_dashboard/QQQ",
         },
         "generated_at": _v25_now_iso(),
-    }
+    }, "V25_REMOTE_SNAPSHOT_STORE", endpoints=["/v25_system_status"])
 
 
 @app.get("/v25_trade_decision/{ticker}")
 async def v25_trade_decision(ticker: str):
-    return _v25_make_decision(ticker)
+    return _annotate_legacy_response(
+        _v25_make_decision(ticker),
+        "V25_REMOTE_SNAPSHOT_STORE",
+        endpoints=["/v25_trade_decision/{ticker}"],
+    )
 
 
 @app.get("/v25_dashboard")
@@ -12249,7 +12674,7 @@ async def v25_dashboard():
         </thead>
         <tbody>{rows_html}</tbody>
       </table>
-      <p class="small">Endpoints: /v25_system_status · /v25_trade_decision/QQQ · /v25_dashboard/QQQ · POST /v25_ingest_snapshot</p>
+      <p class="small">Endpoints: /v25_system_status · /v25_trade_decision/QQQ · /v25_dashboard/QQQ · POST /v25_ingest_snapshot (legacy) · POST /v28_ingest_snapshot (canonical)</p>
     </body>
     </html>
     """
@@ -12737,36 +13162,22 @@ def _v27_decide_for_ticker(ticker):
     bidask_expected = bool(market.get("options_bidask_expected"))
     market_ok = market_open and bidask_expected
 
-    if option_ok and technical_ok and market_ok:
-        final_state = "ENTRY_READY"
-        decision = "ENTRY_READY"
-        severity = "green"
-        blocker = None
-        action = f"{ticker}: posible entrada. Validar tamaño, spread, liquidez y riesgo final antes de ejecutar."
-    elif option_ok and technical_ok and not market_ok:
-        final_state = "WAIT_MARKET_OPEN"
-        decision = "WAIT_MARKET_OPEN"
-        severity = "gray"
-        blocker = "MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE"
-        action = f"{ticker}: oportunidad válida, pero esperar ventana confiable de mercado/opciones."
-    elif option_ok and not technical_ok:
-        final_state = "WAIT_TECHNICAL_CONFIRMATION"
-        decision = "WAIT_TECHNICAL_CONFIRMATION"
-        severity = "yellow"
-        blocker = technical_reason
-        action = f"{ticker}: opciones operables, pero falta confirmación técnica para {strategy}."
-    elif not option_ok and technical_ok:
-        final_state = "WAIT_OPTIONS_DATA"
-        decision = "WAIT_OPTIONS_DATA"
-        severity = "yellow"
-        blocker = option_reason
-        action = f"{ticker}: técnico confirmado, pero faltan datos/confirmaciones de opciones."
-    else:
-        final_state = "WAIT_DATA_CONFIRMATION"
-        decision = "WAIT_DATA_CONFIRMATION"
-        severity = "yellow"
-        blocker = f"{option_reason}+{technical_reason}"
-        action = f"{ticker}: faltan confirmaciones técnicas y/o de opciones."
+    canonical = _canonical_decision_state(
+        ticker=ticker,
+        strategy=strategy,
+        option_ok=option_ok,
+        option_reason=option_reason,
+        technical_ok=technical_ok,
+        technical_reason=technical_reason,
+        market_ok=market_ok,
+        row=best_row,
+        technical=technical,
+    )
+    final_state = canonical["final_state"]
+    decision = canonical["decision"]
+    severity = canonical["severity"]
+    blocker = canonical["main_blocker"]
+    action = canonical["action"]
 
     tech_score = None if not technical else technical.get("score")
     opt_score = best_row.get("score") or best_row.get("combined_score") or best_row.get("master_score")
@@ -12785,14 +13196,16 @@ def _v27_decide_for_ticker(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": final_state == "ENTRY_READY",
+        "can_operate": canonical["can_operate"],
         "severity": severity,
         "main_blocker": blocker,
+        "blockers": canonical["blockers"],
         "action": action,
         "executive_summary": executive_summary,
         "strategy": strategy,
         "technical_fit": technical_reason,
         "options_fit": option_reason,
+        "risk_fit": "STRATEGY_RISK_CONFIRMED" if canonical["risk_gate"]["ok"] else ",".join(canonical["risk_gate"]["blockers"]),
         "technical": technical or {},
         "technical_score": tech_score,
         "technical_bias": (technical or {}).get("trend", "UNKNOWN"),
@@ -12801,6 +13214,7 @@ def _v27_decide_for_ticker(ticker):
         "rows_found_for_ticker": len([r for r in rows if _v27_normalize_ticker(r.get("ticker")) == ticker]),
         "total_rows_found": len(rows),
         "market": market,
+        "risk_gate": canonical["risk_gate"],
         "diagnostics": {
             "technical_sources": tech_diag,
             "technical_tickers": sorted(list(tech_map.keys())),
@@ -12836,8 +13250,9 @@ def _v27_dashboard_html(tickers=None):
 
     decisions = [_v27_decide_for_ticker(t) for t in tickers]
     entry_count = sum(1 for d in decisions if d.get("final_state") == "ENTRY_READY")
-    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL_CONFIRMATION")
+    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL")
     wait_options = sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA")
+    risk_blocked = sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED")
     no_data = sum(1 for d in decisions if d.get("final_state") == "NO_DATA")
 
     rows = ""
@@ -12885,7 +13300,7 @@ def _v27_dashboard_html(tickers=None):
         .hero h2 {{ margin:0 0 12px; font-size:28px; }}
         .cards {{
           display:grid;
-          grid-template-columns:repeat(4,minmax(0,1fr));
+          grid-template-columns:repeat(5,minmax(0,1fr));
           gap:16px;
           margin-bottom:24px;
         }}
@@ -12946,6 +13361,7 @@ def _v27_dashboard_html(tickers=None):
         <div class="card"><div class="label">Entry Ready</div><div class="value">{entry_count}</div></div>
         <div class="card"><div class="label">Wait Technical</div><div class="value">{wait_tech}</div></div>
         <div class="card"><div class="label">Wait Options</div><div class="value">{wait_options}</div></div>
+        <div class="card"><div class="label">Risk Blocked</div><div class="value">{risk_blocked}</div></div>
         <div class="card"><div class="label">No Data</div><div class="value">{no_data}</div></div>
       </div>
 
@@ -13419,36 +13835,22 @@ def _v271_decide_for_ticker(ticker):
     bidask_expected = bool(market.get("options_bidask_expected"))
     market_ok = market_open and bidask_expected
 
-    if option_ok and technical_ok and market_ok:
-        final_state = "ENTRY_READY"
-        decision = "ENTRY_READY"
-        severity = "green"
-        blocker = None
-        action = f"{ticker}: posible entrada. Validar tamaño, spread, liquidez y riesgo final antes de ejecutar."
-    elif option_ok and technical_ok and not market_ok:
-        final_state = "WAIT_MARKET_OPEN"
-        decision = "WAIT_MARKET_OPEN"
-        severity = "gray"
-        blocker = "MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE"
-        action = f"{ticker}: setup válido, pero esperar ventana confiable de mercado/opciones."
-    elif option_ok and not technical_ok:
-        final_state = "WAIT_TECHNICAL_CONFIRMATION"
-        decision = "WAIT_TECHNICAL_CONFIRMATION"
-        severity = "yellow"
-        blocker = technical_reason
-        action = f"{ticker}: opciones operables, pero falta confirmación técnica para {strategy}."
-    elif not option_ok and technical_ok:
-        final_state = "WAIT_OPTIONS_DATA"
-        decision = "WAIT_OPTIONS_DATA"
-        severity = "yellow"
-        blocker = option_reason
-        action = f"{ticker}: técnico confirmado, pero faltan datos/confirmaciones de opciones."
-    else:
-        final_state = "WAIT_DATA_CONFIRMATION"
-        decision = "WAIT_DATA_CONFIRMATION"
-        severity = "yellow"
-        blocker = f"{option_reason}+{technical_reason}"
-        action = f"{ticker}: faltan confirmaciones técnicas y/o de opciones."
+    canonical = _canonical_decision_state(
+        ticker=ticker,
+        strategy=strategy,
+        option_ok=option_ok,
+        option_reason=option_reason,
+        technical_ok=technical_ok,
+        technical_reason=technical_reason,
+        market_ok=market_ok,
+        row=best_row,
+        technical=technical,
+    )
+    final_state = canonical["final_state"]
+    decision = canonical["decision"]
+    severity = canonical["severity"]
+    blocker = canonical["main_blocker"]
+    action = canonical["action"]
 
     return {
         "engine": "V27_1_RUNTIME_DATA_RESOLVER",
@@ -13457,9 +13859,10 @@ def _v271_decide_for_ticker(ticker):
         "status": "OK",
         "final_state": final_state,
         "decision": decision,
-        "can_operate": final_state == "ENTRY_READY",
+        "can_operate": canonical["can_operate"],
         "severity": severity,
         "main_blocker": blocker,
+        "blockers": canonical["blockers"],
         "action": action,
         "executive_summary": (
             f"{ticker}: estado {final_state}. Estrategia {strategy}. "
@@ -13471,12 +13874,14 @@ def _v271_decide_for_ticker(ticker):
         "options_score": best_row.get("score") or best_row.get("combined_score") or best_row.get("master_score"),
         "options_fit": option_reason,
         "technical_fit": technical_reason,
+        "risk_fit": "STRATEGY_RISK_CONFIRMED" if canonical["risk_gate"]["ok"] else ",".join(canonical["risk_gate"]["blockers"]),
         "best_row": best_row,
         "technical": technical or {},
         "rows_found_for_ticker": len([r for r in rows if r.get("ticker") == ticker]),
         "total_rows_found": len(rows),
         "market": market,
         "runtime_source": source_item,
+        "risk_gate": canonical["risk_gate"],
     }
 
 def _v271_dashboard_html(tickers=None):
@@ -13485,9 +13890,10 @@ def _v271_dashboard_html(tickers=None):
 
     decisions = [_v271_decide_for_ticker(t) for t in tickers]
     entry_count = sum(1 for d in decisions if d.get("final_state") == "ENTRY_READY")
-    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL_CONFIRMATION")
+    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL")
     wait_options = sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA")
-    wait_data = sum(1 for d in decisions if d.get("final_state") in {"NO_DATA", "WAIT_DATA_CONFIRMATION"})
+    risk_blocked = sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED")
+    wait_data = sum(1 for d in decisions if d.get("final_state") == "NO_DATA")
 
     rows = ""
     for d in decisions:
@@ -13534,7 +13940,7 @@ def _v271_dashboard_html(tickers=None):
         .hero h2 {{ margin:0 0 12px; font-size:28px; }}
         .cards {{
           display:grid;
-          grid-template-columns:repeat(4,minmax(0,1fr));
+          grid-template-columns:repeat(5,minmax(0,1fr));
           gap:16px;
           margin-bottom:24px;
         }}
@@ -13595,7 +14001,8 @@ def _v271_dashboard_html(tickers=None):
         <div class="card"><div class="label">Entry Ready</div><div class="value">{entry_count}</div></div>
         <div class="card"><div class="label">Wait Technical</div><div class="value">{wait_tech}</div></div>
         <div class="card"><div class="label">Wait Options</div><div class="value">{wait_options}</div></div>
-        <div class="card"><div class="label">Wait Data</div><div class="value">{wait_data}</div></div>
+        <div class="card"><div class="label">Risk Blocked</div><div class="value">{risk_blocked}</div></div>
+        <div class="card"><div class="label">No Data</div><div class="value">{wait_data}</div></div>
       </div>
 
       <table>
@@ -13759,6 +14166,110 @@ def _v28_write_master(payload: dict):
     _V28_ALIAS_V25_FILE.write_text(_v28_json.dumps(payload, indent=2, ensure_ascii=False))
     return payload
 
+def _v28_ingest_payload(payload, ingest_engine=None, ingest_path=None):
+    normalized = dict(payload or {}) if isinstance(payload, dict) else {"raw_payload": payload}
+    if ingest_engine:
+        normalized["legacy_ingest_engine"] = ingest_engine
+    if ingest_path:
+        normalized["legacy_ingest_path"] = ingest_path
+    return _v28_write_master(normalized)
+
+def _v28_ingest_response(saved):
+    return {
+        "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
+        "status": "OK",
+        "stored_file": str(_V28_MASTER_FILE),
+        "alias_file": str(_V28_ALIAS_V25_FILE),
+        "rows_found": saved.get("rows_found"),
+        "technical_available": saved.get("technical_available"),
+        "tickers_detected": saved.get("tickers_detected"),
+        "received_at": saved.get("received_at"),
+    }
+
+def _v28_stored_technical_snapshot(data):
+    technical = {}
+    if not isinstance(data, dict):
+        return technical
+
+    raw = data.get("technical_snapshot")
+    if raw is None:
+        raw = data.get("technical") or data.get("snapshot") or {}
+
+    if not isinstance(raw, dict):
+        return technical
+
+    if any(isinstance(v, dict) for v in raw.values()):
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                continue
+            t = _v28_norm_ticker(v.get("ticker") or k)
+            vv = dict(v)
+            vv["ticker"] = t
+            technical[t] = vv
+        return technical
+
+    if any(key in raw for key in ["ticker", "trend", "bias", "score", "rsi", "adx", "event_risk", "earnings_soon"]):
+        t = _v28_norm_ticker(raw.get("ticker") or data.get("ticker") or "UNKNOWN")
+        vv = dict(raw)
+        vv["ticker"] = t
+        technical[t] = vv
+
+    return technical
+
+def _v28_raw_market(data):
+    if not isinstance(data, dict):
+        return {}
+
+    market = data.get("market")
+    if isinstance(market, dict):
+        return market
+
+    market = data.get("market_hours")
+    if isinstance(market, dict):
+        return market
+
+    return {}
+
+def _v22_2_sync_technical_to_canonical(ticker, snapshot):
+    existing_data, _source = _v28_load_master()
+    rows = _v28_rows(existing_data)
+    technical_snapshot = _v28_stored_technical_snapshot(existing_data)
+    technical_snapshot[ticker] = dict(snapshot or {})
+    market = _v28_raw_market(existing_data)
+
+    payload = {
+        "source": (snapshot or {}).get("source") or (existing_data or {}).get("source") or "REMOTE_V22_2_TECHNICAL",
+        "generated_at": (existing_data or {}).get("generated_at") or (snapshot or {}).get("received_at") or _v28_now(),
+        "options_rows": rows,
+        "technical_snapshot": technical_snapshot,
+        "market": market,
+    }
+    return _v28_ingest_payload(
+        payload,
+        ingest_engine="V22_2_REMOTE_SNAPSHOT_SYNC",
+        ingest_path="/v22_2_ingest_technical_snapshot",
+    )
+
+def _v22_2_sync_decision_to_canonical(data):
+    existing_data, _source = _v28_load_master()
+    technical_snapshot = _v28_stored_technical_snapshot(existing_data)
+    incoming_rows = _v28_rows(data)
+    rows = incoming_rows or _v28_rows(existing_data)
+    market = _v28_raw_market(data) or _v28_raw_market(existing_data)
+
+    payload = {
+        "source": (data or {}).get("source") or (existing_data or {}).get("source") or "REMOTE_V22_2_DECISION",
+        "generated_at": (data or {}).get("generated_at") or (existing_data or {}).get("generated_at") or _v28_now(),
+        "options_rows": rows,
+        "technical_snapshot": technical_snapshot,
+        "market": market,
+    }
+    return _v28_ingest_payload(
+        payload,
+        ingest_engine="V22_2_REMOTE_SNAPSHOT_SYNC",
+        ingest_path="/v22_2_ingest_decision_snapshot",
+    )
+
 def _v28_load_master():
     data = _v28_safe_load(_V28_MASTER_FILE)
     if data:
@@ -13814,18 +14325,7 @@ def _v28_rows(data):
     return cleaned
 
 def _v28_technical_map(data):
-    technical = {}
-    if not isinstance(data, dict):
-        return technical
-
-    raw = data.get("technical_snapshot") or data.get("technical") or data.get("snapshot") or {}
-    if isinstance(raw, dict):
-        for k, v in raw.items():
-            if isinstance(v, dict):
-                t = _v28_norm_ticker(v.get("ticker") or k)
-                vv = dict(v)
-                vv["ticker"] = t
-                technical[t] = vv
+    technical = _v28_stored_technical_snapshot(data)
 
     # Merge V27 technical if available.
     try:
@@ -14001,39 +14501,22 @@ def _v28_decide(ticker):
     tech_ok, tech_reason = _v28_technical_confirmed(strategy, technical)
 
     market_ok = bool(market.get("is_regular_market_open") and market.get("options_bidask_expected"))
-
-    # Important: if the row already came FULL_WITH_GREEKS and can_operate True,
-    # market is not allowed to fully downgrade the setup; it becomes ENTRY_READY_WITH_MARKET_CHECK.
-    if opt_ok and tech_ok and market_ok:
-        state = "ENTRY_READY"
-        can_operate = True
-        severity = "green"
-        blocker = None
-        action = f"{ticker}: entrada potencial lista. Validar tamaño, spread, liquidez, evento y riesgo final antes de ejecutar."
-    elif opt_ok and tech_ok and not market_ok:
-        state = "ENTRY_READY_WITH_MARKET_CHECK"
-        can_operate = True
-        severity = "green"
-        blocker = "MARKET_STATUS_NOT_CONFIRMED_BY_RENDER"
-        action = f"{ticker}: setup técnico y opciones confirmado. Validar manualmente que mercado/opciones estén activos antes de ejecutar."
-    elif opt_ok and not tech_ok:
-        state = "WAIT_TECHNICAL_CONFIRMATION"
-        can_operate = False
-        severity = "yellow"
-        blocker = tech_reason
-        action = f"{ticker}: opciones confirmadas, pero falta confirmación técnica para {strategy}."
-    elif not opt_ok and tech_ok:
-        state = "WAIT_OPTIONS_DATA"
-        can_operate = False
-        severity = "yellow"
-        blocker = opt_reason
-        action = f"{ticker}: técnico confirmado, pero faltan datos/confirmación de opciones."
-    else:
-        state = "WAIT_DATA_CONFIRMATION"
-        can_operate = False
-        severity = "yellow"
-        blocker = f"{opt_reason}+{tech_reason}"
-        action = f"{ticker}: faltan confirmaciones críticas antes de operar."
+    canonical = _canonical_decision_state(
+        ticker=ticker,
+        strategy=strategy,
+        option_ok=opt_ok,
+        option_reason=opt_reason,
+        technical_ok=tech_ok,
+        technical_reason=tech_reason,
+        market_ok=market_ok,
+        row=best,
+        technical=technical,
+    )
+    state = canonical["final_state"]
+    can_operate = canonical["can_operate"]
+    severity = canonical["severity"]
+    blocker = canonical["main_blocker"]
+    action = canonical["action"]
 
     return {
         "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
@@ -14041,16 +14524,18 @@ def _v28_decide(ticker):
         "ticker": ticker,
         "status": "OK",
         "final_state": state,
-        "decision": state,
+        "decision": canonical["decision"],
         "can_operate": can_operate,
         "severity": severity,
         "main_blocker": blocker,
+        "blockers": canonical["blockers"],
         "strategy": strategy,
         "technical_bias": (technical or {}).get("trend", "UNKNOWN"),
         "technical_score": (technical or {}).get("score"),
         "options_score": best.get("score"),
         "options_fit": opt_reason,
         "technical_fit": tech_reason,
+        "risk_fit": "STRATEGY_RISK_CONFIRMED" if canonical["risk_gate"]["ok"] else ",".join(canonical["risk_gate"]["blockers"]),
         "action": action,
         "executive_summary": (
             f"{ticker}: {state}. Estrategia {strategy}. "
@@ -14059,6 +14544,7 @@ def _v28_decide(ticker):
         "best_row": best,
         "technical": technical or {},
         "market": market,
+        "risk_gate": canonical["risk_gate"],
         "rows_found_for_ticker": len([r for r in rows if _v28_norm_ticker(r.get("ticker")) == ticker]),
         "total_rows_found": len(rows),
         "master_source": source,
@@ -14093,8 +14579,9 @@ def _v28_dashboard_html(tickers=None):
     decisions = [_v28_decide(t) for t in tickers]
 
     entry = sum(1 for d in decisions if "ENTRY_READY" in str(d.get("final_state")))
-    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL_CONFIRMATION")
+    wait_tech = sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL")
     wait_options = sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA")
+    risk_blocked = sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED")
     no_data = sum(1 for d in decisions if d.get("final_state") == "NO_DATA")
 
     rows_html = ""
@@ -14142,7 +14629,7 @@ def _v28_dashboard_html(tickers=None):
         .hero h2 {{ margin:0 0 12px; font-size:28px; }}
         .cards {{
           display:grid;
-          grid-template-columns:repeat(4,minmax(0,1fr));
+          grid-template-columns:repeat(5,minmax(0,1fr));
           gap:16px;
           margin-bottom:24px;
         }}
@@ -14209,6 +14696,7 @@ def _v28_dashboard_html(tickers=None):
         <div class="card"><div class="label">Entry Ready</div><div class="value">{entry}</div></div>
         <div class="card"><div class="label">Wait Technical</div><div class="value">{wait_tech}</div></div>
         <div class="card"><div class="label">Wait Options</div><div class="value">{wait_options}</div></div>
+        <div class="card"><div class="label">Risk Blocked</div><div class="value">{risk_blocked}</div></div>
         <div class="card"><div class="label">No Data</div><div class="value">{no_data}</div></div>
       </div>
 
@@ -14239,17 +14727,8 @@ def _v28_dashboard_html(tickers=None):
 
 @app.post("/v28_ingest_snapshot")
 async def v28_ingest_snapshot(payload: dict):
-    saved = _v28_write_master(payload)
-    return {
-        "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
-        "status": "OK",
-        "stored_file": str(_V28_MASTER_FILE),
-        "alias_file": str(_V28_ALIAS_V25_FILE),
-        "rows_found": saved.get("rows_found"),
-        "technical_available": saved.get("technical_available"),
-        "tickers_detected": saved.get("tickers_detected"),
-        "received_at": saved.get("received_at"),
-    }
+    saved = _v28_ingest_payload(payload)
+    return _v28_ingest_response(saved)
 
 @app.get("/v28_system_status")
 async def v28_system_status():
@@ -14340,15 +14819,66 @@ _V29_MASTER_FILES = [
     "decision_desk_snapshot.json",
     "decision_snapshot.json",
 ]
+_V29_IGNORED_RUNTIME_FILES = {
+    "v32_decision_journal.json",
+    "v32_outcomes_journal.json",
+}
 
 _V29_DEFAULT_TICKERS = ["QQQ", "SPY", "NVDA", "TSLA", "META", "NFLX", "TLT", "AAPL", "AMZN", "MSFT"]
 
-_V29_MAX_SPREAD_PCT = 18.0
+_V29_MAX_SPREAD_PCT = OPTION_SPREAD_PCT_READY_MAX
 _V29_MAX_ABS_SPREAD = 0.35
 _V29_MIN_BID = 0.05
 _V29_MIN_ASK = 0.05
 _V29_MIN_OPTION_SCORE = 70
 _V29_MIN_TECH_SCORE = 65
+
+_V31_DECISION_VERSION = "v31.0"
+_V31_STRATEGY_VERSION = "strategy_rules_v1"
+_V31_RULESET_VERSION = "v31_canonical_rules_v1"
+_V31_SNAPSHOT_VERSION = "v30_master_snapshot_contract_v1"
+_STRATEGY_SIGNAL_CONTRACT_VERSION = "strategy_signal_contract_v1"
+_CANSLIM_RULESET_VERSION = "canslim_filter_v1"
+_V32_ENGINE = "V32_OUTCOMES_TRACKING"
+_V32_DECISION_JOURNAL_FILE = _V29_RUNTIME_DIR / "v32_decision_journal.json"
+_V32_OUTCOMES_JOURNAL_FILE = _V29_RUNTIME_DIR / "v32_outcomes_journal.json"
+_V31_CANONICAL_STATES = [
+    "NO_DATA",
+    "WAIT_MARKET",
+    "WAIT_ACCOUNT_CONTEXT",
+    "WAIT_OPTIONS_DATA",
+    "WAIT_TECHNICAL",
+    "RISK_BLOCKED",
+    "MANUAL_REVIEW",
+    "ENTRY_READY",
+]
+
+_STRATEGY_SIGNAL_REQUIRED_FIELDS = [
+    "ticker",
+    "timeframe",
+    "strategy_context",
+    "trend",
+    "score",
+]
+
+_STRATEGY_SIGNAL_OPTIONAL_FIELDS = [
+    "rsi",
+    "adx",
+    "support_near",
+    "resistance_near",
+    "range_20d",
+    "range_breakout",
+    "vwap_position",
+    "volume_relative",
+    "iv_rank",
+    "earnings_soon",
+    "event_risk",
+    "canslim",
+    "canslim_score",
+    "canslim_passes",
+]
+
+_CANSLIM_MIN_SCORE = 70
 
 
 def _v29_now():
@@ -14399,6 +14929,8 @@ def _v29_discover_master_snapshot():
 
     if _V29_RUNTIME_DIR.exists():
         for p in _V29_RUNTIME_DIR.glob("*.json"):
+            if p.name in _V29_IGNORED_RUNTIME_FILES:
+                continue
             if p not in candidates:
                 candidates.append(p)
 
@@ -14838,9 +15370,39 @@ def _v29_best_row_for_ticker(ticker, rows):
     return best, enriched, executable
 
 
-def _v29_technical_state(ticker, technical):
+def _v29_technical_state(ticker, technical, strategy="UNKNOWN"):
     ticker = _v29_safe_upper(ticker)
-    t = technical.get(ticker) or {}
+    root = technical.get(ticker) or {}
+    contexts = root.get("by_strategy_context") if isinstance(root.get("by_strategy_context"), dict) else {}
+    strategy = _v29_safe_upper(strategy, "UNKNOWN")
+    context_preferences = {
+        "NAKED_PUT": ["NAKED_PUT", "CASH_SECURED_PUT"],
+        "CASH_SECURED_PUT": ["CASH_SECURED_PUT", "NAKED_PUT"],
+        "COVERED_CALL": ["COVERED_CALL"],
+        "IRON_CONDOR": ["IRON_CONDOR"],
+        "FUTURES": ["FUTURES"],
+        "FUTURES_PRO": ["FUTURES"],
+    }
+
+    selected = None
+    selected_context = None
+    for context in context_preferences.get(strategy, []):
+        candidate = contexts.get(context)
+        if isinstance(candidate, dict):
+            selected = candidate
+            selected_context = context
+            break
+
+    t = dict(root)
+    if selected:
+        t.update(selected)
+        t["selected_strategy_context"] = selected_context
+    if isinstance(root.get("canslim"), dict):
+        t["canslim"] = dict(root.get("canslim"))
+    if contexts:
+        t["by_strategy_context"] = contexts
+        t["available_strategy_contexts"] = sorted(contexts.keys())
+
     score = _v29_safe_float(t.get("score") or t.get("technical_score"), None)
     trend = _v29_safe_upper(t.get("trend") or t.get("bias") or t.get("technical_bias"), "UNKNOWN")
 
@@ -14851,7 +15413,655 @@ def _v29_technical_state(ticker, technical):
         "confirmed": confirmed,
         "score": score,
         "trend": trend,
+        "strategy_context": t.get("selected_strategy_context") or t.get("strategy_context"),
+        "available_strategy_contexts": t.get("available_strategy_contexts", []),
         "raw": t,
+    }
+
+
+def _v29_strategy_signal_contract():
+    return {
+        "contract_version": _STRATEGY_SIGNAL_CONTRACT_VERSION,
+        "technical_endpoint": "/technical_snapshot",
+        "strategy_contexts": [
+            "NAKED_PUT",
+            "CASH_SECURED_PUT",
+            "COVERED_CALL",
+            "IRON_CONDOR",
+            "FUTURES",
+            "CANSLIM_FILTER",
+        ],
+        "required_fields": list(_STRATEGY_SIGNAL_REQUIRED_FIELDS),
+        "optional_fields": list(_STRATEGY_SIGNAL_OPTIONAL_FIELDS),
+        "technical_confirmation": {
+            "minimum_score": _V29_MIN_TECH_SCORE,
+            "notes": [
+                "Technical confirmation is an input to deterministic blocker logic.",
+                "Missing or unconfirmed technical data keeps option candidates out of ENTRY_READY.",
+            ],
+        },
+        "canslim": {
+            "ruleset_version": _CANSLIM_RULESET_VERSION,
+            "minimum_score": _CANSLIM_MIN_SCORE,
+            "accepted_shapes": [
+                {"canslim": {"passes": True, "score": 82}},
+                {"canslim_passes": True, "canslim_score": 82},
+            ],
+            "blocking_behavior": "If CANSLIM data is provided and fails, ENTRY_READY is blocked as RISK_BLOCKED. Missing CANSLIM data is advisory until the feed is intentionally required.",
+        },
+        "not_order_instruction": True,
+    }
+
+
+def _v29_strategy_signal_template(ticker="QQQ", strategy_context="NAKED_PUT"):
+    ticker = _v29_safe_upper(ticker, "QQQ")
+    strategy_context = _v29_safe_upper(strategy_context, "NAKED_PUT")
+    return {
+        "ticker": ticker,
+        "timeframe": "1h",
+        "strategy_context": strategy_context,
+        "trend": "bullish" if strategy_context in ["NAKED_PUT", "CASH_SECURED_PUT"] else "neutral",
+        "score": 72,
+        "rsi": 52,
+        "adx": 18,
+        "support_near": strategy_context in ["NAKED_PUT", "CASH_SECURED_PUT"],
+        "resistance_near": strategy_context == "COVERED_CALL",
+        "range_20d": strategy_context == "IRON_CONDOR",
+        "range_breakout": False,
+        "vwap_position": "near",
+        "volume_relative": 1.0,
+        "iv_rank": 45,
+        "earnings_soon": False,
+        "event_risk": False,
+        "canslim": {
+            "passes": True,
+            "score": 78,
+            "rating": "PASS",
+            "notes": "Optional fundamental-growth filter. Do not include secrets or account data.",
+        },
+        "source": "TRADINGVIEW_STRATEGY_SIGNAL",
+        "contract_version": _STRATEGY_SIGNAL_CONTRACT_VERSION,
+    }
+
+
+def _v29_canslim_payload(row, technical):
+    row = row or {}
+    technical = technical or {}
+
+    for container in [technical, row]:
+        value = container.get("canslim")
+        if isinstance(value, dict):
+            return dict(value)
+
+        snapshot = container.get("fundamental_snapshot")
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("canslim"), dict):
+            return dict(snapshot.get("canslim"))
+
+    payload = {}
+    for key in [
+        "canslim_score",
+        "canslim_passes",
+        "canslim_rating",
+        "canslim_notes",
+    ]:
+        if key in technical:
+            payload[key] = technical.get(key)
+        elif key in row:
+            payload[key] = row.get(key)
+
+    return payload
+
+
+def _v29_canslim_gate(row, technical, strategy):
+    strategy = _v29_safe_upper(strategy, "UNKNOWN")
+
+    if strategy in ["FUTURES", "FUTURES_PRO", "MNQ", "NQ", "ES", "MES"]:
+        return {
+            "applicable": False,
+            "status": "NOT_APPLICABLE",
+            "ok": True,
+            "blockers": [],
+            "score": None,
+            "passes": None,
+            "ruleset_version": _CANSLIM_RULESET_VERSION,
+        }
+
+    payload = _v29_canslim_payload(row, technical)
+    if not payload:
+        return {
+            "applicable": True,
+            "status": "NOT_PROVIDED",
+            "ok": True,
+            "blockers": [],
+            "score": None,
+            "passes": None,
+            "ruleset_version": _CANSLIM_RULESET_VERSION,
+        }
+
+    score = _v29_safe_float(
+        payload.get("score")
+        or payload.get("canslim_score")
+        or payload.get("rating_score"),
+        None,
+    )
+    passes_raw = payload.get("passes")
+    if passes_raw is None:
+        passes_raw = payload.get("pass")
+    if passes_raw is None:
+        passes_raw = payload.get("canslim_passes")
+
+    passes = None
+    if isinstance(passes_raw, bool):
+        passes = passes_raw
+    elif isinstance(passes_raw, str):
+        val = passes_raw.strip().upper()
+        if val in ["TRUE", "PASS", "PASSES", "OK", "YES", "SI", "SÍ", "1"]:
+            passes = True
+        elif val in ["FALSE", "FAIL", "FAILED", "NO", "0"]:
+            passes = False
+
+    if passes is None and score is not None:
+        passes = score >= _CANSLIM_MIN_SCORE
+
+    blockers = []
+    if passes is False:
+        blockers.append("CANSLIM_BLOCKED")
+    elif score is not None and score < _CANSLIM_MIN_SCORE:
+        blockers.append("CANSLIM_SCORE_BELOW_MIN")
+
+    return {
+        "applicable": True,
+        "status": "PASS" if not blockers else "BLOCKED",
+        "ok": not blockers,
+        "blockers": blockers,
+        "score": score,
+        "passes": passes,
+        "minimum_score": _CANSLIM_MIN_SCORE,
+        "ruleset_version": _CANSLIM_RULESET_VERSION,
+        "raw": payload,
+    }
+
+
+def _selected_contract_from_v29(v29_decision):
+    row = v29_decision.get("best_row") or {}
+    quality = v29_decision.get("best_row_quality") or {}
+    return {
+        "ticker": v29_decision.get("ticker"),
+        "strategy": v29_decision.get("strategy"),
+        "strike": row.get("strike"),
+        "expiration": row.get("expiration"),
+        "dte": row.get("dte"),
+        "bid": quality.get("bid"),
+        "ask": quality.get("ask"),
+        "mid": quality.get("mid"),
+        "spread": quality.get("spread"),
+        "spread_pct": quality.get("spread_pct"),
+        "delta": quality.get("delta"),
+        "iv": quality.get("iv"),
+        "volume": quality.get("volume"),
+        "open_interest": quality.get("open_interest"),
+        "data_quality": row.get("data_quality"),
+        "source_decision": row.get("decision"),
+        "source_score": row.get("score"),
+    }
+
+
+def _v32_read_list(path):
+    try:
+        p = _V29Path(path)
+        if not p.exists():
+            return []
+        data = _v29_json.loads(p.read_text())
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _v32_write_list(path, items):
+    p = _V29Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_v29_json.dumps(items, indent=2, ensure_ascii=False, default=str))
+
+
+def _v32_load_decision_journal():
+    return _v32_read_list(_V32_DECISION_JOURNAL_FILE)
+
+
+def _v32_load_outcomes_journal():
+    return _v32_read_list(_V32_OUTCOMES_JOURNAL_FILE)
+
+
+def _v32_hash_id(prefix, payload):
+    raw = _v29_json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16].upper()
+    return f"{prefix}-{digest}"
+
+
+def _v32_followup_summary(followups):
+    underlying_values = [f.get("underlying_price") for f in followups if _v29_safe_float(f.get("underlying_price"), None) is not None]
+    option_mid_values = [f.get("option_mid") for f in followups if _v29_safe_float(f.get("option_mid"), None) is not None]
+    pnl_r_values = [f.get("pnl_r") for f in followups if _v29_safe_float(f.get("pnl_r"), None) is not None]
+
+    return {
+        "observation_count": len(followups),
+        "last_observed_at": followups[-1].get("recorded_at") if followups else None,
+        "underlying_price_min": min(underlying_values) if underlying_values else None,
+        "underlying_price_max": max(underlying_values) if underlying_values else None,
+        "option_mid_min": min(option_mid_values) if option_mid_values else None,
+        "option_mid_max": max(option_mid_values) if option_mid_values else None,
+        "mfe_r": max(pnl_r_values) if pnl_r_values else None,
+        "mae_r": min(pnl_r_values) if pnl_r_values else None,
+    }
+
+
+def _v32_decision_record(v29_decision):
+    selected_contract = _selected_contract_from_v29(v29_decision)
+    identity_payload = {
+        "ticker": v29_decision.get("ticker"),
+        "final_state": v29_decision.get("final_state"),
+        "strategy": v29_decision.get("strategy"),
+        "main_blocker": v29_decision.get("main_blocker"),
+        "blockers": list(v29_decision.get("blockers") or []),
+        "selected_contract": selected_contract,
+        "technical_score": v29_decision.get("technical_score"),
+        "options_score": v29_decision.get("options_score"),
+        "snapshot_generated_at": v29_decision.get("snapshot_generated_at"),
+        "snapshot_received_at": v29_decision.get("snapshot_received_at"),
+        "master_source": v29_decision.get("master_source"),
+    }
+    decision_id = _v32_hash_id("DEC", identity_payload)
+    return {
+        "decision_id": decision_id,
+        "engine": _V32_ENGINE,
+        "source_engine": v29_decision.get("engine"),
+        "decision_version": _V31_DECISION_VERSION,
+        "strategy_version": _V31_STRATEGY_VERSION,
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "recorded_at": _v29_now(),
+        "decision_generated_at": v29_decision.get("generated_at"),
+        "snapshot_generated_at": v29_decision.get("snapshot_generated_at"),
+        "snapshot_received_at": v29_decision.get("snapshot_received_at"),
+        "ticker": v29_decision.get("ticker"),
+        "strategy": v29_decision.get("strategy"),
+        "final_state": v29_decision.get("final_state"),
+        "decision": v29_decision.get("decision"),
+        "main_blocker": v29_decision.get("main_blocker"),
+        "blockers": list(v29_decision.get("blockers") or []),
+        "required_missing_fields": list(v29_decision.get("required_missing_fields") or []),
+        "technical": {
+            "bias": v29_decision.get("technical_bias"),
+            "score": v29_decision.get("technical_score"),
+            "fit": v29_decision.get("technical_fit"),
+        },
+        "risk": {
+            "fit": v29_decision.get("risk_fit"),
+            "manual_review_fit": v29_decision.get("manual_review_fit"),
+            "gate": v29_decision.get("risk_gate"),
+        },
+        "selected_contract": selected_contract,
+        "market": v29_decision.get("market"),
+        "master_source": v29_decision.get("master_source"),
+        "action": v29_decision.get("action"),
+        "explanation": v29_decision.get("executive_summary"),
+        "ready_for_manual_review": v29_decision.get("final_state") == "ENTRY_READY",
+        "outcome_status": "OPEN",
+        "followup_summary": _v32_followup_summary([]),
+        "followups": [],
+        "latest_outcome": None,
+    }
+
+
+def _v32_upsert_decision_record(record):
+    journal = _v32_load_decision_journal()
+    for index, item in enumerate(journal):
+        if item.get("decision_id") == record.get("decision_id"):
+            preserved = {
+                "followups": item.get("followups") or [],
+                "followup_summary": item.get("followup_summary") or _v32_followup_summary(item.get("followups") or []),
+                "outcome_status": item.get("outcome_status") or record.get("outcome_status"),
+                "latest_outcome": item.get("latest_outcome"),
+                "recorded_at": item.get("recorded_at") or record.get("recorded_at"),
+            }
+            merged = dict(record)
+            merged.update(preserved)
+            journal[index] = merged
+            _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal[-5000:])
+            return merged, False
+
+    journal.append(record)
+    journal = journal[-5000:]
+    _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal)
+    return record, True
+
+
+def _v32_record_decision(v29_decision):
+    record = _v32_decision_record(v29_decision)
+    saved, created = _v32_upsert_decision_record(record)
+    return saved, created
+
+
+def _v32_find_decision_record(decision_id):
+    for record in reversed(_v32_load_decision_journal()):
+        if record.get("decision_id") == decision_id:
+            return record
+    return None
+
+
+def _v32_replace_decision_record(updated):
+    journal = _v32_load_decision_journal()
+    replaced = False
+    for index, item in enumerate(journal):
+        if item.get("decision_id") == updated.get("decision_id"):
+            journal[index] = updated
+            replaced = True
+            break
+    if not replaced:
+        journal.append(updated)
+    journal = journal[-5000:]
+    _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal)
+    return updated
+
+
+def _v32_followup_entry(payload):
+    decision_id = str((payload or {}).get("decision_id") or "").strip()
+    if not decision_id:
+        return {"status": "error", "message": "decision_id is required."}
+
+    decision = _v32_find_decision_record(decision_id)
+    if not decision:
+        return {"status": "error", "message": "decision_id not found.", "decision_id": decision_id}
+
+    followups = list(decision.get("followups") or [])
+    followup = {
+        "followup_id": _v32_hash_id("FUP", {"decision_id": decision_id, "count": len(followups) + 1, "payload": payload}),
+        "recorded_at": _v29_now(),
+        "tag": payload.get("tag") or "FOLLOWUP",
+        "note": payload.get("note"),
+        "underlying_price": _v29_safe_float(payload.get("underlying_price"), None),
+        "option_mid": _v29_safe_float(payload.get("option_mid"), None),
+        "option_bid": _v29_safe_float(payload.get("option_bid"), None),
+        "option_ask": _v29_safe_float(payload.get("option_ask"), None),
+        "pnl": _v29_safe_float(payload.get("pnl"), None),
+        "pnl_r": _v29_safe_float(payload.get("pnl_r"), None),
+        "status": payload.get("status"),
+    }
+    followups.append(followup)
+    decision["followups"] = followups[-200:]
+    decision["followup_summary"] = _v32_followup_summary(decision["followups"])
+    _v32_replace_decision_record(decision)
+
+    return {
+        "status": "ok",
+        "engine": _V32_ENGINE,
+        "decision_id": decision_id,
+        "followup": followup,
+        "followup_summary": decision.get("followup_summary"),
+    }
+
+
+def _v32_duration_minutes(decision, closed_at):
+    start = decision.get("recorded_at") or decision.get("decision_generated_at")
+    try:
+        start_dt = datetime.fromisoformat(str(start))
+        end_dt = datetime.fromisoformat(str(closed_at))
+        return round((end_dt - start_dt).total_seconds() / 60.0, 2)
+    except Exception:
+        return None
+
+
+def _v32_outcome_entry(payload):
+    decision_id = str((payload or {}).get("decision_id") or "").strip()
+    if not decision_id:
+        return {"status": "error", "message": "decision_id is required."}
+
+    decision = _v32_find_decision_record(decision_id)
+    if not decision:
+        return {"status": "error", "message": "decision_id not found.", "decision_id": decision_id}
+
+    closed_at = _v29_now()
+    outcome = {
+        "outcome_id": _v32_hash_id("OUT", {"decision_id": decision_id, "payload": payload, "closed_at": closed_at}),
+        "decision_id": decision_id,
+        "recorded_at": closed_at,
+        "ticker": decision.get("ticker"),
+        "strategy": decision.get("strategy"),
+        "final_state_at_entry": decision.get("final_state"),
+        "outcome": _v29_safe_upper(payload.get("outcome"), "UNKNOWN"),
+        "pnl": _v29_safe_float(payload.get("pnl"), None),
+        "pnl_r": _v29_safe_float(payload.get("pnl_r"), None),
+        "mfe_r": _v29_safe_float(payload.get("mfe_r"), None),
+        "mae_r": _v29_safe_float(payload.get("mae_r"), None),
+        "exit_underlying_price": _v29_safe_float(payload.get("exit_underlying_price"), None),
+        "exit_option_mid": _v29_safe_float(payload.get("exit_option_mid"), None),
+        "note": payload.get("note"),
+        "duration_minutes": _v32_duration_minutes(decision, closed_at),
+    }
+
+    outcomes = _v32_load_outcomes_journal()
+    outcomes.append(outcome)
+    outcomes = outcomes[-5000:]
+    _v32_write_list(_V32_OUTCOMES_JOURNAL_FILE, outcomes)
+
+    decision["outcome_status"] = outcome["outcome"]
+    decision["latest_outcome"] = outcome
+    if outcome.get("mfe_r") is not None or outcome.get("mae_r") is not None:
+        summary = dict(decision.get("followup_summary") or {})
+        if outcome.get("mfe_r") is not None:
+            summary["mfe_r"] = outcome.get("mfe_r")
+        if outcome.get("mae_r") is not None:
+            summary["mae_r"] = outcome.get("mae_r")
+        decision["followup_summary"] = summary
+    _v32_replace_decision_record(decision)
+
+    return {
+        "status": "ok",
+        "engine": _V32_ENGINE,
+        "decision_id": decision_id,
+        "outcome": outcome,
+    }
+
+
+def _v32_outcome_stats(outcomes):
+    closed = [o for o in outcomes if _v29_safe_upper(o.get("outcome"), "UNKNOWN") in ["WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"]]
+    wins = [o for o in closed if _v29_safe_upper(o.get("outcome"), "UNKNOWN") == "WIN"]
+    losses = [o for o in closed if _v29_safe_upper(o.get("outcome"), "UNKNOWN") == "LOSS"]
+    pnl_values = [o.get("pnl") for o in closed if _v29_safe_float(o.get("pnl"), None) is not None]
+
+    by_strategy = {}
+    by_ticker = {}
+    for item in outcomes:
+        strategy = _v29_safe_upper(item.get("strategy"), "UNKNOWN")
+        ticker = _v29_safe_upper(item.get("ticker"), "UNKNOWN")
+        by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
+        by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
+
+    return {
+        "total_outcomes": len(outcomes),
+        "closed_outcomes": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round((len(wins) / max(len(wins) + len(losses), 1)) * 100, 2),
+        "net_pnl": round(sum(pnl_values), 2) if pnl_values else 0,
+        "avg_pnl": round(sum(pnl_values) / len(pnl_values), 2) if pnl_values else 0,
+        "by_strategy": by_strategy,
+        "by_ticker": by_ticker,
+    }
+
+
+def _v32_history_summary(decisions, outcomes):
+    by_state = {}
+    for decision in decisions:
+        state = str(decision.get("final_state") or "UNKNOWN")
+        by_state[state] = by_state.get(state, 0) + 1
+
+    return {
+        "decision_count": len(decisions),
+        "open_decisions": sum(1 for d in decisions if str(d.get("outcome_status") or "OPEN") == "OPEN"),
+        "entry_ready_decisions": sum(1 for d in decisions if d.get("final_state") == "ENTRY_READY"),
+        "risk_blocked_decisions": sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED"),
+        "wait_options_decisions": sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"),
+        "by_state": by_state,
+        "outcomes": _v32_outcome_stats(outcomes),
+    }
+
+
+def _v29_finalize_decision(decision, master):
+    payload = dict(decision)
+    payload["snapshot_generated_at"] = (master.get("data") or {}).get("generated_at")
+    payload["snapshot_received_at"] = (master.get("data") or {}).get("received_at")
+    payload["selected_contract"] = _selected_contract_from_v29(payload)
+    record, _created = _v32_record_decision(payload)
+    payload["decision_id"] = record.get("decision_id")
+    return payload
+
+
+def _v29_strategy_risk_gate(quality_gate, technical_state, row=None, strategy="UNKNOWN"):
+    technical_raw = technical_state.get("raw") if isinstance(technical_state, dict) else {}
+    event_risk = bool(technical_raw.get("event_risk", False))
+    earnings_soon = bool(technical_raw.get("earnings_soon", False))
+    volume = quality_gate.get("volume")
+    open_interest = quality_gate.get("open_interest")
+    canslim_gate = _v29_canslim_gate(row or {}, technical_raw, strategy)
+
+    blockers = []
+    blockers.extend(shared_technical_event_blockers(event_risk=event_risk, earnings_soon=earnings_soon))
+    blockers.extend(shared_liquidity_blockers(volume=volume, open_interest=open_interest))
+    blockers.extend(canslim_gate.get("blockers", []))
+
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "event_risk": event_risk,
+        "earnings_soon": earnings_soon,
+        "volume": volume,
+        "open_interest": open_interest,
+        "canslim": canslim_gate,
+    }
+
+
+def _canonical_strategy_risk_gate_from_sources(row, technical, strategy="UNKNOWN"):
+    technical = technical or {}
+    row = row or {}
+
+    event_risk = bool(technical.get("event_risk", False))
+    earnings_soon = bool(technical.get("earnings_soon", False))
+    volume = _v29_safe_float(row.get("volume"), None)
+    open_interest = _v29_safe_float(row.get("open_interest") or row.get("oi"), None)
+    canslim_gate = _v29_canslim_gate(row, technical, strategy)
+
+    blockers = []
+    blockers.extend(shared_technical_event_blockers(event_risk=event_risk, earnings_soon=earnings_soon))
+    blockers.extend(shared_liquidity_blockers(volume=volume, open_interest=open_interest))
+    blockers.extend(canslim_gate.get("blockers", []))
+
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "event_risk": event_risk,
+        "earnings_soon": earnings_soon,
+        "volume": volume,
+        "open_interest": open_interest,
+        "canslim": canslim_gate,
+    }
+
+
+def _canonical_decision_state(
+    *,
+    ticker,
+    strategy,
+    option_ok,
+    option_reason,
+    technical_ok,
+    technical_reason,
+    market_ok,
+    row,
+    technical,
+):
+    strategy_risk = _canonical_strategy_risk_gate_from_sources(row, technical, strategy)
+
+    if option_ok and strategy_risk["ok"] and technical_ok and market_ok:
+        return {
+            "final_state": "ENTRY_READY",
+            "decision": "ENTRY_READY",
+            "can_operate": True,
+            "severity": "green",
+            "main_blocker": None,
+            "blockers": [],
+            "action": f"{ticker}: entrada potencial lista. Validar tamaño, spread, liquidez, evento y riesgo final antes de ejecutar.",
+            "risk_gate": strategy_risk,
+        }
+
+    if option_ok and not strategy_risk["ok"]:
+        blocker = strategy_risk["blockers"][0]
+        action = f"{ticker}: contrato ejecutable, pero existe un bloqueo adicional de riesgo/liquidez."
+        if blocker == "EVENT_RISK_ACTIVE":
+            action = f"{ticker}: contrato ejecutable, pero event risk activo bloquea la entrada."
+        elif blocker == "EARNINGS_SOON":
+            action = f"{ticker}: contrato ejecutable, pero earnings próximos bloquean la entrada."
+        elif blocker == "LOW_OPTION_VOLUME":
+            action = f"{ticker}: contrato ejecutable, pero el volumen de la opción está por debajo del mínimo de {OPTION_MIN_VOLUME_READY}."
+        elif blocker == "LOW_OPEN_INTEREST":
+            action = f"{ticker}: contrato ejecutable, pero el open interest está por debajo del mínimo de {OPTION_MIN_OPEN_INTEREST_READY}."
+        elif blocker in ["CANSLIM_BLOCKED", "CANSLIM_SCORE_BELOW_MIN"]:
+            action = f"{ticker}: contrato ejecutable, pero CANSLIM/fundamental filter bloquea la entrada."
+
+        return {
+            "final_state": "RISK_BLOCKED",
+            "decision": "RISK_BLOCKED",
+            "can_operate": False,
+            "severity": "red",
+            "main_blocker": blocker,
+            "blockers": strategy_risk["blockers"],
+            "action": action,
+            "risk_gate": strategy_risk,
+        }
+
+    if option_ok and technical_ok and not market_ok:
+        return {
+            "final_state": "WAIT_MARKET_OPEN",
+            "decision": "WAIT_MARKET_OPEN",
+            "can_operate": False,
+            "severity": "gray",
+            "main_blocker": "MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE",
+            "blockers": ["MARKET_OR_OPTIONS_WINDOW_NOT_RELIABLE"],
+            "action": f"{ticker}: setup válido, pero esperar ventana confiable de mercado/opciones.",
+            "risk_gate": strategy_risk,
+        }
+
+    if not technical_ok:
+        return {
+            "final_state": "WAIT_TECHNICAL",
+            "decision": "WAIT_TECHNICAL",
+            "can_operate": False,
+            "severity": "yellow",
+            "main_blocker": technical_reason or "TECHNICAL_NOT_CONFIRMED",
+            "blockers": [technical_reason or "TECHNICAL_NOT_CONFIRMED"],
+            "action": f"{ticker}: opciones evaluadas, pero falta confirmación técnica para {strategy}.",
+            "risk_gate": strategy_risk,
+        }
+
+    if not option_ok:
+        return {
+            "final_state": "WAIT_OPTIONS_DATA",
+            "decision": "WAIT_OPTIONS_DATA",
+            "can_operate": False,
+            "severity": "yellow",
+            "main_blocker": option_reason or "WAIT_OPTIONS_DATA",
+            "blockers": [option_reason or "WAIT_OPTIONS_DATA"],
+            "action": f"{ticker}: técnico confirmado, pero faltan datos/confirmaciones de opciones.",
+            "risk_gate": strategy_risk,
+        }
+
+    return {
+        "final_state": "NO_DATA",
+        "decision": "NO_DATA",
+        "can_operate": False,
+        "severity": "red",
+        "main_blocker": "NO_DATA",
+        "blockers": ["NO_DATA"],
+        "action": f"{ticker}: no hay datos suficientes para evaluar operación.",
+        "risk_gate": strategy_risk,
     }
 
 
@@ -14892,10 +16102,38 @@ def _v29_decide_ticker(ticker):
     market = _v29_market_state(master)
 
     best, ticker_rows, executable_rows = _v29_best_row_for_ticker(ticker, rows)
-    tech_state = _v29_technical_state(ticker, technical)
+    best_strategy = _v29_safe_upper((best or {}).get("strategy"), "UNKNOWN")
+    tech_state = _v29_technical_state(ticker, technical, best_strategy)
 
     if not best:
-        return {
+        if tech_state["confirmed"]:
+            return _v29_finalize_decision({
+                "engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
+                "generated_at": _v29_now(),
+                "ticker": ticker,
+                "status": "OK",
+                "final_state": "WAIT_OPTIONS_DATA",
+                "decision": "WAIT_OPTIONS_DATA",
+                "can_operate": False,
+                "severity": "yellow",
+                "strategy": "UNKNOWN",
+                "technical_bias": tech_state["trend"],
+                "technical_score": tech_state["score"],
+                "options_score": None,
+                "main_blocker": "NO_OPTIONS_ROWS_FOR_TICKER",
+                "blockers": ["NO_OPTIONS_ROWS_FOR_TICKER"],
+                "action": f"{ticker}: técnico confirmado, pero faltan filas de opciones para evaluar contrato ejecutable.",
+                "executive_summary": f"{ticker}: WAIT_OPTIONS_DATA. Hay técnico confirmado, pero aún no hay filas de opciones para evaluar operación.",
+                "risk_note": "No ejecutar sin validar manualmente datos, liquidez, spread, evento, capital y tolerancia de riesgo.",
+                "best_row": None,
+                "rows_found_for_ticker": 0,
+                "total_rows_found": len(rows),
+                "executable_rows_found": 0,
+                "technical": tech_state,
+                "market": market,
+                "master_source": master["path"],
+            }, master)
+        return _v29_finalize_decision({
             "engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
             "generated_at": _v29_now(),
             "ticker": ticker,
@@ -14919,7 +16157,7 @@ def _v29_decide_ticker(ticker):
             "technical": tech_state,
             "market": market,
             "master_source": master["path"],
-        }
+        }, master)
 
     q = _v29_quality_gate(best)
     strategy = _v29_safe_upper(best.get("strategy"), "UNKNOWN")
@@ -14929,7 +16167,8 @@ def _v29_decide_ticker(ticker):
     technical_ok = tech_state["confirmed"]
     options_ok = q["executable"]
     risk_manual = _v29_risk_manual_gate(best)
-    risk_ok = risk_manual["risk_ok"]
+    strategy_risk = _v29_strategy_risk_gate(q, tech_state, best, strategy)
+    risk_ok = risk_manual["risk_ok"] and strategy_risk["ok"]
     manual_ok = risk_manual["manual_ok"]
 
     if technical_ok and not options_ok:
@@ -14946,13 +16185,31 @@ def _v29_decide_ticker(ticker):
         severity = "yellow"
         blocker = "TECHNICAL_NOT_CONFIRMED"
         action = f"{ticker}: opciones evaluadas, pero falta confirmación técnica."
-    elif not risk_ok:
+    elif not risk_manual["risk_ok"]:
         final_state = "RISK_BLOCKED"
         decision = "RISK_BLOCKED"
         can_operate = False
         severity = "red"
         blocker = risk_manual["risk_blocker"] or "RISK_NOT_CONFIRMED"
         action = f"{ticker}: contrato y técnico disponibles, pero falta aprobación explícita de riesgo."
+    elif not strategy_risk["ok"]:
+        final_state = "RISK_BLOCKED"
+        decision = "RISK_BLOCKED"
+        can_operate = False
+        severity = "red"
+        blocker = strategy_risk["blockers"][0]
+        if blocker == "EVENT_RISK_ACTIVE":
+            action = f"{ticker}: contrato ejecutable, pero event risk activo bloquea la entrada."
+        elif blocker == "EARNINGS_SOON":
+            action = f"{ticker}: contrato ejecutable, pero earnings próximos bloquean la entrada."
+        elif blocker == "LOW_OPTION_VOLUME":
+            action = f"{ticker}: contrato ejecutable, pero el volumen de la opción está por debajo del mínimo de {OPTION_MIN_VOLUME_READY}."
+        elif blocker == "LOW_OPEN_INTEREST":
+            action = f"{ticker}: contrato ejecutable, pero el open interest está por debajo del mínimo de {OPTION_MIN_OPEN_INTEREST_READY}."
+        elif blocker in ["CANSLIM_BLOCKED", "CANSLIM_SCORE_BELOW_MIN"]:
+            action = f"{ticker}: contrato y técnico disponibles, pero CANSLIM/fundamental filter bloquea la entrada."
+        else:
+            action = f"{ticker}: contrato ejecutable, pero existe un bloqueo adicional de riesgo/liquidez."
     elif not manual_ok:
         final_state = "MANUAL_REVIEW_BLOCKED"
         decision = "MANUAL_REVIEW_BLOCKED"
@@ -14982,16 +16239,23 @@ def _v29_decide_ticker(ticker):
         blocker = "UNKNOWN_CONFIRMATION_GAP"
         action = f"{ticker}: mantener en radar. Confirmaciones incompletas."
 
+    result_blockers = [blocker] if blocker else []
+    if final_state == "RISK_BLOCKED" and strategy_risk["blockers"] and risk_manual["risk_ok"]:
+        result_blockers = strategy_risk["blockers"]
+    elif final_state == "MANUAL_REVIEW_BLOCKED" and risk_manual["manual_blockers"]:
+        result_blockers = risk_manual["manual_blockers"]
+
     executive_summary = (
         f"{ticker}: {final_state}. "
         f"Estrategia {strategy}. "
         f"Técnico {tech_state['trend']} score {tech_state['score']}. "
         f"Opciones score {options_score}. "
         f"Spread {q.get('spread')} / {q.get('spread_pct')}%. "
+        f"Vol/OI {q.get('volume')} / {q.get('open_interest')}. "
         f"Bloqueador: {blocker or 'None'}."
     )
 
-    return {
+    return _v29_finalize_decision({
         "engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
         "generated_at": _v29_now(),
         "ticker": ticker,
@@ -15006,15 +16270,25 @@ def _v29_decide_ticker(ticker):
         "options_score": options_score,
         "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
         "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
-        "risk_fit": "RISK_CONFIRMED" if risk_ok else (risk_manual["risk_blocker"] or "RISK_NOT_CONFIRMED"),
+        "risk_fit": "RISK_CONFIRMED" if risk_ok else (risk_manual["risk_blocker"] or ",".join(strategy_risk["blockers"]) or "RISK_NOT_CONFIRMED"),
+        "strategy_risk_fit": "STRATEGY_RISK_CONFIRMED" if strategy_risk["ok"] else ",".join(strategy_risk["blockers"]),
         "manual_review_fit": "NO_MANUAL_BLOCKERS" if manual_ok else "MANUAL_REVIEW_BLOCKED",
         "main_blocker": blocker,
-        "blockers": [blocker] if blocker else [],
+        "blockers": result_blockers,
         "required_missing_fields": q["missing"],
         "action": action,
         "executive_summary": executive_summary,
         "risk_note": "No ejecutar sin validar manualmente tamaño, liquidez, spread, evento, capital disponible y tolerancia de riesgo.",
-        "risk_gate": risk_manual,
+        "risk_gate": {
+            **risk_manual,
+            "strategy_risk_ok": strategy_risk["ok"],
+            "strategy_risk_blockers": strategy_risk["blockers"],
+            "event_risk": strategy_risk["event_risk"],
+            "earnings_soon": strategy_risk["earnings_soon"],
+            "volume": strategy_risk["volume"],
+            "open_interest": strategy_risk["open_interest"],
+            "canslim": strategy_risk.get("canslim"),
+        },
         "best_row": best,
         "best_row_quality": q,
         "rows_found_for_ticker": len(ticker_rows),
@@ -15023,13 +16297,98 @@ def _v29_decide_ticker(ticker):
         "technical": tech_state,
         "market": market,
         "master_source": master["path"],
-    }
+    }, master)
 
 
 def _v29_all_decisions(tickers=None):
     if not tickers:
         tickers = _V29_DEFAULT_TICKERS
     return [_v29_decide_ticker(t) for t in tickers]
+
+
+def _v31_canonical_state(v29_state):
+    mapping = {
+        "WAIT_MARKET_OPEN": "WAIT_MARKET",
+        "MANUAL_REVIEW_BLOCKED": "MANUAL_REVIEW",
+        "RADAR": "MANUAL_REVIEW",
+    }
+    state = mapping.get(str(v29_state or ""), v29_state)
+    if state not in _V31_CANONICAL_STATES:
+        return "NO_DATA"
+    return state
+
+
+def _v31_selected_contract(v29_decision):
+    return _selected_contract_from_v29(v29_decision)
+
+
+def _v31_decision_contract(v29_decision):
+    final_state = _v31_canonical_state(v29_decision.get("final_state"))
+    blockers = list(v29_decision.get("blockers") or [])
+    main_blocker = v29_decision.get("main_blocker")
+    if main_blocker and main_blocker not in blockers:
+        blockers.insert(0, main_blocker)
+
+    return {
+        "engine": "V31_CANONICAL_DECISION_CONTRACT",
+        "source_engine": v29_decision.get("engine"),
+        "decision_id": v29_decision.get("decision_id"),
+        "decision_version": _V31_DECISION_VERSION,
+        "strategy_version": _V31_STRATEGY_VERSION,
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "generated_at": _v29_now(),
+        "ticker": v29_decision.get("ticker"),
+        "status": v29_decision.get("status", "OK"),
+        "final_state": final_state,
+        "decision": final_state,
+        "main_blocker": main_blocker,
+        "blockers": blockers,
+        "required_missing_fields": list(v29_decision.get("required_missing_fields") or []),
+        "risk_notes": [
+            v29_decision.get("risk_note"),
+            "ENTRY_READY means ready for manual review, not authorization to trade.",
+        ],
+        "explanation": v29_decision.get("executive_summary") or v29_decision.get("action"),
+        "next_required_action": v29_decision.get("action"),
+        "not_order_instruction": True,
+        "ready_for_manual_review": final_state == "ENTRY_READY",
+        "execution_authorized": False,
+        "selected_contract": _v31_selected_contract(v29_decision),
+        "technical": {
+            "bias": v29_decision.get("technical_bias"),
+            "score": v29_decision.get("technical_score"),
+            "fit": v29_decision.get("technical_fit"),
+            "raw": v29_decision.get("technical"),
+        },
+        "risk": {
+            "fit": v29_decision.get("risk_fit"),
+            "manual_review_fit": v29_decision.get("manual_review_fit"),
+            "gate": v29_decision.get("risk_gate"),
+        },
+        "market": v29_decision.get("market"),
+        "audit": {
+            "decision_id": v29_decision.get("decision_id"),
+            "master_source": v29_decision.get("master_source"),
+            "snapshot_generated_at": v29_decision.get("snapshot_generated_at"),
+            "snapshot_received_at": v29_decision.get("snapshot_received_at"),
+            "rows_found_for_ticker": v29_decision.get("rows_found_for_ticker"),
+            "total_rows_found": v29_decision.get("total_rows_found"),
+            "executable_rows_found": v29_decision.get("executable_rows_found"),
+            "source_final_state": v29_decision.get("final_state"),
+            "source_decision": v29_decision.get("decision"),
+        },
+    }
+
+
+def _v31_decide_ticker(ticker):
+    return _v31_decision_contract(_v29_decide_ticker(ticker))
+
+
+def _v31_all_decisions(tickers=None):
+    if not tickers:
+        tickers = _V29_DEFAULT_TICKERS
+    return [_v31_decide_ticker(t) for t in tickers]
 
 
 def _v29_html_escape(x):
@@ -15277,6 +16636,7 @@ async def v29_trade_decision(ticker: str):
 async def gpt_v29_trade_decision(ticker: str):
     d = _v29_decide_ticker(ticker)
     return {
+        "decision_id": d.get("decision_id"),
         "ticker": d.get("ticker"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
@@ -15287,6 +16647,10 @@ async def gpt_v29_trade_decision(ticker: str):
         "technical_fit": d.get("technical_fit"),
         "options_score": d.get("options_score"),
         "options_fit": d.get("options_fit"),
+        "risk_fit": d.get("risk_fit"),
+        "strategy_risk_fit": d.get("strategy_risk_fit"),
+        "manual_review_fit": d.get("manual_review_fit"),
+        "risk_gate": d.get("risk_gate"),
         "best_contract": {
             "strike": (d.get("best_row") or {}).get("strike"),
             "expiration": (d.get("best_row") or {}).get("expiration"),
@@ -15317,6 +16681,143 @@ async def gpt_v29_trade_decision(ticker: str):
         "master_source": d.get("master_source"),
         "engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
         "generated_at": _v29_now(),
+    }
+
+
+@app.get("/strategy_signal_contract")
+async def strategy_signal_contract():
+    return _v29_strategy_signal_contract()
+
+
+@app.get("/strategy_signal_template")
+async def strategy_signal_template(ticker: str = "QQQ", strategy_context: str = "NAKED_PUT"):
+    return {
+        "contract": _v29_strategy_signal_contract(),
+        "alert_payload_template": _v29_strategy_signal_template(ticker, strategy_context),
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v31_system_status")
+async def v31_system_status():
+    master = _v29_discover_master_snapshot()
+    decisions = _v31_all_decisions()
+
+    return {
+        "engine": "V31_CANONICAL_DECISION_CONTRACT",
+        "decision_version": _V31_DECISION_VERSION,
+        "strategy_version": _V31_STRATEGY_VERSION,
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "generated_at": _v29_now(),
+        "status": "OK",
+        "canonical_states": _V31_CANONICAL_STATES,
+        "source_engine": "V29_FINAL_DECISION_QUALITY_ENGINE",
+        "master_snapshot_available": bool(master.get("path")),
+        "master_source": master.get("path"),
+        "summary": {
+            "entry_ready": sum(1 for d in decisions if d.get("final_state") == "ENTRY_READY"),
+            "manual_review": sum(1 for d in decisions if d.get("final_state") == "MANUAL_REVIEW"),
+            "risk_blocked": sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED"),
+            "wait_technical": sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL"),
+            "wait_options": sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"),
+            "wait_market": sum(1 for d in decisions if d.get("final_state") == "WAIT_MARKET"),
+            "no_data": sum(1 for d in decisions if d.get("final_state") == "NO_DATA"),
+        },
+        "not_order_instruction": True,
+        "endpoints": {
+            "trade_decision_example": "/v31_trade_decision/QQQ",
+            "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
+            "source_status": "/v29_system_status",
+        },
+    }
+
+
+@app.get("/v31_trade_decision/{ticker}")
+async def v31_trade_decision(ticker: str):
+    return _v31_decide_ticker(ticker)
+
+
+@app.get("/gpt_v31_trade_decision/{ticker}")
+async def gpt_v31_trade_decision(ticker: str):
+    d = _v31_decide_ticker(ticker)
+    return {
+        "engine": d.get("engine"),
+        "decision_id": d.get("decision_id"),
+        "decision_version": d.get("decision_version"),
+        "strategy_version": d.get("strategy_version"),
+        "ruleset_version": d.get("ruleset_version"),
+        "snapshot_version": d.get("snapshot_version"),
+        "ticker": d.get("ticker"),
+        "decision": d.get("decision"),
+        "final_state": d.get("final_state"),
+        "main_blocker": d.get("main_blocker"),
+        "blockers": d.get("blockers"),
+        "required_missing_fields": d.get("required_missing_fields"),
+        "selected_contract": d.get("selected_contract"),
+        "technical": d.get("technical"),
+        "risk": d.get("risk"),
+        "explanation": d.get("explanation"),
+        "next_required_action": d.get("next_required_action"),
+        "risk_notes": d.get("risk_notes"),
+        "ready_for_manual_review": d.get("ready_for_manual_review"),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+        "audit": d.get("audit"),
+        "generated_at": d.get("generated_at"),
+    }
+
+
+@app.get("/v32_decision_history")
+async def v32_decision_history(limit: int = 100, ticker: Optional[str] = None):
+    decisions = _v32_load_decision_journal()
+    if ticker:
+        wanted = _v29_safe_upper(ticker)
+        decisions = [d for d in decisions if _v29_safe_upper(d.get("ticker")) == wanted]
+
+    trimmed = decisions[-max(1, min(limit, 500)):]
+    outcomes = _v32_load_outcomes_journal()
+    return {
+        "engine": _V32_ENGINE,
+        "generated_at": _v29_now(),
+        "showing": len(trimmed),
+        "ticker_filter": _v29_safe_upper(ticker, "") if ticker else None,
+        "summary": _v32_history_summary(decisions, outcomes),
+        "decisions": trimmed,
+    }
+
+
+@app.post("/v32_record_followup")
+async def v32_record_followup(payload: dict):
+    return _v32_followup_entry(payload or {})
+
+
+@app.post("/v32_record_outcome")
+async def v32_record_outcome(payload: dict):
+    return _v32_outcome_entry(payload or {})
+
+
+@app.get("/v32_outcomes_summary")
+async def v32_outcomes_summary(limit: int = 100):
+    decisions = _v32_load_decision_journal()
+    outcomes = _v32_load_outcomes_journal()
+    trimmed_decisions = decisions[-max(1, min(limit, 500)):]
+    trimmed_outcomes = outcomes[-max(1, min(limit, 500)):]
+    return {
+        "engine": _V32_ENGINE,
+        "generated_at": _v29_now(),
+        "decision_version": _V31_DECISION_VERSION,
+        "strategy_version": _V31_STRATEGY_VERSION,
+        "ruleset_version": _V31_RULESET_VERSION,
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "summary": _v32_history_summary(decisions, outcomes),
+        "recent_decisions": trimmed_decisions,
+        "recent_outcomes": trimmed_outcomes,
+        "endpoints": {
+            "decision_history": "/v32_decision_history",
+            "record_followup": "/v32_record_followup",
+            "record_outcome": "/v32_record_outcome",
+        },
     }
 
 

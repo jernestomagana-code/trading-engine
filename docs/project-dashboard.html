@@ -422,12 +422,12 @@
   <main>
     <section class="hero" aria-label="Resumen Stock Ultimus">
       <div class="hero-inner">
-        <div class="eyebrow">Stock Ultimus Dashboard</div>
-        <h1>V30 en verificacion e integracion</h1>
+        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-06-18</div>
+        <h1>V31 y V32 ya estan en marcha</h1>
         <p>
-          El proyecto ya valida contratos ejecutables, protege la prioridad
-          `WAIT_OPTIONS_DATA` y mantiene `ENTRY_READY` como revision manual,
-          no como autorizacion de operar.
+          V30 esta validado localmente. El proyecto ya expone decisiones
+          canonicas V31, registra outcomes V32 y cuenta con senales TradingView
+          validadas, siempre bajo revision manual y sin ordenes automaticas.
         </p>
       </div>
     </section>
@@ -435,18 +435,18 @@
     <section class="top-grid" aria-label="Metricas principales">
       <article class="metric">
         <div class="metric-label">Prioridad activa</div>
-        <div class="metric-value">V30</div>
-        <div class="metric-note">Contract enrichment para opciones ejecutables.</div>
+        <div class="metric-value">V31</div>
+        <div class="metric-note">Contrato canonico y schemas compartidos.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Validacion local</div>
         <div class="metric-value">Pasa</div>
-        <div class="metric-note">Integrity check y fixtures V30 OK.</div>
+        <div class="metric-note">V30, V31, V32 y TradingView pasan el guard integral.</div>
       </article>
       <article class="metric">
-        <div class="metric-label">Fixtures V30</div>
-        <div class="metric-value">7</div>
-        <div class="metric-note">Cubren opciones incompletas, riesgo y readiness.</div>
+        <div class="metric-label">Senales TradingView</div>
+        <div class="metric-value">6 + 6</div>
+        <div class="metric-note">Fixtures de estrategia y scripts Pine validados.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Guardrail clave</div>
@@ -460,7 +460,7 @@
         <section class="panel" aria-label="Semaforo por area">
           <div class="panel-title">
             <h2>Semaforo Del Proyecto</h2>
-            <span class="status-pill is-work">V30 en curso</span>
+            <span class="status-pill is-work">V31 prioridad activa</span>
           </div>
           <div class="area-list">
             <div class="area-row">
@@ -471,7 +471,7 @@
             <div class="area-row">
               <div class="area-name">Cloud/FastAPI</div>
               <span class="status-pill is-work">En progreso</span>
-              <div class="area-text"><span class="code">app/main.py</span> expone estados V30 y datos de contrato para API, GPT y dashboard.</div>
+              <div class="area-text"><span class="code">app/main.py</span> expone decisiones V31 e historial, follow-ups y outcomes V32.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Decision/Riesgo</div>
@@ -484,6 +484,16 @@
               <div class="area-text">7 fixtures y 1 snapshot runtime sanitizado cubren ausencia de contrato, contrato parcial, contrato completo, riesgo y readiness.</div>
             </div>
             <div class="area-row">
+              <div class="area-name">Outcomes V32</div>
+              <span class="status-pill is-work">En progreso</span>
+              <div class="area-text">IDs estables, deduplicacion, follow-ups, MFE/MAE y resumen de outcomes pasan el guard local.</div>
+            </div>
+            <div class="area-row">
+              <div class="area-name">TradingView</div>
+              <span class="status-pill is-next">Forward test</span>
+              <div class="area-text">Contrato de senal, 6 fixtures y 6 Pine scripts validados; CANSLIM permanece como filtro separado.</div>
+            </div>
+            <div class="area-row">
               <div class="area-name">Seguridad</div>
               <span class="status-pill is-good">Alineado</span>
               <div class="area-text">Guardrails locales revisan ordenes automaticas prohibidas y datos sensibles en fixtures runtime.</div>
@@ -491,7 +501,7 @@
             <div class="area-row">
               <div class="area-name">Documentacion</div>
               <span class="status-pill is-work">En progreso</span>
-              <div class="area-text">Roadmap, contrato V30, checklist, briefs de agentes y tablero visual disponibles.</div>
+              <div class="area-text">Roadmap, contratos V30/V31, contrato de senales, guias Pine, briefs de agentes y tablero disponibles.</div>
             </div>
           </div>
         </section>
@@ -530,17 +540,17 @@
             <div class="version-row">
               <strong>V30</strong>
               <span class="area-text">Contratos ejecutables enriquecidos y readiness bloqueado si faltan campos.</span>
-              <span class="status-pill is-work">Verificacion</span>
+              <span class="status-pill is-good">Validado local</span>
             </div>
             <div class="version-row">
               <strong>V31</strong>
-              <span class="area-text">Motor canonico de decision y schemas compartidos.</span>
-              <span class="status-pill is-next">Pendiente</span>
+              <span class="area-text">Contrato API canonico, paths V31 y publicacion runtime.</span>
+              <span class="status-pill is-work">En progreso</span>
             </div>
             <div class="version-row">
               <strong>V32</strong>
-              <span class="area-text">Outcome tracking y learning loop medible.</span>
-              <span class="status-pill is-next">Pendiente</span>
+              <span class="area-text">Journaling, follow-ups, MFE/MAE y outcomes medibles.</span>
+              <span class="status-pill is-work">En progreso</span>
             </div>
             <div class="version-row">
               <strong>V33</strong>
@@ -560,11 +570,15 @@
           <ul class="validation-list">
             <li>7 fixtures V30 validados.</li>
             <li>Guardrails de no-auto-order validados.</li>
-            <li>8 archivos Python compilados.</li>
+            <li>16 archivos Python compilados.</li>
             <li>Privacidad de fixtures runtime validada.</li>
+            <li>6 fixtures de senales TradingView validados.</li>
+            <li>6 scripts Pine de TradingView validados.</li>
+            <li>Fusion por estrategia y CANSLIM validados.</li>
+            <li>Journaling y outcomes V32 validados.</li>
             <li>Escenarios guard V29 validados.</li>
             <li>Snapshot runtime sanitizado validado para 5 tickers.</li>
-            <li>Endpoint smoke V29 validado.</li>
+            <li>Endpoint smoke V29/V31 validado.</li>
           </ul>
           <p class="small" style="margin-top:16px;">
             Comando base: <span class="code">scripts/check_v30_integrity.py</span>
@@ -576,10 +590,10 @@
             <h2>Proximas Acciones</h2>
           </div>
           <ol class="action-list">
-            <li><span class="number">1</span><span>Capturar un snapshot real de IBKR fuera del repo y pasarlo por el sanitizador.</span></li>
-            <li><span class="number">2</span><span>Agregar pruebas automatizadas formales si el proyecto adopta pytest.</span></li>
-            <li><span class="number">3</span><span>Iniciar V31 con una decision canonica y schema compartido.</span></li>
-            <li><span class="number">4</span><span>Ampliar fixtures runtime para casos reales raros detectados por Vega/Ledger.</span></li>
+            <li><span class="number">1</span><span>Extraer schemas, contrato y prioridad de blockers V31 fuera de app/main.py.</span></li>
+            <li><span class="number">2</span><span>Capturar un snapshot real de IBKR y pasarlo por el sanitizador.</span></li>
+            <li><span class="number">3</span><span>Hacer forward test de Pine Pro V2 contra /technical_snapshot.</span></li>
+            <li><span class="number">4</span><span>Disenar persistencia durable y auditada para journals V32.</span></li>
           </ol>
         </section>
 
@@ -595,6 +609,14 @@
             <div class="risk-row">
               <strong>Faltan snapshots reales sanitizados</strong>
               <p>La validacion local puede no cubrir todas las peculiaridades de IBKR en vivo.</p>
+            </div>
+            <div class="risk-row">
+              <strong>Persistencia V32 aun es runtime local</strong>
+              <p>Antes de despliegue necesita almacenamiento durable, retencion, aislamiento y auditoria.</p>
+            </div>
+            <div class="risk-row">
+              <strong>Pine scripts sin forward test real</strong>
+              <p>Falta confirmar alertas reales por simbolo, timeframe y contexto de estrategia.</p>
             </div>
             <div class="risk-row">
               <strong>Preparacion comercial pendiente</strong>
@@ -618,6 +640,14 @@
           <div class="timeline-item">
             <time>2026-06-12</time>
             Se agrega sanitizador y validador de privacidad para snapshots reales.
+          </div>
+          <div class="timeline-item">
+            <time>2026-06-17</time>
+            Se inicia V31 con contrato canonico versionado y publicacion runtime.
+          </div>
+          <div class="timeline-item">
+            <time>2026-06-18</time>
+            V32 journaling/outcomes y el paquete TradingView pasan validacion local.
           </div>
         </section>
       </aside>
