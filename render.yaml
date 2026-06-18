@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: trading-engine
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: OPERATING_MODE
+        value: ANALYSIS_ONLY
+      - key: REQUIRE_WEBHOOK_SECRET
+        value: "true"
+      - key: REQUIRE_SNAPSHOT_INGEST_TOKEN
+        value: "true"
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: SNAPSHOT_INGEST_TOKEN
+        sync: false

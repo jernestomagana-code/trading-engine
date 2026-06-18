@@ -9,6 +9,7 @@ import html
 import re
 import os
 import math
+import hmac
 import requests
 
 # ============================================================
@@ -67,6 +68,8 @@ V31_DURABLE_SNAPSHOT_ID = os.getenv("V31_DURABLE_SNAPSHOT_ID", "canonical")
 V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES = os.getenv("V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES", "180")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
+SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISION_DESK_INGEST_TOKEN", "")
+REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
@@ -3959,6 +3962,18 @@ def verify_webhook_secret(x_webhook_secret: Optional[str]):
             raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
+def verify_snapshot_ingest_token(*provided_tokens):
+    if not REQUIRE_SNAPSHOT_INGEST_TOKEN:
+        return
+    if not SNAPSHOT_INGEST_TOKEN:
+        raise HTTPException(status_code=503, detail="Snapshot ingest token is required but not configured")
+    if not any(
+        token and hmac.compare_digest(str(token), SNAPSHOT_INGEST_TOKEN)
+        for token in provided_tokens
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized snapshot ingest")
+
+
 # ============================================================
 # INGESTION HELPERS
 # ============================================================
@@ -4057,6 +4072,7 @@ def health():
         "operating_mode": OPERATING_MODE,
         "supabase_enabled": supabase_enabled(),
         "webhook_secret_required": REQUIRE_WEBHOOK_SECRET,
+        "snapshot_ingest_token_required": REQUIRE_SNAPSHOT_INGEST_TOKEN,
         "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
         "last_signal": signals[-1] if signals else None,
@@ -17913,7 +17929,17 @@ def _v28_dashboard_html(tickers=None):
     return html
 
 @app.post("/v28_ingest_snapshot")
-async def v28_ingest_snapshot(payload: dict):
+async def v28_ingest_snapshot(
+    payload: dict,
+    x_snapshot_ingest_token: Optional[str] = Header(default=None),
+    x_decision_desk_token: Optional[str] = Header(default=None),
+    x_webhook_secret: Optional[str] = Header(default=None),
+):
+    verify_snapshot_ingest_token(
+        x_snapshot_ingest_token,
+        x_decision_desk_token,
+        x_webhook_secret,
+    )
     saved = _v28_write_master(payload)
     return {
         "engine": "V28_AUTO_PUBLISHER_TRADE_COMMAND",
@@ -19883,7 +19909,17 @@ async def v31_data_pipeline_status():
 
 
 @app.post("/v31_ingest_snapshot")
-async def v31_ingest_snapshot(payload: dict):
+async def v31_ingest_snapshot(
+    payload: dict,
+    x_snapshot_ingest_token: Optional[str] = Header(default=None),
+    x_decision_desk_token: Optional[str] = Header(default=None),
+    x_webhook_secret: Optional[str] = Header(default=None),
+):
+    verify_snapshot_ingest_token(
+        x_snapshot_ingest_token,
+        x_decision_desk_token,
+        x_webhook_secret,
+    )
     return _v31_ingest_snapshot_payload(payload)
 
 
