@@ -63,6 +63,8 @@ INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS = [
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+V31_DURABLE_SNAPSHOT_ID = os.getenv("V31_DURABLE_SNAPSHOT_ID", "canonical")
+V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES = os.getenv("V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES", "180")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
@@ -448,6 +450,32 @@ def supabase_fetch_table_rows(table, order_column="received_at", limit=1000):
         return []
     except Exception:
         return []
+
+
+def supabase_fetch_single_row(table, filters=None, select="*"):
+    if not supabase_enabled():
+        return None
+
+    params = {"select": select, "limit": 1}
+    for key, value in (filters or {}).items():
+        params[key] = f"eq.{value}"
+
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    try:
+        response = requests.get(
+            url,
+            headers=supabase_headers(None),
+            params=params,
+            timeout=10,
+        )
+        if response.status_code != 200:
+            return None
+        rows = response.json()
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
+    except Exception:
+        return None
 
 
 def supabase_count_signals():
@@ -3999,6 +4027,9 @@ def save_ingested_payload(parsed, raw_text, source_label):
 def startup():
     global trade_store
     trade_store = rebuild_store_from_history()
+    restore = globals().get("_v31_restore_durable_snapshot")
+    if callable(restore):
+        restore()
 
 
 # ============================================================
@@ -18039,7 +18070,7 @@ def _v29_load_json_file(path):
         return None
 
 
-def _v29_discover_master_snapshot():
+def _v29_discover_master_snapshot(_allow_durable_restore=True):
     candidates = []
 
     for name in _V29_MASTER_FILES:
@@ -18079,6 +18110,13 @@ def _v29_discover_master_snapshot():
                 "technical": tech,
                 "score": score,
             }
+
+    if best is None and _allow_durable_restore:
+        restore = globals().get("_v31_restore_durable_snapshot")
+        if callable(restore):
+            restored = restore()
+            if restored.get("restored"):
+                return _v29_discover_master_snapshot(False)
 
     if best is None:
         return {
@@ -19249,6 +19287,153 @@ def _v31_runtime_file_status():
     return files
 
 
+_V31_DURABLE_SNAPSHOT_TABLE = "stock_ultimus_v31_snapshots"
+_V31_DURABLE_RESTORE_STATE = {
+    "attempted": False,
+    "restored": False,
+    "status": "NOT_ATTEMPTED",
+}
+_V31_DURABLE_PERSIST_STATE = {
+    "enabled": supabase_enabled(),
+    "saved": False,
+    "status": "NOT_ATTEMPTED",
+}
+
+
+def _v31_durable_max_age_minutes():
+    try:
+        return max(1, int(V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES))
+    except Exception:
+        return 180
+
+
+def _v31_parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _v31_snapshot_age_minutes(snapshot, durable_row=None):
+    durable_row = durable_row or {}
+    timestamp = (
+        snapshot.get("received_at")
+        or snapshot.get("generated_at")
+        or durable_row.get("received_at")
+        or durable_row.get("updated_at")
+    )
+    parsed = _v31_parse_timestamp(timestamp)
+    if parsed is None:
+        return None
+    return round((datetime.now(timezone.utc) - parsed).total_seconds() / 60, 2)
+
+
+def _v31_canonical_durable_payload(snapshot):
+    snapshot = dict(snapshot or {})
+    allowed_fields = [
+        "engine",
+        "source",
+        "generated_at",
+        "received_at",
+        "snapshot_version",
+        "options_rows",
+        "technical_snapshot",
+        "market",
+        "tickers_detected",
+        "rows_found",
+        "technical_available",
+        "bridge_status",
+        "runtime_files_seen",
+        "not_order_instruction",
+    ]
+    durable = {key: snapshot.get(key) for key in allowed_fields if key in snapshot}
+    durable["options_rows"] = snapshot.get("options_rows") if isinstance(snapshot.get("options_rows"), list) else []
+    durable["technical_snapshot"] = snapshot.get("technical_snapshot") if isinstance(snapshot.get("technical_snapshot"), dict) else {}
+    durable["market"] = snapshot.get("market") if isinstance(snapshot.get("market"), dict) else {}
+    durable["not_order_instruction"] = True
+    return durable
+
+
+def _v31_persist_durable_snapshot(snapshot):
+    global _V31_DURABLE_PERSIST_STATE
+    durable = _v31_canonical_durable_payload(snapshot)
+    now = _v29_now()
+    row = {
+        "snapshot_id": V31_DURABLE_SNAPSHOT_ID,
+        "snapshot_version": durable.get("snapshot_version") or "v30_options_executable_contract",
+        "source": durable.get("source") or "UNKNOWN",
+        "generated_at": durable.get("generated_at"),
+        "received_at": durable.get("received_at") or now,
+        "snapshot": durable,
+        "not_order_instruction": True,
+        "updated_at": now,
+    }
+    result = supabase_upsert_row(
+        _V31_DURABLE_SNAPSHOT_TABLE,
+        row,
+        "snapshot_id",
+    )
+    result = dict(result or {})
+    result["table"] = _V31_DURABLE_SNAPSHOT_TABLE
+    result["snapshot_id"] = V31_DURABLE_SNAPSHOT_ID
+    result["status"] = "SAVED" if result.get("saved") else "NOT_SAVED"
+    _V31_DURABLE_PERSIST_STATE = result
+    return result
+
+
+def _v31_restore_durable_snapshot(force=False):
+    global _V31_DURABLE_RESTORE_STATE
+    if _V31_DURABLE_RESTORE_STATE.get("attempted") and not force:
+        return dict(_V31_DURABLE_RESTORE_STATE)
+
+    state = {
+        "attempted": True,
+        "restored": False,
+        "status": "NOT_FOUND",
+        "table": _V31_DURABLE_SNAPSHOT_TABLE,
+        "snapshot_id": V31_DURABLE_SNAPSHOT_ID,
+        "max_age_minutes": _v31_durable_max_age_minutes(),
+    }
+
+    if not supabase_enabled():
+        state["status"] = "DISABLED"
+        _V31_DURABLE_RESTORE_STATE = state
+        return dict(state)
+
+    row = supabase_fetch_single_row(
+        _V31_DURABLE_SNAPSHOT_TABLE,
+        {"snapshot_id": V31_DURABLE_SNAPSHOT_ID},
+    )
+    snapshot = row.get("snapshot") if isinstance(row, dict) else None
+    if not isinstance(snapshot, dict):
+        _V31_DURABLE_RESTORE_STATE = state
+        return dict(state)
+
+    age_minutes = _v31_snapshot_age_minutes(snapshot, row)
+    state["age_minutes"] = age_minutes
+    if age_minutes is None or age_minutes > state["max_age_minutes"]:
+        state["status"] = "STALE"
+        _V31_DURABLE_RESTORE_STATE = state
+        return dict(state)
+
+    restored = _v28_write_master(_v31_canonical_durable_payload(snapshot))
+    state.update({
+        "restored": True,
+        "status": "RESTORED",
+        "rows_found": restored.get("rows_found"),
+        "technical_available": restored.get("technical_available"),
+        "received_at": restored.get("received_at"),
+    })
+    _V31_DURABLE_RESTORE_STATE = state
+    return dict(state)
+
+
 def _v31_data_pipeline_status_payload():
     status = _v31_system_status_payload()
     files = _v31_runtime_file_status()
@@ -19265,6 +19450,12 @@ def _v31_data_pipeline_status_payload():
         "rows_found": status.get("rows_found"),
         "technical_count": status.get("technical_count"),
         "runtime_files": files,
+        "durable_snapshot": {
+            "table": _V31_DURABLE_SNAPSHOT_TABLE,
+            "restore": dict(_V31_DURABLE_RESTORE_STATE),
+            "persist": dict(_V31_DURABLE_PERSIST_STATE),
+            "max_age_minutes": _v31_durable_max_age_minutes(),
+        },
         "diagnosis": (
             "Pipeline listo. Falta que ibkr_bridge.py publique un snapshot maestro."
             if not has_data else
@@ -19281,6 +19472,7 @@ def _v31_data_pipeline_status_payload():
 
 def _v31_ingest_snapshot_payload(payload):
     saved = _v28_write_master(payload)
+    durable_storage = _v31_persist_durable_snapshot(saved)
     return {
         "engine": "V31_CANONICAL_SNAPSHOT_INGEST",
         "status": "OK",
@@ -19291,6 +19483,7 @@ def _v31_ingest_snapshot_payload(payload):
         "tickers_detected": saved.get("tickers_detected"),
         "received_at": saved.get("received_at"),
         "source": saved.get("source"),
+        "durable_storage": durable_storage,
         "v31_status": "/v31_system_status",
         "v31_pipeline_status": "/v31_data_pipeline_status",
         "not_order_instruction": True,

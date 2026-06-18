@@ -441,7 +441,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "source": "UNIT_TEST",
         }
 
-        with patch.object(main, "_v28_write_master", return_value=saved):
+        with patch.object(main, "_v28_write_master", return_value=saved), patch.object(
+            main,
+            "_v31_persist_durable_snapshot",
+            return_value={"saved": True, "status": "SAVED"},
+        ):
             result = main._v31_ingest_snapshot_payload({
                 "source": "UNIT_TEST",
                 "options_rows": [],
@@ -455,7 +459,97 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["tickers_detected"], ["QQQ"])
         self.assertEqual(result["v31_status"], "/v31_system_status")
         self.assertEqual(result["v31_pipeline_status"], "/v31_data_pipeline_status")
+        self.assertTrue(result["durable_storage"]["saved"])
         self.assertTrue(result["not_order_instruction"])
+
+    def test_v31_durable_payload_excludes_unapproved_account_context(self):
+        durable = main._v31_canonical_durable_payload({
+            "source": "UNIT_TEST",
+            "options_rows": [{"ticker": "QQQ", "strike": 700}],
+            "technical_snapshot": {"QQQ": {"score": 80}},
+            "market": {"is_regular_market_open": True},
+            "account_id": "SENSITIVE",
+            "positions": [{"ticker": "TLT", "size": 700}],
+        })
+
+        self.assertEqual(durable["source"], "UNIT_TEST")
+        self.assertTrue(durable["not_order_instruction"])
+        self.assertNotIn("account_id", durable)
+        self.assertNotIn("positions", durable)
+
+    def test_v31_persist_uses_singleton_supabase_row(self):
+        snapshot = {
+            "source": "UNIT_TEST",
+            "generated_at": main._v29_now(),
+            "received_at": main._v29_now(),
+            "options_rows": [{"ticker": "QQQ", "strike": 700}],
+            "technical_snapshot": {"QQQ": {"score": 80}},
+            "market": {"is_regular_market_open": False},
+            "account_id": "SENSITIVE",
+        }
+
+        with patch.object(
+            main,
+            "supabase_upsert_row",
+            return_value={"enabled": True, "saved": True, "status_code": 201},
+        ) as upsert:
+            result = main._v31_persist_durable_snapshot(snapshot)
+
+        table, row, conflict_key = upsert.call_args.args
+        self.assertEqual(table, "stock_ultimus_v31_snapshots")
+        self.assertEqual(row["snapshot_id"], "canonical")
+        self.assertEqual(conflict_key, "snapshot_id")
+        self.assertNotIn("account_id", row["snapshot"])
+        self.assertTrue(row["not_order_instruction"])
+        self.assertTrue(result["saved"])
+
+    def test_v31_restore_fresh_durable_snapshot_writes_runtime_master(self):
+        snapshot = {
+            "source": "SUPABASE_TEST",
+            "generated_at": main._v29_now(),
+            "received_at": main._v29_now(),
+            "options_rows": [{"ticker": "QQQ", "strike": 700}],
+            "technical_snapshot": {"QQQ": {"score": 80}},
+            "market": {"is_regular_market_open": False},
+        }
+        saved = {
+            **snapshot,
+            "rows_found": 1,
+            "technical_available": True,
+            "received_at": main._v29_now(),
+        }
+
+        with patch.object(main, "supabase_enabled", return_value=True), patch.object(
+            main,
+            "supabase_fetch_single_row",
+            return_value={"snapshot": snapshot, "updated_at": main._v29_now()},
+        ), patch.object(main, "_v28_write_master", return_value=saved) as write_master:
+            result = main._v31_restore_durable_snapshot(force=True)
+
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["status"], "RESTORED")
+        self.assertEqual(result["rows_found"], 1)
+        write_master.assert_called_once()
+
+    def test_v31_restore_rejects_stale_durable_snapshot(self):
+        snapshot = {
+            "source": "SUPABASE_TEST",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "received_at": "2026-01-01T00:00:00+00:00",
+            "options_rows": [{"ticker": "QQQ", "strike": 700}],
+            "technical_snapshot": {"QQQ": {"score": 80}},
+        }
+
+        with patch.object(main, "supabase_enabled", return_value=True), patch.object(
+            main,
+            "supabase_fetch_single_row",
+            return_value={"snapshot": snapshot, "updated_at": "2026-01-01T00:00:00+00:00"},
+        ), patch.object(main, "_v28_write_master") as write_master:
+            result = main._v31_restore_durable_snapshot(force=True)
+
+        self.assertFalse(result["restored"])
+        self.assertEqual(result["status"], "STALE")
+        write_master.assert_not_called()
 
     def test_v31_pipeline_status_explains_missing_master_snapshot(self):
         empty_master = {
