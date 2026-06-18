@@ -1,6 +1,8 @@
 import unittest
+import importlib.util
 import sys
 import types
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -68,7 +70,20 @@ def _install_import_stubs():
 
 _install_import_stubs()
 
-from app import main
+
+def _load_main_module():
+    app_path = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    spec = importlib.util.spec_from_file_location("trading_engine_main_for_contract_tests", app_path)
+    if spec is None:
+        raise RuntimeError("unable to load app/main.py")
+    module = importlib.util.module_from_spec(spec)
+    module.__dict__["__file__"] = str(app_path)
+    source = "from __future__ import annotations\n" + app_path.read_text()
+    exec(compile(source, str(app_path), "exec"), module.__dict__)
+    return module
+
+
+main = _load_main_module()
 
 
 def _master_snapshot(rows):
@@ -151,6 +166,111 @@ class V29V30ContractGatingTests(unittest.TestCase):
         self.assertEqual(decision["selected_contract"]["delta"], -0.20)
         self.assertTrue(decision["selected_contract"]["manual_review_ready"])
         self.assertFalse(decision["selected_contract"]["can_operate"])
+
+    def test_strategy_context_selection_preserves_canslim(self):
+        contexts = {
+            "NAKED_PUT": {
+                "ticker": "QQQ",
+                "strategy_context": "NAKED_PUT",
+                "trend": "bullish",
+                "score": 82,
+                "received_at": "2026-06-17T20:00:00+00:00",
+            },
+            "COVERED_CALL": {
+                "ticker": "QQQ",
+                "strategy_context": "COVERED_CALL",
+                "trend": "neutral",
+                "score": 74,
+                "received_at": "2026-06-17T20:01:00+00:00",
+            },
+            "CANSLIM_FILTER": {
+                "ticker": "QQQ",
+                "strategy_context": "CANSLIM_FILTER",
+                "score": 42,
+                "canslim": {"passes": False, "score": 42, "rating": "FAIL"},
+                "received_at": "2026-06-17T20:02:00+00:00",
+            },
+        }
+        merged = main._strategy_signal_merge_contexts("QQQ", contexts)
+        technical = {"QQQ": merged}
+
+        naked_put = main._v29_technical_state("QQQ", technical, "NAKED_PUT")
+        covered_call = main._v29_technical_state("QQQ", technical, "COVERED_CALL")
+
+        self.assertEqual(naked_put["score"], 82)
+        self.assertEqual(naked_put["strategy_context"], "NAKED_PUT")
+        self.assertEqual(covered_call["score"], 74)
+        self.assertEqual(covered_call["strategy_context"], "COVERED_CALL")
+        self.assertFalse(naked_put["raw"]["canslim"]["passes"])
+
+    def test_strategy_context_sanitizer_excludes_sensitive_account_fields(self):
+        sanitized = main._strategy_signal_sanitize_snapshot({
+            "ticker": "QQQ",
+            "strategy_context": "NAKED_PUT",
+            "trend": "bullish",
+            "score": 80,
+            "account_id": "SHOULD_NOT_PERSIST",
+            "balance": 123456,
+            "token": "SHOULD_NOT_PERSIST",
+        })
+
+        self.assertEqual(sanitized["ticker"], "QQQ")
+        self.assertNotIn("account_id", sanitized)
+        self.assertNotIn("balance", sanitized)
+        self.assertNotIn("token", sanitized)
+
+    def test_canslim_failure_blocks_complete_entry(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"]["QQQ"]["canslim"] = {"passes": False, "score": 42}
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v29_decide_ticker("QQQ")
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertEqual(decision["main_blocker"], "CANSLIM_BLOCKED")
+        self.assertFalse(decision["manual_review_ready"])
+        self.assertFalse(decision["can_operate"])
+
+    def test_wait_options_priority_is_preserved_when_canslim_fails(self):
+        incomplete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": None,
+        }
+        master = _master_snapshot([incomplete_row])
+        master["technical"]["QQQ"]["canslim"] = {"passes": False, "score": 42}
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v29_decide_ticker("QQQ")
+
+        self.assertEqual(decision["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(decision["main_blocker"], "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY")
+        self.assertFalse(decision["manual_review_ready"])
 
 
 class V31CanonicalDecisionTests(unittest.TestCase):

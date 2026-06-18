@@ -9189,6 +9189,147 @@ def debug_routes_v15_1():
 # Removes older duplicate routes registered earlier in the file.
 # ============================================================
 
+from pathlib import Path as _strategy_signal_Path
+
+_STRATEGY_SIGNAL_CONTEXT_FILE = _strategy_signal_Path("runtime/strategy_signal_by_ticker_context.json")
+_STRATEGY_SIGNAL_CONTEXTS = {
+    "NAKED_PUT",
+    "CASH_SECURED_PUT",
+    "COVERED_CALL",
+    "IRON_CONDOR",
+    "FUTURES",
+    "CANSLIM_FILTER",
+    "GENERAL_TECHNICAL",
+}
+_STRATEGY_SIGNAL_SAFE_FIELDS = {
+    "ticker", "chart_ticker", "timeframe", "strategy_context", "trend", "score",
+    "rsi", "adx", "support_near", "resistance_near", "range_20d", "range_breakout",
+    "vwap_position", "volume_relative", "iv_rank", "iv_percentile", "earnings_soon",
+    "event_risk", "market_regime", "vix", "atr_pct", "opening_range_high",
+    "opening_range_low", "vwap_distance_atr", "relative_strength_ratio",
+    "market_direction_auto", "canslim", "canslim_score", "canslim_passes",
+    "canslim_rating", "source", "original_source", "contract_version", "received_at",
+    "saved_at", "engine_layer", "state", "grade", "conviction", "priority_score",
+    "final_decision", "v6_strategy", "master_score", "event", "event_code",
+    "decision_max_state", "decision_engine_version", "final_state", "main_blocker",
+    "blockers", "required_missing_fields", "decision_explanation", "decision",
+    "construction_status", "risk_status", "portfolio_status",
+}
+
+
+def _strategy_signal_context(payload):
+    context = str((payload or {}).get("strategy_context") or "GENERAL_TECHNICAL").upper().strip()
+    return context if context in _STRATEGY_SIGNAL_CONTEXTS else "GENERAL_TECHNICAL"
+
+
+def _strategy_signal_read_store():
+    try:
+        if not _STRATEGY_SIGNAL_CONTEXT_FILE.exists():
+            return {}
+        data = json.loads(_STRATEGY_SIGNAL_CONTEXT_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _strategy_signal_sanitize_snapshot(payload):
+    return {
+        key: value
+        for key, value in (payload or {}).items()
+        if key in _STRATEGY_SIGNAL_SAFE_FIELDS
+    }
+
+
+def _strategy_signal_merge_contexts(ticker, contexts):
+    ticker = str(ticker or "").upper().strip()
+    contexts = {
+        str(key).upper().strip(): dict(value)
+        for key, value in (contexts or {}).items()
+        if isinstance(value, dict)
+    }
+    technical_candidates = [value for key, value in contexts.items() if key != "CANSLIM_FILTER"]
+    technical_candidates.sort(
+        key=lambda value: str(value.get("received_at") or value.get("saved_at") or ""),
+        reverse=True,
+    )
+    merged = dict(technical_candidates[0]) if technical_candidates else {
+        "ticker": ticker,
+        "trend": "UNKNOWN",
+        "score": None,
+        "source": "STRATEGY_SIGNAL_CONTEXT_STORE",
+    }
+
+    canslim_snapshot = contexts.get("CANSLIM_FILTER")
+    if isinstance(canslim_snapshot, dict):
+        canslim = canslim_snapshot.get("canslim")
+        merged["canslim"] = dict(canslim) if isinstance(canslim, dict) else {
+            "passes": canslim_snapshot.get("canslim_passes"),
+            "score": canslim_snapshot.get("canslim_score") or canslim_snapshot.get("score"),
+            "rating": canslim_snapshot.get("canslim_rating"),
+        }
+        merged["canslim_received_at"] = canslim_snapshot.get("received_at")
+
+    merged["ticker"] = ticker
+    merged["strategy_context"] = merged.get("strategy_context") or "GENERAL_TECHNICAL"
+    merged["available_strategy_contexts"] = sorted(contexts.keys())
+    merged["by_strategy_context"] = contexts
+    merged["context_store_version"] = "strategy_context_store_v1"
+    return merged
+
+
+def _strategy_signal_sync_canonical(ticker, merged):
+    load_master = globals().get("_v28_load_master")
+    rows_from = globals().get("_v28_rows")
+    technical_from = globals().get("_v28_technical_map")
+    write_master = globals().get("_v28_write_master")
+    if not all(callable(fn) for fn in [load_master, rows_from, technical_from, write_master]):
+        return {"status": "DEFERRED", "reason": "canonical_helpers_not_ready"}
+
+    existing, _source = load_master()
+    existing = existing if isinstance(existing, dict) else {}
+    technical = technical_from(existing)
+    technical[ticker] = merged
+    market = existing.get("market") or existing.get("market_hours") or {}
+    saved = write_master({
+        "source": merged.get("source") or existing.get("source") or "TRADINGVIEW_STRATEGY_SIGNAL",
+        "generated_at": existing.get("generated_at") or merged.get("received_at"),
+        "options_rows": rows_from(existing),
+        "technical_snapshot": technical,
+        "market": market if isinstance(market, dict) else {},
+    })
+    return {
+        "status": "OK",
+        "technical_available": saved.get("technical_available"),
+        "tickers_detected": saved.get("tickers_detected"),
+    }
+
+
+def _strategy_signal_store_snapshot(payload):
+    ticker = str((payload or {}).get("ticker") or "").upper().strip()
+    context = _strategy_signal_context(payload)
+    store = _strategy_signal_read_store()
+    ticker_contexts = store.get(ticker) if isinstance(store.get(ticker), dict) else {}
+
+    clean_snapshot = _strategy_signal_sanitize_snapshot(payload)
+    clean_snapshot["ticker"] = ticker
+    clean_snapshot["strategy_context"] = context
+    ticker_contexts[context] = clean_snapshot
+    store[ticker] = ticker_contexts
+
+    _STRATEGY_SIGNAL_CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _STRATEGY_SIGNAL_CONTEXT_FILE.write_text(json.dumps(store, indent=2, ensure_ascii=False, default=str))
+    merged = _strategy_signal_merge_contexts(ticker, ticker_contexts)
+    canonical = _strategy_signal_sync_canonical(ticker, merged)
+    return {
+        "ticker": ticker,
+        "strategy_context": context,
+        "available_strategy_contexts": merged.get("available_strategy_contexts", []),
+        "merged_snapshot": merged,
+        "canonical": canonical,
+        "path": str(_STRATEGY_SIGNAL_CONTEXT_FILE),
+    }
+
+
 async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
     verify_webhook_secret(x_webhook_secret)
 
@@ -9215,6 +9356,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     parsed.update({
         "ticker": ticker,
         "timeframe": timeframe,
+        "strategy_context": _strategy_signal_context(parsed),
         "received_at": now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
         "source": "TECHNICAL_SNAPSHOT",
@@ -9240,8 +9382,11 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "master_score": classification.get("master_score"),
     })
 
+    context_storage = _strategy_signal_store_snapshot(parsed)
+    merged_snapshot = context_storage["merged_snapshot"]
     trade_store[ticker][timeframe] = parsed
-    trade_store[ticker]["technical_snapshot"] = parsed
+    trade_store[ticker]["technical_snapshot"] = merged_snapshot
+    trade_store[ticker]["technical_snapshots_by_context"] = merged_snapshot.get("by_strategy_context", {})
 
     storage_result, unified = safe_persist_and_context(ticker, parsed)
     outcome_event_storage = save_intraday_futures_alert_event(parsed)
@@ -9253,6 +9398,10 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "message": f"Normalized technical snapshot received for {ticker} {timeframe}",
         "ticker": ticker,
         "timeframe": timeframe,
+        "strategy_context": parsed.get("strategy_context"),
+        "available_strategy_contexts": context_storage.get("available_strategy_contexts"),
+        "context_storage_version": "strategy_context_store_v1",
+        "canonical_context_sync": context_storage.get("canonical"),
         "storage": storage_result,
         "classification_state": parsed.get("state"),
         "final_decision": parsed.get("final_decision"),
@@ -9313,6 +9462,33 @@ def debug_routes_v15_2():
         "technical_snapshot_routes": technical_snapshot_routes,
         "routes": sorted([route.path for route in app.routes]),
         "expected": "Only one POST /technical_snapshot route should exist and it should be technical_snapshot_forced_v15_2."
+    }
+
+
+@app.get("/strategy_signal_contract")
+def strategy_signal_contract():
+    return {
+        "contract_version": "strategy_signal_contract_v1",
+        "context_store_version": "strategy_context_store_v1",
+        "technical_endpoint": "/technical_snapshot",
+        "strategy_contexts": sorted(_STRATEGY_SIGNAL_CONTEXTS - {"GENERAL_TECHNICAL"}),
+        "required_fields": ["ticker", "timeframe", "strategy_context", "trend", "score"],
+        "futures_ticker_note": "Use the canonical IBKR ticker (MNQ/NQ/MES/ES); chart_ticker may preserve the TradingView symbol.",
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/strategy_signal_context/{ticker}")
+def strategy_signal_context_status(ticker: str):
+    ticker = str(ticker or "").upper().strip()
+    store = _strategy_signal_read_store()
+    contexts = store.get(ticker) if isinstance(store.get(ticker), dict) else {}
+    return {
+        "ticker": ticker,
+        "status": "OK" if contexts else "NO_CONTEXT_SIGNALS",
+        "available_strategy_contexts": sorted(contexts.keys()),
+        "merged_snapshot": _strategy_signal_merge_contexts(ticker, contexts),
+        "not_order_instruction": True,
     }
 
 # END SUPER ENGINE BOLSA — V15.2 PATCH
@@ -17822,6 +17998,7 @@ _V29_MIN_BID = 0.05
 _V29_MIN_ASK = 0.05
 _V29_MIN_OPTION_SCORE = 70
 _V29_MIN_TECH_SCORE = 65
+_CANSLIM_MIN_SCORE = 70
 
 
 def _v29_now():
@@ -18218,9 +18395,39 @@ def _v29_best_row_for_ticker(ticker, rows):
     return best, enriched, executable
 
 
-def _v29_technical_state(ticker, technical):
+def _v29_technical_state(ticker, technical, strategy="UNKNOWN"):
     ticker = _v29_safe_upper(ticker)
-    t = technical.get(ticker) or {}
+    root = technical.get(ticker) or {}
+    contexts = root.get("by_strategy_context") if isinstance(root.get("by_strategy_context"), dict) else {}
+    strategy = _v29_safe_upper(strategy, "UNKNOWN")
+    context_preferences = {
+        "NAKED_PUT": ["NAKED_PUT", "CASH_SECURED_PUT"],
+        "CASH_SECURED_PUT": ["CASH_SECURED_PUT", "NAKED_PUT"],
+        "COVERED_CALL": ["COVERED_CALL"],
+        "IRON_CONDOR": ["IRON_CONDOR"],
+        "FUTURES": ["FUTURES"],
+        "FUTURES_PRO": ["FUTURES"],
+    }
+
+    selected = None
+    selected_context = None
+    for context in context_preferences.get(strategy, []):
+        candidate = contexts.get(context)
+        if isinstance(candidate, dict):
+            selected = candidate
+            selected_context = context
+            break
+
+    t = dict(root)
+    if selected:
+        t.update(selected)
+        t["selected_strategy_context"] = selected_context
+    if isinstance(root.get("canslim"), dict):
+        t["canslim"] = dict(root.get("canslim"))
+    if contexts:
+        t["by_strategy_context"] = contexts
+        t["available_strategy_contexts"] = sorted(contexts.keys())
+
     score = _v29_safe_float(t.get("score") or t.get("technical_score"), None)
     trend = _v29_safe_upper(t.get("trend") or t.get("bias") or t.get("technical_bias"), "UNKNOWN")
 
@@ -18231,7 +18438,55 @@ def _v29_technical_state(ticker, technical):
         "confirmed": confirmed,
         "score": score,
         "trend": trend,
+        "strategy_context": t.get("selected_strategy_context") or t.get("strategy_context"),
+        "available_strategy_contexts": t.get("available_strategy_contexts", []),
         "raw": t,
+    }
+
+
+def _v29_canslim_gate(technical_state, strategy):
+    strategy = _v29_safe_upper(strategy, "UNKNOWN")
+    if strategy in ["FUTURES", "FUTURES_PRO", "MNQ", "NQ", "MES", "ES"]:
+        return {
+            "applicable": False,
+            "status": "NOT_APPLICABLE",
+            "ok": True,
+            "blockers": [],
+            "score": None,
+            "passes": None,
+        }
+
+    raw = technical_state.get("raw") if isinstance(technical_state, dict) else {}
+    canslim = raw.get("canslim") if isinstance(raw, dict) else None
+    if not isinstance(canslim, dict):
+        return {
+            "applicable": True,
+            "status": "NOT_PROVIDED",
+            "ok": True,
+            "blockers": [],
+            "score": None,
+            "passes": None,
+        }
+
+    score = _v29_safe_float(canslim.get("score") or canslim.get("rating_score"), None)
+    passes = canslim.get("passes")
+    if not isinstance(passes, bool):
+        passes = score >= _CANSLIM_MIN_SCORE if score is not None else None
+
+    blockers = []
+    if passes is False:
+        blockers.append("CANSLIM_BLOCKED")
+    elif score is not None and score < _CANSLIM_MIN_SCORE:
+        blockers.append("CANSLIM_SCORE_BELOW_MIN")
+
+    return {
+        "applicable": True,
+        "status": "PASS" if not blockers else "BLOCKED",
+        "ok": not blockers,
+        "blockers": blockers,
+        "score": score,
+        "passes": passes,
+        "minimum_score": _CANSLIM_MIN_SCORE,
     }
 
 
@@ -18272,7 +18527,8 @@ def _v29_decide_ticker(ticker):
     market = _v29_market_state(master)
 
     best, ticker_rows, executable_rows = _v29_best_row_for_ticker(ticker, rows)
-    tech_state = _v29_technical_state(ticker, technical)
+    best_strategy = _v29_safe_upper((best or {}).get("strategy"), "UNKNOWN")
+    tech_state = _v29_technical_state(ticker, technical, best_strategy)
 
     if not best:
         return {
@@ -18335,8 +18591,9 @@ def _v29_decide_ticker(ticker):
     market_ok = bool(market.get("is_regular_market_open")) and bool(market.get("options_bidask_expected"))
     technical_ok = tech_state["confirmed"]
     options_ok = q["executable"]
+    canslim_gate = _v29_canslim_gate(tech_state, strategy)
 
-    if market_ok and technical_ok and options_ok:
+    if market_ok and technical_ok and options_ok and canslim_gate["ok"]:
         final_state = "ENTRY_READY"
         decision = "ENTRY_READY"
         can_operate = False
@@ -18368,6 +18625,14 @@ def _v29_decide_ticker(ticker):
         severity = "yellow"
         blocker = "TECHNICAL_NOT_CONFIRMED"
         action = f"{ticker}: opciones completas, pero falta confirmación técnica."
+    elif not canslim_gate["ok"]:
+        final_state = "RISK_BLOCKED"
+        decision = "RISK_BLOCKED"
+        can_operate = False
+        manual_review_ready = False
+        severity = "red"
+        blocker = canslim_gate["blockers"][0]
+        action = f"{ticker}: contrato y técnico completos, pero el filtro CANSLIM bloquea la entrada."
     else:
         final_state = "RADAR"
         decision = "RADAR"
@@ -18403,7 +18668,10 @@ def _v29_decide_ticker(ticker):
         "options_score": options_score,
         "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
         "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
+        "risk_status": "RISK_BLOCKED" if not canslim_gate["ok"] else "PASS",
+        "canslim": canslim_gate,
         "main_blocker": blocker,
+        "blockers": [blocker] if blocker else [],
         "action": action,
         "executive_summary": executive_summary,
         "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
