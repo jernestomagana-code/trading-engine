@@ -95,6 +95,7 @@ def assert_routes(app_module):
         "/v29_dashboard",
         "/v29_dashboard/{ticker}",
         "/v31_system_status",
+        "/v31_ingest_snapshot",
         "/v31_trade_decision/{ticker}",
         "/gpt_v31_trade_decision/{ticker}",
         "/strategy_signal_contract",
@@ -158,6 +159,23 @@ async def run_case(app_module, name, snapshot, expected_state, expected_blocker=
 async def smoke() -> None:
     app_module = load_app_module()
     assert_routes(app_module)
+
+    app_module.SNAPSHOT_INGEST_TOKEN = "local-smoke-test-token"
+    try:
+        await app_module.v31_ingest_snapshot(master_snapshot(option_row()), None, None, None)
+        raise AssertionError("V31 ingest accepted a request without its configured token")
+    except Exception as exc:
+        if getattr(exc, "status_code", None) != 401:
+            raise
+
+    ingest = await app_module.v31_ingest_snapshot(
+        master_snapshot(option_row()),
+        "local-smoke-test-token",
+        None,
+        None,
+    )
+    if ingest.get("engine") != "V31_CANONICAL_SNAPSHOT_INGEST":
+        raise AssertionError(f"unexpected V31 ingest response: {ingest}")
 
     cases = [
         ("entry_ready", master_snapshot(option_row()), "ENTRY_READY", None),

@@ -4,6 +4,7 @@ import time
 import math
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import nest_asyncio
 import sys
 from pathlib import Path
@@ -81,6 +82,7 @@ if not _V283_INGEST_PATH.startswith("/"):
     _V283_INGEST_PATH = "/" + _V283_INGEST_PATH
 
 _V283_INGEST_URL = _V283_REMOTE_BASE_URL + _V283_INGEST_PATH
+_V283_INGEST_TOKEN = _v283_os.environ.get("TRADING_ENGINE_INGEST_TOKEN", "")
 
 def _v283_now():
     return _v283_datetime.now(_v283_timezone.utc).isoformat()
@@ -259,21 +261,22 @@ def _v283_publish_to_v28():
         "generated_at": _v283_now(),
         "options_rows": rows,
         "technical_snapshot": tech,
-        "market": {
-            "status": "REGULAR_OPTIONS_SESSION",
-            "label": "Mercado abierto: opciones en ventana operable",
-            "is_regular_market_open": True,
-            "options_bidask_expected": True,
-            "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26",
-            "generated_at": _v283_now()
-        },
+        "market": bridge_market_snapshot("IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26"),
         "bridge_status": "LIVE_IBKR_AFTER_V26_PUBLISH",
         "runtime_files_seen": sorted(list(runtime_data.keys())),
         "not_order_instruction": True,
     }
 
     try:
-        resp = _v283_requests.post(_V283_INGEST_URL, json=payload, timeout=20)
+        headers = {}
+        if _V283_INGEST_TOKEN:
+            headers["X-Snapshot-Ingest-Token"] = _V283_INGEST_TOKEN
+        resp = _v283_requests.post(
+            _V283_INGEST_URL,
+            json=payload,
+            headers=headers,
+            timeout=20,
+        )
         ok = 200 <= resp.status_code < 300
         print(
             "V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED"
@@ -786,18 +789,31 @@ def ibkr_market_is_open_for_options():
     Sirve para no castigar bid/ask faltante cuando el mercado está cerrado.
     """
     try:
-        now = datetime.now(timezone.utc)
-        # NY regular market: 9:30-16:00 ET.
-        # Aproximación simple usando UTC:
-        # Durante horario estándar: 14:30-21:00 UTC.
-        # Durante horario de verano: 13:30-20:00 UTC.
-        # Usamos ventana amplia para evitar falsos negativos.
-        weekday = now.weekday() < 5
-        minutes_utc = now.hour * 60 + now.minute
-        open_wide = (13 * 60 + 25) <= minutes_utc <= (21 * 60 + 5)
-        return weekday and open_wide
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        weekday = now_et.weekday() < 5
+        minutes_et = now_et.hour * 60 + now_et.minute
+        regular_session = (9 * 60 + 30) <= minutes_et < (16 * 60)
+        return weekday and regular_session
     except Exception:
         return False
+
+
+def bridge_market_snapshot(source):
+    """Return a conservative session estimate for downstream decision gates."""
+    is_open = ibkr_market_is_open_for_options()
+    return {
+        "status": "REGULAR_OPTIONS_SESSION" if is_open else "OUTSIDE_REGULAR_OPTIONS_SESSION",
+        "label": (
+            "Mercado abierto: opciones en ventana regular"
+            if is_open
+            else "Fuera de la sesion regular de opciones"
+        ),
+        "is_regular_market_open": is_open,
+        "options_bidask_expected": is_open,
+        "source": source,
+        "generated_at": now_iso(),
+        "calendar_precision": "WEEKDAY_AND_US_EASTERN_SESSION_ESTIMATE",
+    }
 
 
 def market_closed_bidask_note():
@@ -3172,19 +3188,10 @@ print("Robust stock price fallback enabled")
 print("")
 
 
-# === V26 AUTO PUBLISH CALL ===
-try:
-    _v26_print_remote_publish_status(extra_payload={'cycle': 'auto'})
-except Exception as _v26_auto_e:
-    print(f'V26 auto publish non-fatal error: {_v26_auto_e}')
-while True:
+def run_bridge_cycle():
+    """Collect one IBKR cycle and publish the resulting runtime snapshot."""
     print("")
     print("=========================================")
-    # V28.3 HOOK AFTER V26 REMOTE PUBLISH - FALLBACK
-    try:
-        _v283_publish_to_v28()
-    except Exception as _v283_hook_error:
-        print(f"V28.3 hook error: {_v283_hook_error}")
     print("NUEVO CICLO V18_1_REMOTE_SNAPSHOT_INGEST")
     print("=========================================")
 
@@ -3207,25 +3214,22 @@ while True:
                     print("")
                     print("V18 DECISION API SNAPSHOT UPDATED")
                     print(f"NEXT: {nba.get('ticker')} | {nba.get('strategy')} | {nba.get('decision')} | can_operate:{nba.get('can_operate')}")
+                else:
+                    print("")
+                    print("V18 DECISION API SNAPSHOT UPDATED | No next_best_action")
                 try:
                     print(f"REMOTE INGEST: {v18_remote.get('posted')} | status:{v18_remote.get('status')} | url:{v18_remote.get('url', '')}")
                 except Exception:
                     pass
-                else:
-                    print("")
-                    print("V18 DECISION API SNAPSHOT UPDATED | No next_best_action")
             except Exception as e:
                 print(f"V18 snapshot error: {e}")
         except Exception as e:
             print(f"V17 summary error: {e}")
-print(f"Esperando {LOOP_SECONDS} segundos...")
-print("")
-# V28 AUTO PUBLISH CALL INSERTED
-try:
-    _v28_publish_master_snapshot({'cycle': 'auto'})
-except Exception as _v28_pub_e:
-    print(f"V28 publish call error: {_v28_pub_e}")
-time.sleep(LOOP_SECONDS)
+
+    try:
+        _v283_publish_to_v28()
+    except Exception as publish_error:
+        print(f"V31 canonical publish call error: {publish_error}")
 
 
 # ============================================================
@@ -3521,15 +3525,7 @@ def _v28_bridge_extract_technical_snapshot(runtime_data):
     return tech
 
 def _v28_bridge_market_snapshot():
-    # Local IBKR bridge is source of truth for live cycle.
-    return {
-        "status": "REGULAR_OPTIONS_SESSION",
-        "label": "Mercado abierto: opciones en ventana operable",
-        "is_regular_market_open": True,
-        "options_bidask_expected": True,
-        "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
-        "generated_at": _v28_bridge_now(),
-    }
+    return bridge_market_snapshot("IBKR_BRIDGE_V28_AUTO_PUBLISHER")
 
 def _v28_publish_master_snapshot(extra_payload=None):
     if _v28_requests is None:
@@ -3579,3 +3575,36 @@ def _v28_publish_master_snapshot(extra_payload=None):
 # ============================================================
 # END V28 REMOTE MASTER SNAPSHOT AUTO PUBLISHER
 # ============================================================
+
+
+def run_bridge_forever():
+    """Run bridge cycles at a controlled cadence until interrupted."""
+    try:
+        while True:
+            cycle_started = time.monotonic()
+            try:
+                run_bridge_cycle()
+            except Exception as exc:
+                print(f"BRIDGE CYCLE ERROR: {exc}")
+
+            elapsed = time.monotonic() - cycle_started
+            wait_seconds = max(1.0, float(LOOP_SECONDS) - elapsed)
+            print(f"Esperando {wait_seconds:.1f} segundos...")
+            print("")
+            time.sleep(wait_seconds)
+    except KeyboardInterrupt:
+        print("Bridge detenido por el usuario.")
+    finally:
+        if ib.isConnected():
+            ib.disconnect()
+
+
+if __name__ == "__main__":
+    if "--once" in sys.argv:
+        try:
+            run_bridge_cycle()
+        finally:
+            if ib.isConnected():
+                ib.disconnect()
+    else:
+        run_bridge_forever()

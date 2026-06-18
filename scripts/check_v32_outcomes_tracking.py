@@ -87,6 +87,7 @@ def parity_payload():
 
 async def main_async() -> int:
     app = load_app_module()
+    app.SNAPSHOT_INGEST_TOKEN = "local-integrity-test-token"
     RUNTIME_DIR.mkdir(exist_ok=True)
 
     backups = {}
@@ -100,7 +101,14 @@ async def main_async() -> int:
             pass
 
     try:
-        ingest = await maybe_await(app.v28_ingest_snapshot(parity_payload()))
+        ingest = await maybe_await(
+            app.v28_ingest_snapshot(
+                parity_payload(),
+                "local-integrity-test-token",
+                None,
+                None,
+            )
+        )
         require(ingest.get("status") == "OK", f"v28 ingest failed: {ingest}")
 
         d1 = await maybe_await(app.v29_trade_decision("AAPL"))

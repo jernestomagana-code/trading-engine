@@ -10,6 +10,7 @@ import os
 import math
 import sys
 import hashlib
+import hmac
 from pathlib import Path
 import requests
 
@@ -292,12 +293,26 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
+SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISION_DESK_INGEST_TOKEN", "")
+REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 MONITOR_EMAIL_TO = os.getenv("MONITOR_EMAIL_TO") or os.getenv("PREMARKET_EMAIL_TO", "")
 MONITOR_EMAIL_FROM = os.getenv("MONITOR_EMAIL_FROM") or os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
+
+def require_snapshot_ingest_token(*provided_tokens):
+    if not REQUIRE_SNAPSHOT_INGEST_TOKEN:
+        return
+    if not SNAPSHOT_INGEST_TOKEN:
+        raise HTTPException(status_code=503, detail="Snapshot ingest token is required but not configured")
+    if not any(
+        token and hmac.compare_digest(str(token), SNAPSHOT_INGEST_TOKEN)
+        for token in provided_tokens
+    ):
+        raise HTTPException(status_code=401, detail="Unauthorized snapshot ingest")
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -14726,7 +14741,17 @@ def _v28_dashboard_html(tickers=None):
     return html
 
 @app.post("/v28_ingest_snapshot")
-async def v28_ingest_snapshot(payload: dict):
+async def v28_ingest_snapshot(
+    payload: dict,
+    x_snapshot_ingest_token: Optional[str] = Header(default=None),
+    x_decision_desk_token: Optional[str] = Header(default=None),
+    x_webhook_secret: Optional[str] = Header(default=None),
+):
+    require_snapshot_ingest_token(
+        x_snapshot_ingest_token,
+        x_decision_desk_token,
+        x_webhook_secret,
+    )
     saved = _v28_ingest_payload(payload)
     return _v28_ingest_response(saved)
 
@@ -16698,6 +16723,32 @@ async def strategy_signal_template(ticker: str = "QQQ", strategy_context: str = 
     }
 
 
+@app.post("/v31_ingest_snapshot")
+async def v31_ingest_snapshot(
+    payload: dict,
+    x_snapshot_ingest_token: Optional[str] = Header(default=None),
+    x_decision_desk_token: Optional[str] = Header(default=None),
+    x_webhook_secret: Optional[str] = Header(default=None),
+):
+    require_snapshot_ingest_token(
+        x_snapshot_ingest_token,
+        x_decision_desk_token,
+        x_webhook_secret,
+    )
+    saved = _v28_ingest_payload(
+        payload,
+        ingest_engine="V31_CANONICAL_SNAPSHOT_INGEST",
+        ingest_path="/v31_ingest_snapshot",
+    )
+    response = _v28_ingest_response(saved)
+    response.update({
+        "engine": "V31_CANONICAL_SNAPSHOT_INGEST",
+        "snapshot_version": _V31_SNAPSHOT_VERSION,
+        "not_order_instruction": True,
+    })
+    return response
+
+
 @app.get("/v31_system_status")
 async def v31_system_status():
     master = _v29_discover_master_snapshot()
@@ -16726,6 +16777,7 @@ async def v31_system_status():
         },
         "not_order_instruction": True,
         "endpoints": {
+            "ingest": "/v31_ingest_snapshot",
             "trade_decision_example": "/v31_trade_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "source_status": "/v29_system_status",

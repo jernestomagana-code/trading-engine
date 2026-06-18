@@ -149,6 +149,7 @@ def resolve_runtime_path(value):
 
 async def main_async() -> int:
     app = load_app_module()
+    app.SNAPSHOT_INGEST_TOKEN = "local-integrity-test-token"
     RUNTIME_DIR.mkdir(exist_ok=True)
 
     backups = {}
@@ -163,7 +164,14 @@ async def main_async() -> int:
         require(any(item.get("engine") == "V29_FINAL_DECISION_QUALITY_ENGINE" for item in canonical), "inventory missing V29 canonical engine")
         require(any(item.get("engine") == "V22_UNIFIED_TRADING_DECISION_ENGINE" for item in legacy), "inventory missing V22 legacy engine")
 
-        v28_response = await maybe_await(app.v28_ingest_snapshot(parity_payload()))
+        v28_response = await maybe_await(
+            app.v28_ingest_snapshot(
+                parity_payload(),
+                "local-integrity-test-token",
+                None,
+                None,
+            )
+        )
         require(v28_response.get("status") == "OK", f"v28 ingest failed: {v28_response}")
         v28_summary = snapshot_summary()
         v28_decision = app._v29_decide_ticker("AAPL")

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import py_compile
+import ast
 import importlib.util
 import json
 import os
@@ -247,6 +248,46 @@ def compile_available_files() -> list[str]:
     return errors
 
 
+def run_bridge_execution_guard() -> list[str]:
+    bridge_path = ROOT / "ibkr_bridge.py"
+    tree = ast.parse(bridge_path.read_text(), filename=str(bridge_path))
+    failures: list[str] = []
+
+    if any(isinstance(node, ast.While) for node in tree.body):
+        failures.append("ibkr_bridge.py must not execute a while loop at module scope")
+
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for required in ["run_bridge_cycle", "run_bridge_forever", "_v283_publish_to_v28"]:
+        if required not in functions:
+            failures.append(f"ibkr_bridge.py missing executable bridge function: {required}")
+
+    forever = functions.get("run_bridge_forever")
+    if forever is not None:
+        has_loop = any(isinstance(node, ast.While) for node in ast.walk(forever))
+        has_sleep = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "time"
+            and node.func.attr == "sleep"
+            for node in ast.walk(forever)
+        )
+        if not has_loop or not has_sleep:
+            failures.append("run_bridge_forever must contain both its loop and controlled sleep")
+
+    source = bridge_path.read_text()
+    if '"is_regular_market_open": True' in source or '"options_bidask_expected": True' in source:
+        failures.append("ibkr_bridge.py must not hardcode the options market as open")
+
+    if not failures:
+        print("Validated bridge entrypoint, cadence, and market-state guardrails.")
+    return failures
+
+
 def load_app_module():
     sys.dont_write_bytecode = True
     app_path = ROOT / "app" / "main.py"
@@ -468,6 +509,7 @@ def main() -> int:
     failures: list[str] = []
     failures.extend(run_fixture_guard())
     failures.extend(compile_available_files())
+    failures.extend(run_bridge_execution_guard())
     failures.extend(run_runtime_privacy_guard())
     failures.extend(run_strategy_signal_contract_guard())
     failures.extend(run_tradingview_pine_guard())
