@@ -16,6 +16,7 @@ def load_quote_helpers():
         "calculate_spread_pct",
         "data_quality_for_option",
         "normalize_option_quote_fields",
+        "option_market_data_score",
     }
     nodes = [
         node
@@ -86,6 +87,32 @@ class IbkrOptionQuoteNormalizationTests(unittest.TestCase):
         self.assertIsNone(quote["spread"])
         self.assertIsNone(quote["spread_pct"])
         self.assertEqual(quote["data_quality"], "PRICE_WITH_GREEKS_NO_BIDASK")
+
+    def test_market_data_score_prefers_executable_quote(self):
+        helpers = load_quote_helpers()
+        partial = {
+            "bid": None,
+            "ask": None,
+            "mid": 0.32,
+            "spread": None,
+            "spread_pct": None,
+            "greeks": {"delta": -0.06},
+            "data_quality": "PRICE_WITH_GREEKS_NO_BIDASK",
+        }
+        full = {
+            "bid": 1.2,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "greeks": {"delta": -0.2},
+            "data_quality": "FULL_WITH_GREEKS",
+        }
+
+        self.assertGreater(
+            helpers["option_market_data_score"](full),
+            helpers["option_market_data_score"](partial),
+        )
 
 
 if __name__ == "__main__":
