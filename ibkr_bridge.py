@@ -1018,7 +1018,13 @@ def calculate_spread_pct(bid, ask, mid):
 
 def data_quality_for_option(bid, ask, mid, greeks):
     has_price = mid is not None and mid > 0
-    has_bid_ask = bid is not None and ask is not None and bid > 0 and ask > 0
+    has_bid_ask = (
+        bid is not None
+        and ask is not None
+        and bid > 0
+        and ask > 0
+        and ask >= bid
+    )
     has_delta = greeks.get("delta") is not None
     has_iv = greeks.get("iv") is not None
 
@@ -1035,6 +1041,65 @@ def data_quality_for_option(bid, ask, mid, greeks):
         return "PARTIAL_OPTION_DATA"
 
     return "NO_VALID_OPTION_PRICE"
+
+
+def normalize_option_quote_fields(bid, ask, last, close, market_price, greeks):
+    """
+    Pure V30 quote normalization for executable option fields.
+
+    - Sanitizes IBKR placeholder values such as nan, -1, and 0.
+    - Uses bid/ask only when both are positive and ordered.
+    - Computes mid/spread/spread_pct consistently.
+    - Allows a non-executable mid from market/last/close, but never invents
+      bid/ask/spread from it.
+    """
+    bid = clean(bid)
+    ask = clean(ask)
+    last = clean(last)
+    close = clean(close)
+    market_price = clean(market_price)
+    greeks = greeks or {}
+
+    has_ordered_bidask = (
+        bid is not None
+        and ask is not None
+        and ask >= bid
+    )
+
+    mid = None
+    spread = None
+    if has_ordered_bidask:
+        mid = safe_round((bid + ask) / 2, 4)
+        spread = safe_round(ask - bid, 4)
+    elif market_price:
+        mid = market_price
+    elif last:
+        mid = last
+    elif close:
+        mid = close
+
+    spread_pct = calculate_spread_pct(
+        bid=bid,
+        ask=ask,
+        mid=mid,
+    )
+
+    return {
+        "bid": bid,
+        "ask": ask,
+        "last": last,
+        "close": close,
+        "market_price": market_price,
+        "mid": mid,
+        "spread": spread,
+        "spread_pct": spread_pct,
+        "data_quality": data_quality_for_option(
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            greeks=greeks,
+        ),
+    }
 
 
 # ============================================================
@@ -1818,37 +1883,23 @@ def request_option_market_data(contract):
 
         ib.sleep(OPTION_MARKET_DATA_WAIT_SECONDS)
 
-        bid = clean(ticker.bid)
-        ask = clean(ticker.ask)
-        last = clean(ticker.last)
-        close = clean(ticker.close)
-        market_price = clean(ticker.marketPrice())
-
-        mid = None
-
-        if bid and ask:
-            mid = safe_round((bid + ask) / 2, 4)
-
-        elif market_price:
-            mid = market_price
-
-        elif last:
-            mid = last
-
-        elif close:
-            mid = close
-
         greeks = option_greeks(ticker)
-
-        spread_pct = calculate_spread_pct(
-            bid=bid,
-            ask=ask,
-            mid=mid
+        quote = normalize_option_quote_fields(
+            bid=getattr(ticker, "bid", None),
+            ask=getattr(ticker, "ask", None),
+            last=getattr(ticker, "last", None),
+            close=getattr(ticker, "close", None),
+            market_price=ticker.marketPrice(),
+            greeks=greeks,
         )
-
-        spread = None
-        if bid is not None and ask is not None and ask >= bid:
-            spread = safe_round(ask - bid, 4)
+        bid = quote["bid"]
+        ask = quote["ask"]
+        last = quote["last"]
+        close = quote["close"]
+        market_price = quote["market_price"]
+        mid = quote["mid"]
+        spread_pct = quote["spread_pct"]
+        spread = quote["spread"]
 
         volume = clean(getattr(ticker, "volume", None))
         if getattr(contract, "right", "") == "P":
@@ -1861,12 +1912,7 @@ def request_option_market_data(contract):
             option_volume = volume
             open_interest = None
 
-        data_quality = data_quality_for_option(
-            bid=bid,
-            ask=ask,
-            mid=mid,
-            greeks=greeks
-        )
+        data_quality = quote["data_quality"]
 
         try:
             ib.cancelMktData(contract)
