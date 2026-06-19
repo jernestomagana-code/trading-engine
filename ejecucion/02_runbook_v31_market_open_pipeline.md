@@ -15,23 +15,27 @@ Este flujo es decision support solamente. No coloca ordenes, no autoriza ejecuci
 - Repo local ubicado en:
 
 ```bash
-cd /Users/ernestomagana04/Projects/trading-engine
+cd /private/tmp/stock-ultimus-p0
 ```
+
+> Si se trabaja desde otro clon, confirmar que `git status --short --branch`
+> muestra `main...origin/main` y que contiene `tools/v31_operational_check.py`.
 
 Confirmar Render:
 
 ```bash
 curl -sS https://trading-engine-p097.onrender.com/v31_data_pipeline_status
 curl -sS https://trading-engine-p097.onrender.com/v31_monitor_notify/preview
+python3 tools/v31_operational_check.py --ticker SPY
 ```
 
 Estado esperado antes de publicar datos:
 
-- `status`: `NO_MASTER_SNAPSHOT`
+- `status`: `NO_MASTER_SNAPSHOT` u `OK` con snapshot previo
 - `canonical_ingest`: `/v31_ingest_snapshot`
-- `master_snapshot_available`: `false`
 - `preview.email_sent`: `false`
 - `preview.not_order_instruction`: `true`
+- `v31_operational_check.ok`: `true`
 
 ## Paso 1. Revisar target activo del bridge
 
@@ -67,12 +71,48 @@ entonces hay datos historicos en `runtime/`, pero no deben publicarse a producci
 
 No usar `--allow-stale` salvo prueba historica explicita.
 
-## Paso 3. Correr bridge local durante mercado
+## Paso 3. Diagnosticar quote de opcion antes del bridge completo
+
+Primero aislar IBKR option market data con una sola opcion. Esto no publica a
+Render y no coloca ordenes.
+
+Auto-seleccion de contrato SPY put cercano a 45 DTE y 10% OTM:
+
+```bash
+python3 tools/ibkr_option_quote_probe.py \
+  --ticker SPY \
+  --right P \
+  --target-dte 45 \
+  --otm-pct 0.10
+```
+
+Resultado util:
+
+- `readonly`: `true`
+- `not_order_instruction`: `true`
+- `best.data_quality`: idealmente `FULL_WITH_GREEKS`
+- `best.bid`, `best.ask`, `best.mid`, `best.spread`, `best.spread_pct`, `best.greeks.delta` presentes
+- `best.source` indica si gano `STREAM_TYPE_1`, `SNAPSHOT_TYPE_1`, `STREAM_TYPE_2`, etc.
+
+Si no hay `bid/ask`:
+
+- revisar errores IBKR en `errors`
+- verificar permisos de opciones en TWS/IBKR
+- probar si TWS muestra bid/ask para el contrato elegido
+- no continuar esperando `ENTRY_READY`; el sistema debe quedar en `WAIT_OPTIONS_DATA`
+
+## Paso 4. Correr bridge local durante mercado
 
 Con IBKR abierto:
 
 ```bash
-python3 ibkr_bridge.py
+TRADING_ENGINE_INGEST_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-snapshot-ingest -w)" \
+IBKR_PORT=7496 \
+IBKR_MARKET_DATA_TYPE=1 \
+IBKR_WATCHLIST=SPY \
+IBKR_OPTION_SYMBOLS=SPY \
+PYTHONUNBUFFERED=1 \
+python3 ibkr_bridge.py --once
 ```
 
 Esperar a que el bridge genere ciclo nuevo y runtime fresco.
@@ -82,6 +122,7 @@ Senales positivas en consola:
 - IBKR conectado correctamente.
 - Se generan filas de opciones.
 - Se actualizan snapshots runtime.
+- `option_source:` muestra que fuente de market data de opcion gano.
 - Aparece publicacion hacia V31:
 
 ```text
@@ -90,7 +131,30 @@ V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED | ok:True | status:200 | rows:... | techni
 
 Si el bridge falla antes de generar runtime, detener y revisar conexion IBKR antes de continuar.
 
-## Paso 4. Validar pipeline remoto despues del primer ciclo
+## Paso 5. Ejecutar compuerta operacional V31
+
+```bash
+TRADING_ENGINE_INGEST_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-snapshot-ingest -w)" \
+python3 tools/v31_operational_check.py \
+  --ticker SPY \
+  --run-bridge \
+  --require-open-data \
+  --min-rows 1
+```
+
+Resultado esperado:
+
+- `ok`: `true`
+- `bridge_once_completed`: `true`
+- `pipeline.rows_found >= 1`
+- `decision.final_state` distinto de `NO_DATA`
+- `decision.not_order_instruction`: `true`
+- `decision.can_operate`: `false`
+
+Si falla `rows_found_minimum` o `decision_not_no_data`, revisar primero
+`tools/ibkr_option_quote_probe.py`.
+
+## Paso 6. Validar pipeline remoto despues del primer ciclo
 
 ```bash
 curl -sS https://trading-engine-p097.onrender.com/v31_data_pipeline_status
@@ -111,7 +175,7 @@ Si aun aparece `NO_MASTER_SNAPSHOT`, revisar la consola del bridge:
 - cantidad de `rows`.
 - errores de red.
 
-## Paso 5. Validar frescura local como respaldo
+## Paso 7. Validar frescura local como respaldo
 
 En otra terminal:
 
@@ -128,13 +192,14 @@ Condiciones minimas:
 
 Si `stale` sigue en `true`, no publicar.
 
-## Paso 6. Publicar snapshot V31 manualmente solo como respaldo
+## Paso 8. Publicar snapshot V31 manualmente solo como respaldo
 
 El camino principal es la autopublicacion del bridge. Usar este paso solo si el bridge genero runtime fresco pero no logro publicar a Render.
 
 Solo cuando el dry-run indique `stale: false`:
 
 ```bash
+TRADING_ENGINE_INGEST_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-snapshot-ingest -w)" \
 python3 tools/publish_v31_snapshot_from_runtime.py --publish
 ```
 
@@ -144,7 +209,7 @@ Resultado esperado:
 - `status_code`: `200`
 - target: `https://trading-engine-p097.onrender.com/v31_ingest_snapshot`
 
-## Paso 7. Validar decisiones V31
+## Paso 9. Validar decisiones V31
 
 Ejemplos:
 
@@ -174,7 +239,7 @@ Si sigue `NO_DATA`, revisar:
 - `required_missing_fields`
 - `master_source`
 
-## Paso 8. Revisar monitor V31
+## Paso 10. Revisar monitor V31
 
 ```bash
 curl -sS https://trading-engine-p097.onrender.com/v31_monitor_status
@@ -191,7 +256,7 @@ Interpretacion:
 
 No usar `force=true` durante mercado salvo prueba explicita de canal de correo.
 
-## Paso 9. Revisar dashboard
+## Paso 11. Revisar dashboard
 
 Abrir:
 
@@ -209,11 +274,13 @@ Confirmar:
 ## Checklist rapido de market open
 
 - [ ] TWS/IB Gateway abierto y conectado.
-- [ ] Repo en `/Users/ernestomagana04/Projects/trading-engine`.
+- [ ] Repo en `/private/tmp/stock-ultimus-p0` o clon equivalente en `main`.
 - [ ] Render responde `/v31_data_pipeline_status`.
 - [ ] Bridge apunta a `/v31_ingest_snapshot`.
 - [ ] TradingView QQQ/SPY alertas activas si aplica.
-- [ ] Ejecutar `python3 ibkr_bridge.py`.
+- [ ] Ejecutar `python3 tools/ibkr_option_quote_probe.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10`.
+- [ ] Confirmar si hay `bid/ask/spread/spread_pct/delta`.
+- [ ] Ejecutar `python3 tools/v31_operational_check.py --ticker SPY --run-bridge --require-open-data --min-rows 1`.
 - [ ] Ver log `V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED`.
 - [ ] Confirmar `status: OK` en `/v31_data_pipeline_status`.
 - [ ] Confirmar `rows_found > 0`.
