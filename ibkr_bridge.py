@@ -626,6 +626,9 @@ OPTION_SECOND_PASS_WAIT_SECONDS = 5.0
 
 # Espera para fallback de market data en acciones
 STOCK_MARKET_DATA_WAIT_SECONDS = 2.0
+HISTORICAL_DATA_TIMEOUT_SECONDS = float(
+    _v283_os.environ.get("IBKR_HISTORICAL_DATA_TIMEOUT_SECONDS", "4")
+)
 
 # Mandamos opciones aunque estén incompletas, pero la decisión queda bloqueada.
 SEND_OPTIONS_WITHOUT_GREEKS = True
@@ -1050,7 +1053,9 @@ def get_price_snapshot_historical(symbol, contract):
     Si no hay precio vivo, intenta obtener último cierre histórico.
     Esto ayuda con casos como NFLX cuando reqTickers no devuelve precio.
     """
+    previous_timeout = getattr(ib, "RequestTimeout", 0)
     try:
+        ib.RequestTimeout = HISTORICAL_DATA_TIMEOUT_SECONDS
         bars = ib.reqHistoricalData(
             contract,
             endDateTime="",
@@ -1085,6 +1090,11 @@ def get_price_snapshot_historical(symbol, contract):
 
     except Exception:
         return None
+    finally:
+        try:
+            ib.RequestTimeout = previous_timeout
+        except Exception:
+            pass
 
 
 # ============================================================
