@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "ibkr_bridge.py"
 APP = ROOT / "app" / "main.py"
+GITIGNORE = ROOT / ".gitignore"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -64,6 +65,17 @@ class SnapshotIngestAuthTests(unittest.TestCase):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
         self.assertIn("verify_snapshot_ingest_token", ingest_calls)
+
+
+class RepositorySafetyTests(unittest.TestCase):
+    def test_sensitive_runtime_paths_are_gitignored(self):
+        ignored = GITIGNORE.read_text().splitlines()
+
+        self.assertIn("runtime/", ignored)
+        self.assertIn(".env", ignored)
+        self.assertIn(".env.*", ignored)
+        self.assertIn("!.env.example", ignored)
+        self.assertIn("*.log", ignored)
 
 
 if __name__ == "__main__":
