@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import json
 import html
@@ -211,6 +211,75 @@ def now_market():
     return datetime.now(MARKET_TZ)
 
 
+def observed_fixed_market_holiday(year, month, day):
+    holiday = datetime(year, month, day).date()
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def nth_weekday_date(year, month, weekday, occurrence):
+    current = datetime(year, month, 1).date()
+    while current.weekday() != weekday:
+        current += timedelta(days=1)
+    return current + timedelta(days=7 * (occurrence - 1))
+
+
+def last_weekday_date(year, month, weekday):
+    if month == 12:
+        current = datetime(year, 12, 31).date()
+    else:
+        current = datetime(year, month + 1, 1).date() - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def easter_date(year):
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime(year, month, day).date()
+
+
+def us_market_holiday_dates(year):
+    return {
+        observed_fixed_market_holiday(year, 1, 1),
+        nth_weekday_date(year, 1, 0, 3),
+        nth_weekday_date(year, 2, 0, 3),
+        easter_date(year) - timedelta(days=2),
+        last_weekday_date(year, 5, 0),
+        observed_fixed_market_holiday(year, 6, 19),
+        observed_fixed_market_holiday(year, 7, 4),
+        nth_weekday_date(year, 9, 0, 1),
+        nth_weekday_date(year, 11, 3, 4),
+        observed_fixed_market_holiday(year, 12, 25),
+    }
+
+
+def is_us_market_holiday(value=None):
+    try:
+        current = value or now_market()
+        current_date = current.date()
+        years = {current_date.year - 1, current_date.year, current_date.year + 1}
+        return any(current_date in us_market_holiday_dates(year) for year in years)
+    except Exception:
+        return False
+
+
 def market_open_today():
     now = now_market()
     return now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
@@ -222,7 +291,8 @@ def market_close_today():
 
 
 def is_market_weekday():
-    return now_market().weekday() < 5
+    current = now_market()
+    return current.weekday() < 5 and not is_us_market_holiday(current)
 
 
 def minutes_since_open():
@@ -235,6 +305,8 @@ def inside_execution_window():
 
 
 def market_session_state():
+    if is_us_market_holiday():
+        return "CLOSED_MARKET_HOLIDAY"
     if not is_market_weekday():
         return "CLOSED_WEEKEND"
     now = now_market()
@@ -4081,6 +4153,7 @@ def health():
             "market_timezone": "America/New_York",
             "session_state": market_session_state(),
             "execution_window": inside_execution_window(),
+            "market_holiday": is_us_market_holiday(),
             "minutes_since_open": minutes_since_open(),
             "initial_window_minutes": INITIAL_WINDOW_MINUTES,
         },
@@ -5048,6 +5121,7 @@ def debug_regime():
             "market_timezone": "America/New_York",
             "session_state": market_session_state(),
             "execution_window": inside_execution_window(),
+            "market_holiday": is_us_market_holiday(),
             "minutes_since_open": minutes_since_open(),
             "initial_window_minutes": INITIAL_WINDOW_MINUTES,
         },
@@ -10560,6 +10634,12 @@ def _v20_market_hours_status():
         options_expected = False
         next_check = "Próxima sesión hábil, después de 09:35 ET."
         label = "Mercado cerrado por fin de semana"
+    elif is_us_market_holiday(now):
+        status = "MARKET_HOLIDAY_CLOSED"
+        is_open = False
+        options_expected = False
+        next_check = "Revisar próxima sesión hábil, después de 09:35 ET."
+        label = "Mercado cerrado por feriado de EE.UU."
     elif current_time < market_open:
         status = "PRE_MARKET"
         is_open = False
@@ -10596,6 +10676,7 @@ def _v20_market_hours_status():
         "label": label,
         "is_regular_market_open": bool(is_open),
         "options_bidask_expected": bool(options_expected),
+        "market_holiday": bool(is_us_market_holiday(now)),
         "new_york_time": now.isoformat(),
         "next_check": next_check,
     }
@@ -18561,6 +18642,12 @@ def _v29_market_state(master):
     if not isinstance(market, dict):
         market = {}
 
+    market_holiday = bool(
+        market.get("market_holiday")
+        or market.get("is_market_holiday")
+        or str(market.get("status", "")).upper() == "MARKET_HOLIDAY_CLOSED"
+    )
+
     is_open = bool(
         market.get("is_regular_market_open") or
         market.get("regular_market_open") or
@@ -18573,11 +18660,16 @@ def _v29_market_state(master):
         is_open
     )
 
+    if market_holiday:
+        is_open = False
+        options_expected = False
+
     label = market.get("label") or market.get("status") or "UNKNOWN"
 
     return {
         "is_regular_market_open": is_open,
         "options_bidask_expected": options_expected,
+        "market_holiday": market_holiday,
         "label": label,
         "raw": market,
     }

@@ -2,7 +2,9 @@ import unittest
 import importlib.util
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
 
@@ -274,6 +276,43 @@ class V29V30ContractGatingTests(unittest.TestCase):
 
 
 class V31CanonicalDecisionTests(unittest.TestCase):
+    def test_cloud_market_calendar_treats_juneteenth_2026_as_closed(self):
+        juneteenth = datetime(2026, 6, 19, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+        regular_day = datetime(2026, 6, 22, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+
+        self.assertTrue(main.is_us_market_holiday(juneteenth))
+        self.assertFalse(main.is_us_market_holiday(regular_day))
+
+    def test_v20_market_hours_respects_us_market_holiday(self):
+        juneteenth = datetime(2026, 6, 19, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch.object(main, "_v20_now_ny", return_value=juneteenth):
+            status = main._v20_market_hours_status()
+
+        self.assertEqual(status["status"], "MARKET_HOLIDAY_CLOSED")
+        self.assertFalse(status["is_regular_market_open"])
+        self.assertFalse(status["options_bidask_expected"])
+        self.assertTrue(status["market_holiday"])
+
+    def test_v31_market_state_forces_closed_when_snapshot_marks_holiday(self):
+        master = {
+            "data": {
+                "market": {
+                    "status": "REGULAR_OPTIONS_SESSION",
+                    "is_regular_market_open": True,
+                    "options_bidask_expected": True,
+                    "market_holiday": True,
+                    "label": "Mercado cerrado por feriado de EE.UU.",
+                }
+            }
+        }
+
+        market = main._v29_market_state(master)
+
+        self.assertFalse(market["is_regular_market_open"])
+        self.assertFalse(market["options_bidask_expected"])
+        self.assertTrue(market["market_holiday"])
+
     def test_snapshot_ingest_requires_matching_configured_token(self):
         with patch.object(main, "REQUIRE_SNAPSHOT_INGEST_TOKEN", True), \
                 patch.object(main, "SNAPSHOT_INGEST_TOKEN", "test-token"):
