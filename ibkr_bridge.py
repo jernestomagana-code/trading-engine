@@ -615,6 +615,28 @@ MAX_OPTIONS_PER_SYMBOL = 8
 # 1 = live, 2 = frozen, 3 = delayed, 4 = delayed frozen
 MARKET_DATA_TYPE = int(_v283_os.environ.get("IBKR_MARKET_DATA_TYPE", "1"))
 
+
+def _env_int_sequence(name, default):
+    raw = _v283_os.environ.get(name, "")
+    values = []
+    if raw.strip():
+        for item in raw.split(","):
+            try:
+                value = int(item.strip())
+            except Exception:
+                continue
+            if value not in values:
+                values.append(value)
+    if not values:
+        values = list(default)
+    return values
+
+
+OPTION_MARKET_DATA_TYPE_SEQUENCE = _env_int_sequence(
+    "IBKR_OPTION_MARKET_DATA_TYPE_SEQUENCE",
+    [MARKET_DATA_TYPE, 2, 3, 4],
+)
+
 # ============================================================
 # CONTROL FLAGS
 # ============================================================
@@ -637,6 +659,9 @@ OPTION_MARKET_DATA_WAIT_SECONDS = float(
 )
 OPTION_SECOND_PASS_WAIT_SECONDS = float(
     _v283_os.environ.get("IBKR_OPTION_SECOND_PASS_WAIT_SECONDS", "5")
+)
+OPTION_SNAPSHOT_WAIT_SECONDS = float(
+    _v283_os.environ.get("IBKR_OPTION_SNAPSHOT_WAIT_SECONDS", "4")
 )
 
 # Espera para fallback de market data en acciones
@@ -1100,6 +1125,34 @@ def normalize_option_quote_fields(bid, ask, last, close, market_price, greeks):
             greeks=greeks,
         ),
     }
+
+
+def option_market_data_score(data):
+    data = data or {}
+    greeks = data.get("greeks") or {}
+    fields = [
+        data.get("bid"),
+        data.get("ask"),
+        data.get("mid"),
+        data.get("spread"),
+        data.get("spread_pct"),
+        greeks.get("delta"),
+    ]
+    complete = sum(1 for value in fields if value not in [None, "", "None"])
+    quality_rank = {
+        "FULL_WITH_GREEKS": 4,
+        "PRICE_WITH_GREEKS_NO_BIDASK": 3,
+        "PARTIAL_OPTION_DATA": 2,
+        "PRICE_ONLY_NO_GREEKS": 1,
+        "NO_VALID_OPTION_PRICE": 0,
+        "OPTION_MARKET_DATA_ERROR": -1,
+    }.get(str(data.get("data_quality") or ""), 0)
+    return (
+        complete,
+        quality_rank,
+        1 if data.get("bid") is not None and data.get("ask") is not None else 0,
+        1 if data.get("mid") is not None else 0,
+    )
 
 
 # ============================================================
@@ -1870,18 +1923,46 @@ def build_option_candidates(symbol, stock_price):
     return valid[:MAX_OPTIONS_PER_SYMBOL]
 
 
-def request_option_market_data(contract):
+def _empty_option_market_data(error=None, source="OPTION_MARKET_DATA_ERROR"):
+    out = {
+        "bid": None,
+        "ask": None,
+        "last": None,
+        "close": None,
+        "market_price": None,
+        "mid": None,
+        "spread_pct": None,
+        "spread": None,
+        "greeks": {
+            "iv": None,
+            "delta": None,
+            "gamma": None,
+            "theta": None,
+            "vega": None
+        },
+        "data_quality": "OPTION_MARKET_DATA_ERROR",
+        "volume": None,
+        "open_interest": None,
+        "market_data_source": source,
+    }
+    if error:
+        out["error"] = str(error)
+    return out
+
+
+def _request_option_market_data_once(contract, market_data_type, snapshot=False):
     ticker = None
 
     try:
+        ib.reqMarketDataType(market_data_type)
         ticker = ib.reqMktData(
             contract,
             genericTickList="100,101,106",
-            snapshot=False,
+            snapshot=bool(snapshot),
             regulatorySnapshot=False
         )
 
-        ib.sleep(OPTION_MARKET_DATA_WAIT_SECONDS)
+        ib.sleep(OPTION_SNAPSHOT_WAIT_SECONDS if snapshot else OPTION_MARKET_DATA_WAIT_SECONDS)
 
         greeks = option_greeks(ticker)
         quote = normalize_option_quote_fields(
@@ -1931,7 +2012,10 @@ def request_option_market_data(contract):
             "greeks": greeks,
             "data_quality": data_quality,
             "volume": option_volume,
-            "open_interest": open_interest
+            "open_interest": open_interest,
+            "market_data_source": (
+                f"IBKR_OPTION_{'SNAPSHOT' if snapshot else 'STREAM'}_TYPE_{market_data_type}"
+            ),
         }
 
     except Exception as e:
@@ -1941,27 +2025,49 @@ def request_option_market_data(contract):
         except Exception:
             pass
 
-        return {
-            "bid": None,
-            "ask": None,
-            "last": None,
-            "close": None,
-            "market_price": None,
-            "mid": None,
-            "spread_pct": None,
-            "spread": None,
-            "greeks": {
-                "iv": None,
-                "delta": None,
-                "gamma": None,
-                "theta": None,
-                "vega": None
-            },
-            "data_quality": "OPTION_MARKET_DATA_ERROR",
-            "volume": None,
-            "open_interest": None,
-            "error": str(e)
+        return _empty_option_market_data(
+            error=e,
+            source=f"IBKR_OPTION_{'SNAPSHOT' if snapshot else 'STREAM'}_TYPE_{market_data_type}_ERROR",
+        )
+
+
+def request_option_market_data(contract):
+    best = None
+    attempts = []
+
+    for market_data_type in OPTION_MARKET_DATA_TYPE_SEQUENCE:
+        attempts.append(_request_option_market_data_once(contract, market_data_type, snapshot=False))
+
+        if attempts[-1].get("data_quality") == "FULL_WITH_GREEKS":
+            best = attempts[-1]
+            break
+
+        attempts.append(_request_option_market_data_once(contract, market_data_type, snapshot=True))
+
+        if attempts[-1].get("data_quality") == "FULL_WITH_GREEKS":
+            best = attempts[-1]
+            break
+
+    if best is None and attempts:
+        best = max(attempts, key=option_market_data_score)
+
+    try:
+        ib.reqMarketDataType(MARKET_DATA_TYPE)
+    except Exception:
+        pass
+
+    if not best:
+        best = _empty_option_market_data()
+
+    best["market_data_attempts"] = [
+        {
+            "source": item.get("market_data_source"),
+            "data_quality": item.get("data_quality"),
+            "score": option_market_data_score(item),
         }
+        for item in attempts
+    ]
+    return best
 
 
 def liquidity_decision_cap(data_quality, spread_pct, mid):
@@ -2237,6 +2343,8 @@ def send_options_intelligence():
                     data_quality = option_data.get("data_quality")
                     volume = option_data.get("volume")
                     open_interest = option_data.get("open_interest")
+                    option_market_data_source = option_data.get("market_data_source")
+                    option_market_data_attempts = option_data.get("market_data_attempts")
 
                     if not SEND_OPTIONS_WITHOUT_GREEKS:
                         if data_quality != "FULL_WITH_GREEKS":
@@ -2323,6 +2431,8 @@ def send_options_intelligence():
                         "vega": greeks["vega"],
                         "volume": volume,
                         "open_interest": open_interest,
+                        "option_market_data_source": option_market_data_source,
+                        "option_market_data_attempts": option_market_data_attempts,
                         "can_operate": False,
                         "manual_review_ready": manual_review_ready,
                         "not_order_instruction": True,
@@ -2351,6 +2461,7 @@ def send_options_intelligence():
                         f"quality:{data_quality} cap:{decision_cap} "
                         f"score:{score} decision:{decision} "
                         f"underlying_source:{snap.get('price_source')} "
+                        f"option_source:{option_market_data_source} "
                         f"status:{status}"
                     )
 
