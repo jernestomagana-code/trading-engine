@@ -3,7 +3,7 @@ import requests
 import time
 import math
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import nest_asyncio
 import sys
@@ -841,24 +841,100 @@ def stock_contract(symbol):
 
 
 
-def ibkr_market_is_open_for_options():
+def _observed_fixed_market_holiday(year, month, day):
+    holiday = datetime(year, month, day).date()
+    if holiday.weekday() == 5:  # Saturday observed Friday
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:  # Sunday observed Monday
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _nth_weekday_date(year, month, weekday, occurrence):
+    current = datetime(year, month, 1).date()
+    while current.weekday() != weekday:
+        current += timedelta(days=1)
+    return current + timedelta(days=7 * (occurrence - 1))
+
+
+def _last_weekday_date(year, month, weekday):
+    if month == 12:
+        current = datetime(year, 12, 31).date()
+    else:
+        current = datetime(year, month + 1, 1).date() - timedelta(days=1)
+    while current.weekday() != weekday:
+        current -= timedelta(days=1)
+    return current
+
+
+def _easter_date(year):
+    """Gregorian Easter date; Good Friday is two days earlier."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return datetime(year, month, day).date()
+
+
+def _us_market_holiday_dates(year):
+    holidays = {
+        _observed_fixed_market_holiday(year, 1, 1),   # New Year's Day
+        _nth_weekday_date(year, 1, 0, 3),             # Martin Luther King Jr. Day
+        _nth_weekday_date(year, 2, 0, 3),             # Washington's Birthday
+        _easter_date(year) - timedelta(days=2),       # Good Friday
+        _last_weekday_date(year, 5, 0),               # Memorial Day
+        _observed_fixed_market_holiday(year, 6, 19),  # Juneteenth
+        _observed_fixed_market_holiday(year, 7, 4),   # Independence Day
+        _nth_weekday_date(year, 9, 0, 1),             # Labor Day
+        _nth_weekday_date(year, 11, 3, 4),            # Thanksgiving Day
+        _observed_fixed_market_holiday(year, 12, 25), # Christmas Day
+    }
+    return holidays
+
+
+def ibkr_market_is_us_holiday(now_et=None):
+    try:
+        current = now_et or datetime.now(ZoneInfo("America/New_York"))
+        current_date = current.date()
+        years = {current_date.year - 1, current_date.year, current_date.year + 1}
+        return any(current_date in _us_market_holiday_dates(year) for year in years)
+    except Exception:
+        return False
+
+
+def ibkr_market_is_open_for_options(now_et=None):
     """
     V16.1 Market-Aware:
-    Detecta si estamos en horario regular aproximado de mercado USA.
+    Detecta si estamos en horario regular aproximado de mercado USA,
+    respetando feriados principales de NYSE/Nasdaq.
     Sirve para no castigar bid/ask faltante cuando el mercado está cerrado.
     """
     try:
-        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_et = now_et or datetime.now(ZoneInfo("America/New_York"))
         weekday = now_et.weekday() < 5
+        if not weekday or ibkr_market_is_us_holiday(now_et):
+            return False
         minutes_et = now_et.hour * 60 + now_et.minute
         regular_session = (9 * 60 + 30) <= minutes_et < (16 * 60)
-        return weekday and regular_session
+        return regular_session
     except Exception:
         return False
 
 
 def bridge_market_snapshot(source):
+    now_et = datetime.now(ZoneInfo("America/New_York"))
     is_open = ibkr_market_is_open_for_options()
+    is_holiday = ibkr_market_is_us_holiday(now_et)
     return {
         "status": "REGULAR_OPTIONS_SESSION" if is_open else "OUTSIDE_REGULAR_OPTIONS_SESSION",
         "label": (
@@ -870,7 +946,8 @@ def bridge_market_snapshot(source):
         "options_bidask_expected": is_open,
         "source": source,
         "generated_at": now_iso(),
-        "calendar_precision": "WEEKDAY_AND_US_EASTERN_SESSION_ESTIMATE",
+        "calendar_precision": "NYSE_HOLIDAY_AWARE_ESTIMATE",
+        "market_holiday": is_holiday,
     }
 
 
