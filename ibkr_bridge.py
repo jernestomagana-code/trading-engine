@@ -584,16 +584,27 @@ CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "10"))
 
 ENGINE_URL = "https://trading-engine-p097.onrender.com/webhook/ibkr"
 
-WATCHLIST = [
+def _env_csv_list(name, default):
+    raw = _v283_os.environ.get(name, "")
+    if not raw.strip():
+        return list(default)
+    values = [item.strip().upper() for item in raw.split(",") if item.strip()]
+    return values or list(default)
+
+
+DEFAULT_WATCHLIST = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "TLT"
 ]
 
-OPTION_SYMBOLS = [
+DEFAULT_OPTION_SYMBOLS = [
     "QQQ", "SPY", "NVDA", "TSLA", "NFLX", "META", "TLT"
 ]
 
-LOOP_SECONDS = 180
+WATCHLIST = _env_csv_list("IBKR_WATCHLIST", DEFAULT_WATCHLIST)
+OPTION_SYMBOLS = _env_csv_list("IBKR_OPTION_SYMBOLS", DEFAULT_OPTION_SYMBOLS)
+
+LOOP_SECONDS = int(_v283_os.environ.get("IBKR_LOOP_SECONDS", "180"))
 
 TARGET_DTE_MIN = 25
 TARGET_DTE_MAX = 65
@@ -602,7 +613,7 @@ TARGET_DTE_IDEAL = 45
 MAX_OPTIONS_PER_SYMBOL = 8
 
 # 1 = live, 2 = frozen, 3 = delayed, 4 = delayed frozen
-MARKET_DATA_TYPE = 1
+MARKET_DATA_TYPE = int(_v283_os.environ.get("IBKR_MARKET_DATA_TYPE", "1"))
 
 # ============================================================
 # CONTROL FLAGS
@@ -621,11 +632,17 @@ STANDARD_STRIKE_MULTIPLE = 5
 SHOW_IBKR_CONTRACT_ERRORS = False
 
 # Espera para que IBKR entregue bid/ask/greeks en opciones
-OPTION_MARKET_DATA_WAIT_SECONDS = 8.0
-OPTION_SECOND_PASS_WAIT_SECONDS = 5.0
+OPTION_MARKET_DATA_WAIT_SECONDS = float(
+    _v283_os.environ.get("IBKR_OPTION_MARKET_DATA_WAIT_SECONDS", "8")
+)
+OPTION_SECOND_PASS_WAIT_SECONDS = float(
+    _v283_os.environ.get("IBKR_OPTION_SECOND_PASS_WAIT_SECONDS", "5")
+)
 
 # Espera para fallback de market data en acciones
-STOCK_MARKET_DATA_WAIT_SECONDS = 2.0
+STOCK_MARKET_DATA_WAIT_SECONDS = float(
+    _v283_os.environ.get("IBKR_STOCK_MARKET_DATA_WAIT_SECONDS", "2")
+)
 HISTORICAL_DATA_TIMEOUT_SECONDS = float(
     _v283_os.environ.get("IBKR_HISTORICAL_DATA_TIMEOUT_SECONDS", "4")
 )
