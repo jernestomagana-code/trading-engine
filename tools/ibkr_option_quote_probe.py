@@ -167,6 +167,132 @@ def parse_market_data_types(raw: str) -> list[int]:
     return out or list(DEFAULT_MARKET_DATA_TYPES)
 
 
+def parse_ibkr_expiration(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(str(value), "%Y%m%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def days_to_expiration(value: str) -> int | None:
+    expiration = parse_ibkr_expiration(value)
+    if expiration is None:
+        return None
+    return max(0, int(round((expiration - datetime.now(timezone.utc)).total_seconds() / 86400)))
+
+
+def choose_expiration(expirations: list[str], target_dte: int) -> str | None:
+    dated = [
+        (expiration, days_to_expiration(expiration))
+        for expiration in expirations
+    ]
+    dated = [(expiration, dte) for expiration, dte in dated if dte is not None and dte > 0]
+    if not dated:
+        return None
+    return min(dated, key=lambda item: abs(item[1] - target_dte))[0]
+
+
+def choose_strike(strikes: list[float], underlying_price: float, right: str, otm_pct: float) -> float | None:
+    if not strikes or underlying_price <= 0:
+        return None
+    target = (
+        underlying_price * (1 - otm_pct)
+        if right.upper() == "P"
+        else underlying_price * (1 + otm_pct)
+    )
+    if right.upper() == "P":
+        candidates = [strike for strike in strikes if 0 < strike < underlying_price]
+    else:
+        candidates = [strike for strike in strikes if strike > underlying_price]
+    candidates = candidates or [strike for strike in strikes if strike > 0]
+    return min(candidates, key=lambda strike: abs(strike - target)) if candidates else None
+
+
+def get_underlying_price(ib: IB, ticker: str, exchange: str, currency: str, wait_seconds: float) -> tuple[Stock, float | None]:
+    contract = Stock(ticker.upper(), exchange, currency)
+    qualified = ib.qualifyContracts(contract)
+    if qualified:
+        contract = qualified[0]
+    quote = ib.reqMktData(contract, "", False, False)
+    ib.sleep(wait_seconds)
+    price = (
+        clean(quote.marketPrice())
+        or clean(getattr(quote, "last", None))
+        or clean(getattr(quote, "close", None))
+    )
+    try:
+        ib.cancelMktData(contract)
+    except Exception:
+        pass
+    return contract, price
+
+
+def resolve_option_contract(ib: IB, args: argparse.Namespace) -> tuple[Option, dict[str, Any]]:
+    if args.expiration and args.strike:
+        contract = option_contract(args)
+        return contract, {"mode": "manual"}
+
+    underlying, underlying_price = get_underlying_price(
+        ib,
+        args.ticker,
+        args.underlying_exchange,
+        args.currency,
+        args.underlying_wait,
+    )
+    if underlying_price is None:
+        raise RuntimeError("Unable to resolve underlying price for automatic option selection.")
+
+    chains = ib.reqSecDefOptParams(
+        underlying.symbol,
+        "",
+        underlying.secType,
+        underlying.conId,
+    )
+    if not chains:
+        raise RuntimeError("IBKR returned no option chains for automatic option selection.")
+
+    chain = next(
+        (
+            item
+            for item in chains
+            if str(getattr(item, "tradingClass", "")).upper() == args.ticker.upper()
+            and str(getattr(item, "exchange", "")).upper() in [args.exchange.upper(), "SMART"]
+        ),
+        chains[0],
+    )
+    expiration = args.expiration or choose_expiration(list(chain.expirations), args.target_dte)
+    if not expiration:
+        raise RuntimeError("Unable to choose option expiration.")
+
+    strike = float(args.strike) if args.strike else choose_strike(
+        [float(strike) for strike in chain.strikes],
+        underlying_price,
+        args.right,
+        args.otm_pct,
+    )
+    if strike is None:
+        raise RuntimeError("Unable to choose option strike.")
+
+    contract = Option(
+        args.ticker.upper(),
+        expiration,
+        float(strike),
+        args.right.upper(),
+        getattr(chain, "exchange", None) or args.exchange,
+        currency=args.currency,
+        multiplier=str(getattr(chain, "multiplier", None) or args.multiplier),
+        tradingClass=getattr(chain, "tradingClass", None) or args.ticker.upper(),
+    )
+    return contract, {
+        "mode": "auto",
+        "underlying_price": underlying_price,
+        "target_dte": args.target_dte,
+        "otm_pct": args.otm_pct,
+        "chain_exchange": getattr(chain, "exchange", None),
+        "trading_class": getattr(chain, "tradingClass", None),
+    }
+
+
 def option_contract(args: argparse.Namespace) -> Option:
     return Option(
         args.ticker.upper(),
@@ -218,12 +344,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--client-id", type=int, default=DEFAULT_CLIENT_ID)
     parser.add_argument("--ticker", default="SPY")
-    parser.add_argument("--expiration", required=True, help="YYYYMMDD, e.g. 20260731")
-    parser.add_argument("--strike", required=True)
+    parser.add_argument("--expiration", help="YYYYMMDD, e.g. 20260731. Optional in auto-select mode.")
+    parser.add_argument("--strike", help="Optional in auto-select mode.")
     parser.add_argument("--right", choices=["P", "C", "p", "c"], default="P")
     parser.add_argument("--exchange", default="SMART")
+    parser.add_argument("--underlying-exchange", default="SMART")
     parser.add_argument("--currency", default="USD")
     parser.add_argument("--multiplier", default="100")
+    parser.add_argument("--target-dte", type=int, default=45)
+    parser.add_argument("--otm-pct", type=float, default=0.10)
+    parser.add_argument("--underlying-wait", type=float, default=6)
     parser.add_argument("--market-data-types", default="1,2,3,4")
     parser.add_argument("--stream-wait", type=float, default=12)
     parser.add_argument("--snapshot-wait", type=float, default=4)
@@ -240,11 +370,12 @@ def main() -> int:
         errors.append({"req_id": req_id, "code": code, "message": message})
 
     ib.errorEvent += on_error
-    contract = option_contract(args)
     attempts: list[dict[str, Any]] = []
+    selection: dict[str, Any] = {}
 
     try:
         ib.connect(args.host, args.port, clientId=args.client_id, readonly=True, timeout=args.timeout)
+        contract, selection = resolve_option_contract(ib, args)
         qualified = ib.qualifyContracts(contract)
         if qualified:
             contract = qualified[0]
@@ -259,6 +390,7 @@ def main() -> int:
             "generated_at": now_iso(),
             "readonly": True,
             "not_order_instruction": True,
+            "selection": selection,
             "contract": {
                 "localSymbol": getattr(contract, "localSymbol", None),
                 "conId": getattr(contract, "conId", None),
