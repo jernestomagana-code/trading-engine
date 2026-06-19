@@ -235,10 +235,14 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
 
 def post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
     body = json.dumps(payload, default=str).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    ingest_token = os.getenv("TRADING_ENGINE_INGEST_TOKEN", "")
+    if ingest_token:
+        headers["X-Snapshot-Ingest-Token"] = ingest_token
     req = request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
