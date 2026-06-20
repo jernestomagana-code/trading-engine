@@ -47,6 +47,7 @@ READ_AUTH_SENSITIVE_PREFIXES = (
     "/dashboard",
     "/debug",
     "/decision",
+    "/durable_storage",
     "/fusion",
     "/get_",
     "/gpt",
