@@ -1,5 +1,6 @@
 import unittest
 import importlib.util
+import asyncio
 import sys
 import types
 from datetime import datetime
@@ -33,6 +34,11 @@ def _install_import_stubs():
                 return func
             return decorator
 
+        def middleware(self, *args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
         def add_api_route(self, *args, **kwargs):
             self.router.routes.append(types.SimpleNamespace(path=args[0] if args else None))
 
@@ -44,6 +50,11 @@ def _install_import_stubs():
 
     class HTMLResponse(str):
         pass
+
+    class JSONResponse(dict):
+        def __init__(self, content=None, status_code=200, *args, **kwargs):
+            super().__init__(content or {})
+            self.status_code = status_code
 
     class BaseModel:
         pass
@@ -59,6 +70,7 @@ def _install_import_stubs():
     fastapi.Header = Header
     fastapi.HTTPException = HTTPException
     responses.HTMLResponse = HTMLResponse
+    responses.JSONResponse = JSONResponse
     pydantic.BaseModel = BaseModel
     pydantic.Field = Field
     requests.get = lambda *args, **kwargs: None
@@ -455,7 +467,151 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["ingest"], "/v31_ingest_snapshot")
         self.assertEqual(status["endpoints"]["pipeline_status"], "/v31_data_pipeline_status")
         self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
+        self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
+        self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertIn("risk_profile", status)
+        self.assertIn("outcome_tracking", status)
+        self.assertTrue(status["not_order_instruction"])
+
+    def test_v31_finalizer_enforces_decision_support_only_contract(self):
+        decision = {
+            "final_state": "ENTRY_READY",
+            "decision": "ENTRY_READY",
+            "manual_review_ready": False,
+            "can_operate": True,
+            "warnings": [],
+            "blockers": ["STALE_BLOCKER"],
+            "selected_contract": {
+                "strike": 710,
+                "can_operate": True,
+                "manual_review_ready": False,
+            },
+            "source_decision": {"can_operate": True},
+        }
+
+        finalized = main._v31_finalize_decision_support_contract(decision)
+
+        self.assertEqual(finalized["final_state"], "ENTRY_READY")
+        self.assertTrue(finalized["manual_review_ready"])
+        self.assertFalse(finalized["can_operate"])
+        self.assertTrue(finalized["not_order_instruction"])
+        self.assertEqual(finalized["blockers"], [])
+        self.assertIsNone(finalized["main_blocker"])
+        self.assertFalse(finalized["selected_contract"]["can_operate"])
+        self.assertTrue(finalized["selected_contract"]["manual_review_ready"])
+        self.assertFalse(finalized["source_decision"]["can_operate"])
+        self.assertIn("NOT_AN_ORDER_INSTRUCTION", finalized["warnings"])
+
+    def test_v31_risk_profile_blocks_entry_ready_without_weakening_wait_options(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.50,
+        }
+        incomplete_row = {
+            **complete_row,
+            "delta": None,
+        }
+
+        with patch.dict(main.os.environ, {"V31_MAX_ABS_DELTA": "0.30"}), patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([complete_row]),
+        ):
+            blocked = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(blocked["final_state"], "RISK_BLOCKED")
+        self.assertEqual(blocked["main_blocker"], "RISK_BLOCKED")
+        self.assertIn("RISK_PROFILE_DELTA_TOO_HIGH", blocked["blockers"])
+        self.assertFalse(blocked["manual_review_ready"])
+        self.assertFalse(blocked["can_operate"])
+
+        with patch.dict(main.os.environ, {"V31_MAX_ABS_DELTA": "0.30"}), patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([incomplete_row]),
+        ):
+            wait_options = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(wait_options["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(wait_options["main_blocker"], "WAIT_OPTIONS_DATA")
+        self.assertIn("WAIT_OPTIONS_DATA", wait_options["blockers"])
+        self.assertFalse(wait_options["manual_review_ready"])
+        self.assertFalse(wait_options["can_operate"])
+
+    def test_v31_entry_ready_signal_tracking_creates_pending_paper_outcome(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
+            decision = main._v31_canonical_decision("QQQ")
+
+        with patch.object(main, "_journal_outcome", return_value={"saved": True, "status": "SAVED"}) as journal:
+            tracking = main._v31_track_entry_ready_signal(decision, source="unit_test")
+
+        self.assertEqual(tracking["status"], "TRACKED")
+        self.assertTrue(tracking["enabled"])
+        self.assertEqual(tracking["outcome"]["outcome"], "PENDING")
+        self.assertTrue(tracking["outcome"]["paper_outcome"])
+        self.assertEqual(tracking["outcome"]["final_state"], "ENTRY_READY")
+        self.assertIn("SIG-", tracking["signal_id"])
+        self.assertTrue(tracking["not_order_instruction"])
+        journal.assert_called_once()
+
+    def test_v31_non_entry_signal_tracking_is_skipped(self):
+        tracking = main._v31_track_entry_ready_signal({
+            "final_state": "WAIT_OPTIONS_DATA",
+            "ticker": "QQQ",
+            "not_order_instruction": True,
+        })
+
+        self.assertEqual(tracking["status"], "NOT_ENTRY_READY")
+        self.assertFalse(tracking["enabled"])
+
+    def test_v31_outcome_tracking_status_reports_pending_entry_ready_signals(self):
+        rows = [
+            {
+                "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
+                "outcome": "PENDING",
+                "ticker": "QQQ",
+                "not_order_instruction": True,
+            },
+            {
+                "outcome_tracking_version": "other",
+                "outcome": "PENDING",
+            },
+        ]
+
+        with patch.object(main, "_durable_supabase_fetch", return_value=rows):
+            status = asyncio.run(main.v31_outcome_tracking_status())
+
+        self.assertEqual(status["engine"], "V31_OUTCOME_TRACKING_STATUS")
+        self.assertEqual(status["tracked_entry_ready_signals"], 1)
+        self.assertEqual(status["pending_entry_ready_signals"], 1)
         self.assertTrue(status["not_order_instruction"])
 
     def test_v31_dashboard_points_to_canonical_routes(self):
