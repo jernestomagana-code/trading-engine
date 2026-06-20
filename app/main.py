@@ -19492,7 +19492,7 @@ async def gpt_v29_trade_decision(ticker: str):
 
 
 _V31_DECISION_VERSION = "v31_canonical_decision_engine"
-_V31_RULESET_VERSION = "v31.0_manual_review_only"
+_V31_RULESET_VERSION = "v31.1_manual_review_risk_profile_outcomes"
 _V31_SNAPSHOT_VERSION = "v30_options_executable_contract"
 
 
@@ -19585,11 +19585,11 @@ def _v31_main_blocker(state, blockers):
 
     priority = [
         "NO_DATA",
-        "RISK_BLOCKED",
         "WAIT_ACCOUNT_CONTEXT",
         "WAIT_MARKET",
         "WAIT_OPTIONS_DATA",
         "WAIT_TECHNICAL",
+        "RISK_BLOCKED",
         "MANUAL_REVIEW",
     ]
 
@@ -19611,6 +19611,249 @@ def _v31_strategy_version(d):
     return "strategy_v31_manual_review"
 
 
+def _v31_env_float(name, default):
+    try:
+        value = os.getenv(name, "")
+        if str(value).strip() == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _v31_env_int(name, default):
+    try:
+        value = os.getenv(name, "")
+        if str(value).strip() == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _v31_risk_profile():
+    """Runtime-tunable risk profile for manual-review readiness.
+
+    Defaults are intentionally close to the existing V29 quality gate so this
+    layer tightens or documents risk without weakening WAIT_OPTIONS_DATA or
+    creating any path to automatic execution.
+    """
+    allowed_strategies = [
+        item.strip().upper()
+        for item in os.getenv("V31_ALLOWED_STRATEGIES", "").split(",")
+        if item.strip()
+    ]
+    blocked_tickers = [
+        item.strip().upper()
+        for item in os.getenv("V31_BLOCKED_TICKERS", "").split(",")
+        if item.strip()
+    ]
+    return {
+        "profile_version": "v31_risk_profile_v1",
+        "profile_name": os.getenv("V31_RISK_PROFILE_NAME", "personal_manual_review"),
+        "min_dte": _v31_env_int("V31_MIN_DTE", 1),
+        "max_dte": _v31_env_int("V31_MAX_DTE", 75),
+        "min_abs_delta": _v31_env_float("V31_MIN_ABS_DELTA", 0.05),
+        "max_abs_delta": _v31_env_float("V31_MAX_ABS_DELTA", 0.40),
+        "max_spread_pct": _v31_env_float("V31_MAX_SPREAD_PCT", _V29_MAX_SPREAD_PCT),
+        "max_abs_spread": _v31_env_float("V31_MAX_ABS_SPREAD", _V29_MAX_ABS_SPREAD),
+        "min_bid": _v31_env_float("V31_MIN_BID", _V29_MIN_BID),
+        "min_option_score": _v31_env_float("V31_MIN_OPTION_SCORE", _V29_MIN_OPTION_SCORE),
+        "min_technical_score": _v31_env_float("V31_MIN_TECH_SCORE", _V29_MIN_TECH_SCORE),
+        "allowed_strategies": allowed_strategies,
+        "blocked_tickers": blocked_tickers,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_profile_value(value):
+    return _v29_safe_float(value, None)
+
+
+def _v31_evaluate_risk_profile(decision, profile=None):
+    profile = profile or _v31_risk_profile()
+    contract = decision.get("selected_contract") or {}
+    strategy = _v29_safe_upper(decision.get("strategy"), "UNKNOWN")
+    ticker = _v29_safe_upper(decision.get("ticker"), "UNKNOWN")
+    blockers = []
+    notes = []
+
+    if profile.get("allowed_strategies") and strategy not in profile["allowed_strategies"]:
+        blockers.append("RISK_PROFILE_STRATEGY_NOT_ALLOWED")
+    if ticker in (profile.get("blocked_tickers") or []):
+        blockers.append("RISK_PROFILE_TICKER_BLOCKED")
+
+    dte = _v31_profile_value(contract.get("dte"))
+    if dte is not None:
+        if dte < profile["min_dte"]:
+            blockers.append("RISK_PROFILE_DTE_TOO_LOW")
+        if dte > profile["max_dte"]:
+            blockers.append("RISK_PROFILE_DTE_TOO_HIGH")
+
+    delta = _v31_profile_value(contract.get("delta"))
+    if delta is not None:
+        abs_delta = abs(delta)
+        if abs_delta < profile["min_abs_delta"]:
+            blockers.append("RISK_PROFILE_DELTA_TOO_LOW")
+        if abs_delta > profile["max_abs_delta"]:
+            blockers.append("RISK_PROFILE_DELTA_TOO_HIGH")
+
+    spread = _v31_profile_value(contract.get("spread"))
+    spread_pct = _v31_profile_value(contract.get("spread_pct"))
+    if spread is not None and spread > profile["max_abs_spread"]:
+        blockers.append("RISK_PROFILE_SPREAD_TOO_WIDE")
+    if spread_pct is not None and spread_pct > profile["max_spread_pct"]:
+        blockers.append("RISK_PROFILE_SPREAD_PCT_TOO_WIDE")
+
+    bid = _v31_profile_value(contract.get("bid"))
+    if bid is not None and bid < profile["min_bid"]:
+        blockers.append("RISK_PROFILE_BID_TOO_LOW")
+
+    option_score = _v31_profile_value(decision.get("source_decision", {}).get("options_score") or decision.get("options_score"))
+    if option_score is not None and option_score < profile["min_option_score"]:
+        blockers.append("RISK_PROFILE_OPTION_SCORE_TOO_LOW")
+
+    technical_score = _v31_profile_value(decision.get("technical", {}).get("score") if isinstance(decision.get("technical"), dict) else None)
+    if technical_score is not None and technical_score < profile["min_technical_score"]:
+        blockers.append("RISK_PROFILE_TECH_SCORE_TOO_LOW")
+
+    if blockers:
+        notes.append("Risk profile blocked manual-review readiness; no execution is authorized.")
+    else:
+        notes.append("Risk profile passed for manual-review readiness only.")
+
+    deduped = []
+    for blocker in blockers:
+        if blocker not in deduped:
+            deduped.append(blocker)
+
+    return {
+        "profile": profile,
+        "status": "BLOCKED" if deduped else "PASS",
+        "blockers": deduped,
+        "notes": notes,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_apply_risk_profile_gate(decision):
+    risk_profile = _v31_evaluate_risk_profile(decision)
+    decision["risk_profile"] = risk_profile
+    if decision.get("final_state") == "ENTRY_READY" and risk_profile["status"] == "BLOCKED":
+        blockers = list(decision.get("blockers") or [])
+        blockers.extend(risk_profile["blockers"])
+        deduped = []
+        for blocker in blockers:
+            if blocker and blocker not in deduped:
+                deduped.append(blocker)
+        decision["final_state"] = "RISK_BLOCKED"
+        decision["decision"] = "RISK_BLOCKED"
+        decision["main_blocker"] = "RISK_BLOCKED"
+        decision["blockers"] = deduped or ["RISK_BLOCKED"]
+        decision["manual_review_ready"] = False
+        decision["risk_status"] = "RISK_BLOCKED"
+        decision["explanation"] = (
+            f"{decision.get('ticker')}: RISK_BLOCKED por perfil de riesgo V31. "
+            "Revisar risk_profile.blockers antes de considerar revision manual."
+        )
+    return decision
+
+
+def _v31_finalize_decision_support_contract(decision):
+    state = _v31_normalize_state(decision.get("final_state"))
+    decision["final_state"] = state
+    decision["decision"] = state
+    decision["manual_review_ready"] = state == "ENTRY_READY"
+    decision["can_operate"] = False
+    decision["not_order_instruction"] = True
+    warnings = list(decision.get("warnings") or [])
+    for warning in ["DECISION_SUPPORT_ONLY", "MANUAL_REVIEW_REQUIRED", "NOT_AN_ORDER_INSTRUCTION"]:
+        if warning not in warnings:
+            warnings.append(warning)
+    decision["warnings"] = warnings
+
+    if state != "ENTRY_READY":
+        decision["manual_review_ready"] = False
+    if state == "ENTRY_READY":
+        decision["main_blocker"] = None
+        decision["blockers"] = []
+    else:
+        decision["main_blocker"] = _v31_main_blocker(state, decision.get("blockers") or [])
+
+    contract = decision.get("selected_contract")
+    if isinstance(contract, dict):
+        contract["manual_review_ready"] = decision["manual_review_ready"]
+        contract["can_operate"] = False
+        contract["not_order_instruction"] = True
+        decision["selected_contract"] = contract
+
+    source = decision.get("source_decision")
+    if isinstance(source, dict):
+        source["can_operate"] = False
+        decision["source_decision"] = source
+
+    return decision
+
+
+def _v31_entry_ready_signal_seed(decision):
+    contract = decision.get("selected_contract") or {}
+    ticker = _v29_safe_upper(decision.get("ticker"), "UNKNOWN")
+    strategy = _v29_safe_upper(decision.get("strategy"), "UNKNOWN")
+    expiration = contract.get("expiration") or "NOEXP"
+    strike = contract.get("strike") if contract.get("strike") is not None else "NOSTRIKE"
+    generated_at = decision.get("generated_at") or _v29_now()
+    signal_day = str(generated_at)[:10]
+    signal_id = f"SIG-{signal_day}-{ticker}-{strategy}-{expiration}-{strike}"
+    return {
+        "id": signal_id,
+        "outcome_id": signal_id,
+        "signal_id": signal_id,
+        "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
+        "outcome": "PENDING",
+        "paper_outcome": True,
+        "ticker": ticker,
+        "strategy": strategy,
+        "final_state": decision.get("final_state"),
+        "decision_version": decision.get("decision_version"),
+        "ruleset_version": decision.get("ruleset_version"),
+        "snapshot_version": decision.get("snapshot_version"),
+        "recorded_at": generated_at,
+        "entry_ready_at": generated_at,
+        "selected_contract": {
+            "strike": contract.get("strike"),
+            "expiration": contract.get("expiration"),
+            "dte": contract.get("dte"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid": contract.get("mid"),
+            "spread": contract.get("spread"),
+            "spread_pct": contract.get("spread_pct"),
+            "delta": contract.get("delta"),
+        },
+        "measurement_plan": {
+            "status": "PENDING_MARKET_FOLLOW_UP",
+            "checkpoints": ["EOD", "PLUS_1D", "PLUS_5D"],
+            "metrics": ["underlying_return_pct", "option_mid_change_pct", "max_favorable_excursion_r", "max_adverse_excursion_r"],
+        },
+        "not_order_instruction": True,
+    }
+
+
+def _v31_track_entry_ready_signal(decision, source="v31"):
+    if decision.get("final_state") != "ENTRY_READY":
+        return {"enabled": False, "saved": False, "status": "NOT_ENTRY_READY"}
+    seed = _v31_entry_ready_signal_seed(decision)
+    durable = _journal_outcome(seed, source=f"{source}_entry_ready_signal")
+    return {
+        "enabled": True,
+        "status": "TRACKED" if durable.get("saved") else durable.get("status", "TRACKING_ATTEMPTED"),
+        "signal_id": seed.get("signal_id"),
+        "outcome": seed,
+        "durable_storage": durable,
+        "not_order_instruction": True,
+    }
+
+
 def _v31_canonical_decision(ticker):
     d = _v29_decide_ticker(ticker)
     state = _v31_normalize_state(d.get("final_state"))
@@ -19618,7 +19861,7 @@ def _v31_canonical_decision(ticker):
     main_blocker = _v31_main_blocker(state, blockers)
     manual_review_ready = state == "ENTRY_READY"
 
-    return {
+    decision = {
         "engine": "V31_CANONICAL_DECISION_ENGINE",
         "decision_version": _V31_DECISION_VERSION,
         "strategy_version": _v31_strategy_version(d),
@@ -19645,6 +19888,7 @@ def _v31_canonical_decision(ticker):
         "portfolio_status": _v31_status_from_v29(d, "portfolio"),
         "technical_status": _v31_status_from_v29(d, "technical"),
         "construction_status": _v31_status_from_v29(d, "construction"),
+        "options_score": d.get("options_score"),
         "selected_contract": d.get("selected_contract"),
         "selected_structure": None,
         "source_decision": {
@@ -19652,6 +19896,7 @@ def _v31_canonical_decision(ticker):
             "final_state": d.get("final_state"),
             "main_blocker": d.get("main_blocker"),
             "manual_review_ready": d.get("manual_review_ready"),
+            "options_score": d.get("options_score"),
             "can_operate": False,
         },
         "technical": d.get("technical"),
@@ -19660,6 +19905,7 @@ def _v31_canonical_decision(ticker):
         "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
         "master_source": d.get("master_source"),
     }
+    return _v31_finalize_decision_support_contract(_v31_apply_risk_profile_gate(decision))
 
 
 def _v31_all_decisions(tickers=None):
@@ -19700,6 +19946,13 @@ def _v31_system_status_payload(tickers=None):
         "technical_count": len(master.get("technical", {})),
         "technical_tickers": sorted(list(master.get("technical", {}).keys())),
         "market": market,
+        "risk_profile": _v31_risk_profile(),
+        "outcome_tracking": {
+            "version": "v31_entry_ready_signal_outcome_v1",
+            "entry_ready_signals_are_recorded_as": "PENDING_PAPER_OUTCOMES",
+            "durable_storage": _durable_storage_summary(),
+            "not_order_instruction": True,
+        },
         "summary": {
             **summary,
             "manual_review_ready": sum(1 for d in decisions if d.get("manual_review_ready") is True),
@@ -19714,6 +19967,8 @@ def _v31_system_status_payload(tickers=None):
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "dashboard": "/v31_dashboard",
             "dashboard_ticker_example": "/v31_dashboard/QQQ",
+            "risk_profile": "/v31_risk_profile",
+            "outcome_tracking": "/v31_outcome_tracking_status",
             "legacy_v29_dashboard": "/v29_dashboard",
         },
         "decisions": decisions,
@@ -20323,6 +20578,7 @@ def _v31_dashboard_html(tickers=None):
 async def v31_decision(ticker: str):
     decision = _v31_canonical_decision(ticker)
     decision["durable_storage"] = _journal_decision(decision, source="v31_decision")
+    decision["outcome_tracking"] = _v31_track_entry_ready_signal(decision, source="v31_decision")
     return decision
 
 
@@ -20330,6 +20586,7 @@ async def v31_decision(ticker: str):
 async def v31_trade_decision(ticker: str):
     decision = _v31_canonical_decision(ticker)
     decision["durable_storage"] = _journal_decision(decision, source="v31_trade_decision")
+    decision["outcome_tracking"] = _v31_track_entry_ready_signal(decision, source="v31_trade_decision")
     return decision
 
 
@@ -20337,12 +20594,46 @@ async def v31_trade_decision(ticker: str):
 async def gpt_v31_trade_decision(ticker: str):
     decision = _v31_canonical_decision(ticker)
     decision["durable_storage"] = _journal_decision(decision, source="gpt_v31_trade_decision")
+    decision["outcome_tracking"] = _v31_track_entry_ready_signal(decision, source="gpt_v31_trade_decision")
     return decision
 
 
 @app.get("/v31_system_status")
 async def v31_system_status():
     return _v31_system_status_payload()
+
+
+@app.get("/v31_risk_profile")
+async def v31_risk_profile():
+    return {
+        "engine": "V31_RISK_PROFILE",
+        "generated_at": _v29_now(),
+        "risk_profile": _v31_risk_profile(),
+        "description": "Perfil minimo que puede bloquear ENTRY_READY antes de revision manual.",
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v31_outcome_tracking_status")
+async def v31_outcome_tracking_status():
+    outcomes_data = _durable_supabase_fetch("outcome", limit=500)
+    if outcomes_data is None:
+        outcomes_data = load_outcomes_from_file()
+    tracked = [
+        item for item in outcomes_data
+        if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
+    ]
+    pending = [item for item in tracked if str(item.get("outcome") or "").upper() == "PENDING"]
+    return {
+        "engine": "V31_OUTCOME_TRACKING_STATUS",
+        "generated_at": _v29_now(),
+        "tracking_version": "v31_entry_ready_signal_outcome_v1",
+        "tracked_entry_ready_signals": len(tracked),
+        "pending_entry_ready_signals": len(pending),
+        "recent_signals": tracked[-50:],
+        "durable_storage": _durable_storage_summary(),
+        "not_order_instruction": True,
+    }
 
 
 @app.get("/v31_data_pipeline_status")
