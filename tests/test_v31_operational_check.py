@@ -24,11 +24,18 @@ class V31OperationalCheckTests(unittest.TestCase):
             "can_operate": False,
         }
 
+        readiness = {
+            "status": "READY",
+            "read_auth": {"critical_endpoints_protected": True},
+            "outcome_tracking": {"version": "v31_entry_ready_signal_outcome_v1"},
+            "risk_profile": {"profile_version": "v31_risk_profile_v1"},
+        }
+
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
             read_auth={"required": True},
-            readiness={"status": "READY"},
+            readiness=readiness,
             pipeline=pipeline,
             decision=decision,
             require_open_data=False,
@@ -51,11 +58,18 @@ class V31OperationalCheckTests(unittest.TestCase):
             "can_operate": False,
         }
 
+        readiness = {
+            "status": "READY",
+            "read_auth": {"critical_endpoints_protected": True},
+            "outcome_tracking": {"version": "v31_entry_ready_signal_outcome_v1"},
+            "risk_profile": {"profile_version": "v31_risk_profile_v1"},
+        }
+
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
             read_auth={"required": True},
-            readiness={"status": "READY"},
+            readiness=readiness,
             pipeline=pipeline,
             decision=decision,
             require_open_data=True,
@@ -81,11 +95,18 @@ class V31OperationalCheckTests(unittest.TestCase):
             "can_operate": True,
         }
 
+        readiness = {
+            "status": "READY",
+            "read_auth": {"critical_endpoints_protected": True},
+            "outcome_tracking": {"version": "v31_entry_ready_signal_outcome_v1"},
+            "risk_profile": {"profile_version": "v31_risk_profile_v1"},
+        }
+
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
             read_auth={"required": True},
-            readiness={"status": "READY"},
+            readiness=readiness,
             pipeline=pipeline,
             decision=decision,
             require_open_data=False,

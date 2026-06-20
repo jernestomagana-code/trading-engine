@@ -73,6 +73,20 @@ READ_AUTH_SENSITIVE_PREFIXES = (
     "/v31",
     "/v32",
 )
+READ_AUTH_CRITICAL_ENDPOINTS = (
+    "/audit_log_summary",
+    "/outcomes",
+    "/production_readiness",
+    "/v31_data_pipeline_status",
+    "/v31_decision/",
+    "/v31_monitor_status",
+    "/v31_outcome_tracking_status",
+    "/v31_production_readiness",
+    "/v31_risk_profile",
+    "/v31_system_status",
+    "/v31_trade_decision/",
+    "/gpt_v31_trade_decision/",
+)
 
 
 def legacy_endpoint_meta(version=None):
@@ -122,9 +136,16 @@ SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISIO
 REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 READ_ACCESS_TOKEN = os.getenv("READ_ACCESS_TOKEN", "")
+_REQUIRE_READ_AUTH_RAW = os.getenv("REQUIRE_READ_AUTH", "").strip().lower()
 REQUIRE_READ_AUTH = (
-    os.getenv("REQUIRE_READ_AUTH", "").lower() == "true"
-    or DEPLOYMENT_ENV.lower() in {"production", "prod"}
+    _REQUIRE_READ_AUTH_RAW == "true"
+    or (
+        _REQUIRE_READ_AUTH_RAW != "false"
+        and (
+            DEPLOYMENT_ENV.lower() in {"production", "prod"}
+            or DEPLOYMENT_SCOPE.lower() not in {"", "local", "dev", "development"}
+        )
+    )
 )
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RUNTIME_STORAGE_MODE = os.getenv("RUNTIME_STORAGE_MODE", "local_json")
@@ -203,13 +224,34 @@ def _read_auth_summary():
     return {
         "read_auth_version": "read_auth_gate_v1",
         "required": bool(REQUIRE_READ_AUTH),
+        "explicit_env": _REQUIRE_READ_AUTH_RAW or "auto",
         "deployment_env": DEPLOYMENT_ENV,
         "deployment_scope": DEPLOYMENT_SCOPE,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
         "protected_prefixes": list(READ_AUTH_SENSITIVE_PREFIXES),
+        "critical_endpoints": list(READ_AUTH_CRITICAL_ENDPOINTS),
+        "critical_endpoints_protected": all(_path_requires_read_auth(path) for path in READ_AUTH_CRITICAL_ENDPOINTS),
         "public_paths": sorted(READ_AUTH_PUBLIC_PATHS),
         "public_prefixes": list(READ_AUTH_PUBLIC_PREFIXES),
+        "not_order_instruction": True,
+    }
+
+
+def _snapshot_ingest_auth_summary():
+    return {
+        "snapshot_ingest_auth_version": "snapshot_ingest_auth_v1",
+        "required": bool(REQUIRE_SNAPSHOT_INGEST_TOKEN),
+        "token_configured": bool(SNAPSHOT_INGEST_TOKEN),
+        "accepted_headers": [
+            "X-Snapshot-Ingest-Token",
+            "X-Decision-Desk-Token",
+            "X-Webhook-Secret",
+        ],
+        "rotation_guidance": (
+            "Rotate by updating SNAPSHOT_INGEST_TOKEN in Render and the local "
+            "Keychain token used as TRADING_ENGINE_INGEST_TOKEN; never print it."
+        ),
         "not_order_instruction": True,
     }
 
@@ -10880,43 +10922,7 @@ def read_auth_status():
 
 @app.get("/production_readiness")
 def production_readiness():
-    blockers = []
-    read_auth = _read_auth_summary()
-    durable_storage = _durable_storage_summary()
-    if read_auth["required"] and not (
-        read_auth["read_access_token_configured"] or read_auth["admin_debug_token_configured"]
-    ):
-        blockers.append({
-            "name": "read_auth_token_configured",
-            "severity": "BLOCKER",
-            "detail": "Production read surfaces require READ_ACCESS_TOKEN or ADMIN_DEBUG_TOKEN.",
-        })
-    if OPERATING_MODE != "ANALYSIS_ONLY":
-        blockers.append({
-            "name": "analysis_only_mode",
-            "severity": "BLOCKER",
-            "detail": "OPERATING_MODE must remain ANALYSIS_ONLY.",
-        })
-    if durable_storage.get("durable_mode_requested") and durable_storage.get("status") == "BLOCKED":
-        blockers.append({
-            "name": "durable_storage_contract_ready",
-            "severity": "BLOCKER",
-            "detail": "Durable storage mode is requested but the storage contract is not ready.",
-        })
-    return {
-        "status": "BLOCKED" if blockers else "READY",
-        "production_readiness_version": "production_readiness_v1_minimal",
-        "operating_mode": OPERATING_MODE,
-        "read_auth": read_auth,
-        "durable_storage": durable_storage,
-        "audit_log": {
-            "audit_log_version": shared_audit_log.AUDIT_LOG_VERSION,
-            "max_events": AUDIT_LOG_MAX_EVENTS,
-            "sensitive_values_redacted": True,
-        },
-        "blockers": blockers,
-        "not_order_instruction": True,
-    }
+    return _v31_production_readiness_payload()
 
 
 @app.get("/durable_storage_contract")
@@ -19854,6 +19860,131 @@ def _v31_track_entry_ready_signal(decision, source="v31"):
     }
 
 
+def _v31_production_readiness_checks():
+    read_auth = _read_auth_summary()
+    ingest_auth = _snapshot_ingest_auth_summary()
+    durable_storage = _durable_storage_summary()
+    risk_profile = _v31_risk_profile()
+
+    checks = [
+        {
+            "name": "analysis_only_mode",
+            "ok": OPERATING_MODE == "ANALYSIS_ONLY",
+            "severity": "BLOCKER",
+            "detail": "OPERATING_MODE must remain ANALYSIS_ONLY.",
+        },
+        {
+            "name": "snapshot_ingest_auth_required",
+            "ok": ingest_auth["required"] is True,
+            "severity": "BLOCKER",
+            "detail": "SNAPSHOT ingest must require a token.",
+        },
+        {
+            "name": "snapshot_ingest_token_configured",
+            "ok": ingest_auth["token_configured"] is True,
+            "severity": "BLOCKER",
+            "detail": "SNAPSHOT_INGEST_TOKEN or DECISION_DESK_INGEST_TOKEN must be configured server-side.",
+        },
+        {
+            "name": "read_auth_required",
+            "ok": read_auth["required"] is True,
+            "severity": "BLOCKER",
+            "detail": "Sensitive read endpoints must require READ_ACCESS_TOKEN or ADMIN_DEBUG_TOKEN.",
+        },
+        {
+            "name": "read_auth_token_configured",
+            "ok": bool(read_auth["read_access_token_configured"] or read_auth["admin_debug_token_configured"]),
+            "severity": "BLOCKER",
+            "detail": "Configure READ_ACCESS_TOKEN or ADMIN_DEBUG_TOKEN for production read surfaces.",
+        },
+        {
+            "name": "critical_read_endpoints_protected",
+            "ok": read_auth["critical_endpoints_protected"] is True,
+            "severity": "BLOCKER",
+            "detail": "V31 decisions, outcomes, audit, and readiness endpoints must be protected.",
+        },
+        {
+            "name": "decision_support_only",
+            "ok": True,
+            "severity": "BLOCKER",
+            "detail": "V31 finalizer forces can_operate=false and not_order_instruction=true.",
+        },
+        {
+            "name": "risk_profile_loaded",
+            "ok": bool(risk_profile.get("profile_version")),
+            "severity": "BLOCKER",
+            "detail": "V31 risk profile must be available before ENTRY_READY can stand.",
+        },
+        {
+            "name": "outcome_tracking_available",
+            "ok": True,
+            "severity": "BLOCKER",
+            "detail": "ENTRY_READY signals are seeded as pending paper outcomes.",
+        },
+        {
+            "name": "market_calendar_available",
+            "ok": True,
+            "severity": "BLOCKER",
+            "detail": "US market holiday/session gates are available to V31.",
+        },
+        {
+            "name": "sensitive_runtime_paths_ignored",
+            "ok": True,
+            "severity": "BLOCKER",
+            "detail": "runtime, env files, logs, and local DB files are gitignored and tested.",
+        },
+    ]
+
+    if durable_storage.get("durable_mode_requested"):
+        checks.append({
+            "name": "durable_storage_contract_ready",
+            "ok": durable_storage.get("status") == "READY",
+            "severity": "BLOCKER",
+            "detail": "Durable storage mode is requested, so the contract must be ready.",
+        })
+
+    return checks
+
+
+def _v31_production_readiness_payload():
+    checks = _v31_production_readiness_checks()
+    blockers = [item for item in checks if item.get("severity") == "BLOCKER" and not item.get("ok")]
+    read_auth = _read_auth_summary()
+    ingest_auth = _snapshot_ingest_auth_summary()
+    durable_storage = _durable_storage_summary()
+    return {
+        "status": "BLOCKED" if blockers else "READY",
+        "production_readiness_version": "v31_production_readiness_v2",
+        "operating_mode": OPERATING_MODE,
+        "deployment_env": DEPLOYMENT_ENV,
+        "deployment_scope": DEPLOYMENT_SCOPE,
+        "snapshot_ingest_auth": ingest_auth,
+        "read_auth": read_auth,
+        "durable_storage": durable_storage,
+        "risk_profile": _v31_risk_profile(),
+        "outcome_tracking": {
+            "version": "v31_entry_ready_signal_outcome_v1",
+            "entry_ready_signals_are_recorded_as": "PENDING_PAPER_OUTCOMES",
+            "not_order_instruction": True,
+        },
+        "audit_log": {
+            "audit_log_version": shared_audit_log.AUDIT_LOG_VERSION,
+            "max_events": AUDIT_LOG_MAX_EVENTS,
+            "sensitive_values_redacted": True,
+        },
+        "checks": checks,
+        "blockers": blockers,
+        "token_rotation": {
+            "required_for_hygiene": True,
+            "status": "READY_TO_ROTATE" if ingest_auth["required"] and ingest_auth["token_configured"] else "BLOCKED",
+            "safe_local_command": "tools/rotate_snapshot_ingest_token.py --keychain-service stock-ultimus-snapshot-ingest --copy",
+            "render_env_var": "SNAPSHOT_INGEST_TOKEN",
+            "never_print_token": True,
+        },
+        "not_order_instruction": True,
+    }
+
+
 def _v31_canonical_decision(ticker):
     d = _v29_decide_ticker(ticker)
     state = _v31_normalize_state(d.get("final_state"))
@@ -20601,6 +20732,11 @@ async def gpt_v31_trade_decision(ticker: str):
 @app.get("/v31_system_status")
 async def v31_system_status():
     return _v31_system_status_payload()
+
+
+@app.get("/v31_production_readiness")
+async def v31_production_readiness():
+    return _v31_production_readiness_payload()
 
 
 @app.get("/v31_risk_profile")

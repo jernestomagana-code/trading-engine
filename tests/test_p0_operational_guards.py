@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "ibkr_bridge.py"
 APP = ROOT / "app" / "main.py"
 GITIGNORE = ROOT / ".gitignore"
+ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -76,6 +77,23 @@ class RepositorySafetyTests(unittest.TestCase):
         self.assertIn(".env.*", ignored)
         self.assertIn("!.env.example", ignored)
         self.assertIn("*.log", ignored)
+
+
+class TokenRotationToolTests(unittest.TestCase):
+    def test_snapshot_token_rotation_tool_never_prints_secret_value(self):
+        source = ROTATE_TOKEN_TOOL.read_text()
+        tree = ast.parse(source, filename=str(ROTATE_TOKEN_TOOL))
+
+        self.assertIn("secrets.token_hex(32)", source)
+        self.assertIn("add-generic-password", source)
+        self.assertIn("pbcopy", source)
+        self.assertIn("token_printed=false", source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
+                printed = ast.get_source_segment(source, node) or ""
+                self.assertNotIn("token)", printed)
+                self.assertNotIn("{token", printed)
 
 
 if __name__ == "__main__":
