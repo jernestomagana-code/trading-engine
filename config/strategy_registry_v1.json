@@ -1,0 +1,156 @@
+{
+  "registry_version": "strategy_registry_v1",
+  "ruleset_version": "strategy_rules_v1",
+  "status": "ACTIVE",
+  "not_order_instruction": true,
+  "strategies": [
+    {
+      "id": "CASH_SECURED_PUT",
+      "aliases": ["NAKED_PUT", "SHORT_PUT"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "asset_class": "OPTIONS",
+      "market_regime": ["BULLISH", "NEUTRAL_TO_BULLISH", "HIGH_QUALITY_PULLBACK"],
+      "technical_required": true,
+      "canslim_required": true,
+      "fundamental_required": false,
+      "account_context_required": true,
+      "option_contract_required": true,
+      "ready_conditions": {
+        "dte_min": 30,
+        "dte_max": 60,
+        "abs_delta_min": 0.14,
+        "abs_delta_max": 0.22,
+        "max_spread_pct": 18.0,
+        "min_bid": 0.05
+      },
+      "review_conditions": {
+        "dte_min": 25,
+        "dte_max": 65,
+        "abs_delta_min": 0.1,
+        "abs_delta_max": 0.28
+      },
+      "primary_blockers": [
+        "WAIT_MARKET",
+        "WAIT_OPTIONS_DATA",
+        "WAIT_TECHNICAL",
+        "CANSLIM_BLOCKED",
+        "RISK_PROFILE_DELTA_TOO_HIGH",
+        "EVENT_RISK_ACTIVE",
+        "EARNINGS_SOON"
+      ],
+      "recommendation_text": "Vender put garantizado por efectivo solo si ticker, tecnico, CANSLIM, contrato ejecutable y riesgo pasan; siempre requiere revision manual."
+    },
+    {
+      "id": "COVERED_CALL",
+      "aliases": ["SHORT_CALL_COVERED"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "asset_class": "OPTIONS",
+      "market_regime": ["NEUTRAL", "NEUTRAL_TO_BEARISH", "POSITION_MANAGEMENT"],
+      "technical_required": true,
+      "canslim_required": false,
+      "fundamental_required": false,
+      "account_context_required": true,
+      "option_contract_required": true,
+      "ready_conditions": {
+        "dte_min": 25,
+        "dte_max": 65,
+        "abs_delta_min": 0.15,
+        "abs_delta_max": 0.25,
+        "max_spread_pct": 18.0,
+        "min_bid": 0.05
+      },
+      "review_conditions": {
+        "abs_delta_min": 0.1,
+        "abs_delta_max": 0.35
+      },
+      "primary_blockers": [
+        "WAIT_ACCOUNT_CONTEXT",
+        "WAIT_OPTIONS_DATA",
+        "WAIT_TECHNICAL",
+        "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+        "EVENT_RISK_ACTIVE"
+      ],
+      "recommendation_text": "Vender call cubierta solo contra posicion existente y con contrato liquido; no debe crear exposicion descubierta."
+    },
+    {
+      "id": "IRON_CONDOR",
+      "aliases": ["SHORT_IRON_CONDOR"],
+      "status": "RESEARCH_ONLY",
+      "asset_class": "OPTIONS",
+      "market_regime": ["RANGE_BOUND", "NEUTRAL_VOLATILITY"],
+      "technical_required": true,
+      "canslim_required": false,
+      "fundamental_required": false,
+      "account_context_required": true,
+      "option_contract_required": true,
+      "ready_conditions": {
+        "allowed_tickers": ["SPY", "QQQ", "IWM", "DIA"],
+        "dte_min": 35,
+        "dte_max": 45,
+        "short_abs_delta_min": 0.15,
+        "short_abs_delta_max": 0.2,
+        "credit_width_min": 0.25
+      },
+      "primary_blockers": [
+        "RESEARCH_ONLY",
+        "WAIT_OPTIONS_DATA",
+        "WAIT_TECHNICAL",
+        "RISK_PROFILE_STRATEGY_NOT_ALLOWED"
+      ],
+      "recommendation_text": "Mantener en research-only hasta validar chains completas, fills teoricos y manejo de riesgo por alas."
+    },
+    {
+      "id": "INTRADAY_INDEX_FUTURES",
+      "aliases": ["FUTURES", "FUTURES_PRO", "MNQ", "NQ", "MES", "ES"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "asset_class": "FUTURES",
+      "market_regime": ["INTRADAY_TREND", "OPENING_RANGE", "HIGH_CONVICTION_BREAKOUT"],
+      "technical_required": true,
+      "canslim_required": false,
+      "fundamental_required": false,
+      "account_context_required": true,
+      "option_contract_required": false,
+      "ready_conditions": {
+        "premarket_context_required": true,
+        "risk_daily_status": "CLEAR",
+        "portfolio_status": "CLEAR",
+        "validation_source_required": true
+      },
+      "primary_blockers": [
+        "WAIT_MARKET",
+        "WAIT_TECHNICAL",
+        "RISK_BLOCKED",
+        "PREMARKET_CONTEXT_MISSING"
+      ],
+      "recommendation_text": "Solo senales intradia con contexto premarket y riesgo diario claro; no autoriza orden automatica."
+    },
+    {
+      "id": "CANSLIM_GROWTH_FILTER",
+      "aliases": ["CANSLIM_FILTER"],
+      "status": "FILTER_ONLY",
+      "asset_class": "EQUITY",
+      "market_regime": ["GROWTH_LEADERSHIP", "BREAKOUT_CANDIDATE"],
+      "technical_required": true,
+      "canslim_required": true,
+      "fundamental_required": true,
+      "account_context_required": false,
+      "option_contract_required": false,
+      "ready_conditions": {
+        "minimum_score": 70,
+        "passes": true
+      },
+      "primary_blockers": [
+        "CANSLIM_BLOCKED",
+        "CANSLIM_SCORE_BELOW_MIN",
+        "WAIT_TECHNICAL"
+      ],
+      "recommendation_text": "Filtro de calidad fundamental y liderazgo; puede bloquear opciones sobre acciones si falla."
+    }
+  ],
+  "research_loop": {
+    "owner": "Morgan",
+    "status": "RULES_ONLY",
+    "cadence": "weekly_or_when_market_regime_changes",
+    "acceptance_rule": "Research ideas must become versioned, testable rules before changing production recommendations."
+  }
+}

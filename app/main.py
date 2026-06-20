@@ -17,6 +17,7 @@ import requests
 import audit_log as shared_audit_log
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
+import strategy_registry as shared_strategy_registry
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -20102,6 +20103,8 @@ def _v31_system_status_payload(tickers=None):
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "daily_recommendations": "/v31_daily_recommendations",
             "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
+            "strategy_registry": "/strategy_registry",
+            "strategy_playbook": "/strategy_playbook",
             "dashboard": "/v31_dashboard",
             "dashboard_ticker_example": "/v31_dashboard/QQQ",
             "risk_profile": "/v31_risk_profile",
@@ -20121,6 +20124,14 @@ def _v31_daily_recommendations_payload(tickers=None):
         market=status.get("market") or {},
         risk_profile=status.get("risk_profile") or {},
     )
+    registry = _strategy_registry()
+    payload["strategy_playbook"] = shared_strategy_registry.playbook_summary(registry)
+    for item in payload.get("items") or []:
+        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+    for item in payload.get("top_recommendations") or []:
+        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+    for item in payload.get("no_trade") or []:
+        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
     payload["source_status"] = {
         "master_snapshot_available": status.get("master_snapshot_available"),
         "master_source": status.get("master_source"),
@@ -20132,6 +20143,14 @@ def _v31_daily_recommendations_payload(tickers=None):
     }
     payload["durable_storage"] = _durable_storage_summary()
     return payload
+
+
+def _strategy_registry():
+    return shared_strategy_registry.load_registry()
+
+
+def _strategy_playbook_summary():
+    return shared_strategy_registry.playbook_summary(_strategy_registry())
 
 
 def _v31_runtime_file_status():
@@ -20795,6 +20814,30 @@ async def gpt_v31_daily_recommendations():
         source="gpt_v31_daily_recommendations",
     )
     return payload
+
+
+@app.get("/strategy_registry")
+async def strategy_registry():
+    registry = _strategy_registry()
+    return {
+        **registry,
+        "summary": shared_strategy_registry.playbook_summary(registry),
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+@app.get("/strategy_playbook")
+async def strategy_playbook():
+    return {
+        "engine": "STRATEGY_PLAYBOOK",
+        "generated_at": _v29_now(),
+        "playbook": _strategy_playbook_summary(),
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
 
 
 @app.get("/v31_production_readiness")

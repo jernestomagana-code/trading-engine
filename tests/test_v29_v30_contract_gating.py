@@ -472,6 +472,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
         self.assertEqual(status["endpoints"]["daily_recommendations"], "/v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["gpt_daily_recommendations"], "/gpt_v31_daily_recommendations")
+        self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
+        self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
         self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
         self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
@@ -505,6 +507,13 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("delta", payload["items"][0]["required_missing_fields"])
         self.assertFalse(payload["items"][0]["can_operate"])
         self.assertTrue(payload["items"][0]["not_order_instruction"])
+        self.assertEqual(payload["strategy_playbook"]["registry_version"], "strategy_registry_v1")
+        self.assertIn("CASH_SECURED_PUT", payload["strategy_playbook"]["active_manual_review"])
+        overlay = payload["items"][0]["strategy_overlay"]
+        self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
+        self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])
+        self.assertTrue(overlay["not_order_instruction"])
+        self.assertFalse(overlay["execution_authorized"])
 
     def test_v31_finalizer_enforces_decision_support_only_contract(self):
         decision = {
