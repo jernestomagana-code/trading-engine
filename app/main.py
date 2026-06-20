@@ -35,6 +35,9 @@ LEGACY_DECISION_SUPPORT_NOTE = (
 READ_AUTH_PUBLIC_PATHS = {
     "/",
     "/health",
+    "/decision_desk/ingest",
+    "/v28_ingest_snapshot",
+    "/v31_ingest_snapshot",
 }
 READ_AUTH_PUBLIC_PREFIXES = (
     "/webhook",
