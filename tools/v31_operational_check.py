@@ -97,6 +97,7 @@ def evaluate_cloud(
     readiness: dict[str, Any],
     pipeline: dict[str, Any],
     decision: dict[str, Any],
+    daily_recommendations: dict[str, Any],
     require_open_data: bool,
     min_rows: int,
 ) -> list[Check]:
@@ -148,6 +149,12 @@ def evaluate_cloud(
             "pipeline_status_known",
             safe_get(pipeline, "status") in {"OK", "NO_MASTER_SNAPSHOT"},
             str(safe_get(pipeline, "status")),
+        ),
+        Check(
+            "daily_recommendations_ok",
+            safe_get(daily_recommendations, "status") == "OK"
+            and safe_get(daily_recommendations, "not_order_instruction") is True,
+            f"status={safe_get(daily_recommendations, 'status')} not_order={safe_get(daily_recommendations, 'not_order_instruction')}",
         ),
         Check("decision_support_only", not_order and not can_operate, f"not_order={not_order} can_operate={can_operate}"),
     ]
@@ -249,6 +256,7 @@ def main() -> int:
     _, _, readiness = fetch_json(f"{base}/v31_production_readiness", timeout=args.timeout, token=read_token)
     _, _, pipeline = fetch_json(f"{base}/v31_data_pipeline_status", timeout=args.timeout, token=read_token)
     _, _, decision = fetch_json(f"{base}/v31_decision/{ticker}", timeout=args.timeout, token=read_token)
+    _, _, daily_recommendations = fetch_json(f"{base}/v31_daily_recommendations", timeout=args.timeout, token=read_token)
 
     checks = evaluate_cloud(
         health if isinstance(health, dict) else {},
@@ -257,6 +265,7 @@ def main() -> int:
         readiness if isinstance(readiness, dict) else {},
         pipeline if isinstance(pipeline, dict) else {},
         decision if isinstance(decision, dict) else {},
+        daily_recommendations if isinstance(daily_recommendations, dict) else {},
         require_open_data=args.require_open_data,
         min_rows=args.min_rows,
     )
@@ -289,6 +298,11 @@ def main() -> int:
             "required_missing_fields": safe_get(decision, "required_missing_fields", default=[]),
             "can_operate": safe_get(decision, "can_operate"),
             "not_order_instruction": safe_get(decision, "not_order_instruction"),
+        },
+        "daily_recommendations": {
+            "status": safe_get(daily_recommendations, "status"),
+            "recommendation_version": safe_get(daily_recommendations, "recommendation_version"),
+            "summary": safe_get(daily_recommendations, "summary", default={}),
         },
         "market_clock": safe_get(health, "market_clock", default={}),
         "checks": [check.as_dict() for check in checks],

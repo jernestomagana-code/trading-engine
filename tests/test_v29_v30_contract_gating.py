@@ -87,6 +87,9 @@ _install_import_stubs()
 
 def _load_main_module():
     app_path = Path(__file__).resolve().parents[1] / "app" / "main.py"
+    root = app_path.parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
     spec = importlib.util.spec_from_file_location("trading_engine_main_for_contract_tests", app_path)
     if spec is None:
         raise RuntimeError("unable to load app/main.py")
@@ -467,12 +470,41 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["ingest"], "/v31_ingest_snapshot")
         self.assertEqual(status["endpoints"]["pipeline_status"], "/v31_data_pipeline_status")
         self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
+        self.assertEqual(status["endpoints"]["daily_recommendations"], "/v31_daily_recommendations")
+        self.assertEqual(status["endpoints"]["gpt_daily_recommendations"], "/gpt_v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
         self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
         self.assertIn("risk_profile", status)
         self.assertIn("outcome_tracking", status)
         self.assertTrue(status["not_order_instruction"])
+
+    def test_v31_daily_recommendations_preserve_wait_options_priority(self):
+        incomplete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": None,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([incomplete_row])):
+            payload = main._v31_daily_recommendations_payload(["QQQ"])
+
+        self.assertEqual(payload["engine"], "V31_DAILY_RECOMMENDATION_ENGINE")
+        self.assertEqual(payload["items"][0]["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(payload["items"][0]["recommendation_action"], "WAIT_FOR_EXECUTABLE_OPTION_DATA")
+        self.assertIn("delta", payload["items"][0]["required_missing_fields"])
+        self.assertFalse(payload["items"][0]["can_operate"])
+        self.assertTrue(payload["items"][0]["not_order_instruction"])
 
     def test_v31_finalizer_enforces_decision_support_only_contract(self):
         decision = {

@@ -25,10 +25,10 @@ cd /private/tmp/stock-ultimus-p0
 Confirmar Render:
 
 ```bash
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)" \
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" \
 python3 tools/v31_operational_check.py --ticker SPY
 
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)"
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
   https://trading-engine-p097.onrender.com/v31_data_pipeline_status
 ```
@@ -358,9 +358,10 @@ cd /private/tmp/stock-ultimus-p0
 rg -n "TRADING_ENGINE_INGEST_PATH|_V283_INGEST_URL|v31_ingest_snapshot|OFFICIAL V31" ibkr_bridge.py
 python3 tools/v31_market_open_runner.py --dry-run
 python3 tools/v31_market_open_runner.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)" python3 tools/v31_operational_check.py --ticker SPY
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" python3 tools/v31_operational_check.py --ticker SPY
 python3 tools/publish_v31_snapshot_from_runtime.py
 python3 tools/publish_v31_snapshot_from_runtime.py --publish
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)"
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_daily_recommendations
 ```

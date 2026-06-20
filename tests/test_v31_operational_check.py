@@ -9,6 +9,9 @@ if str(ROOT) not in sys.path:
 from tools import v31_operational_check as check
 
 
+DAILY_OK = {"status": "OK", "not_order_instruction": True}
+
+
 class V31OperationalCheckTests(unittest.TestCase):
     def test_cloud_check_passes_safe_holiday_cloud_only(self):
         health = {
@@ -38,6 +41,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             readiness=readiness,
             pipeline=pipeline,
             decision=decision,
+            daily_recommendations=DAILY_OK,
             require_open_data=False,
             min_rows=1,
         )
@@ -72,6 +76,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             readiness=readiness,
             pipeline=pipeline,
             decision=decision,
+            daily_recommendations=DAILY_OK,
             require_open_data=True,
             min_rows=1,
         )
@@ -109,6 +114,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             readiness=readiness,
             pipeline=pipeline,
             decision=decision,
+            daily_recommendations=DAILY_OK,
             require_open_data=False,
             min_rows=1,
         )
@@ -137,6 +143,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             readiness={"status": "BLOCKED"},
             pipeline=pipeline,
             decision=decision,
+            daily_recommendations={"status": "BLOCKED", "not_order_instruction": False},
             require_open_data=False,
             min_rows=1,
         )

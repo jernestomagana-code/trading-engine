@@ -15,6 +15,7 @@ import hmac
 import requests
 
 import audit_log as shared_audit_log
+import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
 
 # ============================================================
@@ -20099,6 +20100,8 @@ def _v31_system_status_payload(tickers=None):
             "trade_decision_example": "/v31_trade_decision/QQQ",
             "canonical_decision_example": "/v31_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
+            "daily_recommendations": "/v31_daily_recommendations",
+            "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
             "dashboard": "/v31_dashboard",
             "dashboard_ticker_example": "/v31_dashboard/QQQ",
             "risk_profile": "/v31_risk_profile",
@@ -20108,6 +20111,27 @@ def _v31_system_status_payload(tickers=None):
         "decisions": decisions,
         "not_order_instruction": True,
     }
+
+
+def _v31_daily_recommendations_payload(tickers=None):
+    status = _v31_system_status_payload(tickers)
+    payload = shared_daily_recommendations.build_daily_recommendations(
+        status.get("decisions") or [],
+        generated_at=_v29_now(),
+        market=status.get("market") or {},
+        risk_profile=status.get("risk_profile") or {},
+    )
+    payload["source_status"] = {
+        "master_snapshot_available": status.get("master_snapshot_available"),
+        "master_source": status.get("master_source"),
+        "rows_found": status.get("rows_found"),
+        "technical_count": status.get("technical_count"),
+        "decision_version": status.get("decision_version"),
+        "ruleset_version": status.get("ruleset_version"),
+        "snapshot_version": status.get("snapshot_version"),
+    }
+    payload["durable_storage"] = _durable_storage_summary()
+    return payload
 
 
 def _v31_runtime_file_status():
@@ -20735,6 +20759,42 @@ async def gpt_v31_trade_decision(ticker: str):
 @app.get("/v31_system_status")
 async def v31_system_status():
     return _v31_system_status_payload()
+
+
+@app.get("/v31_daily_recommendations")
+async def v31_daily_recommendations():
+    payload = _v31_daily_recommendations_payload()
+    _record_audit_event(
+        "DAILY_RECOMMENDATIONS_SERVED",
+        {
+            "recommendation_version": payload.get("recommendation_version"),
+            "total": (payload.get("summary") or {}).get("total"),
+            "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
+            "top_tickers": [item.get("ticker") for item in (payload.get("top_recommendations") or [])[:5]],
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="v31_daily_recommendations",
+    )
+    return payload
+
+
+@app.get("/gpt_v31_daily_recommendations")
+async def gpt_v31_daily_recommendations():
+    payload = _v31_daily_recommendations_payload()
+    _record_audit_event(
+        "GPT_DAILY_RECOMMENDATIONS_SERVED",
+        {
+            "recommendation_version": payload.get("recommendation_version"),
+            "total": (payload.get("summary") or {}).get("total"),
+            "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
+            "top_tickers": [item.get("ticker") for item in (payload.get("top_recommendations") or [])[:5]],
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_recommendations",
+    )
+    return payload
 
 
 @app.get("/v31_production_readiness")
