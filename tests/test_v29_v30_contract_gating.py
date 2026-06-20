@@ -662,6 +662,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(readiness["outcome_tracking"]["version"], "v31_entry_ready_signal_outcome_v1")
         self.assertTrue(readiness["token_rotation"]["required_for_hygiene"])
 
+    def test_v31_ingest_endpoints_keep_snapshot_auth_separate_from_read_auth(self):
+        with patch.object(main, "REQUIRE_READ_AUTH", True):
+            self.assertFalse(main._path_requires_read_auth("/v31_ingest_snapshot"))
+            self.assertFalse(main._path_requires_read_auth("/v28_ingest_snapshot"))
+            self.assertFalse(main._path_requires_read_auth("/decision_desk/ingest"))
+            self.assertTrue(main._path_requires_read_auth("/v31_decision/SPY"))
+            self.assertTrue(main._path_requires_read_auth("/v31_production_readiness"))
+
     def test_v31_dashboard_points_to_canonical_routes(self):
         complete_row = {
             "ticker": "QQQ",
