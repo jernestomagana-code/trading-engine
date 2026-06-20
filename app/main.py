@@ -14,6 +14,9 @@ import math
 import hmac
 import requests
 
+import audit_log as shared_audit_log
+import durable_storage as shared_durable_storage
+
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
 # Unified Decision Engine:
@@ -123,6 +126,16 @@ REQUIRE_READ_AUTH = (
     or DEPLOYMENT_ENV.lower() in {"production", "prod"}
 )
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
+RUNTIME_STORAGE_MODE = os.getenv("RUNTIME_STORAGE_MODE", "local_json")
+DURABLE_STORAGE_PROVIDER = os.getenv("DURABLE_STORAGE_PROVIDER", "")
+DURABLE_STORAGE_CONTRACT_VERSION = os.getenv("DURABLE_STORAGE_CONTRACT_VERSION", "")
+DURABLE_STORAGE_ENABLED = os.getenv("DURABLE_STORAGE_ENABLED", "false").lower() == "true"
+STOCK_ULTIMUS_TENANT_ID = os.getenv("STOCK_ULTIMUS_TENANT_ID", "personal")
+STOCK_ULTIMUS_ACCOUNT_SCOPE = os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE", "default")
+try:
+    AUDIT_LOG_MAX_EVENTS = int(os.getenv("AUDIT_LOG_MAX_EVENTS", "10000") or "10000")
+except Exception:
+    AUDIT_LOG_MAX_EVENTS = 10000
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
 PREMARKET_EMAIL_FROM = os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
@@ -671,6 +684,98 @@ def supabase_fetch_single_row(table, filters=None, select="*"):
         return None
 
 
+def _durable_storage_config():
+    return {
+        "runtime_storage_mode": RUNTIME_STORAGE_MODE,
+        "durable_storage_provider": DURABLE_STORAGE_PROVIDER,
+        "durable_storage_contract_version": DURABLE_STORAGE_CONTRACT_VERSION,
+        "durable_storage_enabled": DURABLE_STORAGE_ENABLED,
+        "deployment_scope": DEPLOYMENT_SCOPE,
+        "supabase_url_present": bool(SUPABASE_URL),
+        "supabase_key_present": bool(SUPABASE_KEY),
+    }
+
+
+def _durable_storage_contract():
+    return shared_durable_storage.assess(_durable_storage_config())
+
+
+def _durable_storage_summary():
+    return shared_durable_storage.summary(_durable_storage_contract())
+
+
+def _durable_storage_ready():
+    contract = _durable_storage_contract()
+    return (
+        contract.get("status") == "READY"
+        and contract.get("supabase_requested") is True
+        and supabase_enabled()
+    )
+
+
+def _durable_supabase_persist(kind, payload):
+    if not _durable_storage_ready():
+        return {"enabled": False, "saved": False, "status": "DISABLED"}
+    try:
+        table = shared_durable_storage.table_for_kind(kind)
+        row = shared_durable_storage.row_from_payload(
+            kind,
+            payload or {},
+            tenant_id=STOCK_ULTIMUS_TENANT_ID,
+            account_scope=STOCK_ULTIMUS_ACCOUNT_SCOPE,
+        )
+        conflict_key = "event_id" if str(kind).lower() == "audit" else "id"
+        result = supabase_upsert_row(table, row, conflict_key)
+        result = dict(result or {})
+        result["table"] = table
+        result["kind"] = kind
+        result["status"] = "SAVED" if result.get("saved") else "NOT_SAVED"
+        return result
+    except Exception as exc:
+        return {"enabled": True, "saved": False, "status": "ERROR", "error": str(exc)}
+
+
+def _durable_supabase_fetch(kind, limit=500):
+    if not _durable_storage_ready():
+        return None
+    try:
+        table = shared_durable_storage.table_for_kind(kind)
+        rows = supabase_fetch_table_rows(table, order_column="recorded_at", limit=limit)
+        return shared_durable_storage.payloads_from_rows(rows)
+    except Exception:
+        return None
+
+
+def _audit_log_file():
+    return shared_audit_log.DEFAULT_AUDIT_LOG_PATH
+
+
+def _record_audit_event(event_type, payload=None, *, actor="system", source="app"):
+    event = shared_audit_log.append_event(
+        event_type,
+        payload or {},
+        path=_audit_log_file(),
+        actor=actor,
+        source=source,
+        max_events=AUDIT_LOG_MAX_EVENTS,
+    )
+    event["durable_storage"] = _durable_supabase_persist("audit", event)
+    return event
+
+
+def _audit_summary(limit=100):
+    durable_events = _durable_supabase_fetch("audit", limit=limit)
+    events = durable_events if durable_events is not None else shared_audit_log.read_events(_audit_log_file())
+    return {
+        "audit_log_version": shared_audit_log.AUDIT_LOG_VERSION,
+        "event_count": len(events),
+        "events": events[-limit:],
+        "durable_storage": _durable_storage_summary(),
+        "sensitive_values_redacted": True,
+        "not_order_instruction": True,
+    }
+
+
 def supabase_count_signals():
     if not supabase_enabled():
         return {"enabled": False, "count": 0}
@@ -739,6 +844,8 @@ def save_outcome_file(outcome):
     outcome = dict(outcome)
     outcome["recorded_at"] = now_utc().isoformat()
     outcome["id"] = f"OUT-{len(outcomes) + 1}-{outcome.get('ticker', 'UNKNOWN')}-{int(now_utc().timestamp())}"
+    outcome["outcome_id"] = outcome.get("outcome_id") or outcome["id"]
+    outcome["not_order_instruction"] = True
     outcomes.append(outcome)
     outcomes = outcomes[-10000:]
 
@@ -746,6 +853,52 @@ def save_outcome_file(outcome):
         json.dump(outcomes, f, indent=2)
 
     return outcome
+
+
+def _journal_outcome(outcome, source="record_outcome"):
+    payload = dict(outcome or {})
+    payload["not_order_instruction"] = True
+    durable_result = _durable_supabase_persist("outcome", payload)
+    _record_audit_event(
+        "OUTCOME_RECORDED",
+        {
+            "outcome_id": payload.get("outcome_id") or payload.get("id"),
+            "ticker": payload.get("ticker"),
+            "strategy": payload.get("strategy"),
+            "outcome": payload.get("outcome"),
+            "durable_saved": durable_result.get("saved"),
+            "not_order_instruction": True,
+        },
+        actor="user",
+        source=source,
+    )
+    return durable_result
+
+
+def _journal_decision(decision, source="v31"):
+    payload = dict(decision or {})
+    ticker = str(payload.get("ticker") or "UNKNOWN").upper()
+    state = str(payload.get("final_state") or payload.get("decision") or "UNKNOWN").upper()
+    payload["decision_id"] = payload.get("decision_id") or f"DEC-{ticker}-{state}-{int(now_utc().timestamp())}"
+    payload["recorded_at"] = payload.get("recorded_at") or payload.get("generated_at") or now_utc().isoformat()
+    payload["not_order_instruction"] = True
+    durable_result = _durable_supabase_persist("decision", payload)
+    _record_audit_event(
+        "DECISION_SERVED",
+        {
+            "decision_id": payload.get("decision_id"),
+            "ticker": payload.get("ticker"),
+            "strategy": payload.get("strategy"),
+            "final_state": payload.get("final_state"),
+            "main_blocker": payload.get("main_blocker"),
+            "manual_review_ready": payload.get("manual_review_ready"),
+            "durable_saved": durable_result.get("saved"),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source=source,
+    )
+    return durable_result
 
 
 def outcome_stats(outcomes):
@@ -4674,21 +4827,27 @@ async def record_outcome(request: Request):
         return {"status": "error", "message": "Invalid outcome payload."}
 
     saved = save_outcome_file(parsed)
+    durable_storage = _journal_outcome(saved)
 
     return {
         "status": "ok",
         "engine": "v8.0",
         "outcome": saved,
+        "durable_storage": durable_storage,
+        "not_order_instruction": True,
     }
 
 
 @app.get("/outcomes")
 def outcomes():
-    data = load_outcomes_from_file()
+    durable_outcomes = _durable_supabase_fetch("outcome", limit=500)
+    data = durable_outcomes if durable_outcomes is not None else load_outcomes_from_file()
     return {
         "engine": "v8.0",
         "outcomes": data[-500:],
         "stats": outcome_stats(data),
+        "durable_storage": _durable_storage_summary(),
+        "not_order_instruction": True,
     }
 
 
@@ -10722,6 +10881,7 @@ def read_auth_status():
 def production_readiness():
     blockers = []
     read_auth = _read_auth_summary()
+    durable_storage = _durable_storage_summary()
     if read_auth["required"] and not (
         read_auth["read_access_token_configured"] or read_auth["admin_debug_token_configured"]
     ):
@@ -10736,14 +10896,43 @@ def production_readiness():
             "severity": "BLOCKER",
             "detail": "OPERATING_MODE must remain ANALYSIS_ONLY.",
         })
+    if durable_storage.get("durable_mode_requested") and durable_storage.get("status") == "BLOCKED":
+        blockers.append({
+            "name": "durable_storage_contract_ready",
+            "severity": "BLOCKER",
+            "detail": "Durable storage mode is requested but the storage contract is not ready.",
+        })
     return {
         "status": "BLOCKED" if blockers else "READY",
         "production_readiness_version": "production_readiness_v1_minimal",
         "operating_mode": OPERATING_MODE,
         "read_auth": read_auth,
+        "durable_storage": durable_storage,
+        "audit_log": {
+            "audit_log_version": shared_audit_log.AUDIT_LOG_VERSION,
+            "max_events": AUDIT_LOG_MAX_EVENTS,
+            "sensitive_values_redacted": True,
+        },
         "blockers": blockers,
         "not_order_instruction": True,
     }
+
+
+@app.get("/durable_storage_contract")
+def durable_storage_contract():
+    contract = _durable_storage_contract()
+    return {
+        **contract,
+        "schema_sql_available": bool(contract.get("schema_sql")),
+        "schema_sql": contract.get("schema_sql"),
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/audit_log_summary")
+def audit_log_summary(limit: int = 100):
+    limit = max(1, min(int(limit or 100), 500))
+    return _audit_summary(limit=limit)
 
 
 # ============================================================
@@ -20131,17 +20320,23 @@ def _v31_dashboard_html(tickers=None):
 
 @app.get("/v31_decision/{ticker}")
 async def v31_decision(ticker: str):
-    return _v31_canonical_decision(ticker)
+    decision = _v31_canonical_decision(ticker)
+    decision["durable_storage"] = _journal_decision(decision, source="v31_decision")
+    return decision
 
 
 @app.get("/v31_trade_decision/{ticker}")
 async def v31_trade_decision(ticker: str):
-    return _v31_canonical_decision(ticker)
+    decision = _v31_canonical_decision(ticker)
+    decision["durable_storage"] = _journal_decision(decision, source="v31_trade_decision")
+    return decision
 
 
 @app.get("/gpt_v31_trade_decision/{ticker}")
 async def gpt_v31_trade_decision(ticker: str):
-    return _v31_canonical_decision(ticker)
+    decision = _v31_canonical_decision(ticker)
+    decision["durable_storage"] = _journal_decision(decision, source="gpt_v31_trade_decision")
+    return decision
 
 
 @app.get("/v31_system_status")
@@ -20166,7 +20361,20 @@ async def v31_ingest_snapshot(
         x_decision_desk_token,
         x_webhook_secret,
     )
-    return _v31_ingest_snapshot_payload(payload)
+    result = _v31_ingest_snapshot_payload(payload)
+    _record_audit_event(
+        "SNAPSHOT_INGESTED",
+        {
+            "source": result.get("source"),
+            "rows_found": result.get("rows_found"),
+            "technical_available": result.get("technical_available"),
+            "durable_snapshot_saved": (result.get("durable_storage") or {}).get("saved"),
+            "not_order_instruction": True,
+        },
+        actor="bridge",
+        source="v31_ingest_snapshot",
+    )
+    return result
 
 
 @app.get("/v31_monitor_status")
