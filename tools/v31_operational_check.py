@@ -5,7 +5,7 @@ Run a focused V31 operational readiness check.
 Default mode is cloud-only and never connects to IBKR. Use --run-bridge to run
 one local ibkr_bridge.py cycle with a reduced watchlist and then validate V31.
 This script does not place orders; it only calls the existing read-only bridge
-entrypoint and public Render status/decision endpoints.
+entrypoint and Render status/decision endpoints.
 """
 
 from __future__ import annotations
@@ -35,9 +35,16 @@ class Check:
         return {"name": self.name, "ok": self.ok, "detail": self.detail}
 
 
-def fetch_json(url: str, timeout: int = 20) -> tuple[bool, int | None, Any]:
+def read_headers(token: str | None = None) -> dict[str, str]:
+    if not token:
+        return {}
+    return {"X-Stock-Ultimus-Read-Token": token}
+
+
+def fetch_json(url: str, timeout: int = 20, token: str | None = None) -> tuple[bool, int | None, Any]:
+    req = request.Request(url, headers=read_headers(token))
     try:
-        with request.urlopen(url, timeout=timeout) as resp:
+        with request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             return True, resp.status, json.loads(body)
     except error.HTTPError as exc:
@@ -86,6 +93,8 @@ def safe_get(data: Any, *path: str, default: Any = None) -> Any:
 def evaluate_cloud(
     health: dict[str, Any],
     unauth_status_code: int | None,
+    read_auth: dict[str, Any],
+    readiness: dict[str, Any],
     pipeline: dict[str, Any],
     decision: dict[str, Any],
     require_open_data: bool,
@@ -100,6 +109,16 @@ def evaluate_cloud(
     checks = [
         Check("health_ok", safe_get(health, "status") == "ok", str(safe_get(health, "status"))),
         Check(
+            "read_auth_required",
+            safe_get(read_auth, "required") is True,
+            str(safe_get(read_auth, "required")),
+        ),
+        Check(
+            "production_readiness_ready",
+            safe_get(readiness, "status") == "READY",
+            str(safe_get(readiness, "status")),
+        ),
+        Check(
             "analysis_only",
             safe_get(health, "operating_mode") == "ANALYSIS_ONLY",
             str(safe_get(health, "operating_mode")),
@@ -110,11 +129,16 @@ def evaluate_cloud(
             str(safe_get(health, "snapshot_ingest_token_required")),
         ),
         Check("unauth_v31_ingest_rejected", unauth_status_code == 401, str(unauth_status_code)),
-        Check("pipeline_status_ok", safe_get(pipeline, "status") == "OK", str(safe_get(pipeline, "status"))),
+        Check(
+            "pipeline_status_known",
+            safe_get(pipeline, "status") in {"OK", "NO_MASTER_SNAPSHOT"},
+            str(safe_get(pipeline, "status")),
+        ),
         Check("decision_support_only", not_order and not can_operate, f"not_order={not_order} can_operate={can_operate}"),
     ]
 
     if require_open_data:
+        checks.append(Check("pipeline_status_ok", safe_get(pipeline, "status") == "OK", str(safe_get(pipeline, "status"))))
         checks.append(Check("market_not_holiday", not market_holiday, f"market_holiday={market_holiday}"))
         checks.append(Check("rows_found_minimum", rows_found >= min_rows, f"rows_found={rows_found} min={min_rows}"))
         checks.append(Check("decision_not_no_data", final_state not in ["", "NO_DATA"], f"final_state={final_state}"))
@@ -169,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check V31 operational readiness.")
     parser.add_argument("--remote-url", default=DEFAULT_REMOTE_URL)
     parser.add_argument("--ticker", default="SPY")
+    parser.add_argument("--read-token", default=os.getenv("READ_ACCESS_TOKEN", ""))
     parser.add_argument("--run-bridge", action="store_true")
     parser.add_argument("--require-open-data", action="store_true")
     parser.add_argument("--min-rows", type=int, default=1)
@@ -189,6 +214,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     base = args.remote_url.rstrip("/")
     ticker = args.ticker.upper()
+    read_token = args.read_token or None
 
     bridge_result = None
     if args.run_bridge:
@@ -204,12 +230,16 @@ def main() -> int:
 
     _, _, health = fetch_json(f"{base}/health", timeout=args.timeout)
     _, unauth_status_code, _ = post_json(f"{base}/v31_ingest_snapshot", {}, timeout=args.timeout)
-    _, _, pipeline = fetch_json(f"{base}/v31_data_pipeline_status", timeout=args.timeout)
-    _, _, decision = fetch_json(f"{base}/v31_decision/{ticker}", timeout=args.timeout)
+    _, _, read_auth = fetch_json(f"{base}/read_auth_status", timeout=args.timeout, token=read_token)
+    _, _, readiness = fetch_json(f"{base}/production_readiness", timeout=args.timeout, token=read_token)
+    _, _, pipeline = fetch_json(f"{base}/v31_data_pipeline_status", timeout=args.timeout, token=read_token)
+    _, _, decision = fetch_json(f"{base}/v31_decision/{ticker}", timeout=args.timeout, token=read_token)
 
     checks = evaluate_cloud(
         health if isinstance(health, dict) else {},
         unauth_status_code,
+        read_auth if isinstance(read_auth, dict) else {},
+        readiness if isinstance(readiness, dict) else {},
         pipeline if isinstance(pipeline, dict) else {},
         decision if isinstance(decision, dict) else {},
         require_open_data=args.require_open_data,
@@ -224,6 +254,14 @@ def main() -> int:
         "ticker": ticker,
         "remote_url": base,
         "bridge_result": bridge_result,
+        "read_auth": {
+            "required": safe_get(read_auth, "required"),
+            "read_access_token_configured": safe_get(read_auth, "read_access_token_configured"),
+        },
+        "production_readiness": {
+            "status": safe_get(readiness, "status"),
+            "durable_storage": safe_get(readiness, "durable_storage", default={}),
+        },
         "pipeline": {
             "status": safe_get(pipeline, "status"),
             "rows_found": safe_get(pipeline, "rows_found"),

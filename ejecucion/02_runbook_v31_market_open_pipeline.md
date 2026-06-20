@@ -12,6 +12,7 @@ Este flujo es decision support solamente. No coloca ordenes, no autoriza ejecuci
 - Cuenta IBKR disponible para datos de mercado.
 - TradingView con alertas QQQ/SPY activas si se va a validar contexto tecnico intradia.
 - Render desplegado con endpoints V31 disponibles.
+- `READ_ACCESS_TOKEN` disponible localmente para endpoints de lectura protegidos.
 - Repo local ubicado en:
 
 ```bash
@@ -24,9 +25,12 @@ cd /private/tmp/stock-ultimus-p0
 Confirmar Render:
 
 ```bash
-curl -sS https://trading-engine-p097.onrender.com/v31_data_pipeline_status
-curl -sS https://trading-engine-p097.onrender.com/v31_monitor_notify/preview
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" \
 python3 tools/v31_operational_check.py --ticker SPY
+
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/v31_data_pipeline_status
 ```
 
 Estado esperado antes de publicar datos:
@@ -157,7 +161,9 @@ Si falla `rows_found_minimum` o `decision_not_no_data`, revisar primero
 ## Paso 6. Validar pipeline remoto despues del primer ciclo
 
 ```bash
-curl -sS https://trading-engine-p097.onrender.com/v31_data_pipeline_status
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/v31_data_pipeline_status
 ```
 
 Resultado esperado:
@@ -214,8 +220,13 @@ Resultado esperado:
 Ejemplos:
 
 ```bash
-curl -sS https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
-curl -sS https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/SPY
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
+
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/SPY
 ```
 
 Estados esperados posibles:
@@ -313,10 +324,9 @@ Confirmar:
 cd /Users/ernestomagana04/Projects/trading-engine
 rg -n "TRADING_ENGINE_INGEST_PATH|_V283_INGEST_URL|v31_ingest_snapshot|OFFICIAL V31" ibkr_bridge.py
 python3 ibkr_bridge.py
-curl -sS https://trading-engine-p097.onrender.com/v31_data_pipeline_status
-curl -sS https://trading-engine-p097.onrender.com/v31_monitor_status
-curl -sS https://trading-engine-p097.onrender.com/v31_monitor_notify/preview
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" python3 tools/v31_operational_check.py --ticker SPY
 python3 tools/publish_v31_snapshot_from_runtime.py
 python3 tools/publish_v31_snapshot_from_runtime.py --publish
-curl -sS https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
 ```

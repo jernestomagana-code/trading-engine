@@ -1,4 +1,10 @@
 import unittest
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from tools import v31_operational_check as check
 
@@ -21,6 +27,8 @@ class V31OperationalCheckTests(unittest.TestCase):
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
+            read_auth={"required": True},
+            readiness={"status": "READY"},
             pipeline=pipeline,
             decision=decision,
             require_open_data=False,
@@ -46,6 +54,8 @@ class V31OperationalCheckTests(unittest.TestCase):
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
+            read_auth={"required": True},
+            readiness={"status": "READY"},
             pipeline=pipeline,
             decision=decision,
             require_open_data=True,
@@ -74,6 +84,8 @@ class V31OperationalCheckTests(unittest.TestCase):
         checks = check.evaluate_cloud(
             health,
             unauth_status_code=401,
+            read_auth={"required": True},
+            readiness={"status": "READY"},
             pipeline=pipeline,
             decision=decision,
             require_open_data=False,
@@ -82,6 +94,35 @@ class V31OperationalCheckTests(unittest.TestCase):
         failed = {item.name for item in checks if not item.ok}
 
         self.assertIn("decision_support_only", failed)
+
+    def test_cloud_check_fails_when_read_auth_or_readiness_missing(self):
+        health = {
+            "status": "ok",
+            "operating_mode": "ANALYSIS_ONLY",
+            "snapshot_ingest_token_required": True,
+            "market_clock": {"market_holiday": False},
+        }
+        pipeline = {"status": "OK", "rows_found": 1}
+        decision = {
+            "final_state": "WAIT_MARKET",
+            "not_order_instruction": True,
+            "can_operate": False,
+        }
+
+        checks = check.evaluate_cloud(
+            health,
+            unauth_status_code=401,
+            read_auth={"required": False},
+            readiness={"status": "BLOCKED"},
+            pipeline=pipeline,
+            decision=decision,
+            require_open_data=False,
+            min_rows=1,
+        )
+        failed = {item.name for item in checks if not item.ok}
+
+        self.assertIn("read_auth_required", failed)
+        self.assertIn("production_readiness_ready", failed)
 
 
 if __name__ == "__main__":
