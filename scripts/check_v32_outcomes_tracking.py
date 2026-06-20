@@ -13,8 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_DIR = ROOT / "runtime"
 V28_MASTER = RUNTIME_DIR / "v28_master_snapshot.json"
 V25_ALIAS = RUNTIME_DIR / "v25_master_snapshot.json"
+LEGACY_DECISION = RUNTIME_DIR / "decision_desk_snapshot.json"
+LEGACY_DECISION_ALIAS = RUNTIME_DIR / "decision_snapshot.json"
 V32_DECISIONS = RUNTIME_DIR / "v32_decision_journal.json"
 V32_OUTCOMES = RUNTIME_DIR / "v32_outcomes_journal.json"
+AUDIT_LOG = RUNTIME_DIR / "stock_ultimus_audit_log.json"
 
 
 def load_app_module():
@@ -91,10 +94,11 @@ async def main_async() -> int:
     RUNTIME_DIR.mkdir(exist_ok=True)
 
     backups = {}
-    for path in [V28_MASTER, V25_ALIAS, V32_DECISIONS, V32_OUTCOMES]:
+    managed_paths = [V28_MASTER, V25_ALIAS, LEGACY_DECISION, LEGACY_DECISION_ALIAS, V32_DECISIONS, V32_OUTCOMES, AUDIT_LOG]
+    for path in managed_paths:
         backups[path] = path.read_text() if path.exists() else None
 
-    for path in [V28_MASTER, V25_ALIAS, V32_DECISIONS, V32_OUTCOMES]:
+    for path in managed_paths:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -166,6 +170,16 @@ async def main_async() -> int:
         require(stats.get("closed_outcomes") == 1, f"closed_outcomes mismatch: {summary}")
         require(stats.get("wins") == 1, f"wins mismatch: {summary}")
         require(stats.get("win_rate") == 100.0, f"win_rate mismatch: {summary}")
+
+        audit_events = app._audit_events(limit=20)
+        audit_types = [event.get("event_type") for event in audit_events]
+        require(
+            any(event_type in audit_types for event_type in ["DECISION_RECORDED", "DECISION_REFRESHED"]),
+            f"decision audit event missing: {audit_events}",
+        )
+        require("FOLLOWUP_RECORDED" in audit_types, f"followup audit event missing: {audit_events}")
+        require("OUTCOME_RECORDED" in audit_types, f"outcome audit event missing: {audit_events}")
+        require(all(event.get("sensitive_values_redacted") is True for event in audit_events), f"audit redaction flag missing: {audit_events}")
 
     finally:
         for path, backup in backups.items():

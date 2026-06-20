@@ -1,0 +1,62 @@
+{
+  "fixture_version": "v31_surface_compatibility_cases_v1",
+  "trade_gpt_parity": {
+    "required_equal_top_level_keys": [
+      "engine",
+      "contract_schema_version",
+      "decision_version",
+      "strategy_version",
+      "ruleset_version",
+      "snapshot_version",
+      "ticker",
+      "strategy",
+      "decision",
+      "final_state",
+      "main_blocker",
+      "blockers",
+      "required_missing_fields",
+      "strategy_registry",
+      "score_components",
+      "freshness",
+      "ready_for_manual_review"
+    ],
+    "required_equal_selected_contract_keys": [
+      "selected_contract_version",
+      "ticker",
+      "strategy",
+      "strike",
+      "expiration",
+      "dte",
+      "bid",
+      "ask",
+      "mid",
+      "spread",
+      "spread_pct",
+      "delta"
+    ],
+    "required_guardrails": {
+      "execution_authorized": false,
+      "not_order_instruction": true
+    }
+  },
+  "daily_ranking_gpt_parity": {
+    "required_equal_top_level_keys": [
+      "engine",
+      "ranking_version",
+      "score_version",
+      "summary",
+      "top_manual_review",
+      "watchlist",
+      "blocked",
+      "research_only"
+    ],
+    "required_guardrails": {
+      "execution_authorized": false,
+      "not_order_instruction": true
+    }
+  },
+  "dashboard_expectations": {
+    "must_render_ticker": "AAPL",
+    "must_render_state": "ENTRY_READY"
+  }
+}

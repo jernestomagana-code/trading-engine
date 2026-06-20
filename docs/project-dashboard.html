@@ -486,7 +486,7 @@
             <div class="area-row">
               <div class="area-name">Outcomes V32</div>
               <span class="status-pill is-work">En progreso</span>
-              <div class="area-text">IDs estables, deduplicacion, follow-ups, MFE/MAE y resumen de outcomes pasan el guard local.</div>
+              <div class="area-text">IDs estables, follow-ups, MFE/MAE, outcomes y adaptador Supabase pasan el guard local.</div>
             </div>
             <div class="area-row">
               <div class="area-name">TradingView</div>
@@ -496,7 +496,7 @@
             <div class="area-row">
               <div class="area-name">Seguridad</div>
               <span class="status-pill is-good">Alineado</span>
-              <div class="area-text">Guardrails locales revisan ordenes automaticas prohibidas y datos sensibles en fixtures runtime.</div>
+              <div class="area-text">Guardrails cubren no-auto-order, secretos, readiness, retencion, aislamiento, storage durable y read-auth.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Documentacion</div>
@@ -570,12 +570,15 @@
           <ul class="validation-list">
             <li>7 fixtures V30 validados.</li>
             <li>Guardrails de no-auto-order validados.</li>
-            <li>16 archivos Python compilados.</li>
+            <li>34 archivos Python compilados.</li>
             <li>Privacidad de fixtures runtime validada.</li>
             <li>6 fixtures de senales TradingView validados.</li>
             <li>6 scripts Pine de TradingView validados.</li>
             <li>Fusion por estrategia y CANSLIM validados.</li>
             <li>Journaling y outcomes V32 validados.</li>
+            <li>Contrato durable storage validado.</li>
+            <li>Adaptador Supabase runtime validado offline.</li>
+            <li>Read-auth middleware validado.</li>
             <li>Escenarios guard V29 validados.</li>
             <li>Snapshot runtime sanitizado validado para 5 tickers.</li>
             <li>Endpoint smoke V29/V31 validado.</li>
@@ -590,10 +593,10 @@
             <h2>Proximas Acciones</h2>
           </div>
           <ol class="action-list">
-            <li><span class="number">1</span><span>Extraer schemas, contrato y prioridad de blockers V31 fuera de app/main.py.</span></li>
+            <li><span class="number">1</span><span>Reducir caminos legacy de decision en app/main.py.</span></li>
             <li><span class="number">2</span><span>Capturar un snapshot real de IBKR y pasarlo por el sanitizador.</span></li>
             <li><span class="number">3</span><span>Hacer forward test de Pine Pro V2 contra /technical_snapshot.</span></li>
-            <li><span class="number">4</span><span>Disenar persistencia durable y auditada para journals V32.</span></li>
+            <li><span class="number">4</span><span>Configurar READ_ACCESS_TOKEN y validar accesos protegidos en Render.</span></li>
           </ol>
         </section>
 
@@ -612,7 +615,7 @@
             </div>
             <div class="risk-row">
               <strong>Persistencia V32 aun es runtime local</strong>
-              <p>Antes de despliegue necesita almacenamiento durable, retencion, aislamiento y auditoria.</p>
+              <p>El adapter Supabase existe, pero falta aplicar SQL y validar contra backend real.</p>
             </div>
             <div class="risk-row">
               <strong>Pine scripts sin forward test real</strong>

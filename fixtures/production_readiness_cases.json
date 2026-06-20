@@ -1,0 +1,85 @@
+{
+  "fixture_version": "production_readiness_cases_v1",
+  "cases": [
+    {
+      "name": "production_ready_minimal",
+      "config": {
+        "deployment_env": "production",
+        "operating_mode": "ANALYSIS_ONLY",
+        "require_snapshot_ingest_token": true,
+        "snapshot_ingest_token": "snapshot-token-very-long-random-value",
+        "require_webhook_secret": true,
+        "webhook_secret": "webhook-secret-very-long-random-value",
+        "public_base_url": "https://stock-ultimus-prod.onrender.com",
+        "resend_api_key": "",
+        "resend_daily_plan_limit": 0,
+        "resend_daily_limit_percent": 100,
+        "execution_authorized": false
+      },
+      "expected_status": "READY"
+    },
+    {
+      "name": "blocks_live_operating_mode",
+      "config": {
+        "deployment_env": "production",
+        "operating_mode": "LIVE_TRADING",
+        "require_snapshot_ingest_token": true,
+        "snapshot_ingest_token": "snapshot-token-very-long-random-value",
+        "require_webhook_secret": true,
+        "webhook_secret": "webhook-secret-very-long-random-value",
+        "public_base_url": "https://stock-ultimus-prod.onrender.com",
+        "execution_authorized": false
+      },
+      "expected_status": "BLOCKED",
+      "expected_blockers": ["operating_mode_analysis_only"]
+    },
+    {
+      "name": "blocks_missing_snapshot_token",
+      "config": {
+        "deployment_env": "production",
+        "operating_mode": "ANALYSIS_ONLY",
+        "require_snapshot_ingest_token": true,
+        "snapshot_ingest_token": "",
+        "require_webhook_secret": true,
+        "webhook_secret": "webhook-secret-very-long-random-value",
+        "public_base_url": "https://stock-ultimus-prod.onrender.com",
+        "execution_authorized": false
+      },
+      "expected_status": "BLOCKED",
+      "expected_blockers": ["snapshot_ingest_token_configured"]
+    },
+    {
+      "name": "blocks_webhook_secret_not_required",
+      "config": {
+        "deployment_env": "production",
+        "operating_mode": "ANALYSIS_ONLY",
+        "require_snapshot_ingest_token": true,
+        "snapshot_ingest_token": "snapshot-token-very-long-random-value",
+        "require_webhook_secret": false,
+        "webhook_secret": "webhook-secret-very-long-random-value",
+        "public_base_url": "https://stock-ultimus-prod.onrender.com",
+        "execution_authorized": false
+      },
+      "expected_status": "BLOCKED",
+      "expected_blockers": ["webhook_secret_required"]
+    },
+    {
+      "name": "blocks_resend_without_limits",
+      "config": {
+        "deployment_env": "production",
+        "operating_mode": "ANALYSIS_ONLY",
+        "require_snapshot_ingest_token": true,
+        "snapshot_ingest_token": "snapshot-token-very-long-random-value",
+        "require_webhook_secret": true,
+        "webhook_secret": "webhook-secret-very-long-random-value",
+        "public_base_url": "https://stock-ultimus-prod.onrender.com",
+        "resend_api_key": "re_valid_test_key",
+        "resend_daily_plan_limit": 0,
+        "resend_daily_limit_percent": 100,
+        "execution_authorized": false
+      },
+      "expected_status": "BLOCKED",
+      "expected_blockers": ["resend_daily_limit_configured"]
+    }
+  ]
+}

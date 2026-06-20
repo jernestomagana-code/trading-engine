@@ -1,0 +1,72 @@
+{
+  "fixture_version": "v31_decision_contract_schema_cases_v1",
+  "cases": [
+    {
+      "name": "enabled_entry_ready_contract",
+      "input": {
+        "engine": "TEST",
+        "decision_id": "DEC-SCHEMA-ENTRY",
+        "ticker": "AAPL",
+        "strategy": "NAKED_PUT",
+        "status": "OK",
+        "final_state": "ENTRY_READY",
+        "decision": "ENTRY_READY",
+        "blockers": [],
+        "required_missing_fields": [],
+        "risk_note": "test",
+        "executive_summary": "schema test",
+        "best_row": {
+          "ticker": "AAPL",
+          "strategy": "NAKED_PUT",
+          "strike": 180,
+          "expiration": "2026-07-17",
+          "dte": 28,
+          "data_quality": "FULL_WITH_GREEKS",
+          "decision": "ENTRY",
+          "score": 90
+        },
+        "best_row_quality": {
+          "bid": 1.2,
+          "ask": 1.35,
+          "mid": 1.275,
+          "spread": 0.15,
+          "spread_pct": 11.76,
+          "delta": -0.22,
+          "iv": 0.31,
+          "volume": 150,
+          "open_interest": 500
+        }
+      },
+      "expected": {
+        "contract_schema_version": "v31_decision_contract_schema_v1",
+        "selected_contract_version": "selected_contract_v1",
+        "final_state": "ENTRY_READY",
+        "execution_authorized": false
+      }
+    },
+    {
+      "name": "radar_only_strategy_capped",
+      "input": {
+        "engine": "TEST",
+        "decision_id": "DEC-SCHEMA-RADAR",
+        "ticker": "SPY",
+        "strategy": "IRON_CONDOR",
+        "status": "OK",
+        "final_state": "ENTRY_READY",
+        "decision": "ENTRY_READY",
+        "blockers": [],
+        "required_missing_fields": [],
+        "risk_note": "test",
+        "executive_summary": "schema test"
+      },
+      "expected": {
+        "contract_schema_version": "v31_decision_contract_schema_v1",
+        "selected_contract_version": "selected_contract_v1",
+        "final_state": "MANUAL_REVIEW",
+        "main_blocker": "STRATEGY_RADAR_ONLY",
+        "ready_for_manual_review": false,
+        "execution_authorized": false
+      }
+    }
+  ]
+}

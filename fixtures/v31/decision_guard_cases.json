@@ -1,0 +1,127 @@
+{
+  "fixture_version": "v31_decision_guard_cases_v1",
+  "executable_option_cases": [
+    {
+      "name": "complete_executable_contract",
+      "row": {
+        "ticker": "AAPL",
+        "strategy": "NAKED_PUT",
+        "decision": "ENTRY",
+        "score": 90,
+        "price": 1.275,
+        "strike": 180,
+        "expiration": "2026-07-17",
+        "dte": 28,
+        "bid": 1.2,
+        "ask": 1.35,
+        "delta": -0.22,
+        "volume": 150,
+        "open_interest": 500
+      },
+      "expected": {
+        "executable": true,
+        "missing": []
+      }
+    },
+    {
+      "name": "missing_delta_wait_options",
+      "row": {
+        "ticker": "AAPL",
+        "strategy": "NAKED_PUT",
+        "decision": "ENTRY",
+        "score": 90,
+        "price": 1.275,
+        "strike": 180,
+        "expiration": "2026-07-17",
+        "dte": 28,
+        "bid": 1.2,
+        "ask": 1.35
+      },
+      "expected": {
+        "executable": false,
+        "missing_contains": ["delta"]
+      }
+    },
+    {
+      "name": "inverted_bid_ask_wait_options",
+      "row": {
+        "ticker": "AAPL",
+        "strategy": "NAKED_PUT",
+        "decision": "ENTRY",
+        "score": 90,
+        "price": 1.275,
+        "strike": 180,
+        "expiration": "2026-07-17",
+        "dte": 28,
+        "bid": 1.4,
+        "ask": 1.2,
+        "delta": -0.22
+      },
+      "expected": {
+        "executable": false,
+        "missing_contains": ["bid_ask_order", "mid", "spread", "spread_pct"]
+      }
+    },
+    {
+      "name": "wide_spread_wait_options",
+      "row": {
+        "ticker": "AAPL",
+        "strategy": "NAKED_PUT",
+        "decision": "ENTRY",
+        "score": 90,
+        "price": 1.5,
+        "strike": 180,
+        "expiration": "2026-07-17",
+        "dte": 28,
+        "bid": 1,
+        "ask": 2,
+        "delta": -0.22
+      },
+      "expected": {
+        "executable": false,
+        "missing_contains": ["spread_too_wide"]
+      }
+    }
+  ],
+  "blocker_priority_cases": [
+    {
+      "name": "strategy_risk_blockers_replace_generic_risk_blocker",
+      "final_state": "RISK_BLOCKED",
+      "blocker": "RISK_NOT_CONFIRMED",
+      "risk_manual": {
+        "risk_ok": true,
+        "manual_blockers": []
+      },
+      "strategy_risk": {
+        "blockers": ["EVENT_RISK_ACTIVE", "LOW_OPTION_VOLUME"]
+      },
+      "expected_blockers": ["EVENT_RISK_ACTIVE", "LOW_OPTION_VOLUME"]
+    },
+    {
+      "name": "manual_review_blockers_replace_joined_blocker",
+      "final_state": "MANUAL_REVIEW_BLOCKED",
+      "blocker": "MANUAL_REVIEW_REQUIRED",
+      "risk_manual": {
+        "risk_ok": true,
+        "manual_blockers": ["MANUAL_REVIEW_REQUIRED"]
+      },
+      "strategy_risk": {
+        "blockers": []
+      },
+      "expected_blockers": ["MANUAL_REVIEW_REQUIRED"]
+    },
+    {
+      "name": "wait_options_keeps_contract_blocker_first",
+      "final_state": "WAIT_OPTIONS_DATA",
+      "blocker": "MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY",
+      "risk_manual": {
+        "risk_ok": true,
+        "manual_blockers": []
+      },
+      "strategy_risk": {
+        "blockers": ["EVENT_RISK_ACTIVE"]
+      },
+      "expected_blockers": ["MISSING_BID_ASK_SPREAD_OR_CONTRACT_QUALITY"]
+    }
+  ]
+}

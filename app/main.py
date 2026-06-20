@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
@@ -15,6 +15,14 @@ from pathlib import Path
 import requests
 
 try:
+    import audit_log as shared_audit_log
+    import decision_guards as shared_decision_guards
+    import durable_storage as shared_durable_storage
+    import production_readiness as shared_production_readiness
+    import runtime_retention as shared_runtime_retention
+    import storage_isolation as shared_storage_isolation
+    import strategy_intelligence as shared_strategy_intelligence
+    import v31_contracts as shared_v31_contracts
     from strategy_rules import (
         MIN_PRICE_FOR_THETA,
         OPTION_SPREAD_PCT_READY_MAX,
@@ -53,6 +61,14 @@ except ModuleNotFoundError:
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
+    import audit_log as shared_audit_log
+    import decision_guards as shared_decision_guards
+    import durable_storage as shared_durable_storage
+    import production_readiness as shared_production_readiness
+    import runtime_retention as shared_runtime_retention
+    import storage_isolation as shared_storage_isolation
+    import strategy_intelligence as shared_strategy_intelligence
+    import v31_contracts as shared_v31_contracts
     from strategy_rules import (
         MIN_PRICE_FOR_THETA,
         OPTION_SPREAD_PCT_READY_MAX,
@@ -95,6 +111,51 @@ except ModuleNotFoundError:
 # ============================================================
 
 app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
+
+
+READ_AUTH_PUBLIC_PATHS = {
+    "/",
+    "/health",
+}
+READ_AUTH_PUBLIC_PREFIXES = (
+    "/webhook",
+    "/technical_snapshot",
+    "/technical-snapshot",
+)
+READ_AUTH_SENSITIVE_PREFIXES = (
+    "/after_action_review",
+    "/audit_log",
+    "/dashboard",
+    "/debug",
+    "/decision",
+    "/durable_storage",
+    "/fusion",
+    "/get_",
+    "/gpt",
+    "/history",
+    "/latest",
+    "/liquidity",
+    "/market_hours",
+    "/outcomes",
+    "/premarket",
+    "/production_readiness",
+    "/read_auth",
+    "/runtime_retention",
+    "/stats",
+    "/storage_isolation",
+    "/strategy",
+    "/system_status",
+    "/v22",
+    "/v23",
+    "/v24",
+    "/v25",
+    "/v27",
+    "/v28",
+    "/v29",
+    "/v30",
+    "/v31",
+    "/v32",
+)
 
 _CANONICAL_DECISION_ENGINES = [
     {
@@ -296,11 +357,33 @@ REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() ==
 SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISION_DESK_INGEST_TOKEN", "")
 REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
+DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "local")
+READ_ACCESS_TOKEN = os.getenv("READ_ACCESS_TOKEN", "")
+REQUIRE_READ_AUTH = os.getenv("REQUIRE_READ_AUTH", "").lower() == "true" or DEPLOYMENT_ENV.lower() in {"production", "prod"}
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 MONITOR_EMAIL_TO = os.getenv("MONITOR_EMAIL_TO") or os.getenv("PREMARKET_EMAIL_TO", "")
 MONITOR_EMAIL_FROM = os.getenv("MONITOR_EMAIL_FROM") or os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+EMAIL_USAGE_DIR = Path(os.getenv("EMAIL_USAGE_DIR", "runtime"))
+RESEND_EMAIL_USAGE_FILE = os.getenv("RESEND_EMAIL_USAGE_FILE", "resend_email_usage.json")
+RESEND_EMAIL_USAGE_PATH = EMAIL_USAGE_DIR / RESEND_EMAIL_USAGE_FILE
+RESEND_DAILY_PLAN_LIMIT = int(os.getenv("RESEND_DAILY_PLAN_LIMIT", "0") or "0")
+RESEND_DAILY_LIMIT_PERCENT = int(os.getenv("RESEND_DAILY_LIMIT_PERCENT", "100") or "100")
+RESEND_EMAIL_CONFIG_FILE = os.getenv("RESEND_EMAIL_CONFIG_FILE", "resend_email_config.json")
+RESEND_EMAIL_CONFIG_PATH = EMAIL_USAGE_DIR / RESEND_EMAIL_CONFIG_FILE
+RUNTIME_STORAGE_MODE = os.getenv("RUNTIME_STORAGE_MODE", "local_json")
+DURABLE_STORAGE_PROVIDER = os.getenv("DURABLE_STORAGE_PROVIDER", "")
+DURABLE_STORAGE_CONTRACT_VERSION = os.getenv("DURABLE_STORAGE_CONTRACT_VERSION", "")
+DECISION_JOURNAL_MAX_ITEMS = os.getenv("DECISION_JOURNAL_MAX_ITEMS", "")
+OUTCOME_JOURNAL_MAX_ITEMS = os.getenv("OUTCOME_JOURNAL_MAX_ITEMS", "")
+AUDIT_LOG_MAX_EVENTS = os.getenv("AUDIT_LOG_MAX_EVENTS", "")
+DEPLOYMENT_SCOPE = os.getenv("DEPLOYMENT_SCOPE", "personal")
+DURABLE_STORAGE_ENABLED = os.getenv("DURABLE_STORAGE_ENABLED", "false")
+TENANT_ISOLATION_ENABLED = os.getenv("TENANT_ISOLATION_ENABLED", "false")
+ACCOUNT_ISOLATION_ENABLED = os.getenv("ACCOUNT_ISOLATION_ENABLED", "false")
+STOCK_ULTIMUS_TENANT_ID = os.getenv("STOCK_ULTIMUS_TENANT_ID", "personal")
+STOCK_ULTIMUS_ACCOUNT_SCOPE = os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE", "default")
 
 
 def require_snapshot_ingest_token(*provided_tokens):
@@ -313,6 +396,67 @@ def require_snapshot_ingest_token(*provided_tokens):
         for token in provided_tokens
     ):
         raise HTTPException(status_code=401, detail="Unauthorized snapshot ingest")
+
+
+def _truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _read_auth_required():
+    return bool(REQUIRE_READ_AUTH)
+
+
+def _configured_read_tokens():
+    return [token for token in [READ_ACCESS_TOKEN, ADMIN_DEBUG_TOKEN] if token]
+
+
+def _extract_bearer_token(value):
+    text = str(value or "").strip()
+    if text.lower().startswith("bearer "):
+        return text[7:].strip()
+    return text
+
+
+def _valid_read_token(*provided_tokens):
+    configured = _configured_read_tokens()
+    if not configured:
+        return False
+    for provided in provided_tokens:
+        token = _extract_bearer_token(provided)
+        if token and any(hmac.compare_digest(str(token), str(expected)) for expected in configured):
+            return True
+    return False
+
+
+def _path_requires_read_auth(path):
+    if not _read_auth_required():
+        return False
+    if path in READ_AUTH_PUBLIC_PATHS:
+        return False
+    if any(path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "_") for prefix in READ_AUTH_PUBLIC_PREFIXES):
+        return False
+    return any(path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "_") for prefix in READ_AUTH_SENSITIVE_PREFIXES)
+
+
+@app.middleware("http")
+async def sensitive_read_auth_middleware(request: Request, call_next):
+    if _path_requires_read_auth(request.url.path):
+        if not _configured_read_tokens():
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Read access token is required but not configured"},
+            )
+        if not _valid_read_token(
+            request.headers.get("x-stock-ultimus-read-token"),
+            request.headers.get("x-admin-debug-token"),
+            request.headers.get("authorization"),
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized read access"},
+            )
+    return await call_next(request)
+
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -639,6 +783,93 @@ def supabase_count_signals():
         }
     except Exception as e:
         return {"enabled": True, "ok": False, "error": str(e)}
+
+
+def _durable_runtime_enabled():
+    contract = _durable_storage_contract() if "_durable_storage_contract" in globals() else {}
+    return bool(
+        contract.get("status") == "READY"
+        and contract.get("supabase_requested")
+        and SUPABASE_URL
+        and SUPABASE_KEY
+    )
+
+
+def _durable_supabase_table(kind):
+    return shared_durable_storage.table_for_kind(kind)
+
+
+def _durable_supabase_pk(kind):
+    return "event_id" if str(kind or "").strip().lower() == "audit" else "id"
+
+
+def _durable_supabase_upsert(kind, payloads):
+    if not _durable_runtime_enabled():
+        return {"enabled": False, "saved": False}
+
+    items = payloads if isinstance(payloads, list) else [payloads]
+    rows = [
+        shared_durable_storage.row_from_payload(
+            kind,
+            item,
+            tenant_id=STOCK_ULTIMUS_TENANT_ID,
+            account_scope=STOCK_ULTIMUS_ACCOUNT_SCOPE,
+        )
+        for item in items
+        if isinstance(item, dict)
+    ]
+    if not rows:
+        return {"enabled": True, "saved": True, "row_count": 0}
+
+    table = _durable_supabase_table(kind)
+    pk = _durable_supabase_pk(kind)
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = supabase_headers("resolution=merge-duplicates,return=minimal")
+    try:
+        response = requests.post(url, headers=headers, params={"on_conflict": pk}, json=rows, timeout=10)
+        ok = response.status_code in [200, 201, 204]
+        return {
+            "enabled": True,
+            "saved": ok,
+            "kind": kind,
+            "table": table,
+            "row_count": len(rows),
+            "status_code": response.status_code,
+            "error": None if ok else response.text[:800],
+        }
+    except Exception as exc:
+        return {"enabled": True, "saved": False, "kind": kind, "table": table, "error": str(exc)}
+
+
+def _durable_supabase_fetch(kind, limit=5000):
+    if not _durable_runtime_enabled():
+        return None
+
+    table = _durable_supabase_table(kind)
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {
+        "select": "payload,recorded_at",
+        "tenant_id": f"eq.{STOCK_ULTIMUS_TENANT_ID}",
+        "account_scope": f"eq.{STOCK_ULTIMUS_ACCOUNT_SCOPE}",
+        "order": "recorded_at.asc",
+        "limit": max(1, min(int(limit or 5000), 100000)),
+    }
+    try:
+        response = requests.get(url, headers=supabase_headers(None), params=params, timeout=10)
+        if response.status_code != 200:
+            return None
+        return shared_durable_storage.payloads_from_rows(response.json())
+    except Exception:
+        return None
+
+
+def _durable_kind_for_path(path):
+    p = _V29Path(path)
+    if p.name == _V32_DECISION_JOURNAL_FILE.name:
+        return "decision"
+    if p.name == _V32_OUTCOMES_JOURNAL_FILE.name:
+        return "outcome"
+    return None
 
 
 def load_signals_from_file():
@@ -2540,6 +2771,131 @@ def health():
             "minutes_since_open": minutes_since_open(),
             "initial_window_minutes": INITIAL_WINDOW_MINUTES,
         },
+    }
+
+
+def _production_readiness_config():
+    return {
+        "deployment_env": DEPLOYMENT_ENV,
+        "operating_mode": OPERATING_MODE,
+        "require_snapshot_ingest_token": REQUIRE_SNAPSHOT_INGEST_TOKEN,
+        "snapshot_ingest_token": SNAPSHOT_INGEST_TOKEN,
+        "require_webhook_secret": REQUIRE_WEBHOOK_SECRET,
+        "webhook_secret": WEBHOOK_SECRET,
+        "public_base_url": PUBLIC_BASE_URL,
+        "resend_api_key": RESEND_API_KEY,
+        "resend_daily_plan_limit": RESEND_DAILY_PLAN_LIMIT,
+        "resend_daily_limit_percent": RESEND_DAILY_LIMIT_PERCENT,
+        "execution_authorized": False,
+    }
+
+
+def _read_auth_summary():
+    return {
+        "read_auth_version": "read_auth_gate_v1",
+        "required": _read_auth_required(),
+        "read_access_token_configured": bool(READ_ACCESS_TOKEN),
+        "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
+        "protected_prefix_count": len(READ_AUTH_SENSITIVE_PREFIXES),
+        "public_paths": sorted(READ_AUTH_PUBLIC_PATHS),
+        "public_prefixes": list(READ_AUTH_PUBLIC_PREFIXES),
+        "sensitive_values_excluded": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+@app.get("/production_readiness")
+def production_readiness():
+    result = shared_production_readiness.assess(_production_readiness_config())
+    storage = _storage_isolation_summary()
+    durable_storage = _durable_storage_summary()
+    read_auth = _read_auth_summary()
+    result["audit_log"] = _audit_summary()
+    result["runtime_retention"] = _retention_summary()
+    result["storage_isolation"] = storage
+    result["durable_storage"] = durable_storage
+    result["read_auth"] = read_auth
+    if read_auth.get("required") and not (
+        read_auth.get("read_access_token_configured") or read_auth.get("admin_debug_token_configured")
+    ):
+        result["status"] = "BLOCKED"
+        result.setdefault("blockers", [])
+        result["blockers"].append({
+            "name": "read_auth_token_configured",
+            "ok": False,
+            "severity": "blocker",
+            "detail": "Production read surfaces require READ_ACCESS_TOKEN or ADMIN_DEBUG_TOKEN.",
+        })
+    if storage.get("commercial_like") and storage.get("status") == "BLOCKED":
+        result["status"] = "BLOCKED"
+        result.setdefault("blockers", [])
+        result["blockers"].append({
+            "name": "storage_isolation_commercial_ready",
+            "ok": False,
+            "severity": "blocker",
+            "detail": "Commercial or multi-user scope requires durable storage, tenant isolation, and account isolation.",
+        })
+    if durable_storage.get("durable_mode_requested") and durable_storage.get("status") == "BLOCKED":
+        result["status"] = "BLOCKED"
+        result.setdefault("blockers", [])
+        result["blockers"].append({
+            "name": "durable_storage_contract_ready",
+            "ok": False,
+            "severity": "blocker",
+            "detail": "Durable runtime storage requires a declared and validated storage contract.",
+        })
+    return result
+
+
+@app.get("/read_auth_status")
+def read_auth_status():
+    return {
+        "engine": "STOCK_ULTIMUS_READ_AUTH",
+        "generated_at": _v29_now() if "_v29_now" in globals() else now_utc().isoformat(),
+        **_read_auth_summary(),
+    }
+
+
+@app.get("/durable_storage_contract")
+def durable_storage_contract():
+    return {
+        "engine": "STOCK_ULTIMUS_DURABLE_STORAGE_CONTRACT",
+        "generated_at": _v29_now() if "_v29_now" in globals() else now_utc().isoformat(),
+        **_durable_storage_contract(),
+    }
+
+
+@app.get("/storage_isolation")
+def storage_isolation():
+    return {
+        "engine": "STOCK_ULTIMUS_STORAGE_ISOLATION",
+        "generated_at": _v29_now() if "_v29_now" in globals() else now_utc().isoformat(),
+        **_storage_isolation_summary(),
+        "durable_storage": _durable_storage_summary(),
+    }
+
+
+@app.get("/runtime_retention")
+def runtime_retention():
+    return {
+        "engine": "STOCK_ULTIMUS_RUNTIME_RETENTION",
+        "generated_at": _v29_now() if "_v29_now" in globals() else now_utc().isoformat(),
+        **_retention_summary(),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+@app.get("/audit_log_summary")
+def audit_log_summary():
+    return {
+        "engine": "STOCK_ULTIMUS_AUDIT_LOG",
+        "generated_at": _v29_now() if "_v29_now" in globals() else now_utc().isoformat(),
+        **_audit_summary(),
+        "runtime_retention": _retention_summary(),
+        "not_order_instruction": True,
+        "execution_authorized": False,
     }
 
 
@@ -14845,6 +15201,7 @@ _V29_MASTER_FILES = [
     "decision_snapshot.json",
 ]
 _V29_IGNORED_RUNTIME_FILES = {
+    "stock_ultimus_audit_log.json",
     "v32_decision_journal.json",
     "v32_outcomes_journal.json",
 }
@@ -14862,11 +15219,22 @@ _V31_DECISION_VERSION = "v31.0"
 _V31_STRATEGY_VERSION = "strategy_rules_v1"
 _V31_RULESET_VERSION = "v31_canonical_rules_v1"
 _V31_SNAPSHOT_VERSION = "v30_master_snapshot_contract_v1"
+_STRATEGY_REGISTRY_FILE = _V29Path("config/strategy_registry.json")
+_STRATEGY_REGISTRY_VERSION = "strategy_registry_v1"
 _STRATEGY_SIGNAL_CONTRACT_VERSION = "strategy_signal_contract_v1"
 _CANSLIM_RULESET_VERSION = "canslim_filter_v1"
+_V31_FRESHNESS_VERSION = "freshness_gates_v1"
+_V31_FRESHNESS_LIMITS_MINUTES = {
+    "ibkr_snapshot": 30,
+    "technical": 390,
+    "market_regime": 30,
+    "fundamental_canslim": 1440,
+    "account_context": 30,
+}
 _V32_ENGINE = "V32_OUTCOMES_TRACKING"
 _V32_DECISION_JOURNAL_FILE = _V29_RUNTIME_DIR / "v32_decision_journal.json"
 _V32_OUTCOMES_JOURNAL_FILE = _V29_RUNTIME_DIR / "v32_outcomes_journal.json"
+_AUDIT_LOG_FILE = _V29_RUNTIME_DIR / "stock_ultimus_audit_log.json"
 _V31_CANONICAL_STATES = [
     "NO_DATA",
     "WAIT_MARKET",
@@ -15168,183 +15536,30 @@ def _v29_extract_technical_from_obj(obj):
 
 
 def _v29_spread_metrics(row):
-    bid = _v29_safe_float(row.get("bid"), None)
-    ask = _v29_safe_float(row.get("ask"), None)
-
-    if bid is None or ask is None:
-        return None, None, None
-
-    if bid <= 0 or ask <= 0 or ask < bid:
-        return None, None, None
-
-    spread = round(ask - bid, 4)
-    mid = round((ask + bid) / 2, 4)
-
-    if mid <= 0:
-        return spread, mid, None
-
-    spread_pct = round((spread / mid) * 100, 2)
-    return spread, mid, spread_pct
+    return shared_decision_guards.spread_metrics(row)
 
 
 def _v29_expiration_parseable(value):
-    if not value:
-        return False
-
-    text = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%Y%m%d"):
-        try:
-            datetime.strptime(text, fmt)
-            return True
-        except ValueError:
-            pass
-
-    return False
+    return shared_decision_guards.expiration_parseable(value)
 
 
 def _v29_listify(value):
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    return [value]
+    return shared_decision_guards.listify(value)
 
 
 def _v29_risk_manual_gate(row):
-    risk = row.get("risk") if isinstance(row.get("risk"), dict) else {}
-    blockers = []
-
-    for key in [
-        "blockers",
-        "manual_review_blockers",
-        "risk_blockers",
-        "missing_confirmations",
-    ]:
-        blockers.extend(_v29_listify(row.get(key)))
-
-    blockers.extend(_v29_listify(risk.get("blockers")))
-
-    risk_pass_value = None
-    for value in [
-        risk.get("passes"),
-        risk.get("pass"),
-        row.get("risk_passes"),
-        row.get("risk_ok"),
-        row.get("risk_pass"),
-        row.get("trade_allowed"),
-    ]:
-        if value is not None:
-            risk_pass_value = value
-            break
-
-    risk_ok = risk_pass_value is True
-    risk_blocker = risk.get("blocker") or row.get("risk_blocker")
-
-    if risk_pass_value is False and not risk_blocker:
-        risk_blocker = "RISK_RULE_FAILED"
-    if risk_pass_value is None:
-        risk_blocker = "RISK_NOT_CONFIRMED"
-
-    manual_review_required = bool(
-        row.get("manual_review_required") is True
-        or row.get("manual_review") is True
-        or row.get("requires_manual_review") is True
-    )
-    manual_blockers = [
-        str(x)
-        for x in blockers
-        if "MANUAL" in _v29_safe_upper(x, "") or "REVIEW" in _v29_safe_upper(x, "")
-    ]
-
-    if manual_review_required and not manual_blockers:
-        manual_blockers.append("MANUAL_REVIEW_REQUIRED")
-
-    return {
-        "risk_ok": risk_ok,
-        "risk_blocker": risk_blocker,
-        "manual_ok": not manual_blockers,
-        "manual_blockers": manual_blockers,
-        "blockers": [str(x) for x in blockers if x not in [None, ""]],
-    }
+    return shared_decision_guards.risk_manual_gate(row)
 
 
 def _v29_quality_gate(row):
-    missing = []
-
-    bid = _v29_safe_float(row.get("bid"), None)
-    ask = _v29_safe_float(row.get("ask"), None)
-    price = _v29_safe_float(row.get("price"), None)
-    score = _v29_safe_float(row.get("score"), 0)
-    delta = _v29_safe_float(row.get("delta"), None)
-    strike = _v29_safe_float(row.get("strike"), None)
-    dte = _v29_safe_float(row.get("dte"), None)
-    expiration = row.get("expiration")
-
-    spread, mid, spread_pct = _v29_spread_metrics(row)
-
-    if bid is None or bid < _V29_MIN_BID:
-        missing.append("bid")
-    if ask is None or ask < _V29_MIN_ASK:
-        missing.append("ask")
-    if bid is not None and ask is not None and ask < bid:
-        missing.append("bid_ask_order")
-    if mid is None or mid <= 0:
-        missing.append("mid")
-    if spread is None:
-        missing.append("spread")
-    if spread_pct is None:
-        missing.append("spread_pct")
-    if strike is None:
-        missing.append("strike")
-    elif strike <= 0:
-        missing.append("strike")
-    if dte is None:
-        missing.append("dte")
-    elif dte < 0:
-        missing.append("dte")
-    if not _v29_expiration_parseable(expiration):
-        missing.append("expiration")
-    if delta is None:
-        missing.append("delta")
-    elif delta < -1 or delta > 1:
-        missing.append("delta")
-    if price is None and mid is None:
-        missing.append("price_or_mid")
-    if score < _V29_MIN_OPTION_SCORE:
-        missing.append("option_score")
-
-    spread_ok = False
-    if spread is not None and spread_pct is not None:
-        spread_ok = spread <= _V29_MAX_ABS_SPREAD or spread_pct <= _V29_MAX_SPREAD_PCT
-        if not spread_ok:
-            missing.append("spread_too_wide")
-
-    executable = len(missing) == 0
-
-    quality = "EXECUTABLE" if executable else "NOT_EXECUTABLE"
-
-    return {
-        "executable": executable,
-        "quality": quality,
-        "missing": missing,
-        "spread": spread,
-        "mid": mid,
-        "spread_pct": spread_pct,
-        "bid": bid,
-        "ask": ask,
-        "strike": strike,
-        "expiration": expiration,
-        "dte": dte,
-        "delta": delta,
-        "gamma": _v29_safe_float(row.get("gamma"), None),
-        "theta": _v29_safe_float(row.get("theta"), None),
-        "vega": _v29_safe_float(row.get("vega"), None),
-        "iv": _v29_safe_float(row.get("iv") or row.get("implied_volatility"), None),
-        "volume": _v29_safe_float(row.get("volume"), None),
-        "open_interest": _v29_safe_float(row.get("open_interest") or row.get("oi"), None),
-    }
+    return shared_decision_guards.executable_option_gate(
+        row,
+        min_bid=_V29_MIN_BID,
+        min_ask=_V29_MIN_ASK,
+        min_option_score=_V29_MIN_OPTION_SCORE,
+        max_abs_spread=_V29_MAX_ABS_SPREAD,
+        max_spread_pct=_V29_MAX_SPREAD_PCT,
+    )
 
 
 def _v29_score_row(row):
@@ -15528,6 +15743,15 @@ def _v29_canslim_payload(row, technical):
         "canslim_passes",
         "canslim_rating",
         "canslim_notes",
+        "canslim_received_at",
+        "canslim_generated_at",
+        "canslim_source_timestamp",
+        "fundamental_received_at",
+        "fundamental_generated_at",
+        "source_timestamp",
+        "received_at",
+        "generated_at",
+        "timestamp",
     ]:
         if key in technical:
             payload[key] = technical.get(key)
@@ -15607,31 +15831,82 @@ def _v29_canslim_gate(row, technical, strategy):
     }
 
 
+def _v29_timestamp_candidate_from_obj(obj):
+    if not isinstance(obj, dict):
+        return None
+    for key in [
+        "received_at",
+        "generated_at",
+        "timestamp",
+        "source_timestamp",
+        "updated_at",
+        "saved_at",
+        "as_of",
+        "received_at_bridge",
+        "canslim_received_at",
+        "fundamental_received_at",
+    ]:
+        value = obj.get(key)
+        if value:
+            return value
+    return None
+
+
+def _v29_first_timestamp_in_obj(obj, max_depth=4):
+    if max_depth < 0:
+        return None
+    if isinstance(obj, dict):
+        direct = _v29_timestamp_candidate_from_obj(obj)
+        if direct:
+            return direct
+        for value in obj.values():
+            found = _v29_first_timestamp_in_obj(value, max_depth - 1)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _v29_first_timestamp_in_obj(item, max_depth - 1)
+            if found:
+                return found
+    return None
+
+
+def _v29_pick_context_timestamp(master_data, row, technical_raw, context_keys):
+    sources = []
+    if isinstance(row, dict):
+        sources.append(row)
+    if isinstance(technical_raw, dict):
+        sources.append(technical_raw)
+    if isinstance(master_data, dict):
+        for key in context_keys:
+            value = master_data.get(key)
+            if value is not None:
+                sources.append(value)
+
+    for source in sources:
+        found = _v29_first_timestamp_in_obj(source)
+        if found:
+            return found
+    return None
+
+
+def _v29_source_context(decision, master_data):
+    return shared_strategy_intelligence.source_context(decision, master_data)
+
+
 def _selected_contract_from_v29(v29_decision):
-    row = v29_decision.get("best_row") or {}
-    quality = v29_decision.get("best_row_quality") or {}
-    return {
-        "ticker": v29_decision.get("ticker"),
-        "strategy": v29_decision.get("strategy"),
-        "strike": row.get("strike"),
-        "expiration": row.get("expiration"),
-        "dte": row.get("dte"),
-        "bid": quality.get("bid"),
-        "ask": quality.get("ask"),
-        "mid": quality.get("mid"),
-        "spread": quality.get("spread"),
-        "spread_pct": quality.get("spread_pct"),
-        "delta": quality.get("delta"),
-        "iv": quality.get("iv"),
-        "volume": quality.get("volume"),
-        "open_interest": quality.get("open_interest"),
-        "data_quality": row.get("data_quality"),
-        "source_decision": row.get("decision"),
-        "source_score": row.get("score"),
-    }
+    return shared_v31_contracts.selected_contract_from_v29(v29_decision)
 
 
 def _v32_read_list(path):
+    kind = _durable_kind_for_path(path)
+    if kind:
+        policy = _runtime_retention_policy()
+        limit = policy["decision_journal_max"] if kind == "decision" else policy["outcome_journal_max"]
+        durable_items = _durable_supabase_fetch(kind, limit=limit)
+        if durable_items is not None:
+            return durable_items
+
     try:
         p = _V29Path(path)
         if not p.exists():
@@ -15643,9 +15918,119 @@ def _v32_read_list(path):
 
 
 def _v32_write_list(path, items):
+    kind = _durable_kind_for_path(path)
+    if kind and _durable_runtime_enabled():
+        _durable_supabase_upsert(kind, list(items or []))
+        return
+
     p = _V29Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(_v29_json.dumps(items, indent=2, ensure_ascii=False, default=str))
+
+
+def _runtime_retention_policy():
+    return shared_runtime_retention.policy({
+        "decision_journal_max": DECISION_JOURNAL_MAX_ITEMS,
+        "outcome_journal_max": OUTCOME_JOURNAL_MAX_ITEMS,
+        "audit_log_max": AUDIT_LOG_MAX_EVENTS,
+        "runtime_storage_mode": RUNTIME_STORAGE_MODE,
+    })
+
+
+def _retention_limit_for_path(path):
+    policy = _runtime_retention_policy()
+    p = _V29Path(path)
+    if p.name == _V32_DECISION_JOURNAL_FILE.name:
+        return policy["decision_journal_max"]
+    if p.name == _V32_OUTCOMES_JOURNAL_FILE.name:
+        return policy["outcome_journal_max"]
+    return None
+
+
+def _v32_write_retained_list(path, items):
+    max_items = _retention_limit_for_path(path)
+    retained = list(items or [])[-max_items:] if max_items else list(items or [])
+    _v32_write_list(path, retained)
+
+
+def _audit_event(event_type, payload=None, *, actor="system", source="app"):
+    try:
+        policy = _runtime_retention_policy()
+        event = shared_audit_log.append_event(
+            event_type,
+            payload or {},
+            path=_AUDIT_LOG_FILE,
+            actor=actor,
+            source=source,
+            max_events=policy["audit_log_max"],
+        )
+        if event and _durable_runtime_enabled():
+            _durable_supabase_upsert("audit", event)
+        return event
+    except Exception:
+        return None
+
+
+def _audit_events(limit=100):
+    durable_events = _durable_supabase_fetch("audit", limit=_runtime_retention_policy()["audit_log_max"])
+    events = durable_events if durable_events is not None else shared_audit_log.read_events(_AUDIT_LOG_FILE)
+    return events[-max(1, min(int(limit or 100), 500)):]
+
+
+def _audit_summary():
+    durable_events = _durable_supabase_fetch("audit", limit=_runtime_retention_policy()["audit_log_max"])
+    events = durable_events if durable_events is not None else shared_audit_log.read_events(_AUDIT_LOG_FILE)
+    by_type = {}
+    for event in events:
+        event_type = str(event.get("event_type") or "UNKNOWN")
+        by_type[event_type] = by_type.get(event_type, 0) + 1
+    return {
+        "audit_log_version": shared_audit_log.AUDIT_LOG_VERSION,
+        "event_count": len(events),
+        "by_type": by_type,
+        "last_event_at": (events[-1] or {}).get("recorded_at") if events else None,
+        "sensitive_values_redacted": True,
+    }
+
+
+def _retention_summary():
+    return shared_runtime_retention.summary(_runtime_retention_policy())
+
+
+def _durable_storage_config():
+    return {
+        "runtime_storage_mode": _runtime_retention_policy().get("runtime_storage_mode"),
+        "durable_storage_provider": DURABLE_STORAGE_PROVIDER,
+        "durable_storage_contract_version": DURABLE_STORAGE_CONTRACT_VERSION,
+        "durable_storage_enabled": DURABLE_STORAGE_ENABLED,
+        "deployment_scope": DEPLOYMENT_SCOPE,
+        "supabase_url_present": bool(SUPABASE_URL),
+        "supabase_key_present": bool(SUPABASE_KEY),
+    }
+
+
+def _durable_storage_contract():
+    return shared_durable_storage.assess(_durable_storage_config())
+
+
+def _durable_storage_summary():
+    return shared_durable_storage.summary(_durable_storage_contract())
+
+
+def _storage_isolation_config():
+    return {
+        "deployment_scope": DEPLOYMENT_SCOPE,
+        "runtime_storage_mode": _runtime_retention_policy().get("runtime_storage_mode"),
+        "durable_storage_enabled": DURABLE_STORAGE_ENABLED,
+        "tenant_isolation_enabled": TENANT_ISOLATION_ENABLED,
+        "account_isolation_enabled": ACCOUNT_ISOLATION_ENABLED,
+        "audit_log_enabled": True,
+        "retention_policy_enabled": True,
+    }
+
+
+def _storage_isolation_summary():
+    return shared_storage_isolation.assess(_storage_isolation_config())
 
 
 def _v32_load_decision_journal():
@@ -15751,18 +16136,31 @@ def _v32_upsert_decision_record(record):
             merged = dict(record)
             merged.update(preserved)
             journal[index] = merged
-            _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal[-5000:])
+            _v32_write_retained_list(_V32_DECISION_JOURNAL_FILE, journal)
             return merged, False
 
     journal.append(record)
-    journal = journal[-5000:]
-    _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal)
+    journal = shared_runtime_retention.trim_items(journal, _runtime_retention_policy()["decision_journal_max"])
+    _v32_write_retained_list(_V32_DECISION_JOURNAL_FILE, journal)
     return record, True
 
 
 def _v32_record_decision(v29_decision):
     record = _v32_decision_record(v29_decision)
     saved, created = _v32_upsert_decision_record(record)
+    _audit_event(
+        "DECISION_RECORDED" if created else "DECISION_REFRESHED",
+        {
+            "decision_id": saved.get("decision_id"),
+            "ticker": saved.get("ticker"),
+            "strategy": saved.get("strategy"),
+            "final_state": saved.get("final_state"),
+            "main_blocker": saved.get("main_blocker"),
+            "decision_version": saved.get("decision_version"),
+            "ruleset_version": saved.get("ruleset_version"),
+        },
+        source="v32_decision_journal",
+    )
     return saved, created
 
 
@@ -15783,8 +16181,8 @@ def _v32_replace_decision_record(updated):
             break
     if not replaced:
         journal.append(updated)
-    journal = journal[-5000:]
-    _v32_write_list(_V32_DECISION_JOURNAL_FILE, journal)
+    journal = shared_runtime_retention.trim_items(journal, _runtime_retention_policy()["decision_journal_max"])
+    _v32_write_retained_list(_V32_DECISION_JOURNAL_FILE, journal)
     return updated
 
 
@@ -15815,6 +16213,17 @@ def _v32_followup_entry(payload):
     decision["followups"] = followups[-200:]
     decision["followup_summary"] = _v32_followup_summary(decision["followups"])
     _v32_replace_decision_record(decision)
+    _audit_event(
+        "FOLLOWUP_RECORDED",
+        {
+            "decision_id": decision_id,
+            "followup_id": followup.get("followup_id"),
+            "tag": followup.get("tag"),
+            "status": followup.get("status"),
+            "pnl_r": followup.get("pnl_r"),
+        },
+        source="v32_followup",
+    )
 
     return {
         "status": "ok",
@@ -15865,8 +16274,8 @@ def _v32_outcome_entry(payload):
 
     outcomes = _v32_load_outcomes_journal()
     outcomes.append(outcome)
-    outcomes = outcomes[-5000:]
-    _v32_write_list(_V32_OUTCOMES_JOURNAL_FILE, outcomes)
+    outcomes = shared_runtime_retention.trim_items(outcomes, _runtime_retention_policy()["outcome_journal_max"])
+    _v32_write_retained_list(_V32_OUTCOMES_JOURNAL_FILE, outcomes)
 
     decision["outcome_status"] = outcome["outcome"]
     decision["latest_outcome"] = outcome
@@ -15878,6 +16287,20 @@ def _v32_outcome_entry(payload):
             summary["mae_r"] = outcome.get("mae_r")
         decision["followup_summary"] = summary
     _v32_replace_decision_record(decision)
+    _audit_event(
+        "OUTCOME_RECORDED",
+        {
+            "decision_id": decision_id,
+            "outcome_id": outcome.get("outcome_id"),
+            "ticker": outcome.get("ticker"),
+            "strategy": outcome.get("strategy"),
+            "outcome": outcome.get("outcome"),
+            "pnl_r": outcome.get("pnl_r"),
+            "mfe_r": outcome.get("mfe_r"),
+            "mae_r": outcome.get("mae_r"),
+        },
+        source="v32_outcome",
+    )
 
     return {
         "status": "ok",
@@ -15935,6 +16358,7 @@ def _v29_finalize_decision(decision, master):
     payload = dict(decision)
     payload["snapshot_generated_at"] = (master.get("data") or {}).get("generated_at")
     payload["snapshot_received_at"] = (master.get("data") or {}).get("received_at")
+    payload["source_context"] = _v29_source_context(payload, master.get("data") or {})
     payload["selected_contract"] = _selected_contract_from_v29(payload)
     record, _created = _v32_record_decision(payload)
     payload["decision_id"] = record.get("decision_id")
@@ -16264,11 +16688,7 @@ def _v29_decide_ticker(ticker):
         blocker = "UNKNOWN_CONFIRMATION_GAP"
         action = f"{ticker}: mantener en radar. Confirmaciones incompletas."
 
-    result_blockers = [blocker] if blocker else []
-    if final_state == "RISK_BLOCKED" and strategy_risk["blockers"] and risk_manual["risk_ok"]:
-        result_blockers = strategy_risk["blockers"]
-    elif final_state == "MANUAL_REVIEW_BLOCKED" and risk_manual["manual_blockers"]:
-        result_blockers = risk_manual["manual_blockers"]
+    result_blockers = shared_decision_guards.primary_blockers(final_state, blocker, risk_manual, strategy_risk)
 
     executive_summary = (
         f"{ticker}: {final_state}. "
@@ -16332,78 +16752,138 @@ def _v29_all_decisions(tickers=None):
 
 
 def _v31_canonical_state(v29_state):
-    mapping = {
-        "WAIT_MARKET_OPEN": "WAIT_MARKET",
-        "MANUAL_REVIEW_BLOCKED": "MANUAL_REVIEW",
-        "RADAR": "MANUAL_REVIEW",
-    }
-    state = mapping.get(str(v29_state or ""), v29_state)
-    if state not in _V31_CANONICAL_STATES:
-        return "NO_DATA"
-    return state
+    return shared_v31_contracts.canonical_state(v29_state, _V31_CANONICAL_STATES)
+
+
+def _v31_strategy_registry():
+    return shared_strategy_intelligence.strategy_registry(_STRATEGY_REGISTRY_FILE)
+
+
+def _v31_strategy_registry_entry(strategy):
+    return shared_strategy_intelligence.strategy_registry_entry(strategy, _STRATEGY_REGISTRY_FILE)
 
 
 def _v31_selected_contract(v29_decision):
     return _selected_contract_from_v29(v29_decision)
 
 
+def _v31_parse_datetime(value):
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = _V29Datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_V29Timezone.utc)
+        return parsed.astimezone(_V29Timezone.utc)
+    except Exception:
+        return None
+
+
+def _v31_first_timestamp(*values):
+    for value in values:
+        parsed = _v31_parse_datetime(value)
+        if parsed is not None:
+            return parsed, value
+    return None, None
+
+
+def _v31_freshness_gate(name, timestamp_value, max_age_minutes, *, required=True, fallback_note=None):
+    parsed, raw_value = _v31_first_timestamp(timestamp_value)
+    if parsed is None:
+        status = "UNKNOWN_REQUIRED" if required else "NOT_PROVIDED"
+        return {
+            "status": status,
+            "fresh": not required,
+            "required": required,
+            "timestamp": None,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+            "score": 0 if required else 50,
+            "blocker": f"{name.upper()}_FRESHNESS_UNKNOWN" if required else None,
+            "notes": ["timestamp missing"] + ([fallback_note] if fallback_note else []),
+        }
+
+    age_minutes = round((_V29Datetime.now(_V29Timezone.utc) - parsed).total_seconds() / 60, 2)
+    fresh = age_minutes <= max_age_minutes
+    score = 100 if fresh else max(0, round(100 - min(100, ((age_minutes - max_age_minutes) / max(max_age_minutes, 1)) * 100), 2))
+    return {
+        "status": "FRESH" if fresh else "STALE",
+        "fresh": fresh,
+        "required": required,
+        "timestamp": parsed.isoformat(),
+        "source_timestamp": raw_value,
+        "age_minutes": age_minutes,
+        "max_age_minutes": max_age_minutes,
+        "score": score,
+        "blocker": None if fresh else f"{name.upper()}_STALE",
+        "notes": [fallback_note] if fallback_note else [],
+    }
+
+
+def _v31_freshness_gates(v29_decision):
+    return shared_strategy_intelligence.freshness_gates(v29_decision)
+
+
+def _v31_score_component(value, status, notes=None, weight=0):
+    score = _v29_safe_float(value, 0)
+    score = max(0, min(100, score))
+    return {
+        "score": round(score, 2),
+        "status": status,
+        "weight": weight,
+        "notes": notes or [],
+    }
+
+
+def _v31_score_components(v29_decision, registry_entry, final_state, blockers, freshness=None):
+    return shared_strategy_intelligence.score_components(
+        v29_decision,
+        registry_entry,
+        final_state,
+        blockers,
+        min_tech_score=_V29_MIN_TECH_SCORE,
+        freshness=freshness,
+        selected_contract=_v31_selected_contract(v29_decision),
+    )
+
+
 def _v31_decision_contract(v29_decision):
     final_state = _v31_canonical_state(v29_decision.get("final_state"))
+    strategy = _v29_safe_upper(v29_decision.get("strategy"), "UNKNOWN")
+    registry_entry = _v31_strategy_registry_entry(strategy)
     blockers = list(v29_decision.get("blockers") or [])
     main_blocker = v29_decision.get("main_blocker")
-    if main_blocker and main_blocker not in blockers:
-        blockers.insert(0, main_blocker)
+    final_state, main_blocker, blockers = shared_v31_contracts.apply_registry_cap(
+        final_state,
+        main_blocker,
+        blockers,
+        registry_entry,
+    )
 
-    return {
-        "engine": "V31_CANONICAL_DECISION_CONTRACT",
-        "source_engine": v29_decision.get("engine"),
-        "decision_id": v29_decision.get("decision_id"),
-        "decision_version": _V31_DECISION_VERSION,
-        "strategy_version": _V31_STRATEGY_VERSION,
-        "ruleset_version": _V31_RULESET_VERSION,
-        "snapshot_version": _V31_SNAPSHOT_VERSION,
-        "generated_at": _v29_now(),
-        "ticker": v29_decision.get("ticker"),
-        "status": v29_decision.get("status", "OK"),
-        "final_state": final_state,
-        "decision": final_state,
-        "main_blocker": main_blocker,
-        "blockers": blockers,
-        "required_missing_fields": list(v29_decision.get("required_missing_fields") or []),
-        "risk_notes": [
-            v29_decision.get("risk_note"),
-            "ENTRY_READY means ready for manual review, not authorization to trade.",
-        ],
-        "explanation": v29_decision.get("executive_summary") or v29_decision.get("action"),
-        "next_required_action": v29_decision.get("action"),
-        "not_order_instruction": True,
-        "ready_for_manual_review": final_state == "ENTRY_READY",
-        "execution_authorized": False,
-        "selected_contract": _v31_selected_contract(v29_decision),
-        "technical": {
-            "bias": v29_decision.get("technical_bias"),
-            "score": v29_decision.get("technical_score"),
-            "fit": v29_decision.get("technical_fit"),
-            "raw": v29_decision.get("technical"),
-        },
-        "risk": {
-            "fit": v29_decision.get("risk_fit"),
-            "manual_review_fit": v29_decision.get("manual_review_fit"),
-            "gate": v29_decision.get("risk_gate"),
-        },
-        "market": v29_decision.get("market"),
-        "audit": {
-            "decision_id": v29_decision.get("decision_id"),
-            "master_source": v29_decision.get("master_source"),
-            "snapshot_generated_at": v29_decision.get("snapshot_generated_at"),
-            "snapshot_received_at": v29_decision.get("snapshot_received_at"),
-            "rows_found_for_ticker": v29_decision.get("rows_found_for_ticker"),
-            "total_rows_found": v29_decision.get("total_rows_found"),
-            "executable_rows_found": v29_decision.get("executable_rows_found"),
-            "source_final_state": v29_decision.get("final_state"),
-            "source_decision": v29_decision.get("decision"),
-        },
-    }
+    freshness = _v31_freshness_gates(v29_decision)
+    score_components = _v31_score_components(v29_decision, registry_entry, final_state, blockers, freshness)
+
+    return shared_v31_contracts.decision_contract(
+        v29_decision,
+        generated_at=_v29_now(),
+        decision_version=_V31_DECISION_VERSION,
+        strategy_version=_V31_STRATEGY_VERSION,
+        ruleset_version=_V31_RULESET_VERSION,
+        snapshot_version=_V31_SNAPSHOT_VERSION,
+        final_state=final_state,
+        strategy=strategy,
+        main_blocker=main_blocker,
+        blockers=blockers,
+        registry_entry=registry_entry,
+        selected_contract=_v31_selected_contract(v29_decision),
+        freshness=freshness,
+        score_components=score_components,
+    )
 
 
 def _v31_decide_ticker(ticker):
@@ -16414,6 +16894,24 @@ def _v31_all_decisions(tickers=None):
     if not tickers:
         tickers = _V29_DEFAULT_TICKERS
     return [_v31_decide_ticker(t) for t in tickers]
+
+
+def _v31_ranking_item(decision, rank=None):
+    return shared_strategy_intelligence.ranking_item(decision, rank)
+
+
+def _v31_sort_ranked_items(items):
+    return shared_strategy_intelligence.sort_ranked_items(items)
+
+
+def _v31_daily_rankings(tickers=None):
+    decisions = _v31_all_decisions(tickers)
+    return shared_strategy_intelligence.daily_rankings(
+        decisions,
+        now_iso=_v29_now(),
+        decision_version=_V31_DECISION_VERSION,
+        ruleset_version=_V31_RULESET_VERSION,
+    )
 
 
 def _v29_html_escape(x):
@@ -16753,6 +17251,7 @@ async def v31_ingest_snapshot(
 async def v31_system_status():
     master = _v29_discover_master_snapshot()
     decisions = _v31_all_decisions()
+    rankings = _v31_daily_rankings()
 
     return {
         "engine": "V31_CANONICAL_DECISION_CONTRACT",
@@ -16774,12 +17273,15 @@ async def v31_system_status():
             "wait_options": sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"),
             "wait_market": sum(1 for d in decisions if d.get("final_state") == "WAIT_MARKET"),
             "no_data": sum(1 for d in decisions if d.get("final_state") == "NO_DATA"),
+            "daily_ranking": rankings.get("summary"),
         },
         "not_order_instruction": True,
         "endpoints": {
             "ingest": "/v31_ingest_snapshot",
             "trade_decision_example": "/v31_trade_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
+            "daily_rankings": "/v31_daily_rankings",
+            "gpt_daily_rankings": "/gpt_v31_daily_rankings",
             "source_status": "/v29_system_status",
         },
     }
@@ -16795,12 +17297,14 @@ async def gpt_v31_trade_decision(ticker: str):
     d = _v31_decide_ticker(ticker)
     return {
         "engine": d.get("engine"),
+        "contract_schema_version": d.get("contract_schema_version"),
         "decision_id": d.get("decision_id"),
         "decision_version": d.get("decision_version"),
         "strategy_version": d.get("strategy_version"),
         "ruleset_version": d.get("ruleset_version"),
         "snapshot_version": d.get("snapshot_version"),
         "ticker": d.get("ticker"),
+        "strategy": d.get("strategy"),
         "decision": d.get("decision"),
         "final_state": d.get("final_state"),
         "main_blocker": d.get("main_blocker"),
@@ -16809,6 +17313,9 @@ async def gpt_v31_trade_decision(ticker: str):
         "selected_contract": d.get("selected_contract"),
         "technical": d.get("technical"),
         "risk": d.get("risk"),
+        "strategy_registry": d.get("strategy_registry"),
+        "score_components": d.get("score_components"),
+        "freshness": d.get("freshness"),
         "explanation": d.get("explanation"),
         "next_required_action": d.get("next_required_action"),
         "risk_notes": d.get("risk_notes"),
@@ -16817,6 +17324,33 @@ async def gpt_v31_trade_decision(ticker: str):
         "not_order_instruction": True,
         "audit": d.get("audit"),
         "generated_at": d.get("generated_at"),
+    }
+
+
+@app.get("/v31_daily_rankings")
+async def v31_daily_rankings():
+    return _v31_daily_rankings()
+
+
+@app.get("/gpt_v31_daily_rankings")
+async def gpt_v31_daily_rankings():
+    rankings = _v31_daily_rankings()
+    return {
+        "engine": rankings.get("engine"),
+        "ranking_version": rankings.get("ranking_version"),
+        "score_version": rankings.get("score_version"),
+        "generated_at": rankings.get("generated_at"),
+        "summary": rankings.get("summary"),
+        "top_manual_review": rankings.get("top_manual_review"),
+        "watchlist": rankings.get("watchlist"),
+        "blocked": rankings.get("blocked"),
+        "research_only": rankings.get("research_only"),
+        "risk_notes": [
+            "This is a manual-review ranking, not an order instruction.",
+            "RADAR_ONLY and blocked candidates are excluded from top manual-review readiness.",
+        ],
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -16891,6 +17425,94 @@ def _v30_monitor_base_url():
     return PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
 
 
+def _v30_today_date():
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _v30_resend_email_usage_path():
+    EMAIL_USAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return RESEND_EMAIL_USAGE_PATH
+
+
+def _v30_resend_email_usage_load():
+    path = _v30_resend_email_usage_path()
+    if not path.exists():
+        return {"date": _v30_today_date(), "count": 0}
+    try:
+        loaded = json.loads(path.read_text())
+        if not isinstance(loaded, dict):
+            raise ValueError("Invalid email usage file")
+        date = str(loaded.get("date", _v30_today_date()))
+        count = int(loaded.get("count", 0))
+        if date != _v30_today_date():
+            return {"date": _v30_today_date(), "count": 0}
+        return {"date": date, "count": max(0, count)}
+    except Exception:
+        return {"date": _v30_today_date(), "count": 0}
+
+
+def _v30_resend_email_usage_save(usage):
+    path = _v30_resend_email_usage_path()
+    path.write_text(json.dumps(usage, ensure_ascii=False, indent=2))
+    return usage
+
+
+def _v30_resend_email_daily_limit():
+    # Prefer persisted config in runtime/resend_email_config.json if present
+    cfg = _v30_resend_config_load()
+    plan_limit = int(cfg.get("plan_limit", RESEND_DAILY_PLAN_LIMIT) or 0)
+    percent = int(cfg.get("percent", RESEND_DAILY_LIMIT_PERCENT) or 100)
+    if plan_limit <= 0:
+        return None
+    percent = max(0, min(100, percent))
+    return math.floor(plan_limit * percent / 100)
+
+
+def _v30_resend_config_path():
+    EMAIL_USAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return RESEND_EMAIL_CONFIG_PATH
+
+
+def _v30_resend_config_load():
+    path = _v30_resend_config_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def _v30_resend_config_save(cfg):
+    path = _v30_resend_config_path()
+    path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+    return cfg
+
+
+def _v30_resend_email_allow_send():
+    limit = _v30_resend_email_daily_limit()
+    usage = _v30_resend_email_usage_load()
+    if limit is None:
+        return True, {"sent_today": usage["count"], "limit": None, "date": usage["date"]}
+    if usage["count"] >= limit:
+        return False, {
+            "sent_today": usage["count"],
+            "limit": limit,
+            "date": usage["date"],
+            "reason": "RESEND_DAILY_LIMIT_REACHED",
+        }
+    return True, {"sent_today": usage["count"], "limit": limit, "date": usage["date"]}
+
+
+def _v30_increment_resend_email_usage():
+    usage = _v30_resend_email_usage_load()
+    usage["count"] += 1
+    return _v30_resend_email_usage_save(usage)
+
+
 def _v30_send_resend_email(to_email, subject, text_body, html_body=None):
     missing = []
     if not RESEND_API_KEY:
@@ -16906,6 +17528,15 @@ def _v30_send_resend_email(to_email, subject, text_body, html_body=None):
             "provider": "resend",
             "reason": "EMAIL_CONFIG_MISSING",
             "missing": missing,
+        }
+
+    allowed, usage_state = _v30_resend_email_allow_send()
+    if not allowed:
+        return {
+            "email_sent": False,
+            "provider": "resend",
+            "reason": "EMAIL_DAILY_LIMIT_REACHED",
+            "email_usage": usage_state,
         }
 
     payload = {
@@ -16928,13 +17559,17 @@ def _v30_send_resend_email(to_email, subject, text_body, html_body=None):
             timeout=12,
         )
         ok = 200 <= response.status_code < 300
-        return {
+        result = {
             "email_sent": ok,
             "provider": "resend",
             "status_code": response.status_code,
             "reason": None if ok else "EMAIL_PROVIDER_REJECTED",
             "response": response.text[:500],
         }
+        if ok:
+            _v30_increment_resend_email_usage()
+            result["email_usage"] = _v30_resend_email_usage_load()
+        return result
     except Exception as exc:
         return {
             "email_sent": False,
@@ -17138,5 +17773,57 @@ async def v30_monitor_notify(force: bool = False, to_email: Optional[str] = None
 
 
 # ============================================================
+
+
+@app.get("/v30_email_usage")
+def v30_email_usage():
+    """Return daily resend email usage and configured limit for this service."""
+    usage = _v30_resend_email_usage_load()
+    limit = _v30_resend_email_daily_limit()
+    return {
+        "engine": "V30_PASSIVE_PIPELINE_MONITOR",
+        "generated_at": _v29_now(),
+        "usage": usage,
+        "limit": limit,
+        "limit_percent": RESEND_DAILY_LIMIT_PERCENT,
+        "note": "Limit applies only to this service; other services may consume remaining quota if sharing API key.",
+    }
+
+
+@app.post("/v30_email_usage/config")
+def v30_email_usage_config(payload: Dict[str, Any], admin_token: Optional[str] = Header(default=None)):
+    """Update persisted resend email config (requires `ADMIN_DEBUG_TOKEN`).
+
+    Payload keys:
+    - plan_limit: integer (total daily plan limit)
+    - percent: integer (0-100 percentage for this service)
+    """
+    # verify admin token
+    token = admin_token or os.getenv("ADMIN_DEBUG_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=403, detail="Admin token not configured")
+    provided = payload or {}
+    plan = provided.get("plan_limit")
+    percent = provided.get("percent")
+    cfg = _v30_resend_config_load()
+    changed = False
+    if plan is not None:
+        try:
+            cfg["plan_limit"] = int(plan)
+            changed = True
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid plan_limit")
+    if percent is not None:
+        try:
+            p = int(percent)
+            if p < 0 or p > 100:
+                raise ValueError()
+            cfg["percent"] = p
+            changed = True
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid percent (0-100)" )
+    if changed:
+        _v30_resend_config_save(cfg)
+    return {"status": "ok", "config": cfg}
 # END V29 FINAL DECISION QUALITY ENGINE
 # ============================================================

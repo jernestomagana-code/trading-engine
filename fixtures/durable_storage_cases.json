@@ -1,0 +1,71 @@
+{
+  "fixture_version": "durable_storage_cases_v1",
+  "cases": [
+    {
+      "name": "personal_local_json_not_requested",
+      "config": {
+        "deployment_scope": "personal",
+        "runtime_storage_mode": "local_json",
+        "durable_storage_enabled": false,
+        "supabase_url_present": false,
+        "supabase_key_present": false
+      },
+      "expected": {
+        "status": "READY",
+        "durable_mode_requested": false,
+        "supabase_requested": false
+      }
+    },
+    {
+      "name": "supabase_missing_contract_blocks",
+      "config": {
+        "deployment_scope": "personal",
+        "runtime_storage_mode": "supabase",
+        "durable_storage_provider": "supabase",
+        "durable_storage_enabled": true,
+        "supabase_url_present": true,
+        "supabase_key_present": true
+      },
+      "expected": {
+        "status": "BLOCKED",
+        "durable_mode_requested": true,
+        "supabase_requested": true,
+        "expected_blockers": ["contract_version_declared"]
+      }
+    },
+    {
+      "name": "supabase_missing_key_blocks",
+      "config": {
+        "deployment_scope": "personal",
+        "runtime_storage_mode": "supabase",
+        "durable_storage_provider": "supabase",
+        "durable_storage_contract_version": "durable_storage_contract_v1",
+        "durable_storage_enabled": true,
+        "supabase_url_present": true,
+        "supabase_key_present": false
+      },
+      "expected": {
+        "status": "BLOCKED",
+        "expected_blockers": ["supabase_key_configured"]
+      }
+    },
+    {
+      "name": "commercial_supabase_contract_ready",
+      "config": {
+        "deployment_scope": "commercial",
+        "runtime_storage_mode": "supabase",
+        "durable_storage_provider": "supabase",
+        "durable_storage_contract_version": "durable_storage_contract_v1",
+        "durable_storage_enabled": true,
+        "supabase_url_present": true,
+        "supabase_key_present": true
+      },
+      "expected": {
+        "status": "READY",
+        "commercial_like": true,
+        "durable_mode_requested": true,
+        "supabase_requested": true
+      }
+    }
+  ]
+}

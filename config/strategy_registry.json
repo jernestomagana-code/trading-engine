@@ -1,0 +1,186 @@
+{
+  "registry_version": "strategy_registry_v1",
+  "playbook_version": "strategy_playbook_v1",
+  "intelligence_loop_version": "strategy_intelligence_loop_v1",
+  "updated_at": "2026-06-19",
+  "governance": {
+    "entry_ready_meaning": "READY_FOR_MANUAL_REVIEW_ONLY",
+    "automatic_order_execution_allowed": false,
+    "research_to_rule_required": true,
+    "production_rule_requires_version_bump": true
+  },
+  "strategy_states": {
+    "ENABLED": "May influence production readiness after all data, blocker, risk, and manual-review gates pass.",
+    "RADAR_ONLY": "May appear in research or watchlist outputs but cannot produce ENTRY_READY.",
+    "DISABLED": "Must not produce recommendations except explanatory no-action state."
+  },
+  "strategies": [
+    {
+      "strategy": "NAKED_PUT",
+      "family": "OPTIONS_INCOME",
+      "time_horizon": "NON_INTRADAY",
+      "state": "ENABLED",
+      "strategy_version": "naked_put_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "IBKR_MARKET_DATA",
+        "IBKR_OPTION_CHAIN",
+        "IBKR_ACCOUNT_CONTEXT",
+        "TRADINGVIEW_TECHNICAL",
+        "EVENT_RISK",
+        "FUNDAMENTAL_OR_CANSLIM_WHEN_CONFIGURED"
+      ],
+      "must_block_on_missing": [
+        "EXECUTABLE_OPTION_DATA",
+        "ACCOUNT_CONTEXT",
+        "TECHNICAL_CONFIRMATION",
+        "RISK_CONFIRMATION"
+      ],
+      "entry_ready_cap": "MANUAL_REVIEW_ONLY",
+      "research_stage": "PRODUCTION_PLAYBOOK",
+      "notes": "Existing V30/V31 flow supports executable put contract gating, technical confirmation, risk blockers, CANSLIM blocker preservation, and manual-review wording."
+    },
+    {
+      "strategy": "CASH_SECURED_PUT",
+      "family": "OPTIONS_INCOME",
+      "time_horizon": "NON_INTRADAY",
+      "state": "RADAR_ONLY",
+      "strategy_version": "cash_secured_put_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "IBKR_MARKET_DATA",
+        "IBKR_OPTION_CHAIN",
+        "IBKR_ACCOUNT_CONTEXT",
+        "TRADINGVIEW_TECHNICAL",
+        "EVENT_RISK",
+        "CASH_RESERVE_CONTEXT",
+        "FUNDAMENTAL_OR_CANSLIM_WHEN_CONFIGURED"
+      ],
+      "must_block_on_missing": [
+        "EXECUTABLE_OPTION_DATA",
+        "ACCOUNT_CONTEXT",
+        "CASH_RESERVE_CONTEXT",
+        "TECHNICAL_CONFIRMATION",
+        "RISK_CONFIRMATION"
+      ],
+      "entry_ready_cap": "RADAR_ONLY_UNTIL_CASH_RESERVE_GATE_IMPLEMENTED",
+      "research_stage": "RULE_PROPOSAL",
+      "notes": "Shares Naked Put logic but needs explicit full-assignment cash-reserve validation before production readiness."
+    },
+    {
+      "strategy": "COVERED_CALL",
+      "family": "OPTIONS_INCOME",
+      "time_horizon": "NON_INTRADAY",
+      "state": "ENABLED",
+      "strategy_version": "covered_call_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "IBKR_MARKET_DATA",
+        "IBKR_OPTION_CHAIN",
+        "IBKR_POSITION_CONTEXT",
+        "TRADINGVIEW_TECHNICAL",
+        "EVENT_RISK"
+      ],
+      "must_block_on_missing": [
+        "EXECUTABLE_OPTION_DATA",
+        "POSITION_CONTEXT",
+        "TECHNICAL_CONFIRMATION",
+        "RISK_CONFIRMATION"
+      ],
+      "entry_ready_cap": "MANUAL_REVIEW_ONLY",
+      "research_stage": "PRODUCTION_PLAYBOOK",
+      "notes": "Existing strategy guard covers position context, earnings blockers, delta ranges, and option-quality readiness checks."
+    },
+    {
+      "strategy": "IRON_CONDOR",
+      "family": "DEFINED_RISK_OPTIONS_INCOME",
+      "time_horizon": "NON_INTRADAY",
+      "state": "RADAR_ONLY",
+      "strategy_version": "iron_condor_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "IBKR_MARKET_DATA",
+        "IBKR_MULTI_LEG_OPTION_CHAIN",
+        "TRADINGVIEW_RANGE_TECHNICAL",
+        "VOLATILITY_REGIME",
+        "EVENT_RISK",
+        "ACCOUNT_RISK_CONTEXT"
+      ],
+      "must_block_on_missing": [
+        "FOUR_LEG_EXECUTABLE_STRUCTURE",
+        "NET_CREDIT_AND_MAX_RISK",
+        "RANGE_CONFIRMATION",
+        "VOLATILITY_REGIME",
+        "RISK_CONFIRMATION"
+      ],
+      "entry_ready_cap": "RADAR_ONLY_UNTIL_MULTI_LEG_CONTRACT_AND_EXIT_PLAN_ARE_CANONICAL",
+      "research_stage": "FORWARD_TEST",
+      "notes": "Local quality gates exist, but production readiness should wait for canonical multi-leg schema, max-risk fields, and exit/invalidation governance."
+    },
+    {
+      "strategy": "FUTURES_INTRADAY",
+      "family": "FUTURES",
+      "time_horizon": "INTRADAY",
+      "state": "RADAR_ONLY",
+      "strategy_version": "futures_intraday_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "TRADINGVIEW_INTRADAY_TECHNICAL",
+        "MARKET_SESSION",
+        "LIQUIDITY_WINDOW",
+        "MACRO_EVENT_WINDOW",
+        "INTRADAY_RISK_PROFILE"
+      ],
+      "must_block_on_missing": [
+        "INTRADAY_RISK_PROFILE",
+        "SESSION_CONTEXT",
+        "EVENT_WINDOW_CONTEXT",
+        "TECHNICAL_CONFIRMATION"
+      ],
+      "entry_ready_cap": "RADAR_ONLY_UNTIL_INTRADAY_GOVERNANCE_IMPLEMENTED",
+      "research_stage": "RADAR_ONLY",
+      "notes": "Futures signals remain separate from options readiness and cannot mark options ENTRY_READY."
+    },
+    {
+      "strategy": "ZERO_DTE_INDEX_OPTIONS",
+      "family": "DEFINED_RISK_INTRADAY_OPTIONS",
+      "time_horizon": "INTRADAY",
+      "state": "RADAR_ONLY",
+      "strategy_version": "zero_dte_index_options_research_v1",
+      "ruleset_version": "research_only_v1",
+      "required_inputs": [
+        "INDEX_OPTION_CHAIN",
+        "INTRADAY_TECHNICAL",
+        "VOLATILITY_REGIME",
+        "SESSION_CONTEXT",
+        "EVENT_WINDOW_CONTEXT",
+        "INTRADAY_MAX_LOSS_PROFILE"
+      ],
+      "must_block_on_missing": [
+        "DEFINED_RISK_STRUCTURE",
+        "INTRADAY_MAX_LOSS_PROFILE",
+        "EVENT_WINDOW_CONTEXT",
+        "LIQUIDITY_CONTEXT"
+      ],
+      "entry_ready_cap": "RADAR_ONLY_RESEARCH_ONLY",
+      "research_stage": "OBSERVED_PRACTICE",
+      "notes": "Included because 0DTE is a major current market practice. It must remain research-only until explicit intraday max-loss, event, liquidity, and exit rules exist."
+    },
+    {
+      "strategy": "CANSLIM_FILTER",
+      "family": "FUNDAMENTAL_FILTER",
+      "time_horizon": "NON_INTRADAY",
+      "state": "ENABLED",
+      "strategy_version": "canslim_filter_playbook_v1",
+      "ruleset_version": "strategy_rules_v1",
+      "required_inputs": [
+        "FUNDAMENTAL_OR_CANSLIM_DATA",
+        "SOURCE_TIMESTAMP"
+      ],
+      "must_block_on_missing": [],
+      "entry_ready_cap": "FILTER_ONLY",
+      "research_stage": "PRODUCTION_PLAYBOOK",
+      "notes": "CANSLIM may improve or block eligible equity/options strategies when provided, but it cannot replace technical, option, account, or risk gates."
+    }
+  ]
+}

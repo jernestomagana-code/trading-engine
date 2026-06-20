@@ -1,0 +1,61 @@
+{
+  "fixture_version": "runtime_retention_cases_v1",
+  "cases": [
+    {
+      "name": "defaults",
+      "config": {},
+      "expected": {
+        "decision_journal_max": 5000,
+        "outcome_journal_max": 5000,
+        "audit_log_max": 10000,
+        "runtime_storage_mode": "local_json"
+      }
+    },
+    {
+      "name": "custom_values",
+      "config": {
+        "decision_journal_max": 750,
+        "outcome_journal_max": 800,
+        "audit_log_max": 1200,
+        "runtime_storage_mode": "render_disk"
+      },
+      "expected": {
+        "decision_journal_max": 750,
+        "outcome_journal_max": 800,
+        "audit_log_max": 1200,
+        "runtime_storage_mode": "render_disk"
+      }
+    },
+    {
+      "name": "too_low_values_are_bounded",
+      "config": {
+        "decision_journal_max": 2,
+        "outcome_journal_max": 3,
+        "audit_log_max": 4
+      },
+      "expected": {
+        "decision_journal_max": 100,
+        "outcome_journal_max": 100,
+        "audit_log_max": 100
+      }
+    },
+    {
+      "name": "too_high_values_are_bounded",
+      "config": {
+        "decision_journal_max": 999999,
+        "outcome_journal_max": 999999,
+        "audit_log_max": 999999
+      },
+      "expected": {
+        "decision_journal_max": 100000,
+        "outcome_journal_max": 100000,
+        "audit_log_max": 100000
+      }
+    }
+  ],
+  "trim_case": {
+    "input_items": [1, 2, 3, 4, 5],
+    "max_items": 3,
+    "expected_items": [3, 4, 5]
+  }
+}

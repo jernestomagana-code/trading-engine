@@ -1,0 +1,96 @@
+{
+  "note_version": "strategy_research_note_v1",
+  "created_at": "2026-06-19",
+  "owner": "Morgan",
+  "status": "ACTIVE_SEED",
+  "summary": "Initial Morgan research queue for converting elite market practice and current strategy observations into Stock Ultimus hypotheses.",
+  "hypotheses": [
+    {
+      "id": "MORGAN-2026-06-19-001",
+      "stage": "PRODUCTION_PLAYBOOK",
+      "strategy": "NAKED_PUT",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Short put candidates require bullish or constructive technical context, executable put data, acceptable DTE/delta, manageable spread, and assignment-aware risk review.",
+      "hypothesis": "Naked Put readiness quality improves when technical fit, option quality, account risk, event risk, and CANSLIM/fundamental filters are scored separately and all blockers remain explicit.",
+      "required_data": [
+        "IBKR_OPTION_CHAIN",
+        "TRADINGVIEW_TECHNICAL",
+        "ACCOUNT_CONTEXT",
+        "EVENT_RISK",
+        "CANSLIM_WHEN_AVAILABLE"
+      ],
+      "blocked_from_entry_ready_until": "Already covered by V30/V31 gates; ranking implementation still pending.",
+      "promotion_requirements": [
+        "daily_ranking_score_components",
+        "freshness_validator",
+        "outcome_review_by_delta_dte_spread"
+      ]
+    },
+    {
+      "id": "MORGAN-2026-06-19-002",
+      "stage": "RULE_PROPOSAL",
+      "strategy": "CASH_SECURED_PUT",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Cash-secured put selling should be treated more strictly than margin-supported put selling because assignment cash must be reserved.",
+      "hypothesis": "Cash Secured Put can share Naked Put technical and option-quality gates, but ENTRY_READY must require explicit assignment cash availability and reserve accounting.",
+      "required_data": [
+        "AVAILABLE_CASH",
+        "CASH_RESERVED_FOR_OPEN_OBLIGATIONS",
+        "STRIKE",
+        "CONTRACT_COUNT"
+      ],
+      "blocked_from_entry_ready_until": "cash_reserve_gate_implemented",
+      "promotion_requirements": [
+        "cash_reserve_schema",
+        "cash_reserve_fixture_pass",
+        "insufficient_cash_fixture_blocked"
+      ]
+    },
+    {
+      "id": "MORGAN-2026-06-19-003",
+      "stage": "FORWARD_TEST",
+      "strategy": "IRON_CONDOR",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Defined-risk neutral option income strategies depend on range confirmation, volatility context, four executable legs, net credit, max risk, and exit/invalidation planning.",
+      "hypothesis": "Iron Condor should remain RADAR_ONLY until multi-leg schema, volatility regime checks, and explicit max-risk/exit-plan gates are canonical.",
+      "required_data": [
+        "FOUR_LEG_OPTION_STRUCTURE",
+        "NET_CREDIT",
+        "MAX_RISK",
+        "BREAKEVENS",
+        "VIX_OR_IV_RANK",
+        "RANGE_TECHNICAL"
+      ],
+      "blocked_from_entry_ready_until": "multi_leg_schema_and_exit_plan_implemented",
+      "promotion_requirements": [
+        "multi_leg_fixture_complete",
+        "multi_leg_fixture_missing_leg_blocked",
+        "volatility_regime_fixture",
+        "exit_plan_field"
+      ]
+    },
+    {
+      "id": "MORGAN-2026-06-19-004",
+      "stage": "OBSERVED_PRACTICE",
+      "strategy": "ZERO_DTE_INDEX_OPTIONS",
+      "time_horizon": "INTRADAY",
+      "observed_practice": "0DTE index options are a major current market practice, but they require strict intraday risk limits, event awareness, liquidity controls, and fast invalidation.",
+      "hypothesis": "0DTE strategies should stay research-only until Stock Ultimus has intraday max-loss governance, event-window blockers, defined-risk-only structures, and outcome tracking at intraday resolution.",
+      "required_data": [
+        "INTRADAY_OPTION_CHAIN",
+        "SESSION_CONTEXT",
+        "MACRO_EVENT_WINDOW",
+        "INTRADAY_TECHNICAL",
+        "MAX_LOSS_PROFILE",
+        "DEFINED_RISK_STRUCTURE"
+      ],
+      "blocked_from_entry_ready_until": "intraday_governance_implemented",
+      "promotion_requirements": [
+        "intraday_governance_doc",
+        "radar_only_dashboard_label",
+        "max_loss_fixture",
+        "event_window_blocker_fixture"
+      ]
+    }
+  ]
+}

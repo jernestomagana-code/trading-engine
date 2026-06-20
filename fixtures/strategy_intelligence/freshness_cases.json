@@ -1,0 +1,122 @@
+{
+  "fixture_version": "strategy_intelligence_freshness_cases_v1",
+  "description": "Relative-minute freshness cases for V31 source freshness gates.",
+  "cases": [
+    {
+      "name": "all_required_sources_fresh_with_context",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -5,
+        "technical": -5,
+        "market_regime": -5,
+        "fundamental_canslim": -60,
+        "account_context": -5
+      },
+      "expected": {
+        "blocks_actionable_ranking": false,
+        "all_required_fresh": true,
+        "gate_status": {
+          "ibkr_snapshot": "FRESH",
+          "technical": "FRESH",
+          "market_regime": "FRESH",
+          "fundamental_canslim": "FRESH",
+          "account_context": "FRESH"
+        }
+      }
+    },
+    {
+      "name": "ibkr_snapshot_stale_blocks_actionable_ranking",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -60,
+        "technical": -5,
+        "market_regime": -5,
+        "fundamental_canslim": -60,
+        "account_context": -5
+      },
+      "expected": {
+        "blocks_actionable_ranking": true,
+        "all_required_fresh": false,
+        "required_blockers": ["IBKR_SNAPSHOT_STALE"],
+        "gate_status": {
+          "ibkr_snapshot": "STALE",
+          "technical": "FRESH",
+          "market_regime": "FRESH"
+        }
+      }
+    },
+    {
+      "name": "technical_stale_blocks_actionable_ranking",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -5,
+        "technical": -500,
+        "market_regime": -5,
+        "fundamental_canslim": -60,
+        "account_context": -5
+      },
+      "expected": {
+        "blocks_actionable_ranking": true,
+        "all_required_fresh": false,
+        "required_blockers": ["TECHNICAL_STALE"],
+        "gate_status": {
+          "ibkr_snapshot": "FRESH",
+          "technical": "STALE",
+          "market_regime": "FRESH"
+        }
+      }
+    },
+    {
+      "name": "market_regime_stale_blocks_actionable_ranking",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -5,
+        "technical": -5,
+        "market_regime": -60,
+        "fundamental_canslim": -60,
+        "account_context": -5
+      },
+      "expected": {
+        "blocks_actionable_ranking": true,
+        "all_required_fresh": false,
+        "required_blockers": ["MARKET_REGIME_STALE"],
+        "gate_status": {
+          "ibkr_snapshot": "FRESH",
+          "technical": "FRESH",
+          "market_regime": "STALE"
+        }
+      }
+    },
+    {
+      "name": "optional_canslim_missing_does_not_block",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -5,
+        "technical": -5,
+        "market_regime": -5,
+        "account_context": -5
+      },
+      "expected": {
+        "blocks_actionable_ranking": false,
+        "all_required_fresh": true,
+        "gate_status": {
+          "fundamental_canslim": "NOT_PROVIDED",
+          "account_context": "FRESH"
+        }
+      }
+    },
+    {
+      "name": "optional_account_stale_is_visible_but_does_not_block",
+      "source_offsets_minutes": {
+        "ibkr_snapshot": -5,
+        "technical": -5,
+        "market_regime": -5,
+        "fundamental_canslim": -60,
+        "account_context": -120
+      },
+      "expected": {
+        "blocks_actionable_ranking": false,
+        "all_required_fresh": true,
+        "gate_status": {
+          "account_context": "STALE",
+          "fundamental_canslim": "FRESH"
+        }
+      }
+    }
+  ]
+}

@@ -25,8 +25,62 @@ Current status:
 - Available surfaces: `/v31_system_status`, `/v31_trade_decision/{ticker}`,
   and `/gpt_v31_trade_decision/{ticker}`.
 - Runtime publishing and canonical-state guards are available locally.
-- Next implementation step: move schema and blocker-contract helpers out of
-  `app/main.py` into shared modules.
+- `docs/strategy-playbook.md` now defines the first versioned strategy playbook
+  for daily data sources, freshness, blockers, ranking, and manual-review
+  recommendation labels.
+- `docs/strategy-intelligence-loop.md` now defines Morgan's research-to-rule
+  process for market practice, elite trader/institutional research, intraday vs
+  non-intraday review, and safe promotion into versioned rules.
+- `config/strategy_registry.json` and `docs/strategy_research_notes/` provide
+  the first validated Strategy Intelligence implementation artifacts.
+- V31 consumes `config/strategy_registry.json` so `RADAR_ONLY` strategies are
+  capped out of `ENTRY_READY` with explicit registry blockers.
+- V31 exposes `strategy_score_components_v1` for technical, option quality,
+  risk, fundamental/CANSLIM, regime, outcome evidence, and registry state.
+- V31 exposes `strategy_daily_ranking_v1` through `/v31_daily_rankings` and
+  `/gpt_v31_daily_rankings`.
+- V31 exposes `freshness_gates_v1` and uses stale/unknown critical source data
+  to keep candidates out of actionable daily ranking.
+- V31 preserves source timestamps as `source_context_timestamps_v1` so
+  fundamental/CANSLIM and account-context freshness can be scored without
+  exposing sensitive values.
+- Strategy Intelligence helpers have been extracted to `strategy_intelligence.py`.
+- V31 decision and selected-contract payload schemas have been extracted to
+  `v31_contracts.py` as `v31_decision_contract_schema_v1` and
+  `selected_contract_v1`.
+- Source-specific freshness fixtures now cover IBKR, TradingView technical,
+  market regime, fundamental/CANSLIM, and account context.
+- V31 schema fixtures now cover enabled recommendations, registry caps,
+  selected-contract versioning, and the no-order flag.
+- V31 surface compatibility fixtures now check API/GPT parity, selected-contract
+  parity, daily-ranking GPT parity, dashboard visibility, and no-order flags.
+- Executable-contract validation and blocker-priority helpers have been
+  extracted to `decision_guards.py` with dedicated fixtures.
+- Production readiness gates have been added through `production_readiness.py`
+  and `/production_readiness` to block unsafe deploy config without exposing
+  secrets.
+- Redacted audit logging has been added through `audit_log.py`,
+  `/audit_log_summary`, and V32 event hooks for decisions, follow-ups, and
+  outcomes.
+- Runtime retention policy has been added through `runtime_retention.py`,
+  `/runtime_retention`, and configurable journal/audit limits.
+- Storage isolation gates have been added through `storage_isolation.py` and
+  `/storage_isolation`; commercial/multi-user scope is blocked unless durable
+  storage, tenant isolation, and account isolation are explicitly enabled.
+- Durable storage contract gates have been added through `durable_storage.py`
+  and `/durable_storage_contract`; Supabase mode requires an explicit contract
+  version, server-side URL/key presence, required journal/audit tables, RLS, and
+  service-role-only grants.
+- Supabase runtime adapter support has been added for V32 decision journals,
+  outcome journals, and audit events; local JSON remains the default personal
+  mode.
+- Production read-auth middleware has been added for sensitive dashboards,
+  GPT/status, decision, audit, readiness, storage, V31, and V32 surfaces while
+  leaving health plus ingest/webhook token flows separate.
+- Next implementation step: apply the durable storage SQL contract to a real
+  Supabase/Postgres backend, configure `READ_ACCESS_TOKEN` and
+  `RUNTIME_STORAGE_MODE=supabase`, and validate with a sanitized live IBKR
+  snapshot.
 
 Expected work:
 
@@ -34,6 +88,12 @@ Expected work:
 - define canonical states,
 - centralize executable option validation,
 - centralize risk gating,
+- centralize strategy playbook scoring and daily ranking,
+- centralize source freshness validation,
+- add a strategy research registry for `OBSERVED_PRACTICE`, `RADAR_ONLY`,
+  `FORWARD_TEST`, and `PRODUCTION_PLAYBOOK` stages,
+- reduce remaining historical decision paths in `app/main.py`,
+- validate against a real sanitized IBKR snapshot,
 - version `decision_version`, `strategy_version`, `ruleset_version`, and
   `snapshot_version`,
 - make dashboards and GPT endpoints consume the same decision payload,
@@ -56,7 +116,7 @@ Current status:
 - Follow-ups track observation count, MFE, and MAE.
 - Outcomes can be recorded and summarized through V32 endpoints.
 - The flow passes local guards but still needs durable, isolated, auditable
-  storage before production or multi-user use.
+  storage deployed in a real backend before production or multi-user use.
 
 Expected work:
 

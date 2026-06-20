@@ -6,6 +6,10 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: DEPLOYMENT_ENV
+        value: production
+      - key: DEPLOYMENT_SCOPE
+        value: personal
       - key: OPERATING_MODE
         value: ANALYSIS_ONLY
       - key: REQUIRE_WEBHOOK_SECRET
@@ -16,3 +20,39 @@ services:
         sync: false
       - key: SNAPSHOT_INGEST_TOKEN
         sync: false
+      - key: READ_ACCESS_TOKEN
+        sync: false
+      - key: REQUIRE_READ_AUTH
+        value: "true"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MONITOR_EMAIL_TO
+        value: ""
+      - key: MONITOR_EMAIL_FROM
+        value: "Stock Ultimus <onboarding@resend.dev>"
+      - key: RESEND_DAILY_PLAN_LIMIT
+        value: ""
+      - key: RESEND_DAILY_LIMIT_PERCENT
+        value: "50"
+      - key: RUNTIME_STORAGE_MODE
+        value: local_json
+      - key: DURABLE_STORAGE_PROVIDER
+        value: ""
+      - key: DURABLE_STORAGE_CONTRACT_VERSION
+        value: ""
+      - key: DURABLE_STORAGE_ENABLED
+        value: "false"
+      - key: TENANT_ISOLATION_ENABLED
+        value: "false"
+      - key: ACCOUNT_ISOLATION_ENABLED
+        value: "false"
+      - key: STOCK_ULTIMUS_TENANT_ID
+        value: personal
+      - key: STOCK_ULTIMUS_ACCOUNT_SCOPE
+        value: default
+      - key: DECISION_JOURNAL_MAX_ITEMS
+        value: "5000"
+      - key: OUTCOME_JOURNAL_MAX_ITEMS
+        value: "5000"
+      - key: AUDIT_LOG_MAX_EVENTS
+        value: "10000"

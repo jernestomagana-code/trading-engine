@@ -22,16 +22,34 @@ SANITIZED_RUNTIME_FIXTURE = ROOT / "fixtures" / "runtime" / "v28_master_snapshot
 COMPILE_CANDIDATES = [
     ROOT / "ibkr_bridge.py",
     ROOT / "app" / "main.py",
+    ROOT / "audit_log.py",
+    ROOT / "decision_guards.py",
+    ROOT / "durable_storage.py",
+    ROOT / "production_readiness.py",
+    ROOT / "runtime_retention.py",
+    ROOT / "storage_isolation.py",
+    ROOT / "strategy_intelligence.py",
+    ROOT / "v31_contracts.py",
     ROOT / "tmp_v30_patch" / "ibkr_bridge.py",
     ROOT / "tmp_v30_patch" / "app" / "main.py",
     ROOT / "strategy_rules.py",
     ROOT / "scripts" / "validate_v30_fixtures.py",
+    ROOT / "scripts" / "validate_audit_log.py",
     ROOT / "scripts" / "smoke_v29_endpoints.py",
     ROOT / "scripts" / "check_strategy_research_rules.py",
     ROOT / "scripts" / "check_legacy_compat_endpoints.py",
     ROOT / "scripts" / "check_v32_outcomes_tracking.py",
     ROOT / "scripts" / "check_v31_canonical_paths.py",
+    ROOT / "scripts" / "validate_decision_guards.py",
+    ROOT / "scripts" / "validate_durable_storage.py",
+    ROOT / "scripts" / "check_durable_storage_runtime.py",
+    ROOT / "scripts" / "check_read_auth_gate.py",
+    ROOT / "scripts" / "verify_production_read_auth.py",
+    ROOT / "scripts" / "validate_production_readiness.py",
+    ROOT / "scripts" / "validate_runtime_retention.py",
+    ROOT / "scripts" / "validate_storage_isolation.py",
     ROOT / "scripts" / "validate_strategy_signal_contract.py",
+    ROOT / "scripts" / "validate_strategy_intelligence.py",
     ROOT / "scripts" / "validate_tradingview_pine_scripts.py",
     ROOT / "scripts" / "check_strategy_signal_contexts.py",
     ROOT / "scripts" / "sanitize_runtime_snapshot.py",
@@ -173,6 +191,23 @@ def run_runtime_privacy_guard() -> list[str]:
     return [output or "runtime privacy guard failed without output"]
 
 
+def run_audit_log_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_audit_log.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "audit log guard failed without output"]
+
+
 def run_strategy_signal_contract_guard() -> list[str]:
     script = ROOT / "scripts" / "validate_strategy_signal_contract.py"
     result = subprocess.run(
@@ -188,6 +223,142 @@ def run_strategy_signal_contract_guard() -> list[str]:
 
     output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
     return [output or "strategy signal contract guard failed without output"]
+
+
+def run_decision_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_decision_guards.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "decision guard failed without output"]
+
+
+def run_production_readiness_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_production_readiness.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "production readiness guard failed without output"]
+
+
+def run_runtime_retention_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_runtime_retention.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "runtime retention guard failed without output"]
+
+
+def run_storage_isolation_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_storage_isolation.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "storage isolation guard failed without output"]
+
+
+def run_durable_storage_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_durable_storage.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "durable storage guard failed without output"]
+
+
+def run_durable_storage_runtime_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_durable_storage_runtime.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "durable storage runtime guard failed without output"]
+
+
+def run_read_auth_guard() -> list[str]:
+    script = ROOT / "scripts" / "check_read_auth_gate.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "read auth guard failed without output"]
+
+
+def run_strategy_intelligence_guard() -> list[str]:
+    script = ROOT / "scripts" / "validate_strategy_intelligence.py"
+    result = subprocess.run(
+        [PYTHON, str(script)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print(result.stdout.strip())
+        return []
+
+    output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
+    return [output or "strategy intelligence guard failed without output"]
 
 
 def run_tradingview_pine_guard() -> list[str]:
@@ -511,7 +682,16 @@ def main() -> int:
     failures.extend(compile_available_files())
     failures.extend(run_bridge_execution_guard())
     failures.extend(run_runtime_privacy_guard())
+    failures.extend(run_audit_log_guard())
+    failures.extend(run_decision_guard())
+    failures.extend(run_production_readiness_guard())
+    failures.extend(run_runtime_retention_guard())
+    failures.extend(run_storage_isolation_guard())
+    failures.extend(run_durable_storage_guard())
+    failures.extend(run_durable_storage_runtime_guard())
+    failures.extend(run_read_auth_guard())
     failures.extend(run_strategy_signal_contract_guard())
+    failures.extend(run_strategy_intelligence_guard())
     failures.extend(run_tradingview_pine_guard())
     failures.extend(run_strategy_signal_context_guard())
     failures.extend(run_strategy_rule_guard())

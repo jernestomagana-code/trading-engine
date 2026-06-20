@@ -7,11 +7,16 @@ See also:
 
 - `../product-vision.md`
 - `../roadmap.md`
+- `../strategy-playbook.md`
+- `../strategy-intelligence-loop.md`
 
 ## Persistent Agents
 
 - Athena (`project-goal-guardian.md`): protects the final objective, non-negotiables, blocker priority, and manual-decision assistant model.
-- Morgan (`market-strategy-researcher.md`): monitors market-practice changes and proposes research-backed strategy or parameter updates.
+- Morgan (`market-strategy-researcher.md`): owns the Strategy Intelligence Loop,
+  monitors market-practice changes, studies elite trader/institutional
+  approaches, and proposes research-backed strategy or parameter updates as
+  testable rules.
 - Sentinel (`information-security-guardian.md`): protects secrets, account data,
   endpoints, logs, dependencies, and future multi-user boundaries.
 

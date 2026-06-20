@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Ultimus | Command Center</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #17202f;
+      --muted: #657084;
+      --line: #dfe4eb;
+      --green: #12724d;
+      --green-bg: #e8f5ef;
+      --amber: #9b5c05;
+      --amber-bg: #fff2d8;
+      --blue: #225ea8;
+      --blue-bg: #e8f1ff;
+      --red: #a92b38;
+      --red-bg: #fdebed;
+      --dark: #202938;
+      --shadow: 0 8px 24px rgba(23, 32, 47, 0.07);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    .shell {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 28px;
+      background: var(--dark);
+      color: white;
+      border-bottom: 4px solid #30a46c;
+    }
+
+    .brand { min-width: 0; }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .brand p {
+      margin: 5px 0 0;
+      color: #c8d1df;
+      font-size: 13px;
+    }
+
+    .updated {
+      flex: 0 0 auto;
+      color: #d9e2ee;
+      font-size: 13px;
+      text-align: right;
+    }
+
+    main { padding: 22px 28px 40px; }
+
+    .status-band {
+      display: grid;
+      grid-template-columns: minmax(280px, 1.25fr) repeat(4, minmax(130px, 0.55fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .status-summary,
+    .metric,
+    .section,
+    .work-item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .status-summary {
+      padding: 18px 20px;
+      border-left: 6px solid var(--amber);
+    }
+
+    .overline {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .status-summary strong {
+      display: block;
+      margin-top: 7px;
+      font-size: 20px;
+      line-height: 1.25;
+    }
+
+    .status-summary p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .metric {
+      padding: 16px;
+      min-height: 118px;
+    }
+
+    .metric-value {
+      margin-top: 10px;
+      font-size: 29px;
+      font-weight: 850;
+      line-height: 1;
+    }
+
+    .metric-note {
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 18px 0 12px;
+    }
+
+    .toolbar h2,
+    .section h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .filters {
+      display: inline-flex;
+      padding: 3px;
+      background: #e7ebf0;
+      border-radius: 8px;
+    }
+
+    .filters button {
+      border: 0;
+      border-radius: 6px;
+      padding: 7px 11px;
+      background: transparent;
+      color: #4c586b;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+
+    .filters button[aria-pressed="true"] {
+      background: white;
+      color: var(--ink);
+      box-shadow: 0 2px 8px rgba(23, 32, 47, 0.10);
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    .lane {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-top-width: 5px;
+      border-radius: 8px;
+      background: #eef1f4;
+    }
+
+    .lane.done { border-top-color: var(--green); }
+    .lane.active { border-top-color: var(--amber); }
+    .lane.next { border-top-color: var(--blue); }
+
+    .lane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .lane-header h3 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .count {
+      min-width: 27px;
+      height: 27px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: white;
+      border: 1px solid var(--line);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .lane-items { display: grid; gap: 10px; }
+
+    .work-item {
+      padding: 14px;
+      box-shadow: 0 4px 14px rgba(23, 32, 47, 0.05);
+    }
+
+    .work-item[hidden] { display: none; }
+
+    .item-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .work-item h4 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    .work-item p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .tag,
+    .state {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .tag { color: #4c586b; background: #edf0f4; }
+    .state.good { color: var(--green); background: var(--green-bg); }
+    .state.work { color: var(--amber); background: var(--amber-bg); }
+    .state.wait { color: var(--blue); background: var(--blue-bg); }
+    .state.risk { color: var(--red); background: var(--red-bg); }
+
+    .evidence {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      color: #4f5b6d;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .lower-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .section { padding: 18px; }
+
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th, td {
+      padding: 11px 10px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      font-size: 12px;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      border-top: 0;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .needs-list {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .needs-list li {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .priority {
+      width: 30px;
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--blue-bg);
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .needs-list strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .needs-list p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 18px;
+      padding-top: 20px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    a { color: var(--blue); font-weight: 750; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    @media (max-width: 1050px) {
+      .status-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .status-summary { grid-column: 1 / -1; }
+      .board { grid-template-columns: 1fr; }
+      .lower-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 680px) {
+      header { align-items: flex-start; padding: 16px; }
+      main { padding: 16px; }
+      .updated { display: none; }
+      .status-band { grid-template-columns: 1fr; }
+      .toolbar { align-items: flex-start; flex-direction: column; }
+      .filters { width: 100%; overflow-x: auto; }
+      .filters button { flex: 1 0 auto; }
+      table { table-layout: auto; }
+      th:nth-child(3), td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <h1>Stock Ultimus Command Center</h1>
+        <p>Decision support para opciones, con trazabilidad y revision manual.</p>
+      </div>
+      <div class="updated">Actualizado<br><strong>18 junio 2026</strong></div>
+    </header>
+
+    <main>
+      <section class="status-band" aria-label="Estado ejecutivo">
+        <article class="status-summary">
+          <div class="overline">Donde estamos</div>
+          <strong>V30 validado; V31 y V32 en construccion controlada</strong>
+          <p>El motor ya protege blockers, publica decisiones canonicas y registra resultados. La prioridad es consolidar arquitectura y probar integraciones reales.</p>
+        </article>
+        <article class="metric">
+          <div class="overline">Prioridad</div>
+          <div class="metric-value">V31</div>
+          <div class="metric-note">Una sola fuente de verdad.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Guard integral</div>
+          <div class="metric-value">Pasa</div>
+          <div class="metric-note">V30, V31, V32 y TradingView.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Pine + fixtures</div>
+          <div class="metric-value">6 + 6</div>
+          <div class="metric-note">Listos para forward test.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Gates faltantes</div>
+          <div class="metric-value">4</div>
+          <div class="metric-note">Arquitectura, IBKR, TV y storage.</div>
+        </article>
+      </section>
+
+      <div class="toolbar">
+        <h2>Mapa De Trabajo</h2>
+        <div class="filters" role="group" aria-label="Filtrar por area">
+          <button type="button" data-filter="all" aria-pressed="true">Todo</button>
+          <button type="button" data-filter="engine" aria-pressed="false">Motor</button>
+          <button type="button" data-filter="data" aria-pressed="false">Datos</button>
+          <button type="button" data-filter="signals" aria-pressed="false">Senales</button>
+          <button type="button" data-filter="platform" aria-pressed="false">Plataforma</button>
+        </div>
+      </div>
+
+      <section class="board" aria-label="Tablero de avance">
+        <div class="lane done">
+          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">4</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="engine">
+              <div class="item-top"><h4>V30 Contract Enrichment</h4><span class="tag">Motor</span></div>
+              <p>Contratos con strike, expiration, DTE, bid, ask, mid, spread, spread_pct y delta.</p>
+              <div class="evidence"><span class="dot"></span>7 fixtures V30 pasan</div>
+            </article>
+            <article class="work-item" data-area="engine">
+              <div class="item-top"><h4>Prioridad De Blockers</h4><span class="tag">Motor</span></div>
+              <p>Datos incompletos conservan WAIT_OPTIONS_DATA y nunca escalan a ENTRY_READY.</p>
+              <div class="evidence"><span class="dot"></span>Guards V29/V30 pasan</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Privacidad Runtime</h4><span class="tag">Datos</span></div>
+              <p>Snapshot sanitizado multi-ticker y validacion contra datos sensibles.</p>
+              <div class="evidence"><span class="dot"></span>5 tickers validados</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>No Auto-Order</h4><span class="tag">Seguridad</span></div>
+              <p>La plataforma permanece como asistente de decision y revision manual.</p>
+              <div class="evidence"><span class="dot"></span>Guardrail integrado</div>
+            </article>
+          </div>
+        </div>
+
+        <div class="lane active">
+          <div class="lane-header"><h3>En Curso</h3><span class="count">4</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="engine">
+              <div class="item-top"><h4>V31 Decision Canonica</h4><span class="state work">Prioridad</span></div>
+              <p>Endpoints, estados canonicos y publicacion runtime existen; falta extraer schemas y reglas compartidas.</p>
+              <div class="evidence"><span class="dot"></span>Paths V31 pasan</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>V32 Outcomes</h4><span class="state work">Activo</span></div>
+              <p>Journaling, IDs estables, follow-ups, MFE/MAE y resumen de resultados funcionan localmente.</p>
+              <div class="evidence"><span class="dot"></span>Guard V32 pasa</div>
+            </article>
+            <article class="work-item" data-area="signals">
+              <div class="item-top"><h4>TradingView Strategy Signals</h4><span class="state work">Activo</span></div>
+              <p>Contrato v1, contextos por estrategia, CANSLIM y scripts Pro V2 disponibles.</p>
+              <div class="evidence"><span class="dot"></span>6 fixtures + 6 Pine</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>Compatibilidad Legacy</h4><span class="state work">Activo</span></div>
+              <p>Wrappers históricos mantienen metadata y paridad mientras V31 absorbe la decision final.</p>
+              <div class="evidence"><span class="dot"></span>V22-V25 parity pasa</div>
+            </article>
+          </div>
+        </div>
+
+        <div class="lane next">
+          <div class="lane-header"><h3>Falta Para Avanzar</h3><span class="count">4</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="engine">
+              <div class="item-top"><h4>Extraer Modulos V31</h4><span class="state wait">Siguiente</span></div>
+              <p>Separar decision schema, contract schema y blocker priority de app/main.py.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: una fuente de verdad</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Prueba Real Sanitizada IBKR</h4><span class="state risk">Bloqueo externo</span></div>
+              <p>Capturar un snapshot real fuera del repo, sanitizarlo y repetir decisiones por ticker.</p>
+              <div class="evidence"><span class="dot" style="background:var(--red)"></span>Gate: evidencia de broker</div>
+            </article>
+            <article class="work-item" data-area="signals">
+              <div class="item-top"><h4>Forward Test TradingView</h4><span class="state wait">Pendiente</span></div>
+              <p>Cargar Pine Pro V2 y verificar payloads reales contra /technical_snapshot.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: alertas reales</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>Storage Durable V32</h4><span class="state wait">Pendiente</span></div>
+              <p>Definir persistencia, retencion, aislamiento y auditoria para decisions y outcomes.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: historia confiable</div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <div class="section">
+          <div class="section-title"><h2>Puertas De Salida</h2><span class="state work">4 abiertas</span></div>
+          <table>
+            <thead><tr><th style="width:22%">Gate</th><th style="width:28%">Para considerarlo listo</th><th>Evidencia requerida</th><th style="width:14%">Estado</th></tr></thead>
+            <tbody>
+              <tr><td>V31 canonico</td><td>Una funcion/modulo posee la decision final.</td><td>Schemas compartidos y paridad API/GPT/dashboard.</td><td><span class="state work">En curso</span></td></tr>
+              <tr><td>IBKR real</td><td>Contrato ejecutable completo desde broker.</td><td>Snapshot sanitizado y decisiones reproducibles.</td><td><span class="state risk">Pendiente</span></td></tr>
+              <tr><td>TradingView</td><td>Alertas reales llegan con contrato v1.</td><td>Forward test por estrategia y timeframe.</td><td><span class="state wait">Pendiente</span></td></tr>
+              <tr><td>V32 durable</td><td>Historia no depende de JSON runtime temporal.</td><td>READ_ACCESS_TOKEN, SQL Supabase/Postgres real y adapter validado.</td><td><span class="state wait">Pendiente</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="section">
+          <div class="section-title"><h2>Orden Recomendado</h2></div>
+          <ol class="needs-list">
+            <li><span class="priority">1</span><div><strong>Consolidar V31</strong><p>Reduce riesgo de decisiones distintas entre superficies.</p></div></li>
+            <li><span class="priority">2</span><div><strong>Validar IBKR real</strong><p>Confirma que V30 funciona con datos del broker.</p></div></li>
+            <li><span class="priority">3</span><div><strong>Forward test TradingView</strong><p>Prueba señales reales sin habilitar órdenes.</p></div></li>
+            <li><span class="priority">4</span><div><strong>Endurecer V32</strong><p>Migra resultados locales al contrato durable auditado.</p></div></li>
+          </ol>
+        </aside>
+      </section>
+
+      <div class="footer-links">
+        <a href="./project-dashboard.html">Dashboard detallado</a>
+        <a href="./project-dashboard.md">Bitacora</a>
+        <a href="./roadmap.md">Roadmap</a>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const buttons = Array.from(document.querySelectorAll("[data-filter]"));
+    const items = Array.from(document.querySelectorAll("[data-area]"));
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const selected = button.dataset.filter;
+        buttons.forEach((candidate) => {
+          candidate.setAttribute("aria-pressed", String(candidate === button));
+        });
+        items.forEach((item) => {
+          item.hidden = selected !== "all" && item.dataset.area !== selected;
+        });
+      });
+    });
+  </script>
+</body>
+</html>

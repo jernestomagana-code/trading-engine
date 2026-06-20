@@ -51,7 +51,7 @@ It should not become more powerful by hiding uncertainty or expanding
 5. Strategy Modularity
 
    Strategies should be independent modules with testable inputs, outputs,
-   blockers, and risk gates.
+   blockers, risk gates, freshness requirements, and ranking criteria.
 
 6. Learning Without Hidden Autonomy
 
@@ -71,6 +71,9 @@ It should not become more powerful by hiding uncertainty or expanding
 - Normalization layer: versioned snapshot contracts and stable JSON schemas.
 - Strategy layer: Naked Put, Covered Call, Iron Condor, position management,
   and future research-approved strategies.
+- Playbook layer: versioned strategy definitions for source freshness,
+  executable-data requirements, blockers, scoring, daily ranking, and
+  manual-review wording.
 - Risk layer: capital, margin, concentration, assignment risk, event risk,
   liquidity, spread, delta exposure, and profile-level limits.
 - Decision layer: canonical blocker priority and one readiness source of truth.

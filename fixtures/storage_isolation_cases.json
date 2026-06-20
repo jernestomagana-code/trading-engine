@@ -1,0 +1,73 @@
+{
+  "fixture_version": "storage_isolation_cases_v1",
+  "cases": [
+    {
+      "name": "personal_local_json_allowed",
+      "config": {
+        "deployment_scope": "personal",
+        "runtime_storage_mode": "local_json",
+        "durable_storage_enabled": false,
+        "tenant_isolation_enabled": false,
+        "account_isolation_enabled": false,
+        "audit_log_enabled": true,
+        "retention_policy_enabled": true
+      },
+      "expected": {
+        "status": "READY",
+        "personal_use_only": true,
+        "commercial_ready": false
+      }
+    },
+    {
+      "name": "commercial_local_json_blocked",
+      "config": {
+        "deployment_scope": "commercial",
+        "runtime_storage_mode": "local_json",
+        "durable_storage_enabled": false,
+        "tenant_isolation_enabled": false,
+        "account_isolation_enabled": false,
+        "audit_log_enabled": true,
+        "retention_policy_enabled": true
+      },
+      "expected": {
+        "status": "BLOCKED",
+        "commercial_like": true,
+        "expected_blockers": [
+          "durable_storage_enabled",
+          "tenant_isolation_enabled",
+          "account_isolation_enabled"
+        ]
+      }
+    },
+    {
+      "name": "commercial_supabase_ready",
+      "config": {
+        "deployment_scope": "commercial",
+        "runtime_storage_mode": "supabase",
+        "durable_storage_enabled": true,
+        "tenant_isolation_enabled": true,
+        "account_isolation_enabled": true,
+        "audit_log_enabled": true,
+        "retention_policy_enabled": true
+      },
+      "expected": {
+        "status": "READY",
+        "commercial_like": true,
+        "commercial_ready": true
+      }
+    },
+    {
+      "name": "missing_audit_blocks",
+      "config": {
+        "deployment_scope": "personal",
+        "runtime_storage_mode": "local_json",
+        "audit_log_enabled": false,
+        "retention_policy_enabled": true
+      },
+      "expected": {
+        "status": "BLOCKED",
+        "expected_blockers": ["audit_log_enabled"]
+      }
+    }
+  ]
+}
