@@ -614,6 +614,54 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["pending_entry_ready_signals"], 1)
         self.assertTrue(status["not_order_instruction"])
 
+    def test_v31_production_readiness_blocks_without_read_token(self):
+        with patch.object(main, "REQUIRE_READ_AUTH", True), patch.object(
+            main,
+            "READ_ACCESS_TOKEN",
+            "",
+        ), patch.object(main, "ADMIN_DEBUG_TOKEN", ""), patch.object(
+            main,
+            "SNAPSHOT_INGEST_TOKEN",
+            "configured",
+        ), patch.object(main, "REQUIRE_SNAPSHOT_INGEST_TOKEN", True), patch.object(
+            main,
+            "OPERATING_MODE",
+            "ANALYSIS_ONLY",
+        ):
+            readiness = main._v31_production_readiness_payload()
+
+        self.assertEqual(readiness["status"], "BLOCKED")
+        blocker_names = {item["name"] for item in readiness["blockers"]}
+        self.assertIn("read_auth_token_configured", blocker_names)
+        self.assertTrue(readiness["read_auth"]["required"])
+        self.assertTrue(readiness["read_auth"]["critical_endpoints_protected"])
+        self.assertTrue(readiness["not_order_instruction"])
+
+    def test_v31_production_readiness_ready_with_required_auth_and_token(self):
+        with patch.object(main, "REQUIRE_READ_AUTH", True), patch.object(
+            main,
+            "READ_ACCESS_TOKEN",
+            "read-token",
+        ), patch.object(main, "ADMIN_DEBUG_TOKEN", ""), patch.object(
+            main,
+            "SNAPSHOT_INGEST_TOKEN",
+            "ingest-token",
+        ), patch.object(main, "REQUIRE_SNAPSHOT_INGEST_TOKEN", True), patch.object(
+            main,
+            "OPERATING_MODE",
+            "ANALYSIS_ONLY",
+        ):
+            readiness = main._v31_production_readiness_payload()
+
+        self.assertEqual(readiness["status"], "READY")
+        self.assertEqual(readiness["production_readiness_version"], "v31_production_readiness_v2")
+        self.assertTrue(readiness["snapshot_ingest_auth"]["required"])
+        self.assertTrue(readiness["snapshot_ingest_auth"]["token_configured"])
+        self.assertTrue(readiness["read_auth"]["critical_endpoints_protected"])
+        self.assertEqual(readiness["risk_profile"]["profile_version"], "v31_risk_profile_v1")
+        self.assertEqual(readiness["outcome_tracking"]["version"], "v31_entry_ready_signal_outcome_v1")
+        self.assertTrue(readiness["token_rotation"]["required_for_hygiene"])
+
     def test_v31_dashboard_points_to_canonical_routes(self):
         complete_row = {
             "ticker": "QQQ",

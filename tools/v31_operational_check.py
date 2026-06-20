@@ -119,6 +119,21 @@ def evaluate_cloud(
             str(safe_get(readiness, "status")),
         ),
         Check(
+            "critical_read_endpoints_protected",
+            safe_get(readiness, "read_auth", "critical_endpoints_protected") is True,
+            str(safe_get(readiness, "read_auth", "critical_endpoints_protected")),
+        ),
+        Check(
+            "outcome_tracking_available",
+            safe_get(readiness, "outcome_tracking", "version") == "v31_entry_ready_signal_outcome_v1",
+            str(safe_get(readiness, "outcome_tracking", "version")),
+        ),
+        Check(
+            "risk_profile_loaded",
+            safe_get(readiness, "risk_profile", "profile_version") == "v31_risk_profile_v1",
+            str(safe_get(readiness, "risk_profile", "profile_version")),
+        ),
+        Check(
             "analysis_only",
             safe_get(health, "operating_mode") == "ANALYSIS_ONLY",
             str(safe_get(health, "operating_mode")),
@@ -231,7 +246,7 @@ def main() -> int:
     _, _, health = fetch_json(f"{base}/health", timeout=args.timeout)
     _, unauth_status_code, _ = post_json(f"{base}/v31_ingest_snapshot", {}, timeout=args.timeout)
     _, _, read_auth = fetch_json(f"{base}/read_auth_status", timeout=args.timeout, token=read_token)
-    _, _, readiness = fetch_json(f"{base}/production_readiness", timeout=args.timeout, token=read_token)
+    _, _, readiness = fetch_json(f"{base}/v31_production_readiness", timeout=args.timeout, token=read_token)
     _, _, pipeline = fetch_json(f"{base}/v31_data_pipeline_status", timeout=args.timeout, token=read_token)
     _, _, decision = fetch_json(f"{base}/v31_decision/{ticker}", timeout=args.timeout, token=read_token)
 
