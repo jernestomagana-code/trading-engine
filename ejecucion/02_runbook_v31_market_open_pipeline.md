@@ -25,10 +25,10 @@ cd /private/tmp/stock-ultimus-p0
 Confirmar Render:
 
 ```bash
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" \
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)" \
 python3 tools/v31_operational_check.py --ticker SPY
 
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)"
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
   https://trading-engine-p097.onrender.com/v31_data_pipeline_status
 ```
@@ -40,6 +40,37 @@ Estado esperado antes de publicar datos:
 - `preview.email_sent`: `false`
 - `preview.not_order_instruction`: `true`
 - `v31_operational_check.ok`: `true`
+
+## Camino recomendado. Runner unico de market open
+
+Durante mercado abierto, correr primero el runner. Ejecuta el probe de opcion,
+el bridge read-only y el operational check V31 en secuencia, sin imprimir
+tokens ni colocar ordenes.
+
+Dry-run seguro:
+
+```bash
+python3 tools/v31_market_open_runner.py --dry-run
+```
+
+Ejecucion real durante mercado:
+
+```bash
+python3 tools/v31_market_open_runner.py \
+  --ticker SPY \
+  --right P \
+  --target-dte 45 \
+  --otm-pct 0.10
+```
+
+Resultado esperado:
+
+- `engine`: `V31_MARKET_OPEN_RUNNER`
+- `ok`: `true`
+- paso `ibkr_option_quote_probe`: `ok=true`
+- paso `v31_operational_check`: `ok=true`
+- `secrets_printed`: `false`
+- `not_order_instruction`: `true`
 
 ## Paso 1. Revisar target activo del bridge
 
@@ -289,6 +320,8 @@ Confirmar:
 - [ ] Render responde `/v31_data_pipeline_status`.
 - [ ] Bridge apunta a `/v31_ingest_snapshot`.
 - [ ] TradingView QQQ/SPY alertas activas si aplica.
+- [ ] Ejecutar `python3 tools/v31_market_open_runner.py --dry-run`.
+- [ ] Ejecutar `python3 tools/v31_market_open_runner.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10`.
 - [ ] Ejecutar `python3 tools/ibkr_option_quote_probe.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10`.
 - [ ] Confirmar si hay `bid/ask/spread/spread_pct/delta`.
 - [ ] Ejecutar `python3 tools/v31_operational_check.py --ticker SPY --run-bridge --require-open-data --min-rows 1`.
@@ -321,12 +354,13 @@ Confirmar:
 ## Comandos rapidos
 
 ```bash
-cd /Users/ernestomagana04/Projects/trading-engine
+cd /private/tmp/stock-ultimus-p0
 rg -n "TRADING_ENGINE_INGEST_PATH|_V283_INGEST_URL|v31_ingest_snapshot|OFFICIAL V31" ibkr_bridge.py
-python3 ibkr_bridge.py
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)" python3 tools/v31_operational_check.py --ticker SPY
+python3 tools/v31_market_open_runner.py --dry-run
+python3 tools/v31_market_open_runner.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)" python3 tools/v31_operational_check.py --ticker SPY
 python3 tools/publish_v31_snapshot_from_runtime.py
 python3 tools/publish_v31_snapshot_from_runtime.py --publish
-READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access -w)"
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
 ```
