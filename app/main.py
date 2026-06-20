@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
@@ -24,6 +26,48 @@ LEGACY_OFFICIAL_FLOW = "/intraday_futures/*"
 LEGACY_DECISION_SUPPORT_NOTE = (
     "LEGACY endpoint. Decision support manual solamente. "
     "No coloca ordenes ni autoriza ejecucion."
+)
+
+
+READ_AUTH_PUBLIC_PATHS = {
+    "/",
+    "/health",
+}
+READ_AUTH_PUBLIC_PREFIXES = (
+    "/webhook",
+    "/technical_snapshot",
+    "/technical-snapshot",
+)
+READ_AUTH_SENSITIVE_PREFIXES = (
+    "/after_action_review",
+    "/audit_log",
+    "/dashboard",
+    "/debug",
+    "/decision",
+    "/fusion",
+    "/get_",
+    "/gpt",
+    "/history",
+    "/latest",
+    "/liquidity",
+    "/market_hours",
+    "/outcomes",
+    "/premarket",
+    "/production_readiness",
+    "/read_auth",
+    "/stats",
+    "/strategy",
+    "/system_status",
+    "/v22",
+    "/v23",
+    "/v24",
+    "/v25",
+    "/v27",
+    "/v28",
+    "/v29",
+    "/v30",
+    "/v31",
+    "/v32",
 )
 
 
@@ -66,11 +110,18 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 V31_DURABLE_SNAPSHOT_ID = os.getenv("V31_DURABLE_SNAPSHOT_ID", "canonical")
 V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES = os.getenv("V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES", "180")
+DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "local")
+DEPLOYMENT_SCOPE = os.getenv("DEPLOYMENT_SCOPE", "personal")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 REQUIRE_WEBHOOK_SECRET = os.getenv("REQUIRE_WEBHOOK_SECRET", "false").lower() == "true"
 SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISION_DESK_INGEST_TOKEN", "")
 REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
+READ_ACCESS_TOKEN = os.getenv("READ_ACCESS_TOKEN", "")
+REQUIRE_READ_AUTH = (
+    os.getenv("REQUIRE_READ_AUTH", "").lower() == "true"
+    or DEPLOYMENT_ENV.lower() in {"production", "prod"}
+)
 OPERATING_MODE = os.getenv("OPERATING_MODE", "ANALYSIS_ONLY")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
@@ -81,6 +132,73 @@ if PUBLIC_BASE_URL.startswith("ttps://"):
     PUBLIC_BASE_URL = "h" + PUBLIC_BASE_URL
 elif not PUBLIC_BASE_URL.startswith(("http://", "https://")):
     PUBLIC_BASE_URL = "https://" + PUBLIC_BASE_URL.lstrip("/")
+
+
+def _read_auth_tokens():
+    return [token for token in (READ_ACCESS_TOKEN, ADMIN_DEBUG_TOKEN) if token]
+
+
+def _request_read_token(request: Request):
+    header_token = request.headers.get("X-Stock-Ultimus-Read-Token")
+    if header_token:
+        return header_token
+    admin_token = request.headers.get("X-Admin-Debug-Token")
+    if admin_token:
+        return admin_token
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return None
+
+
+def _path_requires_read_auth(path):
+    if not REQUIRE_READ_AUTH:
+        return False
+    if path in READ_AUTH_PUBLIC_PATHS:
+        return False
+    if any(path.startswith(prefix) for prefix in READ_AUTH_PUBLIC_PREFIXES):
+        return False
+    return any(path.startswith(prefix) for prefix in READ_AUTH_SENSITIVE_PREFIXES)
+
+
+@app.middleware("http")
+async def sensitive_read_auth_middleware(request: Request, call_next):
+    if _path_requires_read_auth(request.url.path):
+        allowed_tokens = _read_auth_tokens()
+        if not allowed_tokens:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Read auth is required but no read token is configured.",
+                    "not_order_instruction": True,
+                },
+            )
+        request_token = _request_read_token(request)
+        if not request_token or not any(hmac.compare_digest(str(request_token), str(token)) for token in allowed_tokens):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Read token required.",
+                    "not_order_instruction": True,
+                },
+            )
+    return await call_next(request)
+
+
+def _read_auth_summary():
+    return {
+        "read_auth_version": "read_auth_gate_v1",
+        "required": bool(REQUIRE_READ_AUTH),
+        "deployment_env": DEPLOYMENT_ENV,
+        "deployment_scope": DEPLOYMENT_SCOPE,
+        "read_access_token_configured": bool(READ_ACCESS_TOKEN),
+        "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
+        "protected_prefixes": list(READ_AUTH_SENSITIVE_PREFIXES),
+        "public_paths": sorted(READ_AUTH_PUBLIC_PATHS),
+        "public_prefixes": list(READ_AUTH_PUBLIC_PREFIXES),
+        "not_order_instruction": True,
+    }
+
 
 EXPIRATION_MINUTES = {
     "5m": 25,
@@ -10589,6 +10707,42 @@ def system_status():
             "system_status": "/system_status",
             "ticker_example": "/dashboard_ticker/QQQ",
         },
+    }
+
+
+@app.get("/read_auth_status")
+def read_auth_status():
+    return {
+        "status": "OK",
+        **_read_auth_summary(),
+    }
+
+
+@app.get("/production_readiness")
+def production_readiness():
+    blockers = []
+    read_auth = _read_auth_summary()
+    if read_auth["required"] and not (
+        read_auth["read_access_token_configured"] or read_auth["admin_debug_token_configured"]
+    ):
+        blockers.append({
+            "name": "read_auth_token_configured",
+            "severity": "BLOCKER",
+            "detail": "Production read surfaces require READ_ACCESS_TOKEN or ADMIN_DEBUG_TOKEN.",
+        })
+    if OPERATING_MODE != "ANALYSIS_ONLY":
+        blockers.append({
+            "name": "analysis_only_mode",
+            "severity": "BLOCKER",
+            "detail": "OPERATING_MODE must remain ANALYSIS_ONLY.",
+        })
+    return {
+        "status": "BLOCKED" if blockers else "READY",
+        "production_readiness_version": "production_readiness_v1_minimal",
+        "operating_mode": OPERATING_MODE,
+        "read_auth": read_auth,
+        "blockers": blockers,
+        "not_order_instruction": True,
     }
 
 
