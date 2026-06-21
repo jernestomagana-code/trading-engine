@@ -98,6 +98,7 @@ def evaluate_cloud(
     pipeline: dict[str, Any],
     decision: dict[str, Any],
     daily_recommendations: dict[str, Any],
+    strategy_performance: dict[str, Any],
     require_open_data: bool,
     min_rows: int,
 ) -> list[Check]:
@@ -155,6 +156,30 @@ def evaluate_cloud(
             safe_get(daily_recommendations, "status") == "OK"
             and safe_get(daily_recommendations, "not_order_instruction") is True,
             f"status={safe_get(daily_recommendations, 'status')} not_order={safe_get(daily_recommendations, 'not_order_instruction')}",
+        ),
+        Check(
+            "strategy_performance_ok",
+            safe_get(strategy_performance, "engine") == "V32_STRATEGY_PERFORMANCE"
+            and safe_get(strategy_performance, "strategy_performance_version") == "strategy_performance_v1",
+            (
+                f"engine={safe_get(strategy_performance, 'engine')} "
+                f"version={safe_get(strategy_performance, 'strategy_performance_version')}"
+            ),
+        ),
+        Check(
+            "strategy_performance_no_order",
+            safe_get(strategy_performance, "not_order_instruction") is True
+            and safe_get(strategy_performance, "execution_authorized") is False,
+            (
+                f"not_order={safe_get(strategy_performance, 'not_order_instruction')} "
+                f"execution_authorized={safe_get(strategy_performance, 'execution_authorized')}"
+            ),
+        ),
+        Check(
+            "strategy_performance_summary",
+            isinstance(safe_get(strategy_performance, "summary", default={}), dict)
+            and safe_get(strategy_performance, "summary", "strategy_count", default=0) is not None,
+            f"summary={safe_get(strategy_performance, 'summary', default={})}",
         ),
         Check("decision_support_only", not_order and not can_operate, f"not_order={not_order} can_operate={can_operate}"),
     ]
@@ -257,6 +282,7 @@ def main() -> int:
     _, _, pipeline = fetch_json(f"{base}/v31_data_pipeline_status", timeout=args.timeout, token=read_token)
     _, _, decision = fetch_json(f"{base}/v31_decision/{ticker}", timeout=args.timeout, token=read_token)
     _, _, daily_recommendations = fetch_json(f"{base}/v31_daily_recommendations", timeout=args.timeout, token=read_token)
+    _, _, strategy_performance = fetch_json(f"{base}/v32_strategy_performance", timeout=args.timeout, token=read_token)
 
     checks = evaluate_cloud(
         health if isinstance(health, dict) else {},
@@ -266,6 +292,7 @@ def main() -> int:
         pipeline if isinstance(pipeline, dict) else {},
         decision if isinstance(decision, dict) else {},
         daily_recommendations if isinstance(daily_recommendations, dict) else {},
+        strategy_performance if isinstance(strategy_performance, dict) else {},
         require_open_data=args.require_open_data,
         min_rows=args.min_rows,
     )
@@ -303,6 +330,13 @@ def main() -> int:
             "status": safe_get(daily_recommendations, "status"),
             "recommendation_version": safe_get(daily_recommendations, "recommendation_version"),
             "summary": safe_get(daily_recommendations, "summary", default={}),
+        },
+        "strategy_performance": {
+            "engine": safe_get(strategy_performance, "engine"),
+            "strategy_performance_version": safe_get(strategy_performance, "strategy_performance_version"),
+            "summary": safe_get(strategy_performance, "summary", default={}),
+            "execution_authorized": safe_get(strategy_performance, "execution_authorized"),
+            "not_order_instruction": safe_get(strategy_performance, "not_order_instruction"),
         },
         "market_clock": safe_get(health, "market_clock", default={}),
         "checks": [check.as_dict() for check in checks],

@@ -10,6 +10,13 @@ from tools import v31_operational_check as check
 
 
 DAILY_OK = {"status": "OK", "not_order_instruction": True}
+STRATEGY_PERFORMANCE_OK = {
+    "engine": "V32_STRATEGY_PERFORMANCE",
+    "strategy_performance_version": "strategy_performance_v1",
+    "summary": {"strategy_count": 6},
+    "not_order_instruction": True,
+    "execution_authorized": False,
+}
 
 
 class V31OperationalCheckTests(unittest.TestCase):
@@ -42,6 +49,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             pipeline=pipeline,
             decision=decision,
             daily_recommendations=DAILY_OK,
+            strategy_performance=STRATEGY_PERFORMANCE_OK,
             require_open_data=False,
             min_rows=1,
         )
@@ -77,6 +85,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             pipeline=pipeline,
             decision=decision,
             daily_recommendations=DAILY_OK,
+            strategy_performance=STRATEGY_PERFORMANCE_OK,
             require_open_data=True,
             min_rows=1,
         )
@@ -115,6 +124,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             pipeline=pipeline,
             decision=decision,
             daily_recommendations=DAILY_OK,
+            strategy_performance=STRATEGY_PERFORMANCE_OK,
             require_open_data=False,
             min_rows=1,
         )
@@ -144,6 +154,7 @@ class V31OperationalCheckTests(unittest.TestCase):
             pipeline=pipeline,
             decision=decision,
             daily_recommendations={"status": "BLOCKED", "not_order_instruction": False},
+            strategy_performance=STRATEGY_PERFORMANCE_OK,
             require_open_data=False,
             min_rows=1,
         )
@@ -151,6 +162,48 @@ class V31OperationalCheckTests(unittest.TestCase):
 
         self.assertIn("read_auth_required", failed)
         self.assertIn("production_readiness_ready", failed)
+
+    def test_cloud_check_fails_when_strategy_performance_contract_breaks(self):
+        health = {
+            "status": "ok",
+            "operating_mode": "ANALYSIS_ONLY",
+            "snapshot_ingest_token_required": True,
+            "market_clock": {"market_holiday": False},
+        }
+        readiness = {
+            "status": "READY",
+            "read_auth": {"critical_endpoints_protected": True},
+            "outcome_tracking": {"version": "v31_entry_ready_signal_outcome_v1"},
+            "risk_profile": {"profile_version": "v31_risk_profile_v1"},
+        }
+        decision = {
+            "final_state": "WAIT_MARKET",
+            "not_order_instruction": True,
+            "can_operate": False,
+        }
+
+        checks = check.evaluate_cloud(
+            health,
+            unauth_status_code=401,
+            read_auth={"required": True},
+            readiness=readiness,
+            pipeline={"status": "OK", "rows_found": 1},
+            decision=decision,
+            daily_recommendations=DAILY_OK,
+            strategy_performance={
+                "engine": "V32_STRATEGY_PERFORMANCE",
+                "strategy_performance_version": "wrong",
+                "summary": {},
+                "not_order_instruction": True,
+                "execution_authorized": True,
+            },
+            require_open_data=False,
+            min_rows=1,
+        )
+        failed = {item.name for item in checks if not item.ok}
+
+        self.assertIn("strategy_performance_ok", failed)
+        self.assertIn("strategy_performance_no_order", failed)
 
 
 if __name__ == "__main__":
