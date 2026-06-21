@@ -20167,12 +20167,29 @@ def _v31_daily_recommendations_payload(tickers=None):
     payload["strategy_playbook"] = shared_strategy_registry.playbook_summary(registry)
     payload["strategy_exit_playbook"] = _strategy_exit_playbook_summary()
     payload["strategy_regime_policy"] = _strategy_regime_policy_summary()
+    regime_policy = _strategy_regime_policy()
+    market_regime = _strategy_market_regime(status.get("market") or {})
     for item in payload.get("items") or []:
         item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
+            item.get("strategy"),
+            market_regime,
+            regime_policy,
+        )
     for item in payload.get("top_recommendations") or []:
         item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
+            item.get("strategy"),
+            market_regime,
+            regime_policy,
+        )
     for item in payload.get("no_trade") or []:
         item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
+            item.get("strategy"),
+            market_regime,
+            regime_policy,
+        )
     payload["source_status"] = {
         "master_snapshot_available": status.get("master_snapshot_available"),
         "master_source": status.get("master_source"),
@@ -20208,6 +20225,28 @@ def _strategy_regime_policy():
 
 def _strategy_regime_policy_summary():
     return shared_strategy_regime_policy.regime_policy_summary(_strategy_regime_policy())
+
+
+def _strategy_market_regime(market):
+    market = market if isinstance(market, dict) else {}
+    raw = market.get("raw") if isinstance(market.get("raw"), dict) else {}
+    for key in ["strategy_regime", "market_regime", "regime", "regime_id"]:
+        value = market.get(key) or raw.get(key)
+        if value:
+            return value
+
+    label = str(market.get("label") or raw.get("label") or raw.get("status") or "").upper()
+    if "HIGH_VOL" in label or "EVENT" in label:
+        return "HIGH_VOL_EVENT_RISK"
+    if "INTRADAY_TREND" in label or "OPENING_RANGE" in label:
+        return "INTRADAY_TREND"
+    if "BEAR" in label or "CORRECTION" in label:
+        return "BEARISH_OR_CORRECTION"
+    if "BULL" in label and ("LOW_VOL" in label or "LOW VOL" in label):
+        return "BULLISH_LOW_VOL"
+    if "NEUTRAL" in label or "RANGE" in label:
+        return "NEUTRAL_RANGE"
+    return "UNKNOWN"
 
 
 def _v31_runtime_file_status():

@@ -16,6 +16,22 @@ def normalize(value: Any) -> str:
     return str(value or "").strip().upper() or "UNKNOWN"
 
 
+def canonical_strategy(value: Any) -> str:
+    strategy = normalize(value)
+    aliases = {
+        "NAKED_PUT": "CASH_SECURED_PUT",
+        "SHORT_PUT": "CASH_SECURED_PUT",
+        "SHORT_CALL_COVERED": "COVERED_CALL",
+        "FUTURES": "INTRADAY_INDEX_FUTURES",
+        "FUTURES_PRO": "INTRADAY_INDEX_FUTURES",
+        "MNQ": "INTRADAY_INDEX_FUTURES",
+        "NQ": "INTRADAY_INDEX_FUTURES",
+        "MES": "INTRADAY_INDEX_FUTURES",
+        "ES": "INTRADAY_INDEX_FUTURES",
+    }
+    return aliases.get(strategy, strategy)
+
+
 def load_regime_policy(path: str | Path = DEFAULT_REGIME_POLICY_PATH) -> dict[str, Any]:
     data = json.loads(Path(path).read_text())
     validate_regime_policy(data)
@@ -98,7 +114,7 @@ def regime_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
 
 
 def regime_overlay(strategy: Any, regime: Any, policy: dict[str, Any]) -> dict[str, Any]:
-    strategy_id = normalize(strategy)
+    strategy_id = canonical_strategy(strategy)
     regime_id = normalize(regime)
     item = get_regime(policy, regime_id) or {}
     allowed = [normalize(value) for value in item.get("allowed_strategy_bias") or []]
@@ -149,7 +165,7 @@ def promotion_review(strategy: Any, evidence: dict[str, Any], policy: dict[str, 
 
     return {
         "promotion_policy_version": promotion.get("promotion_policy_version"),
-        "strategy_id": normalize(strategy),
+        "strategy_id": canonical_strategy(strategy),
         "promotion_ready": not blockers,
         "promotion_blockers": blockers,
         "requires_manual_review": True,

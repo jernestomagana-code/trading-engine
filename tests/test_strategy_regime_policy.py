@@ -40,11 +40,12 @@ class StrategyRegimePolicyTests(unittest.TestCase):
 
     def test_regime_overlay_aligns_cash_secured_put_in_bullish_low_vol(self):
         overlay = strategy_regime_policy.regime_overlay(
-            "CASH_SECURED_PUT",
+            "NAKED_PUT",
             "BULLISH_LOW_VOL",
             self.policy,
         )
 
+        self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
         self.assertEqual(overlay["regime_state"], "REGIME_ALIGNED")
         self.assertIn("cash_secured_put", overlay["parameter_bias"])
         self.assertTrue(overlay["not_order_instruction"])

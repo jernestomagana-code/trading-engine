@@ -520,6 +520,40 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])
         self.assertTrue(overlay["not_order_instruction"])
         self.assertFalse(overlay["execution_authorized"])
+        regime_overlay = payload["items"][0]["regime_overlay"]
+        self.assertEqual(regime_overlay["regime_policy_version"], "strategy_regime_policy_v1")
+        self.assertEqual(regime_overlay["strategy_id"], "CASH_SECURED_PUT")
+        self.assertIn(regime_overlay["regime_state"], {"REGIME_ALIGNED", "REGIME_CAUTION", "REGIME_BLOCKED", "REGIME_UNSPECIFIED"})
+        self.assertTrue(regime_overlay["not_order_instruction"])
+        self.assertFalse(regime_overlay["execution_authorized"])
+
+    def test_v31_daily_recommendations_apply_explicit_regime_overlay(self):
+        row = {
+            "ticker": "SPY",
+            "strategy": "INTRADAY_INDEX_FUTURES",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([row])
+        master["data"]["market"]["market_regime"] = "HIGH_VOL_EVENT_RISK"
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            payload = main._v31_daily_recommendations_payload(["SPY"])
+
+        overlay = payload["items"][0]["regime_overlay"]
+        self.assertEqual(overlay["market_regime"], "HIGH_VOL_EVENT_RISK")
+        self.assertEqual(overlay["strategy_id"], "INTRADAY_INDEX_FUTURES")
+        self.assertEqual(overlay["regime_state"], "REGIME_BLOCKED")
+        self.assertFalse(overlay["execution_authorized"])
 
     def test_v31_finalizer_enforces_decision_support_only_contract(self):
         decision = {
