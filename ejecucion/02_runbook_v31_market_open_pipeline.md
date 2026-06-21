@@ -174,15 +174,19 @@ python3 tools/v31_operational_check.py \
   --ticker SPY \
   --run-bridge \
   --require-open-data \
-  --min-rows 1
+  --min-rows 1 \
+  --post-bridge-wait-seconds 60 \
+  --post-bridge-poll-interval 5
 ```
 
 Resultado esperado:
 
 - `ok`: `true`
 - `bridge_once_completed`: `true`
+- `post_bridge_pipeline_ready`: `true`
 - `pipeline.rows_found >= 1`
 - `decision.final_state` distinto de `NO_DATA`
+- `strategy_performance_ok`: `true`
 - `decision.not_order_instruction`: `true`
 - `decision.can_operate`: `false`
 
@@ -324,7 +328,7 @@ Confirmar:
 - [ ] Ejecutar `python3 tools/v31_market_open_runner.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10`.
 - [ ] Ejecutar `python3 tools/ibkr_option_quote_probe.py --ticker SPY --right P --target-dte 45 --otm-pct 0.10`.
 - [ ] Confirmar si hay `bid/ask/spread/spread_pct/delta`.
-- [ ] Ejecutar `python3 tools/v31_operational_check.py --ticker SPY --run-bridge --require-open-data --min-rows 1`.
+- [ ] Ejecutar `python3 tools/v31_operational_check.py --ticker SPY --run-bridge --require-open-data --min-rows 1 --post-bridge-wait-seconds 60 --post-bridge-poll-interval 5`.
 - [ ] Ver log `V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED`.
 - [ ] Confirmar `status: OK` en `/v31_data_pipeline_status`.
 - [ ] Confirmar `rows_found > 0`.

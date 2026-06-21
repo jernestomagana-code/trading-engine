@@ -20,6 +20,52 @@ STRATEGY_PERFORMANCE_OK = {
 
 
 class V31OperationalCheckTests(unittest.TestCase):
+    def test_pipeline_ready_for_open_data_requires_ok_and_min_rows(self):
+        self.assertTrue(check.pipeline_ready_for_open_data({"status": "OK", "rows_found": 2}, 1))
+        self.assertFalse(check.pipeline_ready_for_open_data({"status": "NO_MASTER_SNAPSHOT", "rows_found": 2}, 1))
+        self.assertFalse(check.pipeline_ready_for_open_data({"status": "OK", "rows_found": 0}, 1))
+
+    def test_post_bridge_wait_returns_success_when_pipeline_is_ready(self):
+        original_fetch = check.fetch_json
+        original_sleep = check.time.sleep
+        try:
+            check.fetch_json = lambda *args, **kwargs: (
+                True,
+                200,
+                {"status": "OK", "rows_found": 3},
+            )
+            check.time.sleep = lambda *_args, **_kwargs: None
+
+            result = check.wait_for_pipeline_after_bridge(
+                "https://example.test",
+                "token",
+                request_timeout=1,
+                wait_seconds=5,
+                poll_interval=1,
+                min_rows=1,
+            )
+        finally:
+            check.fetch_json = original_fetch
+            check.time.sleep = original_sleep
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["rows_found"], 3)
+
+    def test_post_bridge_wait_can_be_disabled(self):
+        result = check.wait_for_pipeline_after_bridge(
+            "https://example.test",
+            "token",
+            request_timeout=1,
+            wait_seconds=0,
+            poll_interval=1,
+            min_rows=1,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["waited"])
+
     def test_cloud_check_passes_safe_holiday_cloud_only(self):
         health = {
             "status": "ok",

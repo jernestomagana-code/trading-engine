@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,68 @@ def safe_get(data: Any, *path: str, default: Any = None) -> Any:
             return default
         cur = cur.get(key)
     return default if cur is None else cur
+
+
+def pipeline_ready_for_open_data(pipeline: dict[str, Any], min_rows: int) -> bool:
+    rows_found = int(safe_get(pipeline, "rows_found", default=0) or 0)
+    return safe_get(pipeline, "status") == "OK" and rows_found >= min_rows
+
+
+def wait_for_pipeline_after_bridge(
+    base: str,
+    token: str | None,
+    *,
+    request_timeout: int,
+    wait_seconds: int,
+    poll_interval: int,
+    min_rows: int,
+) -> dict[str, Any]:
+    if wait_seconds <= 0:
+        return {
+            "waited": False,
+            "ok": False,
+            "attempts": 0,
+            "detail": "post-bridge wait disabled",
+        }
+
+    deadline = time.monotonic() + wait_seconds
+    attempts = 0
+    last_status = None
+    last_rows = None
+    last_payload: Any = None
+    while True:
+        attempts += 1
+        ok, status_code, payload = fetch_json(
+            f"{base}/v31_data_pipeline_status",
+            timeout=request_timeout,
+            token=token,
+        )
+        last_payload = payload
+        if isinstance(payload, dict):
+            last_status = safe_get(payload, "status")
+            last_rows = safe_get(payload, "rows_found", default=0)
+            if ok and pipeline_ready_for_open_data(payload, min_rows):
+                return {
+                    "waited": True,
+                    "ok": True,
+                    "attempts": attempts,
+                    "status": last_status,
+                    "rows_found": last_rows,
+                }
+        else:
+            last_status = f"HTTP_{status_code}"
+
+        if time.monotonic() >= deadline:
+            return {
+                "waited": True,
+                "ok": False,
+                "attempts": attempts,
+                "status": last_status,
+                "rows_found": last_rows,
+                "last_payload": last_payload if isinstance(last_payload, dict) else str(last_payload)[:200],
+                "detail": f"pipeline did not reach OK with rows >= {min_rows} within {wait_seconds}s",
+            }
+        time.sleep(max(1, poll_interval))
 
 
 def evaluate_cloud(
@@ -246,6 +309,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-rows", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--bridge-timeout", type=int, default=240)
+    parser.add_argument("--post-bridge-wait-seconds", type=int, default=60)
+    parser.add_argument("--post-bridge-poll-interval", type=int, default=5)
     parser.add_argument("--log-path", default=DEFAULT_LOG_PATH)
     parser.add_argument("--ibkr-port", default="7496")
     parser.add_argument("--market-data-type", default="1")
@@ -264,6 +329,7 @@ def main() -> int:
     read_token = args.read_token or None
 
     bridge_result = None
+    pipeline_wait_result = None
     if args.run_bridge:
         try:
             bridge_result = run_bridge_once(args, repo_root)
@@ -274,6 +340,15 @@ def main() -> int:
                 "log_path": args.log_path,
                 "detail": f"Bridge timed out after {args.bridge_timeout}s.",
             }
+        if bridge_result.get("ok") and args.require_open_data:
+            pipeline_wait_result = wait_for_pipeline_after_bridge(
+                base,
+                read_token,
+                request_timeout=args.timeout,
+                wait_seconds=args.post_bridge_wait_seconds,
+                poll_interval=args.post_bridge_poll_interval,
+                min_rows=args.min_rows,
+            )
 
     _, _, health = fetch_json(f"{base}/health", timeout=args.timeout)
     _, unauth_status_code, _ = post_json(f"{base}/v31_ingest_snapshot", {}, timeout=args.timeout)
@@ -299,12 +374,22 @@ def main() -> int:
 
     if bridge_result is not None:
         checks.insert(0, Check("bridge_once_completed", bool(bridge_result.get("ok")), str(bridge_result)))
+        if args.require_open_data:
+            checks.insert(
+                1,
+                Check(
+                    "post_bridge_pipeline_ready",
+                    bool((pipeline_wait_result or {}).get("ok")),
+                    str(pipeline_wait_result),
+                ),
+            )
 
     result = {
         "engine": "V31_OPERATIONAL_CHECK",
         "ticker": ticker,
         "remote_url": base,
         "bridge_result": bridge_result,
+        "post_bridge_pipeline_wait": pipeline_wait_result,
         "read_auth": {
             "required": safe_get(read_auth, "required"),
             "read_access_token_configured": safe_get(read_auth, "read_access_token_configured"),
