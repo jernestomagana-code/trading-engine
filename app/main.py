@@ -22,6 +22,7 @@ try:
     import runtime_retention as shared_runtime_retention
     import storage_isolation as shared_storage_isolation
     import strategy_intelligence as shared_strategy_intelligence
+    import strategy_performance as shared_strategy_performance
     import v31_contracts as shared_v31_contracts
     from strategy_rules import (
         MIN_PRICE_FOR_THETA,
@@ -68,6 +69,7 @@ except ModuleNotFoundError:
     import runtime_retention as shared_runtime_retention
     import storage_isolation as shared_storage_isolation
     import strategy_intelligence as shared_strategy_intelligence
+    import strategy_performance as shared_strategy_performance
     import v31_contracts as shared_v31_contracts
     from strategy_rules import (
         MIN_PRICE_FOR_THETA,
@@ -215,8 +217,9 @@ _CANONICAL_DECISION_ENGINES = [
             "/v32_record_followup",
             "/v32_record_outcome",
             "/v32_outcomes_summary",
+            "/v32_strategy_performance",
         ],
-        "scope": "Persistent decision journal and post-signal outcome tracking for forward evaluation.",
+        "scope": "Persistent decision journal, post-signal outcomes, and strategy-level performance evidence for forward evaluation.",
     },
     {
         "engine": "shared_strategy_rules",
@@ -16354,6 +16357,17 @@ def _v32_history_summary(decisions, outcomes):
     }
 
 
+def _v32_strategy_performance_payload(decisions=None, outcomes=None):
+    decisions = _v32_load_decision_journal() if decisions is None else decisions
+    outcomes = _v32_load_outcomes_journal() if outcomes is None else outcomes
+    return shared_strategy_performance.strategy_performance_report(
+        decisions,
+        outcomes,
+        registry=shared_strategy_intelligence.strategy_registry(),
+        generated_at=_v29_now(),
+    )
+
+
 def _v29_finalize_decision(decision, master):
     payload = dict(decision)
     payload["snapshot_generated_at"] = (master.get("data") or {}).get("generated_at")
@@ -17389,6 +17403,7 @@ async def v32_outcomes_summary(limit: int = 100):
     outcomes = _v32_load_outcomes_journal()
     trimmed_decisions = decisions[-max(1, min(limit, 500)):]
     trimmed_outcomes = outcomes[-max(1, min(limit, 500)):]
+    strategy_performance = _v32_strategy_performance_payload(decisions, outcomes)
     return {
         "engine": _V32_ENGINE,
         "generated_at": _v29_now(),
@@ -17397,14 +17412,27 @@ async def v32_outcomes_summary(limit: int = 100):
         "ruleset_version": _V31_RULESET_VERSION,
         "snapshot_version": _V31_SNAPSHOT_VERSION,
         "summary": _v32_history_summary(decisions, outcomes),
+        "strategy_performance": {
+            "strategy_performance_version": strategy_performance.get("strategy_performance_version"),
+            "summary": strategy_performance.get("summary"),
+            "review_policy": strategy_performance.get("review_policy"),
+            "endpoint": "/v32_strategy_performance",
+            "not_order_instruction": True,
+        },
         "recent_decisions": trimmed_decisions,
         "recent_outcomes": trimmed_outcomes,
         "endpoints": {
             "decision_history": "/v32_decision_history",
             "record_followup": "/v32_record_followup",
             "record_outcome": "/v32_record_outcome",
+            "strategy_performance": "/v32_strategy_performance",
         },
     }
+
+
+@app.get("/v32_strategy_performance")
+async def v32_strategy_performance():
+    return _v32_strategy_performance_payload()
 
 
 @app.get("/v29_dashboard", response_class=_V29HTMLResponse)

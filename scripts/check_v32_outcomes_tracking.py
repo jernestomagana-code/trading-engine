@@ -170,6 +170,29 @@ async def main_async() -> int:
         require(stats.get("closed_outcomes") == 1, f"closed_outcomes mismatch: {summary}")
         require(stats.get("wins") == 1, f"wins mismatch: {summary}")
         require(stats.get("win_rate") == 100.0, f"win_rate mismatch: {summary}")
+        require(
+            summary.get("strategy_performance", {}).get("strategy_performance_version") == "strategy_performance_v1",
+            f"strategy performance summary missing: {summary}",
+        )
+        require(
+            summary.get("endpoints", {}).get("strategy_performance") == "/v32_strategy_performance",
+            f"strategy performance endpoint missing: {summary}",
+        )
+
+        performance = await maybe_await(app.v32_strategy_performance())
+        require(performance.get("engine") == "V32_STRATEGY_PERFORMANCE", f"unexpected performance engine: {performance}")
+        require(performance.get("not_order_instruction") is True, f"performance must preserve no-order guard: {performance}")
+        require(performance.get("execution_authorized") is False, f"performance must never authorize execution: {performance}")
+        naked_put = next(
+            (item for item in performance.get("strategies", []) if item.get("strategy") == "NAKED_PUT"),
+            None,
+        )
+        require(naked_put is not None, f"NAKED_PUT performance row missing: {performance}")
+        require(naked_put.get("closed_outcomes") == 1, f"NAKED_PUT closed outcomes mismatch: {naked_put}")
+        require(naked_put.get("wins") == 1, f"NAKED_PUT wins mismatch: {naked_put}")
+        require(naked_put.get("win_rate") == 100.0, f"NAKED_PUT win rate mismatch: {naked_put}")
+        require(naked_put.get("net_pnl_r") == 1.0, f"NAKED_PUT pnl_r mismatch: {naked_put}")
+        require(naked_put.get("sample_size_warning") is True, f"small sample warning missing: {naked_put}")
 
         audit_events = app._audit_events(limit=20)
         audit_types = [event.get("event_type") for event in audit_events]
