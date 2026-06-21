@@ -515,6 +515,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("COVERED_CALL", payload["strategy_exit_playbook"]["active_exit_strategies"])
         self.assertEqual(payload["strategy_regime_policy"]["regime_policy_version"], "strategy_regime_policy_v1")
         self.assertIn("HIGH_VOL_EVENT_RISK", payload["strategy_regime_policy"]["market_regimes"])
+        self.assertEqual(payload["market"]["market_regime"], "BULLISH_LOW_VOL")
+        self.assertEqual(payload["market"]["regime_detection"]["detector_version"], "market_regime_detector_v1")
         overlay = payload["items"][0]["strategy_overlay"]
         self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
         self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])
@@ -523,6 +525,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         regime_overlay = payload["items"][0]["regime_overlay"]
         self.assertEqual(regime_overlay["regime_policy_version"], "strategy_regime_policy_v1")
         self.assertEqual(regime_overlay["strategy_id"], "CASH_SECURED_PUT")
+        self.assertEqual(regime_overlay["market_regime"], "BULLISH_LOW_VOL")
         self.assertIn(regime_overlay["regime_state"], {"REGIME_ALIGNED", "REGIME_CAUTION", "REGIME_BLOCKED", "REGIME_UNSPECIFIED"})
         self.assertTrue(regime_overlay["not_order_instruction"])
         self.assertFalse(regime_overlay["execution_authorized"])

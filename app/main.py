@@ -17,6 +17,7 @@ import requests
 import audit_log as shared_audit_log
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
+import market_regime_detector as shared_market_regime_detector
 import strategy_exit_playbook as shared_strategy_exit_playbook
 import strategy_regime_policy as shared_strategy_regime_policy
 import strategy_registry as shared_strategy_registry
@@ -19030,6 +19031,7 @@ def _v29_canslim_gate(technical_state, strategy):
 def _v29_market_state(master):
     data = master.get("data") or {}
     market = data.get("market") or data.get("market_hours") or {}
+    technical = master.get("technical") or {}
 
     if not isinstance(market, dict):
         market = {}
@@ -19057,12 +19059,17 @@ def _v29_market_state(master):
         options_expected = False
 
     label = market.get("label") or market.get("status") or "UNKNOWN"
+    regime_detection = shared_market_regime_detector.detect_market_regime(market, technical)
+    market_regime = regime_detection.get("market_regime") or "UNKNOWN"
 
     return {
         "is_regular_market_open": is_open,
         "options_bidask_expected": options_expected,
         "market_holiday": market_holiday,
         "label": label,
+        "market_regime": market_regime,
+        "strategy_regime": market_regime,
+        "regime_detection": regime_detection,
         "raw": market,
     }
 
@@ -20230,6 +20237,11 @@ def _strategy_regime_policy_summary():
 def _strategy_market_regime(market):
     market = market if isinstance(market, dict) else {}
     raw = market.get("raw") if isinstance(market.get("raw"), dict) else {}
+    detection = market.get("regime_detection") if isinstance(market.get("regime_detection"), dict) else {}
+    detected = detection.get("market_regime")
+    if detected:
+        return detected
+
     for key in ["strategy_regime", "market_regime", "regime", "regime_id"]:
         value = market.get(key) or raw.get(key)
         if value:
