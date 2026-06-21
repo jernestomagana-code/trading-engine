@@ -1,0 +1,134 @@
+{
+  "exit_playbook_version": "strategy_exit_playbook_v1",
+  "ruleset_version": "strategy_exit_rules_v1",
+  "status": "ACTIVE",
+  "not_order_instruction": true,
+  "execution_authorized": false,
+  "canonical_exit_states": [
+    "NO_POSITION",
+    "MONITOR",
+    "TAKE_PROFIT_REVIEW",
+    "ROLL_REVIEW",
+    "ASSIGNMENT_REVIEW",
+    "EXIT_REVIEW",
+    "RISK_REVIEW",
+    "EXPIRED_OR_CLOSED"
+  ],
+  "strategies": [
+    {
+      "id": "CASH_SECURED_PUT",
+      "aliases": ["NAKED_PUT", "SHORT_PUT"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "position_required": true,
+      "required_inputs": [
+        "position_status",
+        "short_put_contract",
+        "underlying_price",
+        "option_mid_or_mark",
+        "entry_credit",
+        "dte",
+        "delta",
+        "account_cash_reserve",
+        "event_risk",
+        "technical_context"
+      ],
+      "take_profit_review": {
+        "premium_capture_pct_min": 50,
+        "dte_min": 7,
+        "state": "TAKE_PROFIT_REVIEW",
+        "review_text": "Revisar cierre manual si se capturo al menos 50% del credito y aun queda riesgo abierto."
+      },
+      "roll_review": {
+        "dte_max": 14,
+        "abs_delta_min": 0.3,
+        "same_or_lower_risk_required": true,
+        "state": "ROLL_REVIEW",
+        "review_text": "Revisar roll solo si reduce riesgo o mejora perfil sin aumentar tamano ni saltar cash reserve."
+      },
+      "assignment_review": {
+        "underlying_below_strike": true,
+        "cash_reserve_required": true,
+        "state": "ASSIGNMENT_REVIEW",
+        "review_text": "Revisar asignacion posible, disponibilidad de efectivo y si aceptar acciones cumple el plan."
+      },
+      "risk_review": {
+        "event_risk_active": true,
+        "technical_breakdown": true,
+        "cash_reserve_missing": true,
+        "state": "RISK_REVIEW",
+        "review_text": "Revisar salida defensiva o no accion si evento, tecnico o reserva de efectivo invalidan la tesis."
+      },
+      "outcome_metrics": [
+        "premium_capture_pct",
+        "pnl_r",
+        "mfe_r",
+        "mae_r",
+        "assignment_rate",
+        "days_in_trade",
+        "roll_count"
+      ],
+      "manual_review_text": "Cash secured put: toda salida, roll o aceptacion de asignacion requiere validacion manual."
+    },
+    {
+      "id": "COVERED_CALL",
+      "aliases": ["SHORT_CALL_COVERED"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "position_required": true,
+      "required_inputs": [
+        "long_stock_position",
+        "short_call_contract",
+        "underlying_price",
+        "option_mid_or_mark",
+        "entry_credit",
+        "dte",
+        "delta",
+        "cost_basis",
+        "assignment_preference",
+        "technical_context"
+      ],
+      "take_profit_review": {
+        "premium_capture_pct_min": 50,
+        "dte_min": 7,
+        "state": "TAKE_PROFIT_REVIEW",
+        "review_text": "Revisar cierre manual si se capturo al menos 50% del credito y se desea conservar la accion."
+      },
+      "roll_review": {
+        "dte_max": 14,
+        "abs_delta_min": 0.35,
+        "net_credit_or_thesis_required": true,
+        "state": "ROLL_REVIEW",
+        "review_text": "Revisar roll solo si la asignacion no es deseada y el nuevo riesgo sigue cubierto por acciones."
+      },
+      "assignment_review": {
+        "underlying_above_strike": true,
+        "assignment_preference_required": true,
+        "state": "ASSIGNMENT_REVIEW",
+        "review_text": "Revisar si aceptar asignacion de acciones es mejor que cerrar o rollear."
+      },
+      "risk_review": {
+        "uncovered_call_forbidden": true,
+        "position_size_mismatch": true,
+        "technical_breakout_against_call": true,
+        "state": "RISK_REVIEW",
+        "review_text": "Bloquear cualquier manejo que deje call descubierta o aumente riesgo sin revision manual."
+      },
+      "outcome_metrics": [
+        "premium_capture_pct",
+        "pnl_r",
+        "mfe_r",
+        "mae_r",
+        "assignment_rate",
+        "called_away_return_pct",
+        "days_in_trade",
+        "roll_count"
+      ],
+      "manual_review_text": "Covered call: toda salida, roll o asignacion requiere validar acciones cubriendo el contrato."
+    }
+  ],
+  "promotion_policy": {
+    "minimum_closed_outcomes_for_parameter_review": 30,
+    "minimum_regime_coverage": ["BULLISH", "NEUTRAL", "VOLATILE"],
+    "requires_versioned_rule_change": true,
+    "requires_manual_review": true
+  }
+}

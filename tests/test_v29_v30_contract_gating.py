@@ -474,6 +474,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["gpt_daily_recommendations"], "/gpt_v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
         self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
+        self.assertEqual(status["endpoints"]["strategy_exit_playbook"], "/strategy_exit_playbook")
         self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
         self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
@@ -509,6 +510,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(payload["items"][0]["not_order_instruction"])
         self.assertEqual(payload["strategy_playbook"]["registry_version"], "strategy_registry_v1")
         self.assertIn("CASH_SECURED_PUT", payload["strategy_playbook"]["active_manual_review"])
+        self.assertEqual(payload["strategy_exit_playbook"]["exit_playbook_version"], "strategy_exit_playbook_v1")
+        self.assertIn("COVERED_CALL", payload["strategy_exit_playbook"]["active_exit_strategies"])
         overlay = payload["items"][0]["strategy_overlay"]
         self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
         self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])
