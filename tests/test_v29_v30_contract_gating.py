@@ -475,6 +475,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
         self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
         self.assertEqual(status["endpoints"]["strategy_exit_playbook"], "/strategy_exit_playbook")
+        self.assertEqual(status["endpoints"]["strategy_regime_policy"], "/strategy_regime_policy")
         self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
         self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
@@ -512,6 +513,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("CASH_SECURED_PUT", payload["strategy_playbook"]["active_manual_review"])
         self.assertEqual(payload["strategy_exit_playbook"]["exit_playbook_version"], "strategy_exit_playbook_v1")
         self.assertIn("COVERED_CALL", payload["strategy_exit_playbook"]["active_exit_strategies"])
+        self.assertEqual(payload["strategy_regime_policy"]["regime_policy_version"], "strategy_regime_policy_v1")
+        self.assertIn("HIGH_VOL_EVENT_RISK", payload["strategy_regime_policy"]["market_regimes"])
         overlay = payload["items"][0]["strategy_overlay"]
         self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
         self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])

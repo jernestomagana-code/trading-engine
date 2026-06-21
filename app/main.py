@@ -18,6 +18,7 @@ import audit_log as shared_audit_log
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
 import strategy_exit_playbook as shared_strategy_exit_playbook
+import strategy_regime_policy as shared_strategy_regime_policy
 import strategy_registry as shared_strategy_registry
 import strategy_performance as shared_strategy_performance
 
@@ -20142,6 +20143,7 @@ def _v31_system_status_payload(tickers=None):
             "strategy_registry": "/strategy_registry",
             "strategy_playbook": "/strategy_playbook",
             "strategy_exit_playbook": "/strategy_exit_playbook",
+            "strategy_regime_policy": "/strategy_regime_policy",
             "dashboard": "/v31_dashboard",
             "dashboard_ticker_example": "/v31_dashboard/QQQ",
             "risk_profile": "/v31_risk_profile",
@@ -20164,6 +20166,7 @@ def _v31_daily_recommendations_payload(tickers=None):
     registry = _strategy_registry()
     payload["strategy_playbook"] = shared_strategy_registry.playbook_summary(registry)
     payload["strategy_exit_playbook"] = _strategy_exit_playbook_summary()
+    payload["strategy_regime_policy"] = _strategy_regime_policy_summary()
     for item in payload.get("items") or []:
         item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
     for item in payload.get("top_recommendations") or []:
@@ -20197,6 +20200,14 @@ def _strategy_exit_playbook():
 
 def _strategy_exit_playbook_summary():
     return shared_strategy_exit_playbook.exit_playbook_summary(_strategy_exit_playbook())
+
+
+def _strategy_regime_policy():
+    return shared_strategy_regime_policy.load_regime_policy()
+
+
+def _strategy_regime_policy_summary():
+    return shared_strategy_regime_policy.regime_policy_summary(_strategy_regime_policy())
 
 
 def _v31_runtime_file_status():
@@ -20881,6 +20892,7 @@ async def strategy_playbook():
         "generated_at": _v29_now(),
         "playbook": _strategy_playbook_summary(),
         "exit_playbook": _strategy_exit_playbook_summary(),
+        "regime_policy": _strategy_regime_policy_summary(),
         "manual_review_required": True,
         "not_order_instruction": True,
         "execution_authorized": False,
@@ -20893,6 +20905,18 @@ async def strategy_exit_playbook():
     return {
         **playbook,
         "summary": shared_strategy_exit_playbook.exit_playbook_summary(playbook),
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+@app.get("/strategy_regime_policy")
+async def strategy_regime_policy():
+    policy = _strategy_regime_policy()
+    return {
+        **policy,
+        "summary": shared_strategy_regime_policy.regime_policy_summary(policy),
         "manual_review_required": True,
         "not_order_instruction": True,
         "execution_authorized": False,

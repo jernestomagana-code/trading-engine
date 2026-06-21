@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 import strategy_registry
 import strategy_exit_playbook
+import strategy_regime_policy
 
 
 def require(condition: bool, message: str) -> None:
@@ -56,6 +57,24 @@ def main() -> int:
     exit_text = exit_doc.read_text()
     require("TAKE_PROFIT_REVIEW" in exit_text, "exit playbook must define take-profit review")
     require("rollea" in exit_text.lower() or "roll" in exit_text.lower(), "exit playbook must define roll review")
+
+    regime_policy = strategy_regime_policy.load_regime_policy(
+        ROOT / strategy_regime_policy.DEFAULT_REGIME_POLICY_PATH
+    )
+    regime_summary = strategy_regime_policy.regime_policy_summary(regime_policy)
+    require("BULLISH_LOW_VOL" in regime_summary["market_regimes"], "bullish low vol regime missing")
+    require("HIGH_VOL_EVENT_RISK" in regime_summary["market_regimes"], "high vol event risk regime missing")
+    require(
+        regime_summary["research_promotion_policy"]["minimum_closed_outcomes"] >= 30,
+        "research promotion needs closed outcome minimum",
+    )
+    require(regime_summary["execution_authorized"] is False, "regime policy must never authorize execution")
+
+    regime_doc = ROOT / "referencias/strategy_regime_policy_v1.md"
+    require(regime_doc.exists(), "strategy regime policy doc missing")
+    regime_text = regime_doc.read_text()
+    require("UNDEFINED_MAX_LOSS" in regime_text, "regime policy must document hard promotion blockers")
+    require("WAIT_OPTIONS_DATA" in regime_text, "regime policy must preserve WAIT_OPTIONS_DATA")
 
     print("Strategy registry validation passed.")
     return 0

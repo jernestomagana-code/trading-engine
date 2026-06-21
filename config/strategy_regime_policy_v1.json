@@ -1,0 +1,117 @@
+{
+  "regime_policy_version": "strategy_regime_policy_v1",
+  "ruleset_version": "strategy_regime_rules_v1",
+  "status": "ACTIVE",
+  "not_order_instruction": true,
+  "execution_authorized": false,
+  "market_regimes": [
+    {
+      "id": "BULLISH_LOW_VOL",
+      "description": "Tendencia alcista con volatilidad contenida.",
+      "allowed_strategy_bias": ["CASH_SECURED_PUT", "CANSLIM_GROWTH_FILTER"],
+      "caution_strategy_bias": ["COVERED_CALL"],
+      "blocked_strategy_bias": [],
+      "parameter_bias": {
+        "cash_secured_put": {
+          "preferred_abs_delta_max": 0.2,
+          "preferred_dte_min": 30,
+          "preferred_dte_max": 45,
+          "note": "Priorizar calidad del subyacente y no perseguir prima en delta alta."
+        },
+        "covered_call": {
+          "preferred_abs_delta_max": 0.2,
+          "note": "Cuidado con limitar upside en lideres fuertes."
+        }
+      },
+      "required_confirmations": ["TECHNICAL_TREND_CONFIRMED", "LIQUID_OPTIONS", "EVENT_RISK_CLEAR"]
+    },
+    {
+      "id": "NEUTRAL_RANGE",
+      "description": "Mercado lateral o rango controlado.",
+      "allowed_strategy_bias": ["CASH_SECURED_PUT", "COVERED_CALL"],
+      "caution_strategy_bias": ["IRON_CONDOR"],
+      "blocked_strategy_bias": [],
+      "parameter_bias": {
+        "cash_secured_put": {
+          "preferred_abs_delta_max": 0.22,
+          "preferred_dte_min": 30,
+          "preferred_dte_max": 60
+        },
+        "covered_call": {
+          "preferred_abs_delta_max": 0.25,
+          "preferred_dte_min": 25,
+          "preferred_dte_max": 55
+        }
+      },
+      "required_confirmations": ["RANGE_CONTEXT_CONFIRMED", "LIQUID_OPTIONS", "EVENT_RISK_CLEAR"]
+    },
+    {
+      "id": "BEARISH_OR_CORRECTION",
+      "description": "Tendencia bajista, correccion o deterioro tecnico.",
+      "allowed_strategy_bias": ["COVERED_CALL"],
+      "caution_strategy_bias": ["CASH_SECURED_PUT"],
+      "blocked_strategy_bias": ["IRON_CONDOR"],
+      "parameter_bias": {
+        "cash_secured_put": {
+          "preferred_abs_delta_max": 0.16,
+          "cash_reserve_emphasis": "HIGH",
+          "note": "Reducir agresividad; evitar subyacentes sin liderazgo o con soporte roto."
+        },
+        "covered_call": {
+          "preferred_abs_delta_max": 0.25,
+          "note": "Puede ser defensivo si la posicion larga ya existe."
+        }
+      },
+      "required_confirmations": ["TECHNICAL_DAMAGE_REVIEWED", "POSITION_CONTEXT_CLEAR", "EVENT_RISK_CLEAR"]
+    },
+    {
+      "id": "HIGH_VOL_EVENT_RISK",
+      "description": "Volatilidad elevada, eventos macro/earnings o spreads deteriorados.",
+      "allowed_strategy_bias": [],
+      "caution_strategy_bias": ["CASH_SECURED_PUT", "COVERED_CALL"],
+      "blocked_strategy_bias": ["IRON_CONDOR", "INTRADAY_INDEX_FUTURES"],
+      "parameter_bias": {
+        "global": {
+          "max_spread_pct": 12.0,
+          "position_size_bias": "REDUCE",
+          "note": "Elevar estandar de liquidez y evitar operar antes de eventos binarios."
+        }
+      },
+      "required_confirmations": ["EVENT_RISK_REVIEWED", "SPREADS_TIGHT", "SIZE_REDUCED_OR_BLOCKED"]
+    },
+    {
+      "id": "INTRADAY_TREND",
+      "description": "Sesion intradia con tendencia y contexto premarket claro.",
+      "allowed_strategy_bias": ["INTRADAY_INDEX_FUTURES"],
+      "caution_strategy_bias": [],
+      "blocked_strategy_bias": ["CASH_SECURED_PUT", "COVERED_CALL", "IRON_CONDOR"],
+      "parameter_bias": {
+        "intraday_index_futures": {
+          "premarket_context_required": true,
+          "risk_daily_status": "CLEAR",
+          "portfolio_status": "CLEAR"
+        }
+      },
+      "required_confirmations": ["PREMARKET_CONTEXT_CONFIRMED", "DAILY_RISK_CLEAR", "NO_MAJOR_EVENT_WINDOW"]
+    }
+  ],
+  "research_promotion_policy": {
+    "promotion_policy_version": "research_promotion_policy_v1",
+    "minimum_closed_outcomes": 30,
+    "minimum_distinct_market_regimes": 3,
+    "minimum_positive_expectancy_r": 0.1,
+    "max_sample_mae_r": -2.0,
+    "requires_forward_test": true,
+    "requires_manual_review": true,
+    "requires_version_bump": true,
+    "requires_security_review": true,
+    "blocked_if_any": [
+      "AUTO_ORDER_EXECUTION_REQUIRED",
+      "UNDEFINED_MAX_LOSS",
+      "MISSING_EXIT_PLAYBOOK",
+      "MISSING_OUTCOME_METRICS",
+      "UNTESTED_EVENT_RISK"
+    ],
+    "applies_to": ["IRON_CONDOR", "ZERO_DTE_INDEX_OPTIONS", "NEW_STRATEGY"]
+  }
+}
