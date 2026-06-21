@@ -18,6 +18,7 @@ import audit_log as shared_audit_log
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
 import strategy_registry as shared_strategy_registry
+import strategy_performance as shared_strategy_performance
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -985,6 +986,40 @@ def outcome_stats(outcomes):
         "by_strategy": by_strategy,
         "by_ticker": by_ticker,
     }
+
+
+def _strategy_performance_outcomes(limit=1000):
+    durable_outcomes = _durable_supabase_fetch("outcome", limit=limit)
+    if durable_outcomes is not None:
+        return durable_outcomes
+    return load_outcomes_from_file()[-limit:]
+
+
+def _strategy_performance_decisions(limit=1000):
+    durable_decisions = _durable_supabase_fetch("decision", limit=limit)
+    if durable_decisions is not None:
+        return durable_decisions
+    return []
+
+
+def _v32_strategy_performance_payload(limit=1000):
+    bounded_limit = max(1, min(int(limit or 1000), 5000))
+    registry = _strategy_registry()
+    decisions = _strategy_performance_decisions(bounded_limit)
+    outcomes = _strategy_performance_outcomes(bounded_limit)
+    payload = shared_strategy_performance.strategy_performance_report(
+        decisions,
+        outcomes,
+        registry=registry,
+        generated_at=_v29_now(),
+    )
+    payload["data_sources"] = {
+        "decisions": "durable_decision_journal" if _durable_supabase_fetch("decision", limit=1) is not None else "none",
+        "outcomes": "durable_outcome_journal" if _durable_supabase_fetch("outcome", limit=1) is not None else "local_outcomes_file",
+        "limit": bounded_limit,
+    }
+    payload["durable_storage"] = _durable_storage_summary()
+    return payload
 
 
 def row_to_intraday_futures_alert_event(row):
@@ -20876,6 +20911,11 @@ async def v31_outcome_tracking_status():
         "durable_storage": _durable_storage_summary(),
         "not_order_instruction": True,
     }
+
+
+@app.get("/v32_strategy_performance")
+async def v32_strategy_performance(limit: int = 1000):
+    return _v32_strategy_performance_payload(limit)
 
 
 @app.get("/v31_data_pipeline_status")
