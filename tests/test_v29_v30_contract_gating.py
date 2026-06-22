@@ -705,6 +705,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(tracking["outcome"]["parameter_review_status"], "PASS")
         self.assertEqual(tracking["outcome"]["parameter_review"]["status"], "PASS")
         self.assertEqual(tracking["outcome"]["parameter_review_blockers"], [])
+        self.assertEqual(tracking["outcome"]["exit_regime_guidance_state"], "GUIDANCE_AVAILABLE")
+        self.assertEqual(tracking["outcome"]["exit_regime_guidance"]["market_regime"], "BULLISH_LOW_VOL")
+        self.assertEqual(
+            tracking["outcome"]["exit_regime_guidance"]["regime_exit_adjustment"]["risk_action"],
+            "MONITOR_SUPPORT_AND_EVENT_RISK",
+        )
+        self.assertEqual(tracking["outcome"]["measurement_plan"]["exit_guidance_state"], "GUIDANCE_AVAILABLE")
+        self.assertEqual(tracking["outcome"]["measurement_plan"]["exit_risk_action"], "MONITOR_SUPPORT_AND_EVENT_RISK")
         self.assertIn("SIG-", tracking["signal_id"])
         self.assertTrue(tracking["not_order_instruction"])
         journal.assert_called_once()
@@ -1142,6 +1150,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(preview["engine"], "V31_PIPELINE_MONITOR_EMAIL")
         self.assertEqual(preview["status"], "preview")
         self.assertFalse(preview["email_sent"])
+        self.assertIn("dedupe", preview)
         self.assertIn("Stock Ultimus V31 Monitor", preview["subject"])
         self.assertTrue(preview["not_order_instruction"])
         send_email.assert_not_called()
@@ -1194,13 +1203,81 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         }
 
         with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
-            with patch.object(main, "send_resend_email", return_value={"email_sent": True, "provider": "test"}) as send_email:
-                result = main._v31_monitor_notify_payload(to_email="test@example.com")
+            with patch.object(main, "_v31_load_monitor_notify_state", return_value={}):
+                with patch.object(main, "_v31_save_monitor_notify_state", return_value=True):
+                    with patch.object(main, "send_resend_email", return_value={"email_sent": True, "provider": "test"}) as send_email:
+                        result = main._v31_monitor_notify_payload(to_email="test@example.com")
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(result["notify_reason"], "ACTION_REQUIRED")
         self.assertTrue(result["email_sent"])
         self.assertTrue(result["not_order_instruction"])
+        send_email.assert_called_once()
+
+    def test_v31_monitor_notify_dedupes_recent_actionable_alert(self):
+        monitor = {
+            "engine": "V31_PIPELINE_MONITOR",
+            "generated_at": "2026-06-22T14:00:00+00:00",
+            "alert_level": "ACTION_REQUIRED",
+            "pipeline_status": "OK",
+            "market_context": "REGULAR_MARKET_HOURS",
+            "master_snapshot_available": True,
+            "manual_review_ready_count": 1,
+            "entry_ready_tickers": ["SPY"],
+            "risk_blocked_tickers": [],
+            "wait_options_tickers": [],
+            "message": "Hay setups ENTRY_READY para revision manual.",
+            "next_required_action": "Abrir dashboard.",
+            "not_order_instruction": True,
+        }
+        alert_key = "ACTION_REQUIRED|OK|SPY||"
+        state = {
+            alert_key: {
+                "sent_at": main._v29_now(),
+                "notify_reason": "ACTION_REQUIRED",
+                "status": "sent",
+            }
+        }
+
+        with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
+            with patch.object(main, "_v31_load_monitor_notify_state", return_value=state):
+                with patch.object(main, "send_resend_email") as send_email:
+                    result = main._v31_monitor_notify_payload()
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "DEDUPED_RECENT_ALERT")
+        self.assertFalse(result["email_sent"])
+        self.assertTrue(result["dedupe"]["deduped"])
+        send_email.assert_not_called()
+
+    def test_v31_monitor_notify_force_bypasses_dedupe(self):
+        monitor = {
+            "engine": "V31_PIPELINE_MONITOR",
+            "generated_at": "2026-06-22T14:00:00+00:00",
+            "alert_level": "ACTION_REQUIRED",
+            "pipeline_status": "OK",
+            "market_context": "REGULAR_MARKET_HOURS",
+            "master_snapshot_available": True,
+            "manual_review_ready_count": 1,
+            "entry_ready_tickers": ["SPY"],
+            "risk_blocked_tickers": [],
+            "wait_options_tickers": [],
+            "message": "Hay setups ENTRY_READY para revision manual.",
+            "next_required_action": "Abrir dashboard.",
+            "not_order_instruction": True,
+        }
+        alert_key = "ACTION_REQUIRED|OK|SPY||"
+        state = {alert_key: {"sent_at": main._v29_now()}}
+
+        with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
+            with patch.object(main, "_v31_load_monitor_notify_state", return_value=state):
+                with patch.object(main, "_v31_save_monitor_notify_state", return_value=True):
+                    with patch.object(main, "send_resend_email", return_value={"email_sent": True}) as send_email:
+                        result = main._v31_monitor_notify_payload(force=True)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["email_sent"])
+        self.assertFalse(result["dedupe"]["deduped"])
         send_email.assert_called_once()
 
 

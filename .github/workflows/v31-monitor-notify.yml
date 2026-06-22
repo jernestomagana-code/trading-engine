@@ -1,0 +1,63 @@
+name: V31 Monitor Notify
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Broad US market-hours window in UTC. The app-level monitor decides
+    # whether an alert is actionable and dedupes repeated alerts.
+    - cron: "*/5 13-21 * * 1-5"
+
+jobs:
+  notify:
+    name: Call V31 monitor notify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify when V31 has actionable manual-review setups
+        env:
+          READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import request, error
+
+          token = os.environ.get("READ_ACCESS_TOKEN", "").strip()
+          if not token:
+              print("Missing STOCK_ULTIMUS_READ_ACCESS_TOKEN secret.")
+              sys.exit(1)
+
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          url = base + "/v31_monitor_notify"
+          req = request.Request(
+              url,
+              data=b"",
+              method="POST",
+              headers={"X-Stock-Ultimus-Read-Token": token},
+          )
+          try:
+              with request.urlopen(req, timeout=30) as resp:
+                  payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                  status_code = resp.status
+          except error.HTTPError as exc:
+              body = exc.read().decode("utf-8", errors="replace")
+              print(body)
+              sys.exit(1)
+
+          summary = {
+              "status_code": status_code,
+              "status": payload.get("status"),
+              "would_notify": payload.get("would_notify"),
+              "notify_reason": payload.get("notify_reason"),
+              "email_sent": payload.get("email_sent"),
+              "deduped": (payload.get("dedupe") or {}).get("deduped"),
+              "alert_level": (payload.get("monitor") or {}).get("alert_level"),
+              "entry_ready_tickers": (payload.get("monitor") or {}).get("entry_ready_tickers"),
+              "not_order_instruction": payload.get("not_order_instruction"),
+          }
+          print(json.dumps(summary, indent=2))
+
+          if payload.get("status") == "not_sent":
+              sys.exit(1)
+          PY

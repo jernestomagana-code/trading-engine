@@ -8,6 +8,7 @@ BRIDGE = ROOT / "ibkr_bridge.py"
 APP = ROOT / "app" / "main.py"
 GITIGNORE = ROOT / ".gitignore"
 ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
+MONITOR_NOTIFY_WORKFLOW = ROOT / ".github" / "workflows" / "v31-monitor-notify.yml"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -94,6 +95,17 @@ class TokenRotationToolTests(unittest.TestCase):
                 printed = ast.get_source_segment(source, node) or ""
                 self.assertNotIn("token)", printed)
                 self.assertNotIn("{token", printed)
+
+
+class MonitorNotifyWorkflowTests(unittest.TestCase):
+    def test_v31_monitor_workflow_uses_protected_notify_endpoint(self):
+        source = MONITOR_NOTIFY_WORKFLOW.read_text()
+
+        self.assertIn("cron:", source)
+        self.assertIn("/v31_monitor_notify", source)
+        self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
 
 
 if __name__ == "__main__":
