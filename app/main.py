@@ -19960,6 +19960,37 @@ def _v31_load_manual_reviews():
     return data if isinstance(data, list) else []
 
 
+def _v31_load_manual_reviews_with_durable(limit=500):
+    try:
+        limit = max(1, min(int(limit or 500), 1000))
+    except Exception:
+        limit = 500
+    combined = []
+    seen = set()
+    durable = _durable_supabase_fetch("outcome", limit=limit)
+    sources = {
+        "local_count": 0,
+        "durable_count": 0,
+        "durable_available": durable is not None,
+    }
+    for source_name, items in [
+        ("durable_count", durable if isinstance(durable, list) else []),
+        ("local_count", _v31_load_manual_reviews()),
+    ]:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("outcome_tracking_version") or "") != _V31_MANUAL_REVIEW_VERSION:
+                continue
+            key = item.get("review_id") or item.get("id") or item.get("outcome_id")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            combined.append(item)
+            sources[source_name] = sources.get(source_name, 0) + 1
+    return combined[-limit:], sources
+
+
 def _v31_save_manual_reviews(items):
     path = _v31_manual_review_file()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -20104,7 +20135,7 @@ def _v31_manual_reviews_payload(limit=100):
         limit = max(1, min(int(limit), 1000))
     except Exception:
         limit = 100
-    reviews = _v31_load_manual_reviews()
+    reviews, review_sources = _v31_load_manual_reviews_with_durable(limit=1000)
     recent = reviews[-limit:]
     by_status = {}
     latest_by_signal = {}
@@ -20123,6 +20154,7 @@ def _v31_manual_reviews_payload(limit=100):
         "by_status": dict(sorted(by_status.items())),
         "recent_reviews": recent,
         "latest_by_signal": latest_by_signal,
+        "sources": review_sources,
         "durable_storage": _durable_storage_summary(),
         "not_order_instruction": True,
         "execution_authorized": False,
@@ -20371,7 +20403,7 @@ def _v31_evaluate_manual_review(review, master, checkpoint="EOD"):
 
 def _v31_auto_evaluate_manual_reviews(limit=100, checkpoint="EOD", dry_run=False):
     bounded_limit = max(1, min(int(limit or 100), 500))
-    updated_reviews = list(_v31_load_manual_reviews())
+    updated_reviews, review_sources = _v31_load_manual_reviews_with_durable(limit=bounded_limit)
     reviews = updated_reviews[-bounded_limit:]
     master = _v29_discover_master_snapshot()
     results = []
@@ -20402,6 +20434,8 @@ def _v31_auto_evaluate_manual_reviews(limit=100, checkpoint="EOD", dry_run=False
         "generated_at": _v29_now(),
         "checkpoint": str(checkpoint or "EOD").upper(),
         "dry_run": bool(dry_run),
+        "source": "manual_review_journal_combined",
+        "sources": review_sources,
         "manual_reviews_found": len(reviews),
         "evaluated_count": len(evaluated),
         "not_evaluated_count": len(not_evaluated),
