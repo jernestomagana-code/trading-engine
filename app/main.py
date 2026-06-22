@@ -91,6 +91,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_manual_review",
     "/v31_manual_reviews",
     "/v31_manual_review_learning",
+    "/v31_manual_review_learning_notify",
     "/v31_evaluate_manual_reviews",
     "/v31_monitor_status",
     "/v31_outcome_tracking_status",
@@ -20306,6 +20307,218 @@ def _v31_manual_review_learning_payload(limit=500):
     }
 
 
+def _v31_learning_notify_state_file():
+    return _V29_RUNTIME_DIR / "v31_learning_notify_state.json"
+
+
+def _v31_load_learning_notify_state():
+    return _v29_load_json_file(_v31_learning_notify_state_file()) or {}
+
+
+def _v31_save_learning_notify_state(state):
+    path = _v31_learning_notify_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump(state or {}, f, indent=2)
+    return True
+
+
+def _v31_learning_week_key(now=None):
+    now = now or datetime.now(timezone.utc)
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{int(week):02d}"
+
+
+def _v31_learning_notify_dedupe(learning, force=False):
+    week_key = _v31_learning_week_key()
+    state = _v31_load_learning_notify_state()
+    last = state.get(week_key) if isinstance(state, dict) else None
+    deduped = bool(not force and isinstance(last, dict) and last.get("sent_at"))
+    return {
+        "week_key": week_key,
+        "deduped": deduped,
+        "last_sent_at": (last or {}).get("sent_at") if isinstance(last, dict) else None,
+        "evaluated_count": learning.get("evaluated_count"),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_record_learning_notification(learning, status):
+    week_key = _v31_learning_week_key()
+    state = _v31_load_learning_notify_state()
+    if not isinstance(state, dict):
+        state = {}
+    state[week_key] = {
+        "sent_at": _v29_now(),
+        "status": status,
+        "review_count": learning.get("review_count"),
+        "evaluated_count": learning.get("evaluated_count"),
+        "by_learning_label": learning.get("by_learning_label") or {},
+        "avg_paper_pnl_r": learning.get("avg_paper_pnl_r"),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+    _v31_save_learning_notify_state(state)
+    return state[week_key]
+
+
+def _v31_learning_email_content(learning):
+    base_url = PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
+
+    def item_line(item):
+        return "{ticker} {strategy} {status}/{label} pnl_r={pnl} mfe={mfe} mae={mae} exp={exp} strike={strike}".format(
+            ticker=item.get("ticker"),
+            strategy=item.get("strategy"),
+            status=item.get("manual_status"),
+            label=item.get("learning_label"),
+            pnl=item.get("current_paper_pnl_r"),
+            mfe=item.get("mfe_r"),
+            mae=item.get("mae_r"),
+            exp=item.get("expiration"),
+            strike=item.get("strike"),
+        )
+
+    best_lines = "\n".join("- " + item_line(item) for item in (learning.get("best_reviews") or [])[:5]) or "- None"
+    worst_lines = "\n".join("- " + item_line(item) for item in (learning.get("worst_reviews") or [])[:5]) or "- None"
+    subject = "Stock Ultimus Weekly Learning: {evaluated} evaluated reviews".format(
+        evaluated=learning.get("evaluated_count")
+    )
+    text = "\n".join([
+        "Stock Ultimus Weekly Learning",
+        "",
+        "Reviews: {count}".format(count=learning.get("review_count")),
+        "Evaluated: {count}".format(count=learning.get("evaluated_count")),
+        "Unevaluated: {count}".format(count=learning.get("unevaluated_count")),
+        "Needs more data: {value}".format(value=learning.get("needs_more_data")),
+        "Avg paper PnL-R: {value}".format(value=learning.get("avg_paper_pnl_r")),
+        "Avg MFE-R: {value}".format(value=learning.get("avg_mfe_r")),
+        "Avg MAE-R: {value}".format(value=learning.get("avg_mae_r")),
+        "",
+        "By manual status: {value}".format(value=learning.get("by_manual_status")),
+        "By learning label: {value}".format(value=learning.get("by_learning_label")),
+        "By strategy: {value}".format(value=learning.get("by_strategy")),
+        "By ticker: {value}".format(value=learning.get("by_ticker")),
+        "",
+        "Best reviews:",
+        best_lines,
+        "",
+        "Worst reviews:",
+        worst_lines,
+        "",
+        "Learning endpoint: {base}/v31_manual_review_learning".format(base=base_url),
+        "Manual review journal: {base}/v31_manual_reviews".format(base=base_url),
+        "",
+        "Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.",
+    ])
+    html_body = """
+    <h2>Stock Ultimus Weekly Learning</h2>
+    <ul>
+      <li>Reviews: {review_count}</li>
+      <li>Evaluated: {evaluated_count}</li>
+      <li>Unevaluated: {unevaluated_count}</li>
+      <li>Needs more data: {needs_more_data}</li>
+      <li>Avg paper PnL-R: {avg_pnl}</li>
+      <li>Avg MFE-R: {avg_mfe}</li>
+      <li>Avg MAE-R: {avg_mae}</li>
+    </ul>
+    <h3>Breakdowns</h3>
+    <p><strong>Manual status:</strong> {by_status}</p>
+    <p><strong>Learning label:</strong> {by_label}</p>
+    <p><strong>Strategy:</strong> {by_strategy}</p>
+    <p><strong>Ticker:</strong> {by_ticker}</p>
+    <h3>Best reviews</h3>
+    <pre>{best}</pre>
+    <h3>Worst reviews</h3>
+    <pre>{worst}</pre>
+    <p><a href="{base}/v31_manual_review_learning">Open learning summary</a></p>
+    <p><a href="{base}/v31_manual_reviews">Open manual review journal</a></p>
+    <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
+    """.format(
+        review_count=_v29_html_escape(learning.get("review_count")),
+        evaluated_count=_v29_html_escape(learning.get("evaluated_count")),
+        unevaluated_count=_v29_html_escape(learning.get("unevaluated_count")),
+        needs_more_data=_v29_html_escape(learning.get("needs_more_data")),
+        avg_pnl=_v29_html_escape(learning.get("avg_paper_pnl_r")),
+        avg_mfe=_v29_html_escape(learning.get("avg_mfe_r")),
+        avg_mae=_v29_html_escape(learning.get("avg_mae_r")),
+        by_status=_v29_html_escape(learning.get("by_manual_status")),
+        by_label=_v29_html_escape(learning.get("by_learning_label")),
+        by_strategy=_v29_html_escape(learning.get("by_strategy")),
+        by_ticker=_v29_html_escape(learning.get("by_ticker")),
+        best=_v29_html_escape(best_lines),
+        worst=_v29_html_escape(worst_lines),
+        base=_v29_html_escape(base_url),
+    )
+    return {
+        "subject": subject,
+        "text": text,
+        "html": html_body,
+        "links": {
+            "learning": "{base}/v31_manual_review_learning".format(base=base_url),
+            "manual_reviews": "{base}/v31_manual_reviews".format(base=base_url),
+        },
+    }
+
+
+def _v31_learning_notify_payload(force=False, to_email=None, dry_run=False, limit=500):
+    learning = _v31_manual_review_learning_payload(limit=limit)
+    content = _v31_learning_email_content(learning)
+    dedupe = _v31_learning_notify_dedupe(learning, force=force)
+    should_notify = bool(force or int(learning.get("evaluated_count") or 0) > 0)
+    base_payload = {
+        "engine": "V31_WEEKLY_LEARNING_EMAIL",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "subject": content.get("subject"),
+        "links": content.get("links"),
+        "learning": learning,
+        "dedupe": dedupe,
+        "notification_channel": "email",
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+    if dry_run:
+        return {
+            **base_payload,
+            "status": "preview",
+            "email_sent": False,
+            "text": content.get("text"),
+            "html": content.get("html"),
+        }
+    if not should_notify:
+        return {
+            **base_payload,
+            "status": "skipped",
+            "email_sent": False,
+            "reason": "NO_EVALUATED_REVIEWS",
+        }
+    if dedupe.get("deduped"):
+        return {
+            **base_payload,
+            "status": "skipped",
+            "email_sent": False,
+            "reason": "DEDUPED_WEEKLY_LEARNING_EMAIL",
+        }
+    result = send_resend_email(
+        to_email or PREMARKET_EMAIL_TO,
+        content.get("subject"),
+        content.get("text"),
+        content.get("html"),
+    )
+    status = "sent" if result.get("email_sent") else "not_sent"
+    notification_record = None
+    if result.get("email_sent"):
+        notification_record = _v31_record_learning_notification(learning, status)
+    return {
+        **base_payload,
+        "status": status,
+        "email_sent": bool(result.get("email_sent")),
+        "email_result": result,
+        "notification_record": notification_record,
+    }
+
+
 def _v31_outcome_mid(source):
     source = source if isinstance(source, dict) else {}
     mid = _v29_safe_float(source.get("mid") or source.get("mark") or source.get("price") or source.get("option_price"), None)
@@ -22039,6 +22252,16 @@ async def v31_manual_reviews(limit: int = 100):
 @app.get("/v31_manual_review_learning")
 async def v31_manual_review_learning(limit: int = 500):
     return _v31_manual_review_learning_payload(limit=limit)
+
+
+@app.get("/v31_manual_review_learning_notify/preview")
+async def v31_manual_review_learning_notify_preview(force: bool = False, limit: int = 500):
+    return _v31_learning_notify_payload(force=force, dry_run=True, limit=limit)
+
+
+@app.post("/v31_manual_review_learning_notify")
+async def v31_manual_review_learning_notify(force: bool = False, to_email: Optional[str] = None, limit: int = 500):
+    return _v31_learning_notify_payload(force=force, to_email=to_email, dry_run=False, limit=limit)
 
 
 @app.post("/v31_manual_review")

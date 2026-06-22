@@ -10,6 +10,7 @@ GITIGNORE = ROOT / ".gitignore"
 ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
 MONITOR_NOTIFY_WORKFLOW = ROOT / ".github" / "workflows" / "v31-monitor-notify.yml"
 MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-review-evaluate.yml"
+WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-learning-email.yml"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -117,6 +118,22 @@ class ManualReviewEvaluateWorkflowTests(unittest.TestCase):
         self.assertIn("cron:", source)
         self.assertIn("/v31_evaluate_manual_reviews", source)
         self.assertIn("EOD,PLUS_1D,PLUS_5D", source)
+        self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+
+
+class WeeklyLearningEmailWorkflowTests(unittest.TestCase):
+    def test_v31_weekly_learning_email_workflow_uses_protected_notify_endpoint(self):
+        source = WEEKLY_LEARNING_EMAIL_WORKFLOW.read_text()
+
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("cron:", source)
+        self.assertIn("/v31_manual_review_learning_notify", source)
+        self.assertIn("/v31_manual_review_learning_notify/preview", source)
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
         self.assertIn("not_order_instruction", source)
