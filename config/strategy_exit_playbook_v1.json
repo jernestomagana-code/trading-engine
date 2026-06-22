@@ -58,6 +58,43 @@
         "state": "RISK_REVIEW",
         "review_text": "Revisar salida defensiva o no accion si evento, tecnico o reserva de efectivo invalidan la tesis."
       },
+      "regime_exit_adjustments": {
+        "BULLISH_LOW_VOL": {
+          "take_profit_capture_pct_min": 50,
+          "roll_bias": "ONLY_IF_THESIS_AND_CASH_RESERVE_STILL_CLEAR",
+          "assignment_bias": "ACCEPTABLE_ONLY_FOR_HIGH_QUALITY_UNDERLYING",
+          "risk_action": "MONITOR_SUPPORT_AND_EVENT_RISK",
+          "review_text": "En regimen alcista de baja volatilidad, no cerrar demasiado pronto si la tesis sigue intacta, pero revisar toma de ganancia al 50%."
+        },
+        "NEUTRAL_RANGE": {
+          "take_profit_capture_pct_min": 50,
+          "roll_bias": "ALLOW_CONSERVATIVE_ROLL_WITH_SAME_OR_LOWER_RISK",
+          "assignment_bias": "REVIEW_COST_BASIS_AND_RANGE_SUPPORT",
+          "risk_action": "EXIT_IF_RANGE_SUPPORT_FAILS",
+          "review_text": "En rango neutral, priorizar captura de prima y evitar rolar si rompe soporte del rango."
+        },
+        "BEARISH_OR_CORRECTION": {
+          "take_profit_capture_pct_min": 35,
+          "roll_bias": "AVOID_ROLLING_DOWN_AGGRESSIVELY",
+          "assignment_bias": "DISCOURAGED_UNLESS_LONG_TERM_THESIS_STRONG",
+          "risk_action": "DEFENSIVE_EXIT_REVIEW_ON_TECHNICAL_DAMAGE",
+          "review_text": "En correccion, revisar salida antes y evitar aumentar exposicion mediante rolls defensivos mal justificados."
+        },
+        "HIGH_VOL_EVENT_RISK": {
+          "take_profit_capture_pct_min": 25,
+          "roll_bias": "BLOCK_UNLESS_EVENT_RISK_REVIEWED_AND_SIZE_REDUCED",
+          "assignment_bias": "HIGH_CAUTION",
+          "risk_action": "PRIORITIZE_EVENT_RISK_REDUCTION",
+          "review_text": "Con volatilidad/evento, reducir riesgo antes de perseguir prima; cualquier roll requiere revision de evento y tamano."
+        },
+        "INTRADAY_TREND": {
+          "take_profit_capture_pct_min": 50,
+          "roll_bias": "NOT_PRIMARY_REGIME_FOR_CASH_SECURED_PUT_EXIT",
+          "assignment_bias": "REVIEW_WITH_DAILY_CONTEXT",
+          "risk_action": "DEFER_TO_DAILY_TECHNICAL_CONTEXT",
+          "review_text": "Regimen intradia no debe dominar la salida de put swing; validar contexto diario antes de actuar."
+        }
+      },
       "outcome_metrics": [
         "premium_capture_pct",
         "pnl_r",
@@ -111,6 +148,43 @@
         "technical_breakout_against_call": true,
         "state": "RISK_REVIEW",
         "review_text": "Bloquear cualquier manejo que deje call descubierta o aumente riesgo sin revision manual."
+      },
+      "regime_exit_adjustments": {
+        "BULLISH_LOW_VOL": {
+          "take_profit_capture_pct_min": 60,
+          "roll_bias": "CAUTION_DO_NOT_CAP_STRONG_UPSIDE_BLINDLY",
+          "assignment_bias": "REVIEW_IF_CALLED_AWAY_IS_ACCEPTABLE",
+          "risk_action": "WATCH_BREAKOUT_AGAINST_SHORT_CALL",
+          "review_text": "En lideres alcistas, cuidar no limitar upside; cerrar o rolar solo si protege la tesis y sigue cubierto."
+        },
+        "NEUTRAL_RANGE": {
+          "take_profit_capture_pct_min": 50,
+          "roll_bias": "ALLOW_COVERED_ROLL_IF_RANGE_HOLDS",
+          "assignment_bias": "ACCEPT_IF_TARGET_EXIT_PRICE_MET",
+          "risk_action": "MONITOR_RANGE_BREAKOUT",
+          "review_text": "En rango neutral, la call cubierta puede monetizar prima; revisar cierre al 50% o roll cubierto si el rango sigue intacto."
+        },
+        "BEARISH_OR_CORRECTION": {
+          "take_profit_capture_pct_min": 35,
+          "roll_bias": "ALLOW_DEFENSIVE_ROLL_ONLY_IF_STOCK_POSITION_REMAINS_DESIRED",
+          "assignment_bias": "LESS_LIKELY_UNLESS_REBOUND",
+          "risk_action": "REVIEW_UNDERLYING_DRAWDOWN_AND_POSITION_THESIS",
+          "review_text": "En correccion, la call puede ser defensiva, pero no debe ocultar deterioro de la posicion larga."
+        },
+        "HIGH_VOL_EVENT_RISK": {
+          "take_profit_capture_pct_min": 25,
+          "roll_bias": "BLOCK_IF_EVENT_CAN_CREATE_UNCOVERED_OR_OVERSIZED_RISK",
+          "assignment_bias": "EVENT_DEPENDENT_REVIEW",
+          "risk_action": "PRIORITIZE_COVERAGE_AND_EVENT_RISK",
+          "review_text": "Con evento/volatilidad, confirmar que la call siga cubierta y que cualquier roll no aumente riesgo binario."
+        },
+        "INTRADAY_TREND": {
+          "take_profit_capture_pct_min": 50,
+          "roll_bias": "REVIEW_IF_INTRADAY_BREAKOUT_THREATENS_SHORT_CALL",
+          "assignment_bias": "REVIEW_CLOSE_OR_ACCEPT_ASSIGNMENT",
+          "risk_action": "MONITOR_BREAKOUT_AGAINST_SHORT_CALL",
+          "review_text": "Si el movimiento intradia va contra la call, revisar cierre/roll manual; nunca dejar exposicion descubierta."
+        }
       },
       "outcome_metrics": [
         "premium_capture_pct",

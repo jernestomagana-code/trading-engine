@@ -24,6 +24,7 @@ class StrategyExitPlaybookTests(unittest.TestCase):
         self.assertIn("TAKE_PROFIT_REVIEW", summary["canonical_exit_states"])
         self.assertIn("ROLL_REVIEW", summary["canonical_exit_states"])
         self.assertIn("ASSIGNMENT_REVIEW", summary["canonical_exit_states"])
+        self.assertTrue(summary["regime_exit_adjustments_available"])
         self.assertTrue(summary["manual_review_required"])
         self.assertTrue(summary["not_order_instruction"])
         self.assertFalse(summary["execution_authorized"])
@@ -41,6 +42,7 @@ class StrategyExitPlaybookTests(unittest.TestCase):
                 "ticker": "AAPL",
                 "strategy": "COVERED_CALL",
                 "exit_state": "ROLL_REVIEW",
+                "market_regime": "BULLISH_LOW_VOL",
                 "blockers": [],
             },
             self.playbook,
@@ -48,6 +50,9 @@ class StrategyExitPlaybookTests(unittest.TestCase):
 
         self.assertEqual(overlay["strategy_id"], "COVERED_CALL")
         self.assertEqual(overlay["exit_state"], "ROLL_REVIEW")
+        self.assertEqual(overlay["market_regime"], "BULLISH_LOW_VOL")
+        self.assertEqual(overlay["regime_exit_guidance_state"], "GUIDANCE_AVAILABLE")
+        self.assertEqual(overlay["regime_exit_adjustment"]["take_profit_capture_pct_min"], 60)
         self.assertIn("POSITION_STATUS_REQUIRED", overlay["exit_blockers"])
         self.assertIn("premium_capture_pct", overlay["outcome_metrics"])
         self.assertTrue(overlay["manual_review_required"])
@@ -66,6 +71,25 @@ class StrategyExitPlaybookTests(unittest.TestCase):
         )
 
         self.assertEqual(overlay["exit_state"], "NO_POSITION")
+        self.assertFalse(overlay["execution_authorized"])
+
+    def test_cash_secured_put_high_vol_regime_exit_guidance_is_defensive(self):
+        overlay = strategy_exit_playbook.exit_overlay(
+            {
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "position_open": True,
+                "exit_state": "MONITOR",
+                "market_regime": "HIGH_VOL_EVENT_RISK",
+            },
+            self.playbook,
+        )
+
+        self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
+        self.assertEqual(overlay["market_regime"], "HIGH_VOL_EVENT_RISK")
+        self.assertEqual(overlay["regime_exit_adjustment"]["take_profit_capture_pct_min"], 25)
+        self.assertEqual(overlay["regime_exit_adjustment"]["risk_action"], "PRIORITIZE_EVENT_RISK_REDUCTION")
+        self.assertTrue(overlay["not_order_instruction"])
         self.assertFalse(overlay["execution_authorized"])
 
 
