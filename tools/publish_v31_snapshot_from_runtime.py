@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib import request, error
 
+import runtime_local_technical
+
 
 DEFAULT_REMOTE_URL = "https://trading-engine-p097.onrender.com"
 DEFAULT_INGEST_PATH = "/v31_ingest_snapshot"
@@ -213,6 +215,12 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
     runtime_data = load_runtime_json(runtime_dir)
     options_rows = extract_options_rows(runtime_data)
     technical_snapshot = extract_technical_snapshot(runtime_data)
+    technical_snapshot = runtime_local_technical.merge_local_technical_snapshot(
+        technical_snapshot,
+        runtime_data,
+        options_rows=options_rows,
+        timeframe="1d",
+    )
 
     return {
         "source": "LOCAL_RUNTIME_V31_PUBLISHER",
