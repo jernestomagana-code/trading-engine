@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   audit:
@@ -38,6 +39,8 @@ jobs:
           python-version: "3.11"
 
       - name: Run V31 daily operational audit
+        id: run_audit
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -49,9 +52,33 @@ jobs:
           if [[ "${DRY_RUN}" == "true" ]]; then
             args+=("--dry-run")
           fi
+
+          set +e
           python "${args[@]}" | tee /tmp/v31_daily_operational_audit.json
+          audit_exit="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ ! -s /tmp/v31_daily_operational_audit.json ]]; then
+            cat > /tmp/v31_daily_operational_audit.json <<'JSON'
+          {
+            "engine": "V31_DAILY_OPERATIONAL_AUDIT",
+            "status": "FAIL",
+            "summary": {"total": 0, "passed": 0, "warnings": 0, "failed": 1},
+            "checks": [{"name": "audit_script_output", "ok": false, "severity": "FAIL", "detail": "audit script produced no JSON output"}],
+            "not_order_instruction": true,
+            "execution_authorized": false,
+            "uses_ingest_token": false,
+            "sends_email": false,
+            "touches_ibkr": false,
+            "secrets_printed": false
+          }
+          JSON
+          fi
+
+          exit "${audit_exit}"
 
       - name: Verify audit preserved no-order guardrails
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -80,6 +107,98 @@ jobs:
               raise SystemExit("Daily audit must not send email")
           if payload.get("touches_ibkr") is not False:
               raise SystemExit("Daily audit must not touch IBKR")
-          if payload.get("status") == "FAIL":
-              raise SystemExit("Daily operational audit failed")
+          if payload.get("secrets_printed") is not False:
+              raise SystemExit("Daily audit must not print secrets")
           PY
+
+      - name: Prepare audit failure issue
+        if: steps.run_audit.outcome == 'failure' && env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("/tmp/v31_daily_operational_audit.json").read_text())
+          failed = [
+              item for item in payload.get("checks", [])
+              if item.get("ok") is not True and item.get("severity") == "FAIL"
+          ]
+          warnings = [
+              item for item in payload.get("checks", [])
+              if item.get("ok") is not True and item.get("severity") == "WARN"
+          ]
+
+          title = "Stock Ultimus V31 daily operational audit failed"
+          lines = [
+              "The V31 daily operational audit failed and needs review.",
+              "",
+              f"- Status: `{payload.get('status')}`",
+              f"- Summary: `{json.dumps(payload.get('summary', {}), sort_keys=True)}`",
+              f"- Workflow run: {__import__('os').environ.get('GITHUB_SERVER_URL')}/{__import__('os').environ.get('GITHUB_REPOSITORY')}/actions/runs/{__import__('os').environ.get('GITHUB_RUN_ID')}",
+              f"- Base URL: `{payload.get('base_url')}`",
+              f"- Pipeline: `{json.dumps(payload.get('pipeline', {}), sort_keys=True)}`",
+              f"- Manual reviews: `{json.dumps(payload.get('manual_reviews', {}), sort_keys=True)}`",
+              f"- Learning: `{json.dumps(payload.get('learning', {}), sort_keys=True)}`",
+              "",
+              "Failed checks:",
+          ]
+          if failed:
+              for item in failed[:20]:
+                  lines.append(
+                      f"- `{item.get('name')}` — {item.get('detail')} "
+                      f"(endpoint: `{item.get('endpoint')}`, status: `{item.get('status_code')}`)"
+                  )
+          else:
+              lines.append("- No failed check details were available.")
+          if warnings:
+              lines.extend(["", "Warnings:"])
+              for item in warnings[:20]:
+                  lines.append(f"- `{item.get('name')}` — {item.get('detail')}")
+
+          lines.extend([
+              "",
+              "Guardrails observed by the audit result:",
+              f"- `not_order_instruction`: `{payload.get('not_order_instruction')}`",
+              f"- `execution_authorized`: `{payload.get('execution_authorized')}`",
+              f"- `uses_ingest_token`: `{payload.get('uses_ingest_token')}`",
+              f"- `sends_email`: `{payload.get('sends_email')}`",
+              f"- `touches_ibkr`: `{payload.get('touches_ibkr')}`",
+              f"- `secrets_printed`: `{payload.get('secrets_printed')}`",
+              "",
+              "This issue is created/updated automatically. Stock Ultimus remains decision-support only; this is not an order instruction.",
+          ])
+
+          Path("/tmp/v31_daily_operational_audit_issue_title.txt").write_text(title + "\n")
+          Path("/tmp/v31_daily_operational_audit_issue_body.md").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Create or update audit failure issue
+        if: steps.run_audit.outcome == 'failure' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="$(cat /tmp/v31_daily_operational_audit_issue_title.txt)"
+          existing_issue="$(
+            gh issue list \
+              --state open \
+              --search "${title} in:title" \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          if [[ -n "${existing_issue}" ]]; then
+            gh issue comment "${existing_issue}" --body-file /tmp/v31_daily_operational_audit_issue_body.md
+            echo "Updated existing audit issue #${existing_issue}"
+          else
+            gh issue create --title "${title}" --body-file /tmp/v31_daily_operational_audit_issue_body.md
+          fi
+
+      - name: Fail job if audit failed
+        if: steps.run_audit.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "V31 daily operational audit failed. See JSON output and any created issue for details."
+          exit 1
