@@ -19859,6 +19859,13 @@ def _v31_entry_ready_signal_seed(decision):
     generated_at = decision.get("generated_at") or _v29_now()
     signal_day = str(generated_at)[:10]
     signal_id = f"SIG-{signal_day}-{ticker}-{strategy}-{expiration}-{strike}"
+    market = decision.get("market") if isinstance(decision.get("market"), dict) else {}
+    market_regime = _strategy_market_regime(market)
+    regime_policy = _strategy_regime_policy()
+    regime_overlay = shared_strategy_regime_policy.regime_overlay(strategy, market_regime, regime_policy)
+    recommendation = shared_daily_recommendations.recommendation_item(decision, 1)
+    recommendation["regime_overlay"] = regime_overlay
+    parameter_review = shared_strategy_regime_policy.parameter_review(recommendation, regime_overlay)
     return {
         "id": signal_id,
         "outcome_id": signal_id,
@@ -19874,6 +19881,12 @@ def _v31_entry_ready_signal_seed(decision):
         "snapshot_version": decision.get("snapshot_version"),
         "recorded_at": generated_at,
         "entry_ready_at": generated_at,
+        "market_regime": market_regime,
+        "regime_detection": market.get("regime_detection") if isinstance(market.get("regime_detection"), dict) else {},
+        "regime_overlay": regime_overlay,
+        "parameter_review": parameter_review,
+        "parameter_review_status": parameter_review.get("status"),
+        "parameter_review_blockers": parameter_review.get("blockers") or [],
         "selected_contract": {
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
@@ -20998,12 +21011,21 @@ async def v31_outcome_tracking_status():
         if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
     ]
     pending = [item for item in tracked if str(item.get("outcome") or "").upper() == "PENDING"]
+    by_market_regime = {}
+    by_parameter_review_status = {}
+    for item in tracked:
+        regime = str(item.get("market_regime") or "UNKNOWN").upper()
+        review_status = str(item.get("parameter_review_status") or "UNKNOWN").upper()
+        by_market_regime[regime] = by_market_regime.get(regime, 0) + 1
+        by_parameter_review_status[review_status] = by_parameter_review_status.get(review_status, 0) + 1
     return {
         "engine": "V31_OUTCOME_TRACKING_STATUS",
         "generated_at": _v29_now(),
         "tracking_version": "v31_entry_ready_signal_outcome_v1",
         "tracked_entry_ready_signals": len(tracked),
         "pending_entry_ready_signals": len(pending),
+        "by_market_regime": dict(sorted(by_market_regime.items())),
+        "by_parameter_review_status": dict(sorted(by_parameter_review_status.items())),
         "recent_signals": tracked[-50:],
         "durable_storage": _durable_storage_summary(),
         "not_order_instruction": True,

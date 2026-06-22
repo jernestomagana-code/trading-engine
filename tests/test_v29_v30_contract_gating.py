@@ -686,8 +686,10 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread_pct": 11.76,
             "delta": -0.20,
         }
+        master = _master_snapshot([complete_row])
+        master["technical"]["QQQ"]["canslim"] = {"passes": True, "score": 78}
 
-        with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
             decision = main._v31_canonical_decision("QQQ")
 
         with patch.object(main, "_journal_outcome", return_value={"saved": True, "status": "SAVED"}) as journal:
@@ -698,6 +700,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(tracking["outcome"]["outcome"], "PENDING")
         self.assertTrue(tracking["outcome"]["paper_outcome"])
         self.assertEqual(tracking["outcome"]["final_state"], "ENTRY_READY")
+        self.assertEqual(tracking["outcome"]["market_regime"], "BULLISH_LOW_VOL")
+        self.assertEqual(tracking["outcome"]["regime_overlay"]["market_regime"], "BULLISH_LOW_VOL")
+        self.assertEqual(tracking["outcome"]["parameter_review_status"], "PASS")
+        self.assertEqual(tracking["outcome"]["parameter_review"]["status"], "PASS")
+        self.assertEqual(tracking["outcome"]["parameter_review_blockers"], [])
         self.assertIn("SIG-", tracking["signal_id"])
         self.assertTrue(tracking["not_order_instruction"])
         journal.assert_called_once()
@@ -718,6 +725,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
                 "outcome": "PENDING",
                 "ticker": "QQQ",
+                "market_regime": "BULLISH_LOW_VOL",
+                "parameter_review_status": "PASS",
                 "not_order_instruction": True,
             },
             {
@@ -732,6 +741,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["engine"], "V31_OUTCOME_TRACKING_STATUS")
         self.assertEqual(status["tracked_entry_ready_signals"], 1)
         self.assertEqual(status["pending_entry_ready_signals"], 1)
+        self.assertEqual(status["by_market_regime"], {"BULLISH_LOW_VOL": 1})
+        self.assertEqual(status["by_parameter_review_status"], {"PASS": 1})
         self.assertTrue(status["not_order_instruction"])
 
     def test_v31_production_readiness_blocks_without_read_token(self):
