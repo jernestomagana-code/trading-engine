@@ -19867,6 +19867,16 @@ def _v31_entry_ready_signal_seed(decision):
     recommendation = shared_daily_recommendations.recommendation_item(decision, 1)
     recommendation["regime_overlay"] = regime_overlay
     parameter_review = shared_strategy_regime_policy.parameter_review(recommendation, regime_overlay)
+    exit_guidance = shared_strategy_exit_playbook.exit_overlay(
+        {
+            "ticker": ticker,
+            "strategy": strategy,
+            "market_regime": market_regime,
+            "exit_state": "MONITOR",
+            "position_open": None,
+        },
+        _strategy_exit_playbook(),
+    )
     return {
         "id": signal_id,
         "outcome_id": signal_id,
@@ -19888,6 +19898,8 @@ def _v31_entry_ready_signal_seed(decision):
         "parameter_review": parameter_review,
         "parameter_review_status": parameter_review.get("status"),
         "parameter_review_blockers": parameter_review.get("blockers") or [],
+        "exit_regime_guidance": exit_guidance,
+        "exit_regime_guidance_state": exit_guidance.get("regime_exit_guidance_state"),
         "selected_contract": {
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
@@ -19903,6 +19915,8 @@ def _v31_entry_ready_signal_seed(decision):
             "status": "PENDING_MARKET_FOLLOW_UP",
             "checkpoints": ["EOD", "PLUS_1D", "PLUS_5D"],
             "metrics": ["underlying_return_pct", "option_mid_change_pct", "max_favorable_excursion_r", "max_adverse_excursion_r"],
+            "exit_guidance_state": exit_guidance.get("regime_exit_guidance_state"),
+            "exit_risk_action": (exit_guidance.get("regime_exit_adjustment") or {}).get("risk_action"),
         },
         "not_order_instruction": True,
     }
@@ -20730,6 +20744,87 @@ def _v31_monitor_should_notify(monitor, force=False):
     return False, "NO_ACTIONABLE_ALERT"
 
 
+def _v31_monitor_notify_cooldown_minutes():
+    try:
+        return max(1, int(os.getenv("V31_MONITOR_NOTIFY_COOLDOWN_MINUTES", "60") or "60"))
+    except Exception:
+        return 60
+
+
+def _v31_monitor_notify_state_file():
+    return _V29_RUNTIME_DIR / "v31_monitor_notify_state.json"
+
+
+def _v31_monitor_alert_key(monitor):
+    tickers = sorted(str(ticker).upper() for ticker in (monitor.get("entry_ready_tickers") or []) if ticker)
+    risk_blocked = sorted(str(ticker).upper() for ticker in (monitor.get("risk_blocked_tickers") or []) if ticker)
+    wait_options = sorted(str(ticker).upper() for ticker in (monitor.get("wait_options_tickers") or []) if ticker)
+    return "|".join([
+        str(monitor.get("alert_level") or "UNKNOWN"),
+        str(monitor.get("pipeline_status") or "UNKNOWN"),
+        ",".join(tickers),
+        ",".join(risk_blocked),
+        ",".join(wait_options),
+    ])
+
+
+def _v31_load_monitor_notify_state():
+    return _v29_load_json_file(_v31_monitor_notify_state_file()) or {}
+
+
+def _v31_save_monitor_notify_state(state):
+    path = _v31_monitor_notify_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump(state or {}, f, indent=2)
+    return True
+
+
+def _v31_monitor_dedupe_decision(monitor, force=False):
+    alert_key = _v31_monitor_alert_key(monitor)
+    cooldown = _v31_monitor_notify_cooldown_minutes()
+    now = datetime.now(timezone.utc)
+    state = _v31_load_monitor_notify_state()
+    last = state.get(alert_key) if isinstance(state, dict) else None
+    last_sent_at = (last or {}).get("sent_at") if isinstance(last, dict) else None
+    last_dt = _v31_parse_timestamp(last_sent_at)
+    elapsed_minutes = None
+    if last_dt is not None:
+        elapsed_minutes = round((now - last_dt).total_seconds() / 60, 2)
+    deduped = bool(
+        not force
+        and last_dt is not None
+        and elapsed_minutes is not None
+        and elapsed_minutes < cooldown
+    )
+    return {
+        "alert_key": alert_key,
+        "cooldown_minutes": cooldown,
+        "last_sent_at": last_sent_at,
+        "elapsed_minutes": elapsed_minutes,
+        "deduped": deduped,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_record_monitor_notification(monitor, notify_reason, status):
+    alert_key = _v31_monitor_alert_key(monitor)
+    state = _v31_load_monitor_notify_state()
+    if not isinstance(state, dict):
+        state = {}
+    state[alert_key] = {
+        "sent_at": _v29_now(),
+        "notify_reason": notify_reason,
+        "status": status,
+        "alert_level": monitor.get("alert_level"),
+        "entry_ready_tickers": monitor.get("entry_ready_tickers") or [],
+        "manual_review_ready_count": monitor.get("manual_review_ready_count"),
+        "not_order_instruction": True,
+    }
+    _v31_save_monitor_notify_state(state)
+    return state[alert_key]
+
+
 def _v31_monitor_email_content(monitor):
     base_url = PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
     subject = "Stock Ultimus V31 Monitor: {level}".format(
@@ -20806,6 +20901,7 @@ def _v31_monitor_email_content(monitor):
 def _v31_monitor_notify_payload(force=False, to_email=None, dry_run=False):
     monitor = _v31_monitor_status_payload()
     should_notify, reason = _v31_monitor_should_notify(monitor, force=force)
+    dedupe = _v31_monitor_dedupe_decision(monitor, force=force)
     content = _v31_monitor_email_content(monitor)
 
     base_payload = {
@@ -20816,6 +20912,7 @@ def _v31_monitor_notify_payload(force=False, to_email=None, dry_run=False):
         "subject": content.get("subject"),
         "links": content.get("links"),
         "monitor": monitor,
+        "dedupe": dedupe,
         "notification_channel": "email",
         "not_order_instruction": True,
     }
@@ -20837,17 +20934,30 @@ def _v31_monitor_notify_payload(force=False, to_email=None, dry_run=False):
             "reason": reason,
         }
 
+    if dedupe.get("deduped"):
+        return {
+            **base_payload,
+            "status": "skipped",
+            "email_sent": False,
+            "reason": "DEDUPED_RECENT_ALERT",
+        }
+
     result = send_resend_email(
         to_email or PREMARKET_EMAIL_TO,
         content.get("subject"),
         content.get("text"),
         content.get("html"),
     )
+    status = "sent" if result.get("email_sent") else "not_sent"
+    notification_record = None
+    if result.get("email_sent"):
+        notification_record = _v31_record_monitor_notification(monitor, reason, status)
     return {
         **base_payload,
-        "status": "sent" if result.get("email_sent") else "not_sent",
+        "status": status,
         "email_sent": bool(result.get("email_sent")),
         "email_result": result,
+        "notification_record": notification_record,
     }
 
 
