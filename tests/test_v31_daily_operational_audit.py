@@ -51,7 +51,18 @@ def ok_payload_for_url(url):
             "status": "NO_MASTER_SNAPSHOT",
             "rows_found": 0,
             "master_snapshot_available": False,
+            "freshness": {"status": "MISSING", "not_order_instruction": True},
             "not_order_instruction": True,
+        }
+    if "/v31_trading_day_readiness" in url:
+        return 200, {
+            "engine": "V31_TRADING_DAY_READINESS",
+            "status": "WAIT_PIPELINE",
+            "blockers": [],
+            "warnings": ["PIPELINE_NOT_READY", "SNAPSHOT_MISSING"],
+            "freshness": {"status": "MISSING", "not_order_instruction": True},
+            "not_order_instruction": True,
+            "execution_authorized": False,
         }
     if "/v31_monitor_notify/preview" in url:
         return 200, {
@@ -126,8 +137,9 @@ class DailyOperationalAuditTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "PASS_WITH_WARNINGS")
         self.assertEqual(result["summary"]["failed"], 0)
-        self.assertEqual(result["summary"]["warnings"], 1)
+        self.assertEqual(result["summary"]["warnings"], 2)
         self.assertEqual(result["pipeline"]["status"], "NO_MASTER_SNAPSHOT")
+        self.assertEqual(result["trading_day_readiness"]["status"], "WAIT_PIPELINE")
         self.assertNotIn("read-token-secret", json.dumps(result))
 
     def test_fails_when_nested_execution_guardrail_breaks(self):
@@ -167,6 +179,27 @@ class DailyOperationalAuditTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         failed_names = {item["name"] for item in result["checks"] if not item["ok"]}
         self.assertIn("system_status_guardrails", failed_names)
+
+    def test_fails_when_trading_day_readiness_requires_action(self):
+        def fake_request(method, url, **kwargs):
+            if url.endswith("/v31_system_status") and not kwargs.get("token"):
+                return False, 401, {"detail": "read auth required"}
+            code, payload = ok_payload_for_url(url)
+            if "/v31_trading_day_readiness" in url:
+                payload = {
+                    **payload,
+                    "status": "ACTION_REQUIRED",
+                    "blockers": ["STALE_SNAPSHOT"],
+                    "freshness": {"status": "STALE", "not_order_instruction": True},
+                }
+            return True, code, payload
+
+        with patch.object(audit, "request_json", side_effect=fake_request):
+            result = audit.run_audit(args())
+
+        self.assertEqual(result["status"], "FAIL")
+        failed_names = {item["name"] for item in result["checks"] if not item["ok"]}
+        self.assertIn("trading_day_readiness_not_action_required", failed_names)
 
     def test_missing_token_fails_without_printing_secret_fields(self):
         with patch.object(audit, "resolve_read_token", return_value=""):

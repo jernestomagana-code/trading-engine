@@ -905,6 +905,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             self.assertTrue(main._path_requires_read_auth("/v31_decision/SPY"))
             self.assertTrue(main._path_requires_read_auth("/v31_production_readiness"))
             self.assertTrue(main._path_requires_read_auth("/v31_manual_review_learning"))
+            self.assertTrue(main._path_requires_read_auth("/v31_trading_day_readiness"))
 
     def test_v31_dashboard_points_to_canonical_routes(self):
         complete_row = {
@@ -1070,7 +1071,89 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["legacy_ingest_supported"], "/v28_ingest_snapshot")
         self.assertFalse(status["master_snapshot_available"])
         self.assertIn("ibkr_bridge.py", status["next_required_action"])
+        self.assertEqual(status["freshness"]["status"], "MISSING")
         self.assertTrue(status["not_order_instruction"])
+
+    def test_v31_trading_day_readiness_flags_entry_ready_with_fresh_snapshot(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["data"]["received_at"] = main._v29_now()
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master), \
+                patch.object(main, "_v31_production_readiness_payload", return_value={"status": "READY", "blockers": [], "not_order_instruction": True}):
+            readiness = main._v31_trading_day_readiness_payload(max_open_snapshot_age_minutes=10)
+
+        self.assertEqual(readiness["engine"], "V31_TRADING_DAY_READINESS")
+        self.assertEqual(readiness["status"], "READY_FOR_MANUAL_REVIEW")
+        self.assertEqual(readiness["freshness"]["status"], "FRESH")
+        self.assertEqual(readiness["pipeline"]["status"], "OK")
+        self.assertEqual(readiness["summary"]["entry_ready_count"], 1)
+        self.assertEqual(readiness["monitor"]["entry_ready_tickers"], ["QQQ"])
+        self.assertFalse(readiness["execution_authorized"])
+        self.assertTrue(readiness["not_order_instruction"])
+
+    def test_v31_trading_day_readiness_blocks_stale_snapshot_during_market(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["data"]["received_at"] = "2026-01-01T00:00:00+00:00"
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master), \
+                patch.object(main, "_v31_production_readiness_payload", return_value={"status": "READY", "blockers": [], "not_order_instruction": True}):
+            readiness = main._v31_trading_day_readiness_payload(max_open_snapshot_age_minutes=10)
+
+        self.assertEqual(readiness["status"], "ACTION_REQUIRED")
+        self.assertEqual(readiness["freshness"]["status"], "STALE")
+        self.assertIn("STALE_SNAPSHOT", readiness["blockers"])
+        self.assertFalse(readiness["execution_authorized"])
+        self.assertTrue(readiness["not_order_instruction"])
+
+    def test_v31_trading_day_readiness_waits_pipeline_when_snapshot_missing(self):
+        empty_master = {
+            "path": None,
+            "data": {},
+            "rows": [],
+            "technical": {},
+            "score": 0,
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=empty_master), \
+                patch.object(main, "_v31_production_readiness_payload", return_value={"status": "READY", "blockers": [], "not_order_instruction": True}):
+            readiness = main._v31_trading_day_readiness_payload()
+
+        self.assertEqual(readiness["status"], "WAIT_PIPELINE")
+        self.assertEqual(readiness["freshness"]["status"], "MISSING")
+        self.assertIn("SNAPSHOT_MISSING", readiness["warnings"])
+        self.assertIn("PIPELINE_NOT_READY", readiness["warnings"])
+        self.assertFalse(readiness["execution_authorized"])
+        self.assertTrue(readiness["not_order_instruction"])
 
     def test_v31_monitor_reports_info_when_pipeline_missing_outside_market(self):
         empty_master = {
