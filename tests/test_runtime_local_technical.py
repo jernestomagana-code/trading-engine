@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +105,30 @@ class RuntimeLocalTechnicalTests(unittest.TestCase):
         self.assertIn("SPY", payload["technical_snapshot"])
         self.assertEqual(payload["technical_snapshot"]["SPY"]["source"], "LOCAL_TECHNICAL_ENGINE")
         self.assertFalse(payload["technical_snapshot"]["SPY"]["execution_authorized"])
+        self.assertTrue(payload["not_order_instruction"])
+
+    def test_runtime_publisher_script_runs_with_local_technical_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "sample.json").write_text(json.dumps({
+                "options_rows": [{"ticker": "SPY", "strategy": "NAKED_PUT", "decision": "RADAR"}],
+                "historical_bars": {"SPY": bullish_bars()},
+            }))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "tools" / "publish_v31_snapshot_from_runtime.py"),
+                    "--runtime-dir",
+                    str(runtime),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["technical_count"], 1)
+        self.assertIn("SPY", payload["tickers_detected"])
         self.assertTrue(payload["not_order_instruction"])
 
 
