@@ -88,6 +88,8 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/production_readiness",
     "/v31_data_pipeline_status",
     "/v31_decision/",
+    "/v31_manual_review",
+    "/v31_manual_reviews",
     "/v31_monitor_status",
     "/v31_outcome_tracking_status",
     "/v31_production_readiness",
@@ -19937,6 +19939,195 @@ def _v31_track_entry_ready_signal(decision, source="v31"):
     }
 
 
+_V31_MANUAL_REVIEW_VERSION = "v31_manual_review_journal_v1"
+_V31_MANUAL_REVIEW_STATUSES = (
+    "RECEIVED",
+    "REVIEWING",
+    "APPROVED_FOR_MANUAL_TRADE",
+    "REJECTED",
+    "WATCHLIST",
+    "EXPIRED",
+)
+
+
+def _v31_manual_review_file():
+    return _V29_RUNTIME_DIR / "v31_manual_review_journal.json"
+
+
+def _v31_load_manual_reviews():
+    data = _v29_load_json_file(_v31_manual_review_file())
+    return data if isinstance(data, list) else []
+
+
+def _v31_save_manual_reviews(items):
+    path = _v31_manual_review_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump((items or [])[-10000:], f, indent=2)
+    return True
+
+
+def _v31_manual_review_status(status):
+    normalized = _v29_safe_upper(status, "")
+    if normalized not in _V31_MANUAL_REVIEW_STATUSES:
+        raise ValueError("INVALID_MANUAL_REVIEW_STATUS")
+    return normalized
+
+
+def _v31_manual_review_signal_id(decision, ticker):
+    if isinstance(decision, dict) and decision.get("final_state") == "ENTRY_READY":
+        return _v31_entry_ready_signal_seed(decision).get("signal_id")
+    generated_day = _v29_now()[:10]
+    return f"SIG-{generated_day}-{_v29_safe_upper(ticker, 'UNKNOWN')}-UNCONFIRMED"
+
+
+def _v31_manual_review_decision_summary(decision):
+    decision = decision if isinstance(decision, dict) else {}
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    return {
+        "ticker": decision.get("ticker"),
+        "strategy": decision.get("strategy"),
+        "final_state": decision.get("final_state"),
+        "main_blocker": decision.get("main_blocker"),
+        "blockers": decision.get("blockers") or [],
+        "technical_status": decision.get("technical_status"),
+        "risk_status": decision.get("risk_status"),
+        "manual_review_ready": decision.get("manual_review_ready") is True,
+        "can_operate": False,
+        "selected_contract": {
+            "strike": contract.get("strike"),
+            "expiration": contract.get("expiration"),
+            "dte": contract.get("dte"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid": contract.get("mid"),
+            "spread": contract.get("spread"),
+            "spread_pct": contract.get("spread_pct"),
+            "delta": contract.get("delta"),
+        },
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_manual_review_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    status = _v31_manual_review_status(payload.get("status") or "RECEIVED")
+    ticker = _v29_safe_upper(payload.get("ticker"), "")
+    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else None
+    if not decision and ticker:
+        decision = _v31_canonical_decision(ticker)
+    if decision and not ticker:
+        ticker = _v29_safe_upper(decision.get("ticker"), "")
+    if not ticker:
+        raise ValueError("MANUAL_REVIEW_TICKER_REQUIRED")
+
+    decision_summary = _v31_manual_review_decision_summary(decision)
+    if status == "APPROVED_FOR_MANUAL_TRADE" and (
+        decision_summary.get("final_state") != "ENTRY_READY"
+        or decision_summary.get("manual_review_ready") is not True
+    ):
+        raise ValueError("APPROVAL_REQUIRES_ENTRY_READY")
+
+    now = _v29_now()
+    signal_id = payload.get("signal_id") or _v31_manual_review_signal_id(decision, ticker)
+    review_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    review_id = payload.get("review_id") or f"MR-{signal_id}-{review_stamp}"
+    actor = str(payload.get("actor") or "user")[:80]
+    reason = str(payload.get("reason") or "")[:2000]
+    return {
+        "id": review_id,
+        "review_id": review_id,
+        "signal_id": signal_id,
+        "outcome_id": f"{signal_id}-MANUAL-REVIEW",
+        "outcome_tracking_version": _V31_MANUAL_REVIEW_VERSION,
+        "manual_review_version": _V31_MANUAL_REVIEW_VERSION,
+        "recorded_at": now,
+        "reviewed_at": now,
+        "ticker": ticker,
+        "strategy": decision_summary.get("strategy") or payload.get("strategy"),
+        "status": status,
+        "outcome": status,
+        "reason": reason,
+        "actor": actor,
+        "source": str(payload.get("source") or "v31_manual_review")[:120],
+        "decision": decision_summary,
+        "allowed_statuses": list(_V31_MANUAL_REVIEW_STATUSES),
+        "paper_outcome": True,
+        "manual_trade_review_only": True,
+        "can_operate": False,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+        "disclaimer": (
+            "Registro de revision humana para decision support. "
+            "Stock Ultimus no coloca ordenes ni autoriza ejecucion automatica."
+        ),
+    }
+
+
+def _v31_record_manual_review(payload):
+    review = _v31_manual_review_payload(payload)
+    items = _v31_load_manual_reviews()
+    items.append(review)
+    _v31_save_manual_reviews(items)
+    durable_storage = _journal_outcome(review, source=review.get("source") or "v31_manual_review")
+    audit_event = _record_audit_event(
+        "V31_MANUAL_REVIEW_RECORDED",
+        {
+            "review_id": review.get("review_id"),
+            "signal_id": review.get("signal_id"),
+            "ticker": review.get("ticker"),
+            "strategy": review.get("strategy"),
+            "status": review.get("status"),
+            "final_state": (review.get("decision") or {}).get("final_state"),
+            "durable_saved": durable_storage.get("saved"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
+        actor=review.get("actor") or "user",
+        source=review.get("source") or "v31_manual_review",
+    )
+    return {
+        "engine": "V31_MANUAL_REVIEW_JOURNAL",
+        "status": "RECORDED",
+        "review": review,
+        "durable_storage": durable_storage,
+        "audit_event": audit_event,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_manual_reviews_payload(limit=100):
+    try:
+        limit = max(1, min(int(limit), 1000))
+    except Exception:
+        limit = 100
+    reviews = _v31_load_manual_reviews()
+    recent = reviews[-limit:]
+    by_status = {}
+    latest_by_signal = {}
+    for item in reviews:
+        status = str(item.get("status") or "UNKNOWN").upper()
+        by_status[status] = by_status.get(status, 0) + 1
+        signal_id = item.get("signal_id")
+        if signal_id:
+            latest_by_signal[signal_id] = item
+    return {
+        "engine": "V31_MANUAL_REVIEW_JOURNAL",
+        "manual_review_version": _V31_MANUAL_REVIEW_VERSION,
+        "generated_at": _v29_now(),
+        "allowed_statuses": list(_V31_MANUAL_REVIEW_STATUSES),
+        "review_count": len(reviews),
+        "by_status": dict(sorted(by_status.items())),
+        "recent_reviews": recent,
+        "latest_by_signal": latest_by_signal,
+        "durable_storage": _durable_storage_summary(),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _v31_outcome_mid(source):
     source = source if isinstance(source, dict) else {}
     mid = _v29_safe_float(source.get("mid") or source.get("mark") or source.get("price") or source.get("option_price"), None)
@@ -20864,6 +21055,15 @@ def _v31_monitor_email_content(monitor):
     entry_ready_decisions = monitor.get("entry_ready_decisions") or []
     risk_blocked_decisions = monitor.get("risk_blocked_decisions") or []
     wait_options_decisions = monitor.get("wait_options_decisions") or []
+    manual_review_endpoint = "{base}/v31_manual_review".format(base=base_url)
+    manual_reviews_url = "{base}/v31_manual_reviews".format(base=base_url)
+    manual_review_example = {
+        "ticker": (entry_ready_decisions[0] or {}).get("ticker") if entry_ready_decisions else "SPY",
+        "status": "REVIEWING",
+        "reason": "Human review started; validating chart, liquidity, event risk, and broker ticket manually.",
+    }
+    manual_review_example_text = json.dumps(manual_review_example, separators=(",", ": "))
+    allowed_review_statuses = ", ".join(_V31_MANUAL_REVIEW_STATUSES)
 
     def decision_line(item):
         contract = item.get("contract") or {}
@@ -20972,6 +21172,13 @@ def _v31_monitor_email_content(monitor):
         "WAIT_OPTIONS_DATA detail:",
         wait_options_text,
         "",
+        "Manual review journal:",
+        "Endpoint protegido: POST {endpoint}".format(endpoint=manual_review_endpoint),
+        "Historial: {url}".format(url=manual_reviews_url),
+        "Statuses permitidos: {statuses}".format(statuses=allowed_review_statuses),
+        "Ejemplo body: {example}".format(example=manual_review_example_text),
+        "APPROVED_FOR_MANUAL_TRADE solo se acepta si V31 sigue en ENTRY_READY. execution_authorized=false siempre.",
+        "",
         "Dashboard: {base}/v31_dashboard".format(base=base_url),
         "Estado monitor: {base}/v31_monitor_status".format(base=base_url),
         "",
@@ -21008,6 +21215,12 @@ def _v31_monitor_email_content(monitor):
     <table border="1" cellpadding="6" cellspacing="0"><tbody>{risk_blocked_rows}</tbody></table>
     <h3>WAIT_OPTIONS_DATA detail</h3>
     <table border="1" cellpadding="6" cellspacing="0"><tbody>{wait_options_rows}</tbody></table>
+    <h3>Manual review journal</h3>
+    <p>Registra la decision humana con un POST protegido a <code>{manual_review_endpoint}</code>.</p>
+    <p><strong>Statuses permitidos:</strong> {allowed_review_statuses}</p>
+    <p><strong>Ejemplo body:</strong> <code>{manual_review_example}</code></p>
+    <p><a href="{manual_reviews_url}">Abrir historial de revisiones manuales</a></p>
+    <p><em>APPROVED_FOR_MANUAL_TRADE solo se acepta si V31 sigue en ENTRY_READY. execution_authorized=false siempre.</em></p>
     <p><a href="{base}/v31_dashboard">Abrir dashboard V31</a></p>
     <p><a href="{base}/v31_monitor_status">Abrir estado del monitor</a></p>
     <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
@@ -21027,6 +21240,10 @@ def _v31_monitor_email_content(monitor):
         entry_ready_rows=entry_ready_rows,
         risk_blocked_rows=risk_blocked_rows,
         wait_options_rows=wait_options_rows,
+        manual_review_endpoint=_v29_html_escape(manual_review_endpoint),
+        manual_reviews_url=_v29_html_escape(manual_reviews_url),
+        manual_review_example=_v29_html_escape(manual_review_example_text),
+        allowed_review_statuses=_v29_html_escape(allowed_review_statuses),
         base=_v29_html_escape(base_url),
     )
     return {
@@ -21036,6 +21253,8 @@ def _v31_monitor_email_content(monitor):
         "links": {
             "dashboard": "{base}/v31_dashboard".format(base=base_url),
             "monitor_status": "{base}/v31_monitor_status".format(base=base_url),
+            "manual_review_endpoint": manual_review_endpoint,
+            "manual_reviews": manual_reviews_url,
         },
     }
 
@@ -21493,6 +21712,27 @@ async def v31_ingest_snapshot(
 @app.get("/v31_monitor_status")
 async def v31_monitor_status():
     return _v31_monitor_status_payload()
+
+
+@app.get("/v31_manual_reviews")
+async def v31_manual_reviews(limit: int = 100):
+    return _v31_manual_reviews_payload(limit=limit)
+
+
+@app.post("/v31_manual_review")
+async def v31_manual_review(payload: dict):
+    try:
+        return _v31_record_manual_review(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "allowed_statuses": list(_V31_MANUAL_REVIEW_STATUSES),
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            },
+        )
 
 
 @app.get("/v31_monitor_notify/preview")
