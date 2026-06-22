@@ -1401,9 +1401,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
     def test_v31_manual_review_summary_limits_and_counts_reviews(self):
         reviews = [
-            {"signal_id": "SIG-1", "status": "REVIEWING", "ticker": "QQQ"},
-            {"signal_id": "SIG-1", "status": "WATCHLIST", "ticker": "QQQ"},
-            {"signal_id": "SIG-2", "status": "REJECTED", "ticker": "SPY"},
+            {"outcome_tracking_version": "v31_manual_review_journal_v1", "review_id": "MR-1", "signal_id": "SIG-1", "status": "REVIEWING", "ticker": "QQQ"},
+            {"outcome_tracking_version": "v31_manual_review_journal_v1", "review_id": "MR-2", "signal_id": "SIG-1", "status": "WATCHLIST", "ticker": "QQQ"},
+            {"outcome_tracking_version": "v31_manual_review_journal_v1", "review_id": "MR-3", "signal_id": "SIG-2", "status": "REJECTED", "ticker": "SPY"},
         ]
 
         with patch.object(main, "_v31_load_manual_reviews", return_value=reviews):
@@ -1415,6 +1415,30 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(payload["by_status"]["REJECTED"], 1)
         self.assertEqual(len(payload["recent_reviews"]), 2)
         self.assertEqual(payload["latest_by_signal"]["SIG-1"]["status"], "WATCHLIST")
+        self.assertTrue(payload["not_order_instruction"])
+        self.assertFalse(payload["execution_authorized"])
+
+    def test_v31_manual_reviews_payload_reads_durable_reviews_after_runtime_reset(self):
+        durable_review = {
+            "outcome_tracking_version": "v31_manual_review_journal_v1",
+            "review_id": "MR-DURABLE-1",
+            "signal_id": "SIG-DURABLE-1",
+            "status": "REVIEWING",
+            "ticker": "SPY",
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+        with patch.object(main, "_durable_supabase_fetch", return_value=[durable_review]), \
+                patch.object(main, "_v31_load_manual_reviews", return_value=[]):
+            payload = main._v31_manual_reviews_payload(limit=10)
+
+        self.assertEqual(payload["review_count"], 1)
+        self.assertEqual(payload["by_status"], {"REVIEWING": 1})
+        self.assertEqual(payload["recent_reviews"][0]["review_id"], "MR-DURABLE-1")
+        self.assertEqual(payload["sources"]["durable_count"], 1)
+        self.assertEqual(payload["sources"]["local_count"], 0)
+        self.assertTrue(payload["sources"]["durable_available"])
         self.assertTrue(payload["not_order_instruction"])
         self.assertFalse(payload["execution_authorized"])
 
