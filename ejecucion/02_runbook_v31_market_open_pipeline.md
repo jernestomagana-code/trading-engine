@@ -302,7 +302,120 @@ Interpretacion:
 
 No usar `force=true` durante mercado salvo prueba explicita de canal de correo.
 
-## Paso 11. Revisar dashboard
+## Paso 11. Validar regimen, playbook y recomendaciones diarias
+
+```bash
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/v31_daily_recommendations
+```
+
+Campos que deben aparecer:
+
+- `strategy_playbook.registry_version`: `strategy_registry_v1`
+- `strategy_regime_policy.parameter_matrix_available`: `true`
+- `market.regime_detection.detector_version`: `market_regime_detector_v1`
+- cada item debe incluir:
+  - `strategy_overlay`
+  - `regime_overlay`
+  - `parameter_review`
+  - `not_order_instruction: true`
+  - `execution_authorized: false` dentro de overlays/reviews
+
+Interpretacion de `market.market_regime`:
+
+- `UNKNOWN`: aceptable antes de snapshot fresco o sin evidencia tecnica/mercado suficiente.
+- `BULLISH_LOW_VOL`, `NEUTRAL_RANGE`, `BEARISH_OR_CORRECTION`, `HIGH_VOL_EVENT_RISK`, `INTRADAY_TREND`: regimen detectado o explicito.
+
+Si `market_regime` sigue en `UNKNOWN` con mercado abierto y snapshot fresco:
+
+- revisar `technical_count` en `/v31_data_pipeline_status`
+- revisar que TradingView haya enviado score/trend/contexto reciente
+- revisar si el snapshot trae `vix`, `atr_pct`, `adx`, `event_risk` o `market_regime`
+- no forzar un regimen manual salvo que haya evidencia; `UNKNOWN` debe quedar conservador
+
+Interpretacion de `parameter_review.status`:
+
+- `PASS`: el setup cae dentro de los parametros esperados para su regimen y estrategia.
+- `REVIEW_REQUIRED`: hay datos fuera de rango o faltantes; revisar blockers/missing_fields.
+- `BLOCKED_BY_REGIME`: la estrategia no debe promoverse bajo ese regimen.
+- `WAIT_OPTIONS_DATA`: no hay contrato ejecutable completo; no pasar a revision de entrada.
+- `NO_GUIDANCE`: no hay matriz aplicable, normalmente por `UNKNOWN` o estrategia no cubierta.
+
+## Paso 12. Validar tracking y performance de aprendizaje
+
+```bash
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/v31_outcome_tracking_status
+
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  https://trading-engine-p097.onrender.com/v32_strategy_performance
+```
+
+Resultado esperado:
+
+- `v31_outcome_tracking_status.tracking_version`: `v31_entry_ready_signal_outcome_v1`
+- `by_market_regime` presente
+- `by_parameter_review_status` presente
+- `v32_strategy_performance.strategy_performance_version`: `strategy_performance_v1`
+- `summary.strategy_regime_group_count` presente
+- `summary.parameter_review_group_count` presente
+- `strategy_regime_performance` presente
+- `parameter_review_performance` presente
+- `execution_authorized`: `false`
+
+Si hay `ENTRY_READY`, debe sembrarse un outcome pendiente de papel. Confirmar:
+
+- `pending_entry_ready_signals` sube
+- el recent signal contiene `market_regime`
+- contiene `regime_overlay`
+- contiene `parameter_review_status`
+- contiene `selected_contract`
+
+## Paso 13. Auto-evaluar outcomes pendientes
+
+Usar primero `dry_run=true`. Esto no guarda cambios; solo valida si hay datos comparables en el snapshot actual.
+
+```bash
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -X POST -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  "https://trading-engine-p097.onrender.com/v31_evaluate_pending_outcomes?dry_run=true&limit=25&checkpoint=EOD"
+```
+
+Resultado esperado:
+
+- `engine`: `V31_PENDING_OUTCOME_AUTO_EVALUATION`
+- `outcome_evaluation_version`: `v31_pending_outcome_auto_eval_v1`
+- `dry_run`: `true`
+- `not_order_instruction`: `true`
+- `execution_authorized`: `false`
+
+Si `evaluated_count > 0` y se quiere guardar la medicion de papel:
+
+```bash
+READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
+curl -sS -X POST -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" \
+  "https://trading-engine-p097.onrender.com/v31_evaluate_pending_outcomes?dry_run=false&limit=25&checkpoint=EOD"
+```
+
+La evaluacion calcula:
+
+- `current_paper_pnl_r`
+- `mfe_r`
+- `mae_r`
+- `latest_auto_evaluation`
+- `auto_evaluations`
+
+Si aparece `NOT_EVALUATED`, revisar `reason`:
+
+- `CURRENT_OPTION_ROW_MISSING`: no hay fila actual comparable por ticker/estrategia/expiration/strike.
+- `CURRENT_MID_MISSING`: la fila actual no trae mid/bid/ask.
+- `ENTRY_MID_MISSING`: el outcome pendiente no guardo prima inicial.
+
+No interpretar esta evaluacion como trade real. Es medicion de papel para aprendizaje.
+
+## Paso 14. Revisar dashboard
 
 Abrir:
 
@@ -332,6 +445,14 @@ Confirmar:
 - [ ] Ver log `V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED`.
 - [ ] Confirmar `status: OK` en `/v31_data_pipeline_status`.
 - [ ] Confirmar `rows_found > 0`.
+- [ ] Revisar `/v31_daily_recommendations`.
+- [ ] Confirmar `market.regime_detection.detector_version=market_regime_detector_v1`.
+- [ ] Confirmar `strategy_regime_policy.parameter_matrix_available=true`.
+- [ ] Confirmar que cada item tenga `regime_overlay` y `parameter_review`.
+- [ ] Revisar `/v31_outcome_tracking_status`.
+- [ ] Revisar `/v32_strategy_performance`.
+- [ ] Si hay outcomes pendientes y snapshot posterior, correr `POST /v31_evaluate_pending_outcomes?dry_run=true`.
+- [ ] Si el dry-run evalua correctamente, correr `dry_run=false` solo para guardar medicion de papel.
 - [ ] Revisar `/v31_monitor_status`.
 - [ ] Revisar `/v31_dashboard`.
 - [ ] No operar automaticamente; todo setup es revision manual.
@@ -344,6 +465,10 @@ Confirmar:
 - Por lo menos un ticker deja `NO_DATA`.
 - `can_operate` permanece `false` o `0`.
 - Todo `ENTRY_READY` sigue marcado como revision manual, no ejecucion.
+- `/v31_daily_recommendations` incluye regimen, matriz y revision de parametros.
+- `/v31_outcome_tracking_status` agrupa por regimen y parameter review.
+- `/v32_strategy_performance` expone performance por regimen y por `parameter_review_status`.
+- `/v31_evaluate_pending_outcomes` responde en `dry_run` sin autorizar ejecucion.
 
 ## Reglas de seguridad
 
@@ -354,6 +479,8 @@ Confirmar:
 - No cambiar `can_operate:false`.
 - Si faltan campos de contrato, mantener `WAIT_OPTIONS_DATA`.
 - No forzar email durante mercado salvo prueba deliberada.
+- No convertir auto-evaluaciones de papel en resultados reales sin revision manual.
+- No usar outcomes pendientes para relajar parametros sin muestra suficiente y cambio versionado.
 
 ## Comandos rapidos
 
@@ -368,4 +495,8 @@ python3 tools/publish_v31_snapshot_from_runtime.py --publish
 READ_ACCESS_TOKEN="$(security find-generic-password -a "$USER" -s stock-ultimus-read-access-token -w)"
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_trade_decision/QQQ
 curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/gpt_v31_daily_recommendations
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/v31_daily_recommendations
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/v31_outcome_tracking_status
+curl -sS -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" https://trading-engine-p097.onrender.com/v32_strategy_performance
+curl -sS -X POST -H "X-Stock-Ultimus-Read-Token: $READ_ACCESS_TOKEN" "https://trading-engine-p097.onrender.com/v31_evaluate_pending_outcomes?dry_run=true&limit=25&checkpoint=EOD"
 ```
