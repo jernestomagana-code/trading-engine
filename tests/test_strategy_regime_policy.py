@@ -71,6 +71,51 @@ class StrategyRegimePolicyTests(unittest.TestCase):
         self.assertIn("MISSING_OUTCOME_METRICS", overlay["strategy_parameters"]["avoid_if"])
         self.assertFalse(overlay["execution_authorized"])
 
+    def test_parameter_review_passes_when_contract_matches_regime_parameters(self):
+        overlay = strategy_regime_policy.regime_overlay("NAKED_PUT", "BULLISH_LOW_VOL", self.policy)
+        item = {
+            "final_state": "ENTRY_READY",
+            "required_missing_fields": [],
+            "evidence": {
+                "technical": {"score": 82},
+                "fundamental": {"canslim": {"score": 76}},
+                "options": {"contract": {"delta": -0.18, "dte": 33, "spread_pct": 11.5}},
+            },
+        }
+
+        review = strategy_regime_policy.parameter_review(item, overlay)
+
+        self.assertEqual(review["status"], "PASS")
+        self.assertEqual(review["blockers"], [])
+        self.assertFalse(review["execution_authorized"])
+
+    def test_parameter_review_requires_review_when_contract_is_out_of_range(self):
+        overlay = strategy_regime_policy.regime_overlay("NAKED_PUT", "BULLISH_LOW_VOL", self.policy)
+        item = {
+            "final_state": "ENTRY_READY",
+            "required_missing_fields": [],
+            "evidence": {
+                "technical": {"score": 82},
+                "fundamental": {"canslim": {"score": 76}},
+                "options": {"contract": {"delta": -0.30, "dte": 20, "spread_pct": 22.0}},
+            },
+        }
+
+        review = strategy_regime_policy.parameter_review(item, overlay)
+
+        self.assertEqual(review["status"], "REVIEW_REQUIRED")
+        self.assertIn("DELTA_OUT_OF_REGIME_RANGE", review["blockers"])
+        self.assertIn("DTE_OUT_OF_REGIME_RANGE", review["blockers"])
+        self.assertIn("SPREAD_PCT_OUT_OF_REGIME_RANGE", review["blockers"])
+
+    def test_parameter_review_blocks_when_regime_blocks_strategy(self):
+        overlay = strategy_regime_policy.regime_overlay("INTRADAY_INDEX_FUTURES", "HIGH_VOL_EVENT_RISK", self.policy)
+
+        review = strategy_regime_policy.parameter_review({"final_state": "ENTRY_READY"}, overlay)
+
+        self.assertEqual(review["status"], "BLOCKED_BY_REGIME")
+        self.assertIn("REGIME_BLOCKED_FOR_STRATEGY", review["blockers"])
+
     def test_research_promotion_requires_outcomes_regimes_and_no_hard_blockers(self):
         blocked = strategy_regime_policy.promotion_review(
             "IRON_CONDOR",

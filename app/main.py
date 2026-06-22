@@ -20176,27 +20176,25 @@ def _v31_daily_recommendations_payload(tickers=None):
     payload["strategy_regime_policy"] = _strategy_regime_policy_summary()
     regime_policy = _strategy_regime_policy()
     market_regime = _strategy_market_regime(status.get("market") or {})
+
+    def apply_recommendation_overlays(item):
+        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
+        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
+            item.get("strategy"),
+            market_regime,
+            regime_policy,
+        )
+        item["parameter_review"] = shared_strategy_regime_policy.parameter_review(
+            item,
+            item["regime_overlay"],
+        )
+
     for item in payload.get("items") or []:
-        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
-        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
-            item.get("strategy"),
-            market_regime,
-            regime_policy,
-        )
+        apply_recommendation_overlays(item)
     for item in payload.get("top_recommendations") or []:
-        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
-        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
-            item.get("strategy"),
-            market_regime,
-            regime_policy,
-        )
+        apply_recommendation_overlays(item)
     for item in payload.get("no_trade") or []:
-        item["strategy_overlay"] = shared_strategy_registry.recommendation_overlay(item, registry)
-        item["regime_overlay"] = shared_strategy_regime_policy.regime_overlay(
-            item.get("strategy"),
-            market_regime,
-            regime_policy,
-        )
+        apply_recommendation_overlays(item)
     payload["source_status"] = {
         "master_snapshot_available": status.get("master_snapshot_available"),
         "master_source": status.get("master_source"),

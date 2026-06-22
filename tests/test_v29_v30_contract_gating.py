@@ -529,6 +529,10 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(regime_overlay["market_regime"], "BULLISH_LOW_VOL")
         self.assertEqual(regime_overlay["parameter_guidance_state"], "GUIDANCE_AVAILABLE")
         self.assertEqual(regime_overlay["strategy_parameters"]["preferred_abs_delta_max"], 0.2)
+        parameter_review = payload["items"][0]["parameter_review"]
+        self.assertEqual(parameter_review["status"], "WAIT_OPTIONS_DATA")
+        self.assertIn("WAIT_OPTIONS_DATA", parameter_review["blockers"])
+        self.assertIn("delta", parameter_review["missing_fields"])
         self.assertIn(regime_overlay["regime_state"], {"REGIME_ALIGNED", "REGIME_CAUTION", "REGIME_BLOCKED", "REGIME_UNSPECIFIED"})
         self.assertTrue(regime_overlay["not_order_instruction"])
         self.assertFalse(regime_overlay["execution_authorized"])
@@ -559,7 +563,36 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(overlay["market_regime"], "HIGH_VOL_EVENT_RISK")
         self.assertEqual(overlay["strategy_id"], "INTRADAY_INDEX_FUTURES")
         self.assertEqual(overlay["regime_state"], "REGIME_BLOCKED")
+        self.assertEqual(payload["items"][0]["parameter_review"]["status"], "BLOCKED_BY_REGIME")
         self.assertFalse(overlay["execution_authorized"])
+
+    def test_v31_daily_recommendations_pass_parameter_review_when_aligned(self):
+        row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([row])
+        master["technical"]["QQQ"]["canslim"] = {"passes": True, "score": 78}
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            payload = main._v31_daily_recommendations_payload(["QQQ"])
+
+        review = payload["items"][0]["parameter_review"]
+        self.assertEqual(review["status"], "PASS")
+        self.assertEqual(review["blockers"], [])
+        self.assertTrue(review["not_order_instruction"])
+        self.assertFalse(review["execution_authorized"])
 
     def test_v31_finalizer_enforces_decision_support_only_contract(self):
         decision = {

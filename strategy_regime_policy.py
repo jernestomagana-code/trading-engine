@@ -177,6 +177,168 @@ def regime_overlay(strategy: Any, regime: Any, policy: dict[str, Any]) -> dict[s
     }
 
 
+def safe_float(value: Any) -> float | None:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _check_range(
+    checks: list[dict[str, Any]],
+    blockers: list[str],
+    missing_fields: list[str],
+    *,
+    name: str,
+    value: Any,
+    minimum: Any = None,
+    maximum: Any = None,
+    absolute: bool = False,
+) -> None:
+    actual = safe_float(value)
+    min_value = safe_float(minimum)
+    max_value = safe_float(maximum)
+    if min_value is None and max_value is None:
+        return
+    if actual is None:
+        missing_fields.append(name)
+        checks.append({"name": name, "status": "MISSING", "value": None, "min": min_value, "max": max_value})
+        return
+    comparable = abs(actual) if absolute else actual
+    ok = True
+    if min_value is not None and comparable < min_value:
+        ok = False
+    if max_value is not None and comparable > max_value:
+        ok = False
+    status = "PASS" if ok else "OUT_OF_RANGE"
+    if not ok:
+        blockers.append(f"{name.upper()}_OUT_OF_REGIME_RANGE")
+    checks.append({"name": name, "status": status, "value": actual, "min": min_value, "max": max_value})
+
+
+def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate a recommendation against regime-specific manual-review parameters."""
+    parameters = regime_overlay_data.get("strategy_parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        return {
+            "parameter_policy_version": REGIME_POLICY_VERSION,
+            "status": "NO_GUIDANCE",
+            "blockers": [],
+            "warnings": ["REGIME_PARAMETER_GUIDANCE_MISSING"],
+            "missing_fields": [],
+            "checks": [],
+            "manual_review_required": True,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+    if normalize(regime_overlay_data.get("regime_state")) == "REGIME_BLOCKED":
+        return {
+            "parameter_policy_version": REGIME_POLICY_VERSION,
+            "status": "BLOCKED_BY_REGIME",
+            "blockers": ["REGIME_BLOCKED_FOR_STRATEGY"],
+            "warnings": [],
+            "missing_fields": [],
+            "checks": [],
+            "manual_review_required": True,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+    if normalize(recommendation.get("final_state")) == "WAIT_OPTIONS_DATA":
+        return {
+            "parameter_policy_version": REGIME_POLICY_VERSION,
+            "status": "WAIT_OPTIONS_DATA",
+            "blockers": ["WAIT_OPTIONS_DATA"],
+            "warnings": [],
+            "missing_fields": recommendation.get("required_missing_fields") or [],
+            "checks": [],
+            "manual_review_required": True,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+    evidence = recommendation.get("evidence") if isinstance(recommendation.get("evidence"), dict) else {}
+    options = evidence.get("options") if isinstance(evidence.get("options"), dict) else {}
+    contract = options.get("contract") if isinstance(options.get("contract"), dict) else {}
+    technical = evidence.get("technical") if isinstance(evidence.get("technical"), dict) else {}
+    fundamental = evidence.get("fundamental") if isinstance(evidence.get("fundamental"), dict) else {}
+    canslim = fundamental.get("canslim") if isinstance(fundamental.get("canslim"), dict) else {}
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    missing_fields: list[str] = []
+    checks: list[dict[str, Any]] = []
+
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="delta",
+        value=contract.get("delta"),
+        minimum=parameters.get("preferred_abs_delta_min") or parameters.get("preferred_short_abs_delta_min"),
+        maximum=parameters.get("preferred_abs_delta_max") or parameters.get("preferred_short_abs_delta_max"),
+        absolute=True,
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="dte",
+        value=contract.get("dte"),
+        minimum=parameters.get("preferred_dte_min"),
+        maximum=parameters.get("preferred_dte_max"),
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="spread_pct",
+        value=contract.get("spread_pct"),
+        maximum=parameters.get("max_spread_pct"),
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="technical_score",
+        value=technical.get("score"),
+        minimum=parameters.get("minimum_decision_score"),
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="canslim_score",
+        value=canslim.get("score"),
+        minimum=parameters.get("minimum_canslim_score"),
+    )
+
+    avoid_if = parameters.get("avoid_if") or []
+    if avoid_if:
+        warnings.append("REVIEW_AVOID_IF_CONDITIONS")
+
+    if blockers or missing_fields:
+        status = "REVIEW_REQUIRED"
+    else:
+        status = "PASS"
+
+    return {
+        "parameter_policy_version": REGIME_POLICY_VERSION,
+        "status": status,
+        "blockers": blockers,
+        "warnings": warnings,
+        "missing_fields": missing_fields,
+        "checks": checks,
+        "avoid_if": avoid_if,
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def promotion_review(strategy: Any, evidence: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
     promotion = policy.get("research_promotion_policy") or {}
     blockers = []
