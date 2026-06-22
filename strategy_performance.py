@@ -87,6 +87,49 @@ def _registry_meta(strategy: str, registry: dict[str, Any] | None) -> dict[str, 
     }
 
 
+def _performance_group(label: str, outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    closed = [o for o in outcomes or [] if safe_upper(o.get("outcome")) in CLOSED_OUTCOMES]
+    wins = [o for o in closed if safe_upper(o.get("outcome")) == "WIN"]
+    losses = [o for o in closed if safe_upper(o.get("outcome")) == "LOSS"]
+    pnl_r = [safe_float(o.get("pnl_r")) for o in closed]
+    mfe_r = [safe_float(o.get("mfe_r")) for o in closed]
+    mae_r = [safe_float(o.get("mae_r")) for o in closed]
+    pnl_r = [value for value in pnl_r if value is not None]
+    mfe_r = [value for value in mfe_r if value is not None]
+    mae_r = [value for value in mae_r if value is not None]
+    denominator = len(wins) + len(losses)
+    closed_count = len(closed)
+    return {
+        "group": label,
+        "total_outcomes": len(outcomes or []),
+        "closed_outcomes": closed_count,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round((len(wins) / denominator) * 100, 2) if denominator else None,
+        "net_pnl_r": _sum(pnl_r),
+        "expectancy_r": _avg(pnl_r),
+        "avg_mfe_r": _avg(mfe_r),
+        "avg_mae_r": _avg(mae_r),
+        "evidence_level": _evidence_level(closed_count),
+        "sample_size_warning": closed_count < 30,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _grouped_performance(outcomes: list[dict[str, Any]], key_fn) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for outcome in outcomes or []:
+        key = safe_upper(key_fn(outcome))
+        grouped.setdefault(key, []).append(outcome)
+    return [
+        _performance_group(key, grouped[key])
+        for key in sorted(grouped.keys())
+        if key != "UNKNOWN" or grouped[key]
+    ]
+
+
 def strategy_performance_report(
     decisions: list[dict[str, Any]],
     outcomes: list[dict[str, Any]],
@@ -140,6 +183,11 @@ def strategy_performance_report(
         win_rate = round((len(wins) / denominator) * 100, 2) if denominator else None
         closed_count = len(closed)
         outcome_timestamps = [str(o.get("recorded_at")) for o in strategy_outcomes if o.get("recorded_at")]
+        by_market_regime = _grouped_performance(strategy_outcomes, lambda o: o.get("market_regime"))
+        by_parameter_review_status = _grouped_performance(
+            strategy_outcomes,
+            lambda o: o.get("parameter_review_status"),
+        )
         row = {
             "strategy": strategy,
             **_registry_meta(strategy, registry),
@@ -163,6 +211,8 @@ def strategy_performance_report(
             "avg_mae_r": _avg(mae_r),
             "expectancy_r": _avg(pnl_r),
             "tickers": dict(sorted(ticker_counts.items())),
+            "by_market_regime": by_market_regime,
+            "by_parameter_review_status": by_parameter_review_status,
             "latest_outcome_at": max(outcome_timestamps) if outcome_timestamps else None,
             "evidence_level": _evidence_level(closed_count),
             "parameter_review_ready": closed_count >= 30,
@@ -174,6 +224,14 @@ def strategy_performance_report(
         rows.append(row)
 
     closed_total = sum(item["closed_outcomes"] for item in rows)
+    strategy_regime_performance = _grouped_performance(
+        outcomes or [],
+        lambda o: f"{safe_upper(o.get('strategy'))}::{safe_upper(o.get('market_regime'))}",
+    )
+    parameter_review_performance = _grouped_performance(
+        outcomes or [],
+        lambda o: safe_upper(o.get("parameter_review_status")),
+    )
     return {
         "engine": "V32_STRATEGY_PERFORMANCE",
         "strategy_performance_version": STRATEGY_PERFORMANCE_VERSION,
@@ -185,8 +243,12 @@ def strategy_performance_report(
             "closed_outcomes": closed_total,
             "parameter_review_ready": [item["strategy"] for item in rows if item["parameter_review_ready"]],
             "insufficient_sample": [item["strategy"] for item in rows if item["sample_size_warning"]],
+            "strategy_regime_group_count": len(strategy_regime_performance),
+            "parameter_review_group_count": len(parameter_review_performance),
         },
         "strategies": rows,
+        "strategy_regime_performance": strategy_regime_performance,
+        "parameter_review_performance": parameter_review_performance,
         "review_policy": {
             "minimum_closed_outcomes_for_parameter_review": 30,
             "purpose": "Evidence for strategy and parameter review only.",
