@@ -18566,6 +18566,24 @@ def _v29_safe_upper(x, default="UNKNOWN"):
         return default
 
 
+def _v31_sanitize_public_raw_snapshot(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        removed = []
+        for key, item in value.items():
+            if key in {"can_operate", "can_trade", "execution_authorized"}:
+                removed.append(key)
+                continue
+            sanitized[key] = _v31_sanitize_public_raw_snapshot(item)
+        if removed:
+            sanitized["operational_fields_removed"] = sorted(removed)
+            sanitized["not_order_instruction"] = True
+        return sanitized
+    if isinstance(value, list):
+        return [_v31_sanitize_public_raw_snapshot(item) for item in value]
+    return value
+
+
 def _v29_load_json_file(path):
     try:
         p = _V29Path(path)
@@ -18984,7 +19002,7 @@ def _v29_technical_state(ticker, technical, strategy="UNKNOWN"):
         "trend": trend,
         "strategy_context": t.get("selected_strategy_context") or t.get("strategy_context"),
         "available_strategy_contexts": t.get("available_strategy_contexts", []),
-        "raw": t,
+        "raw": _v31_sanitize_public_raw_snapshot(t),
     }
 
 
