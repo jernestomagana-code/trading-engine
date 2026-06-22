@@ -17,6 +17,7 @@ import requests
 import audit_log as shared_audit_log
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
+import local_technical_engine as shared_local_technical_engine
 import market_regime_detector as shared_market_regime_detector
 import strategy_exit_playbook as shared_strategy_exit_playbook
 import strategy_input_contracts as shared_strategy_input_contracts
@@ -22337,6 +22338,69 @@ async def strategy_input_contracts():
     }
 
 
+@app.get("/strategy_local_technical_engine")
+async def strategy_local_technical_engine():
+    caps = shared_local_technical_engine.capabilities()
+    return {
+        **caps,
+        "purpose": "Generate V31-compatible technical confirmations from local OHLCV bars when TradingView alerts are absent or limited.",
+        "compatible_decision_input": "technical_snapshot",
+        "related_contract_endpoint": "/strategy_input_contracts",
+        "example_post_endpoint": "/strategy_local_technical_engine/evaluate",
+        "accepted_payload_shapes": [
+            {"ticker": "QQQ", "timeframe": "1d", "strategy": "CASH_SECURED_PUT", "bars": [{"close": 100.0}]},
+            {"timeframe": "1d", "strategy": "NAKED_PUT", "symbols": {"QQQ": [{"close": 100.0}]}},
+        ],
+        "guardrails": [
+            "This endpoint only evaluates technical confirmation.",
+            "It does not submit orders.",
+            "ENTRY_READY remains controlled by deterministic option, risk, market, and manual-review gates.",
+        ],
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.post("/strategy_local_technical_engine/evaluate")
+async def strategy_local_technical_engine_evaluate(payload: dict):
+    payload = dict(payload or {})
+    strategy = _v29_safe_upper(payload.get("strategy") or payload.get("strategy_context"), "CASH_SECURED_PUT")
+    timeframe = str(payload.get("timeframe") or "1d")
+
+    if isinstance(payload.get("symbols"), dict):
+        symbols = payload.get("symbols")
+    else:
+        symbols = {
+            payload.get("ticker") or payload.get("symbol") or "UNKNOWN": payload.get("bars") or []
+        }
+
+    snapshot = shared_local_technical_engine.build_technical_snapshot(
+        symbols,
+        strategy=strategy,
+        timeframe=timeframe,
+    )
+    confirmed = [
+        ticker
+        for ticker, item in snapshot.items()
+        if isinstance(item, dict) and bool(item.get("confirmed"))
+    ]
+    return {
+        "engine": "LOCAL_TECHNICAL_ENGINE",
+        "engine_version": shared_local_technical_engine.ENGINE_VERSION,
+        "status": "ok",
+        "strategy": strategy,
+        "timeframe": timeframe,
+        "ticker_count": len(snapshot),
+        "confirmed_tickers": confirmed,
+        "technical_snapshot": snapshot,
+        "integration_note": "This response can be merged into the master snapshot technical_snapshot field before V31 decision evaluation.",
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 @app.get("/strategy_playbook")
 async def strategy_playbook():
     return {
@@ -22344,6 +22408,7 @@ async def strategy_playbook():
         "generated_at": _v29_now(),
         "playbook": _strategy_playbook_summary(),
         "input_contracts": _strategy_input_contracts_summary(),
+        "local_technical_engine": shared_local_technical_engine.capabilities(),
         "exit_playbook": _strategy_exit_playbook_summary(),
         "regime_policy": _strategy_regime_policy_summary(),
         "manual_review_required": True,
