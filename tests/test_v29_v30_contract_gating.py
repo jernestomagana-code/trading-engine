@@ -1106,6 +1106,45 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(readiness["execution_authorized"])
         self.assertTrue(readiness["not_order_instruction"])
 
+    def test_v31_system_status_sanitizes_operational_flags_from_technical_raw(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"]["QQQ"]["can_operate"] = True
+        master["technical"]["QQQ"]["execution_authorized"] = True
+        master["technical"]["QQQ"]["by_strategy_context"] = {
+            "NAKED_PUT": {
+                "score": 90,
+                "trend": "BULLISH",
+                "can_trade": True,
+            },
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            status = main._v31_system_status_payload(tickers=["QQQ"])
+
+        raw = status["decisions"][0]["technical"]["raw"]
+        self.assertNotIn("can_operate", raw)
+        self.assertNotIn("execution_authorized", raw)
+        self.assertNotIn("can_trade", raw["by_strategy_context"]["NAKED_PUT"])
+        self.assertEqual(raw["operational_fields_removed"], ["can_operate", "can_trade", "execution_authorized"])
+        self.assertEqual(raw["by_strategy_context"]["NAKED_PUT"]["operational_fields_removed"], ["can_trade"])
+        self.assertFalse(status["decisions"][0]["can_operate"])
+        self.assertTrue(status["not_order_instruction"])
+
     def test_v31_trading_day_readiness_blocks_stale_snapshot_during_market(self):
         complete_row = {
             "ticker": "QQQ",
