@@ -1,0 +1,370 @@
+openapi: 3.1.0
+info:
+  title: Stock Ultimus GPT Read API
+  version: v31.0
+  description: >
+    Safe read-only endpoints for the Super Engine Bolsa custom GPT. These
+    endpoints expose deterministic Stock Ultimus decision states, daily rankings,
+    blockers, selected option contracts, freshness, and manual-review guardrails.
+servers:
+  - url: https://trading-engine-p097.onrender.com
+    description: Production Render deployment
+security:
+  - StockUltimusReadToken: []
+paths:
+  /v31_system_status:
+    get:
+      operationId: getV31SystemStatus
+      summary: Get Stock Ultimus V31 system status
+      description: >
+        Returns canonical decision-engine status, version fields, summary counts,
+        available endpoints, and no-order guardrails.
+      responses:
+        "200":
+          description: V31 system status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatus"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_daily_rankings:
+    get:
+      operationId: getDailyRankings
+      summary: Get GPT-safe daily opportunity rankings
+      description: >
+        Returns the daily ranking view for manual review, watchlist, blocked, and
+        research-only candidates. This is the primary endpoint for answering
+        "what opportunities do I have today?"
+      responses:
+        "200":
+          description: GPT-safe daily rankings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyRankings"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_trade_decision/{ticker}:
+    get:
+      operationId: getTickerDecision
+      summary: Get GPT-safe ticker decision detail
+      description: >
+        Returns the canonical GPT-facing decision payload for one ticker,
+        including final_state, blockers, missing fields, selected contract,
+        technical context, risk context, freshness, explanation, and no-order
+        guardrails.
+      parameters:
+        - name: ticker
+          in: path
+          required: true
+          description: Stock or ETF ticker, for example QQQ or AAPL.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 12
+            pattern: "^[A-Za-z0-9._-]+$"
+      responses:
+        "200":
+          description: GPT-safe ticker decision detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TickerDecision"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+components:
+  securitySchemes:
+    StockUltimusReadToken:
+      type: apiKey
+      in: header
+      name: X-Stock-Ultimus-Read-Token
+      description: READ_ACCESS_TOKEN configured in the Stock Ultimus deployment.
+  responses:
+    UnauthorizedRead:
+      description: Missing or invalid read token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ReadTokenNotConfigured:
+      description: Read token is required by the server but not configured.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+    SystemStatus:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        decision_version:
+          type: string
+        strategy_version:
+          type: string
+        ruleset_version:
+          type: string
+        snapshot_version:
+          type: string
+        generated_at:
+          type: string
+        status:
+          type: string
+        canonical_states:
+          type: array
+          items:
+            type: string
+        source_engine:
+          type: string
+        master_snapshot_available:
+          type: boolean
+        summary:
+          type: object
+          additionalProperties: true
+        not_order_instruction:
+          type: boolean
+    DailyRankings:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        ranking_version:
+          type: string
+        score_version:
+          type: string
+        generated_at:
+          type: string
+        summary:
+          type: object
+          additionalProperties: true
+        top_manual_review:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        watchlist:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        blocked:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        research_only:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        risk_notes:
+          type: array
+          items:
+            type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+    RankingItem:
+      type: object
+      additionalProperties: true
+      properties:
+        rank:
+          type:
+            - integer
+            - "null"
+        ticker:
+          type: string
+        strategy:
+          type: string
+        final_state:
+          type: string
+        main_blocker:
+          type:
+            - string
+            - "null"
+        blockers:
+          type: array
+          items:
+            type: string
+        ranking_score:
+          type:
+            - number
+            - "null"
+        ranking_label:
+          type:
+            - string
+            - "null"
+        selected_contract:
+          $ref: "#/components/schemas/SelectedContract"
+    TickerDecision:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        contract_schema_version:
+          type: string
+        decision_id:
+          type:
+            - string
+            - "null"
+        decision_version:
+          type: string
+        strategy_version:
+          type: string
+        ruleset_version:
+          type: string
+        snapshot_version:
+          type: string
+        ticker:
+          type: string
+        strategy:
+          type: string
+        decision:
+          type: string
+        final_state:
+          type: string
+        main_blocker:
+          type:
+            - string
+            - "null"
+        blockers:
+          type: array
+          items:
+            type: string
+        required_missing_fields:
+          type: array
+          items:
+            type: string
+        selected_contract:
+          $ref: "#/components/schemas/SelectedContract"
+        technical:
+          type: object
+          additionalProperties: true
+        risk:
+          type: object
+          additionalProperties: true
+        strategy_registry:
+          type: object
+          additionalProperties: true
+        score_components:
+          type: object
+          additionalProperties: true
+        freshness:
+          type: object
+          additionalProperties: true
+        explanation:
+          type:
+            - string
+            - "null"
+        next_required_action:
+          type:
+            - string
+            - "null"
+        risk_notes:
+          type: array
+          items:
+            type:
+              - string
+              - "null"
+        ready_for_manual_review:
+          type: boolean
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+        audit:
+          type: object
+          additionalProperties: true
+        generated_at:
+          type: string
+    SelectedContract:
+      type: object
+      additionalProperties: true
+      properties:
+        selected_contract_version:
+          type:
+            - string
+            - "null"
+        ticker:
+          type:
+            - string
+            - "null"
+        strategy:
+          type:
+            - string
+            - "null"
+        strike:
+          type:
+            - number
+            - "null"
+        expiration:
+          type:
+            - string
+            - "null"
+        dte:
+          type:
+            - number
+            - "null"
+        bid:
+          type:
+            - number
+            - "null"
+        ask:
+          type:
+            - number
+            - "null"
+        mid:
+          type:
+            - number
+            - "null"
+        spread:
+          type:
+            - number
+            - "null"
+        spread_pct:
+          type:
+            - number
+            - "null"
+        delta:
+          type:
+            - number
+            - "null"
+        iv:
+          type:
+            - number
+            - "null"
+        volume:
+          type:
+            - number
+            - "null"
+        open_interest:
+          type:
+            - number
+            - "null"
+        data_quality:
+          type:
+            - string
+            - "null"
+        source_decision:
+          type:
+            - string
+            - "null"
+        source_score:
+          type:
+            - number
+            - "null"
+

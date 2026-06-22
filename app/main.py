@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, Header, HTTPException
 try:
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 except ImportError:
     from fastapi.responses import HTMLResponse, JSONResponse
+
+    class PlainTextResponse(str):
+        pass
 
     class RedirectResponse(dict):
         def __init__(self, url: str, status_code: int = 307, *args, **kwargs):
@@ -21,6 +24,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
+from pathlib import Path
 import json
 import html
 import urllib.parse
@@ -56,12 +60,22 @@ LEGACY_DECISION_SUPPORT_NOTE = (
 )
 
 
+@app.get("/super_engine_bolsa_gpt_action_openapi.yaml", response_class=PlainTextResponse)
+def super_engine_bolsa_gpt_action_openapi():
+    """Serve the read-only ChatGPT Action schema for Super Engine Bolsa."""
+    schema_path = Path(__file__).resolve().parents[1] / "docs" / "super-engine-bolsa-gpt-action.openapi.yaml"
+    if not schema_path.exists():
+        raise HTTPException(status_code=404, detail="GPT Action OpenAPI schema not found")
+    return schema_path.read_text()
+
+
 READ_AUTH_PUBLIC_PATHS = {
     "/",
     "/health",
     "/decision_desk/ingest",
     "/read_auth_login",
     "/read_auth_logout",
+    "/super_engine_bolsa_gpt_action_openapi.yaml",
     "/v28_ingest_snapshot",
     "/v31_ingest_snapshot",
 }
