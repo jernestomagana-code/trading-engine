@@ -9,6 +9,7 @@ APP = ROOT / "app" / "main.py"
 GITIGNORE = ROOT / ".gitignore"
 ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
 MONITOR_NOTIFY_WORKFLOW = ROOT / ".github" / "workflows" / "v31-monitor-notify.yml"
+MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-review-evaluate.yml"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -106,6 +107,22 @@ class MonitorNotifyWorkflowTests(unittest.TestCase):
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+
+
+class ManualReviewEvaluateWorkflowTests(unittest.TestCase):
+    def test_v31_manual_review_evaluate_workflow_uses_protected_endpoint(self):
+        source = MANUAL_REVIEW_EVALUATE_WORKFLOW.read_text()
+
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("cron:", source)
+        self.assertIn("/v31_evaluate_manual_reviews", source)
+        self.assertIn("EOD,PLUS_1D,PLUS_5D", source)
+        self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
 
 
 if __name__ == "__main__":
