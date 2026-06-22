@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+try:
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+except ImportError:
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    class RedirectResponse(dict):
+        def __init__(self, url: str, status_code: int = 307, *args, **kwargs):
+            super().__init__({"redirect_to": url})
+            self.url = url
+            self.status_code = status_code
+
+        def set_cookie(self, *args, **kwargs):
+            return None
+
+        def delete_cookie(self, *args, **kwargs):
+            return None
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import json
 import html
+import urllib.parse
 import re
 import os
 import math
@@ -44,6 +60,8 @@ READ_AUTH_PUBLIC_PATHS = {
     "/",
     "/health",
     "/decision_desk/ingest",
+    "/read_auth_login",
+    "/read_auth_logout",
     "/v28_ingest_snapshot",
     "/v31_ingest_snapshot",
 }
@@ -194,6 +212,9 @@ def _request_read_token(request: Request):
     header_token = request.headers.get("X-Stock-Ultimus-Read-Token")
     if header_token:
         return header_token
+    cookie_token = request.cookies.get("stock_ultimus_read_token")
+    if cookie_token:
+        return cookie_token
     admin_token = request.headers.get("X-Admin-Debug-Token")
     if admin_token:
         return admin_token
@@ -235,6 +256,86 @@ async def sensitive_read_auth_middleware(request: Request, call_next):
                 },
             )
     return await call_next(request)
+
+
+def _read_auth_token_valid(token):
+    if not token:
+        return False
+    return any(hmac.compare_digest(str(token), str(allowed)) for allowed in _read_auth_tokens())
+
+
+def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
+    error_html = (
+        '<div class="error">{}</div>'.format(_v29_html_escape(error))
+        if error else ""
+    )
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Stock Ultimus Login</title>
+      <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0f172a; margin:0; color:#0f172a; }}
+        .wrap {{ max-width:560px; margin:8vh auto; background:white; border-radius:24px; padding:32px; box-shadow:0 22px 60px rgba(0,0,0,.28); }}
+        h1 {{ margin-top:0; }}
+        label {{ display:block; font-weight:800; margin-bottom:8px; }}
+        input {{ width:100%; padding:13px; border:1px solid #cbd5e1; border-radius:12px; font-size:16px; box-sizing:border-box; }}
+        button {{ margin-top:16px; background:#2563eb; color:white; border:0; border-radius:12px; padding:13px 18px; font-weight:800; cursor:pointer; }}
+        .note {{ color:#475569; line-height:1.45; }}
+        .error {{ background:#fee2e2; color:#991b1b; padding:12px; border-radius:12px; margin-bottom:16px; font-weight:700; }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <h1>Stock Ultimus</h1>
+        <p class="note">Ingresa el READ_ACCESS_TOKEN para abrir la consola protegida en este navegador. No autoriza operaciones; solo permite ver y registrar revisión manual.</p>
+        {error_html}
+        <form method="post" action="/read_auth_login">
+          <input type="hidden" name="next" value="{next_path}">
+          <label>READ_ACCESS_TOKEN</label>
+          <input name="token" type="password" autocomplete="current-password" autofocus>
+          <button type="submit">Abrir consola</button>
+        </form>
+      </div>
+    </body>
+    </html>
+    """.format(error_html=error_html, next_path=_v29_html_escape(next_path))
+
+
+@app.get("/read_auth_login", response_class=HTMLResponse)
+async def read_auth_login(next: str = "/v31_manual_review_console"):
+    return HTMLResponse(_read_auth_login_html(next_path=next))
+
+
+@app.post("/read_auth_login")
+async def read_auth_login_post(request: Request):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    form = urllib.parse.parse_qs(raw)
+    token = (form.get("token") or [""])[0]
+    next_path = (form.get("next") or ["/v31_manual_review_console"])[0]
+    if not str(next_path).startswith("/"):
+        next_path = "/v31_manual_review_console"
+    if not _read_auth_token_valid(token):
+        return HTMLResponse(_read_auth_login_html("Token inválido o no configurado.", next_path=next_path), status_code=401)
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        "stock_ultimus_read_token",
+        token,
+        max_age=60 * 60 * 10,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/read_auth_logout")
+async def read_auth_logout():
+    response = RedirectResponse(url="/read_auth_login", status_code=303)
+    response.delete_cookie("stock_ultimus_read_token")
+    return response
 
 
 def _read_auth_summary():
@@ -20184,6 +20285,222 @@ def _v31_manual_reviews_payload(limit=100):
     }
 
 
+def _v31_manual_review_console_decisions():
+    decisions = _v31_all_decisions()
+    actionable_states = {"ENTRY_READY", "RISK_BLOCKED", "WAIT_OPTIONS_DATA", "WAIT_TECHNICAL", "WAIT_MARKET"}
+    visible = [d for d in decisions if d.get("final_state") in actionable_states or d.get("manual_review_ready") is True]
+    reviews = _v31_manual_reviews_payload(limit=500)
+    latest_by_signal = reviews.get("latest_by_signal") or {}
+    enriched = []
+    for decision in visible:
+        ticker = _v29_safe_upper(decision.get("ticker"), "")
+        signal_id = _v31_manual_review_signal_id(decision, ticker)
+        item = dict(decision)
+        item["manual_review_signal_id"] = signal_id
+        item["latest_manual_review"] = latest_by_signal.get(signal_id)
+        enriched.append(item)
+    return enriched, reviews
+
+
+def _v31_manual_review_status_badge(status):
+    status = _v29_safe_upper(status, "UNREVIEWED")
+    colors = {
+        "APPROVED_FOR_MANUAL_TRADE": "#16a34a",
+        "REJECTED": "#dc2626",
+        "WATCHLIST": "#2563eb",
+        "REVIEWING": "#d97706",
+        "RECEIVED": "#64748b",
+        "EXPIRED": "#475569",
+        "UNREVIEWED": "#94a3b8",
+    }
+    return '<span class="badge" style="background:{color};">{status}</span>'.format(
+        color=colors.get(status, "#64748b"),
+        status=_v29_html_escape(status),
+    )
+
+
+def _v31_manual_review_action_forms(decision):
+    ticker = decision.get("ticker")
+    state = decision.get("final_state")
+    allowed = ["REVIEWING", "WATCHLIST", "REJECTED", "EXPIRED"]
+    if state == "ENTRY_READY" and decision.get("manual_review_ready") is True:
+        allowed.insert(1, "APPROVED_FOR_MANUAL_TRADE")
+    labels = {
+        "APPROVED_FOR_MANUAL_TRADE": "Approve",
+        "REVIEWING": "Reviewing",
+        "WATCHLIST": "Watchlist",
+        "REJECTED": "Reject",
+        "EXPIRED": "Expired",
+    }
+    reasons = {
+        "APPROVED_FOR_MANUAL_TRADE": "Validé manualmente contrato, liquidez, spread, riesgo y ticket en broker. Ejecución será manual en TWS.",
+        "REVIEWING": "Iniciando revisión manual; validando chart, liquidez, riesgo y broker ticket.",
+        "WATCHLIST": "Mantener en watchlist; falta mejor precio, confirmación o timing.",
+        "REJECTED": "Descartada tras revisión manual.",
+        "EXPIRED": "Setup expirado o ya no aplica.",
+    }
+    forms = []
+    for status in allowed:
+        css = "approve" if status == "APPROVED_FOR_MANUAL_TRADE" else status.lower()
+        forms.append("""
+          <form method="post" action="/v31_manual_review_console/record" class="action-form">
+            <input type="hidden" name="ticker" value="{ticker}">
+            <input type="hidden" name="status" value="{status}">
+            <input type="hidden" name="reason" value="{reason}">
+            <button class="{css}" type="submit">{label}</button>
+          </form>
+        """.format(
+            ticker=_v29_html_escape(ticker),
+            status=_v29_html_escape(status),
+            reason=_v29_html_escape(reasons.get(status, "")),
+            css=_v29_html_escape(css),
+            label=_v29_html_escape(labels.get(status, status)),
+        ))
+    return "".join(forms)
+
+
+def _v31_manual_review_console_html(message="", error=""):
+    decisions, reviews = _v31_manual_review_console_decisions()
+    rows = []
+    for decision in decisions:
+        contract = decision.get("selected_contract") or {}
+        latest = decision.get("latest_manual_review") or {}
+        latest_status = latest.get("status") or "UNREVIEWED"
+        rows.append("""
+        <tr>
+          <td><a href="/v31_decision/{ticker}">{ticker}</a></td>
+          <td>{strategy}</td>
+          <td>{state}</td>
+          <td>{review_status}<div class="muted">{reviewed_at}</div></td>
+          <td>{strike}</td><td>{expiration}</td><td>{dte}</td>
+          <td>{bid}</td><td>{ask}</td><td>{mid}</td><td>{spread_pct}</td><td>{delta}</td>
+          <td>{technical}</td><td>{risk}</td><td>{blocker}</td>
+          <td class="actions">{forms}</td>
+        </tr>
+        """.format(
+            ticker=_v29_html_escape(decision.get("ticker")),
+            strategy=_v29_html_escape(decision.get("strategy")),
+            state=_v29_html_escape(decision.get("final_state")),
+            review_status=_v31_manual_review_status_badge(latest_status),
+            reviewed_at=_v29_html_escape(latest.get("reviewed_at") or ""),
+            strike=_v29_html_escape(contract.get("strike")),
+            expiration=_v29_html_escape(contract.get("expiration")),
+            dte=_v29_html_escape(contract.get("dte")),
+            bid=_v29_html_escape(contract.get("bid")),
+            ask=_v29_html_escape(contract.get("ask")),
+            mid=_v29_html_escape(contract.get("mid")),
+            spread_pct=_v29_html_escape(contract.get("spread_pct")),
+            delta=_v29_html_escape(contract.get("delta")),
+            technical=_v29_html_escape(decision.get("technical_status")),
+            risk=_v29_html_escape(decision.get("risk_status")),
+            blocker=_v29_html_escape(decision.get("main_blocker")),
+            forms=_v31_manual_review_action_forms(decision),
+        ))
+
+    recent_rows = []
+    for review in reversed((reviews.get("recent_reviews") or [])[-12:]):
+        recent_rows.append("""
+        <tr>
+          <td>{time}</td><td>{ticker}</td><td>{strategy}</td><td>{status}</td><td>{reason}</td>
+        </tr>
+        """.format(
+            time=_v29_html_escape(review.get("reviewed_at")),
+            ticker=_v29_html_escape(review.get("ticker")),
+            strategy=_v29_html_escape(review.get("strategy")),
+            status=_v31_manual_review_status_badge(review.get("status")),
+            reason=_v29_html_escape(review.get("reason")),
+        ))
+
+    message_html = '<div class="notice ok">{}</div>'.format(_v29_html_escape(message)) if message else ""
+    error_html = '<div class="notice error">{}</div>'.format(_v29_html_escape(error)) if error else ""
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>V31 Manual Review Console</title>
+      <style>
+        body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#0f172a; }}
+        .hero {{ background:#0f172a; color:white; padding:28px 34px; }}
+        .hero h1 {{ margin:0 0 8px 0; }}
+        .hero a {{ color:#bfdbfe; }}
+        .wrap {{ padding:24px 34px 48px; }}
+        .notice {{ padding:12px 14px; border-radius:14px; margin-bottom:16px; font-weight:800; }}
+        .notice.ok {{ background:#dcfce7; color:#166534; }}
+        .notice.error {{ background:#fee2e2; color:#991b1b; }}
+        .card {{ background:white; border-radius:18px; padding:18px; box-shadow:0 12px 30px rgba(15,23,42,.08); margin-bottom:22px; overflow:auto; }}
+        table {{ width:100%; border-collapse:collapse; min-width:1280px; }}
+        th, td {{ padding:11px 10px; border-bottom:1px solid #e2e8f0; text-align:left; vertical-align:top; font-size:13px; }}
+        th {{ background:#f1f5f9; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
+        .badge {{ display:inline-block; color:white; padding:5px 8px; border-radius:999px; font-size:11px; font-weight:900; }}
+        .muted {{ color:#64748b; font-size:11px; margin-top:4px; }}
+        .actions {{ min-width:360px; }}
+        .action-form {{ display:inline-block; margin:0 4px 6px 0; }}
+        button {{ border:0; color:white; border-radius:10px; padding:8px 10px; font-weight:900; cursor:pointer; }}
+        button.approve {{ background:#16a34a; }}
+        button.reviewing {{ background:#d97706; }}
+        button.watchlist {{ background:#2563eb; }}
+        button.rejected {{ background:#dc2626; }}
+        button.expired {{ background:#475569; }}
+        .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:13px 15px; border-radius:12px; line-height:1.45; margin-bottom:22px; }}
+      </style>
+    </head>
+    <body>
+      <div class="hero">
+        <h1>V31 Manual Review Console</h1>
+        <div>Generado: {now} · <a href="/v31_dashboard">Dashboard</a> · <a href="/v31_monitor_status">Monitor JSON</a> · <a href="/v31_manual_reviews">Journal JSON</a> · <a href="/read_auth_logout">Logout</a></div>
+      </div>
+      <div class="wrap">
+        {message_html}{error_html}
+        <div class="guardrail">Esta consola registra tu revisión humana. No coloca órdenes, no autoriza ejecución automática y no reemplaza validar el ticket manualmente en TWS.</div>
+        <h2>Setups para revisión</h2>
+        <div class="card">
+          <table>
+            <thead>
+              <tr>
+                <th>Ticker</th><th>Strategy</th><th>State</th><th>Review</th><th>Strike</th><th>Exp</th><th>DTE</th>
+                <th>Bid</th><th>Ask</th><th>Mid</th><th>Spread %</th><th>Delta</th><th>Technical</th><th>Risk</th><th>Blocker</th><th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        <h2>Historial reciente</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Hora</th><th>Ticker</th><th>Strategy</th><th>Status</th><th>Razón</th></tr></thead>
+            <tbody>{recent_rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </body>
+    </html>
+    """.format(
+        now=_v29_html_escape(_v29_now()),
+        message_html=message_html,
+        error_html=error_html,
+        rows="".join(rows) or '<tr><td colspan="16">No hay setups accionables ahora.</td></tr>',
+        recent_rows="".join(recent_rows) or '<tr><td colspan="5">Sin revisiones registradas.</td></tr>',
+    )
+
+
+def _v31_manual_review_console_record_from_form(form):
+    ticker = (form.get("ticker") or [""])[0]
+    status = (form.get("status") or ["REVIEWING"])[0]
+    reason = (form.get("reason") or [""])[0]
+    return _v31_record_manual_review({
+        "ticker": ticker,
+        "status": status,
+        "reason": reason,
+        "actor": "manual_review_console",
+        "source": "v31_manual_review_console",
+        "manual_trade_review_only": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    })
+
+
 def _v31_learning_count(counter, key):
     key = str(key or "UNKNOWN").upper()
     counter[key] = counter.get(key, 0) + 1
@@ -21805,6 +22122,7 @@ def _v31_monitor_email_content(monitor):
     wait_options_decisions = monitor.get("wait_options_decisions") or []
     manual_review_endpoint = "{base}/v31_manual_review".format(base=base_url)
     manual_reviews_url = "{base}/v31_manual_reviews".format(base=base_url)
+    manual_review_console_url = "{base}/v31_manual_review_console".format(base=base_url)
     manual_review_example = {
         "ticker": (entry_ready_decisions[0] or {}).get("ticker") if entry_ready_decisions else "SPY",
         "status": "REVIEWING",
@@ -21921,6 +22239,7 @@ def _v31_monitor_email_content(monitor):
         wait_options_text,
         "",
         "Manual review journal:",
+        "Consola: {url}".format(url=manual_review_console_url),
         "Endpoint protegido: POST {endpoint}".format(endpoint=manual_review_endpoint),
         "Historial: {url}".format(url=manual_reviews_url),
         "Statuses permitidos: {statuses}".format(statuses=allowed_review_statuses),
@@ -21964,7 +22283,8 @@ def _v31_monitor_email_content(monitor):
     <h3>WAIT_OPTIONS_DATA detail</h3>
     <table border="1" cellpadding="6" cellspacing="0"><tbody>{wait_options_rows}</tbody></table>
     <h3>Manual review journal</h3>
-    <p>Registra la decision humana con un POST protegido a <code>{manual_review_endpoint}</code>.</p>
+    <p><a href="{manual_review_console_url}"><strong>Abrir consola de revisión manual</strong></a></p>
+    <p>Registra la decision humana con botones en la consola o con un POST protegido a <code>{manual_review_endpoint}</code>.</p>
     <p><strong>Statuses permitidos:</strong> {allowed_review_statuses}</p>
     <p><strong>Ejemplo body:</strong> <code>{manual_review_example}</code></p>
     <p><a href="{manual_reviews_url}">Abrir historial de revisiones manuales</a></p>
@@ -21988,6 +22308,7 @@ def _v31_monitor_email_content(monitor):
         entry_ready_rows=entry_ready_rows,
         risk_blocked_rows=risk_blocked_rows,
         wait_options_rows=wait_options_rows,
+        manual_review_console_url=_v29_html_escape(manual_review_console_url),
         manual_review_endpoint=_v29_html_escape(manual_review_endpoint),
         manual_reviews_url=_v29_html_escape(manual_reviews_url),
         manual_review_example=_v29_html_escape(manual_review_example_text),
@@ -22001,6 +22322,7 @@ def _v31_monitor_email_content(monitor):
         "links": {
             "dashboard": "{base}/v31_dashboard".format(base=base_url),
             "monitor_status": "{base}/v31_monitor_status".format(base=base_url),
+            "manual_review_console": manual_review_console_url,
             "manual_review_endpoint": manual_review_endpoint,
             "manual_reviews": manual_reviews_url,
         },
@@ -22563,6 +22885,33 @@ async def v31_monitor_status():
 @app.get("/v31_manual_reviews")
 async def v31_manual_reviews(limit: int = 100):
     return _v31_manual_reviews_payload(limit=limit)
+
+
+@app.get("/v31_manual_review_console", response_class=_V29HTMLResponse)
+async def v31_manual_review_console(message: str = "", error: str = ""):
+    return _V29HTMLResponse(_v31_manual_review_console_html(message=message, error=error))
+
+
+@app.post("/v31_manual_review_console/record")
+async def v31_manual_review_console_record(request: Request):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    form = urllib.parse.parse_qs(raw)
+    try:
+        result = _v31_manual_review_console_record_from_form(form)
+        review = result.get("review") or {}
+        message = "{ticker} registrado como {status}".format(
+            ticker=review.get("ticker"),
+            status=review.get("status"),
+        )
+        return RedirectResponse(
+            url="/v31_manual_review_console?{}".format(urllib.parse.urlencode({"message": message})),
+            status_code=303,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url="/v31_manual_review_console?{}".format(urllib.parse.urlencode({"error": str(exc)})),
+            status_code=303,
+        )
 
 
 @app.get("/v31_manual_review_learning")
