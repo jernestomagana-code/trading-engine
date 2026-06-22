@@ -19,6 +19,7 @@ import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
 import market_regime_detector as shared_market_regime_detector
 import strategy_exit_playbook as shared_strategy_exit_playbook
+import strategy_input_contracts as shared_strategy_input_contracts
 import strategy_regime_policy as shared_strategy_regime_policy
 import strategy_registry as shared_strategy_registry
 import strategy_performance as shared_strategy_performance
@@ -21066,6 +21067,7 @@ def _v31_system_status_payload(tickers=None):
             "daily_recommendations": "/v31_daily_recommendations",
             "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
             "strategy_registry": "/strategy_registry",
+            "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
             "strategy_exit_playbook": "/strategy_exit_playbook",
             "strategy_regime_policy": "/strategy_regime_policy",
@@ -21132,6 +21134,14 @@ def _strategy_registry():
 
 def _strategy_playbook_summary():
     return shared_strategy_registry.playbook_summary(_strategy_registry())
+
+
+def _strategy_input_contracts():
+    return shared_strategy_input_contracts.load_input_contracts()
+
+
+def _strategy_input_contracts_summary():
+    return shared_strategy_input_contracts.input_contract_summary(_strategy_input_contracts())
 
 
 def _strategy_exit_playbook():
@@ -22308,6 +22318,19 @@ async def strategy_registry():
     return {
         **registry,
         "summary": shared_strategy_registry.playbook_summary(registry),
+        "strategy_input_contracts": _strategy_input_contracts_summary(),
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+@app.get("/strategy_input_contracts")
+async def strategy_input_contracts():
+    contracts = _strategy_input_contracts()
+    return {
+        **contracts,
+        "summary": shared_strategy_input_contracts.input_contract_summary(contracts),
         "manual_review_required": True,
         "not_order_instruction": True,
         "execution_authorized": False,
@@ -22320,6 +22343,7 @@ async def strategy_playbook():
         "engine": "STRATEGY_PLAYBOOK",
         "generated_at": _v29_now(),
         "playbook": _strategy_playbook_summary(),
+        "input_contracts": _strategy_input_contracts_summary(),
         "exit_playbook": _strategy_exit_playbook_summary(),
         "regime_policy": _strategy_regime_policy_summary(),
         "manual_review_required": True,

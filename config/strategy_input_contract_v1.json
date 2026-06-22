@@ -1,0 +1,138 @@
+{
+  "contract_version": "strategy_input_contract_v1",
+  "ruleset_version": "strategy_input_rules_v1",
+  "status": "ACTIVE",
+  "purpose": "Define required inputs, primary sources, fallbacks, and missing-input behavior per strategy. TradingView alerts are optional confirmations for most strategies, not the only discovery path.",
+  "global_policy": {
+    "candidate_generation_does_not_require_tradingview": true,
+    "tradingview_role": "CONFIRMATION_OR_SPECIALIZED_CONTEXT",
+    "local_scanner_role": "PRIMARY_CANDIDATE_DISCOVERY",
+    "ibkr_role": "PRIMARY_MARKET_ACCOUNT_AND_OPTION_DATA",
+    "entry_ready_requires_deterministic_gates": true,
+    "manual_review_required": true,
+    "not_order_instruction": true,
+    "execution_authorized": false
+  },
+  "contracts": [
+    {
+      "strategy_id": "CASH_SECURED_PUT",
+      "aliases": ["NAKED_PUT", "SHORT_PUT"],
+      "candidate_sources": ["IBKR_UNDERLYING_PRICE", "IBKR_OPTION_CHAIN", "IBKR_ACCOUNT_CONTEXT", "LOCAL_STRATEGY_SCANNER"],
+      "confirmation_sources": ["LOCAL_TECHNICAL_ENGINE", "TRADINGVIEW_ALERT", "MANUAL_CONTEXT_REVIEW"],
+      "fallback_sources": ["IBKR_HISTORICAL_BARS_LOCAL_TECHNICALS", "LAST_FRESH_TECHNICAL_SNAPSHOT"],
+      "tradingview_dependency": "OPTIONAL_CONFIRMATION",
+      "required_for_candidate": ["ticker", "underlying_price", "strike", "expiration", "dte", "bid", "ask", "mid", "spread_pct", "delta"],
+      "required_for_entry_ready": ["candidate_contract", "technical_confirmation", "risk_profile_pass", "account_context", "market_session_ok"],
+      "freshness_minutes": {
+        "candidate": 10,
+        "technical_confirmation": 30,
+        "account_context": 10
+      },
+      "state_when_missing": {
+        "candidate_contract": "WAIT_OPTIONS_DATA",
+        "technical_confirmation": "WAIT_TECHNICAL",
+        "account_context": "WAIT_ACCOUNT_CONTEXT",
+        "risk_profile": "RISK_BLOCKED"
+      },
+      "no_tradingview_alert_behavior": "Continue scanning IBKR candidates and use LOCAL_TECHNICAL_ENGINE when available; otherwise keep candidate in WAIT_TECHNICAL.",
+      "not_order_instruction": true,
+      "execution_authorized": false
+    },
+    {
+      "strategy_id": "COVERED_CALL",
+      "aliases": ["SHORT_CALL_COVERED"],
+      "candidate_sources": ["IBKR_PORTFOLIO_POSITIONS", "IBKR_UNDERLYING_PRICE", "IBKR_OPTION_CHAIN", "LOCAL_STRATEGY_SCANNER"],
+      "confirmation_sources": ["LOCAL_TECHNICAL_ENGINE", "TRADINGVIEW_ALERT", "MANUAL_POSITION_REVIEW"],
+      "fallback_sources": ["IBKR_HISTORICAL_BARS_LOCAL_TECHNICALS", "POSITION_MANAGEMENT_RULES"],
+      "tradingview_dependency": "OPTIONAL_CONFIRMATION",
+      "required_for_candidate": ["ticker", "long_share_position", "underlying_price", "strike", "expiration", "dte", "bid", "ask", "mid", "spread_pct", "delta"],
+      "required_for_entry_ready": ["covered_position_confirmed", "candidate_contract", "technical_confirmation", "risk_profile_pass", "market_session_ok"],
+      "freshness_minutes": {
+        "candidate": 10,
+        "technical_confirmation": 30,
+        "account_context": 10
+      },
+      "state_when_missing": {
+        "covered_position_confirmed": "WAIT_ACCOUNT_CONTEXT",
+        "candidate_contract": "WAIT_OPTIONS_DATA",
+        "technical_confirmation": "WAIT_TECHNICAL",
+        "risk_profile": "RISK_BLOCKED"
+      },
+      "no_tradingview_alert_behavior": "Continue scanning covered positions from IBKR and use LOCAL_TECHNICAL_ENGINE; never create uncovered call exposure.",
+      "not_order_instruction": true,
+      "execution_authorized": false
+    },
+    {
+      "strategy_id": "IRON_CONDOR",
+      "aliases": ["SHORT_IRON_CONDOR"],
+      "candidate_sources": ["IBKR_OPTION_CHAIN", "VIX_OR_VOLATILITY_INPUT", "LOCAL_RANGE_SCANNER"],
+      "confirmation_sources": ["LOCAL_TECHNICAL_ENGINE", "TRADINGVIEW_ALERT", "MANUAL_VOLATILITY_REVIEW"],
+      "fallback_sources": ["IBKR_HISTORICAL_BARS_LOCAL_TECHNICALS", "LOCAL_VOLATILITY_PROXY"],
+      "tradingview_dependency": "OPTIONAL_CONFIRMATION_RESEARCH_ONLY",
+      "required_for_candidate": ["ticker", "put_wing_contracts", "call_wing_contracts", "dte", "short_delta", "credit", "spread_width", "volatility_context"],
+      "required_for_entry_ready": ["research_promotion", "candidate_spread", "range_confirmation", "risk_profile_pass", "defined_max_loss"],
+      "freshness_minutes": {
+        "candidate": 10,
+        "technical_confirmation": 30,
+        "volatility_context": 30
+      },
+      "state_when_missing": {
+        "research_promotion": "RISK_BLOCKED",
+        "candidate_spread": "WAIT_OPTIONS_DATA",
+        "range_confirmation": "WAIT_TECHNICAL",
+        "defined_max_loss": "RISK_BLOCKED"
+      },
+      "no_tradingview_alert_behavior": "Remain RESEARCH_ONLY unless local range and volatility contracts are complete and research promotion criteria pass.",
+      "not_order_instruction": true,
+      "execution_authorized": false
+    },
+    {
+      "strategy_id": "INTRADAY_INDEX_FUTURES",
+      "aliases": ["FUTURES", "FUTURES_PRO", "MNQ", "NQ", "MES", "ES"],
+      "candidate_sources": ["TRADINGVIEW_ALERT", "LOCAL_INTRADAY_SCANNER", "IBKR_HISTORICAL_BARS"],
+      "confirmation_sources": ["TRADINGVIEW_ALERT", "LOCAL_TECHNICAL_ENGINE", "PREMARKET_CONTEXT"],
+      "fallback_sources": ["IBKR_HISTORICAL_BARS_LOCAL_VWAP_ORB", "MANUAL_PREMARKET_CONTEXT"],
+      "tradingview_dependency": "PREFERRED_BUT_NOT_EXCLUSIVE",
+      "required_for_candidate": ["symbol", "session_state", "price", "vwap_or_reference", "opening_range_or_breakout_context"],
+      "required_for_entry_ready": ["premarket_context_clear", "technical_confirmation", "risk_daily_clear", "portfolio_status_clear", "market_session_ok"],
+      "freshness_minutes": {
+        "candidate": 2,
+        "technical_confirmation": 2,
+        "premarket_context": 390
+      },
+      "state_when_missing": {
+        "premarket_context_clear": "MANUAL_REVIEW",
+        "technical_confirmation": "WAIT_TECHNICAL",
+        "risk_daily_clear": "RISK_BLOCKED",
+        "portfolio_status_clear": "RISK_BLOCKED"
+      },
+      "no_tradingview_alert_behavior": "Use LOCAL_INTRADAY_SCANNER from IBKR bars only if VWAP/opening-range/risk context is available; otherwise WAIT_TECHNICAL.",
+      "not_order_instruction": true,
+      "execution_authorized": false
+    },
+    {
+      "strategy_id": "CANSLIM_GROWTH_FILTER",
+      "aliases": ["CANSLIM_FILTER"],
+      "candidate_sources": ["FUNDAMENTAL_DATA", "TECHNICAL_SNAPSHOT", "MANUAL_QUALITY_REVIEW"],
+      "confirmation_sources": ["LOCAL_TECHNICAL_ENGINE", "TRADINGVIEW_ALERT", "FUNDAMENTAL_SCORE"],
+      "fallback_sources": ["LAST_FRESH_CANSLIM_CACHE", "MANUAL_REVIEW"],
+      "tradingview_dependency": "OPTIONAL_CONFIRMATION",
+      "required_for_candidate": ["ticker", "minimum_score", "passes_quality_filter"],
+      "required_for_entry_ready": ["filter_pass", "technical_confirmation_if_used_by_strategy"],
+      "freshness_minutes": {
+        "candidate": 1440,
+        "technical_confirmation": 60,
+        "fundamental_score": 10080
+      },
+      "state_when_missing": {
+        "filter_pass": "CANSLIM_BLOCKED",
+        "technical_confirmation_if_used_by_strategy": "WAIT_TECHNICAL"
+      },
+      "no_tradingview_alert_behavior": "Can still block or permit option strategies using local/fundamental quality data; it is a filter, not an entry alert source.",
+      "not_order_instruction": true,
+      "execution_authorized": false
+    }
+  ],
+  "not_order_instruction": true,
+  "execution_authorized": false
+}
