@@ -155,6 +155,7 @@ class DailyOperationalAuditWorkflowTests(unittest.TestCase):
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
         self.assertIn("READ_ACCESS_TOKEN", source)
         self.assertIn("continue-on-error: true", source)
+        self.assertIn("Trading day readiness", source)
         self.assertIn("gh issue create", source)
         self.assertIn("gh issue comment", source)
         self.assertIn("Stock Ultimus V31 daily operational audit failed", source)
@@ -176,6 +177,7 @@ class DailyOperationalAuditWorkflowTests(unittest.TestCase):
         source = DAILY_OPERATIONAL_AUDIT_TOOL.read_text()
 
         self.assertIn("V31_DAILY_OPERATIONAL_AUDIT", source)
+        self.assertIn("/v31_trading_day_readiness", source)
         self.assertIn("/v31_evaluate_manual_reviews", source)
         self.assertIn("dry_run=true", source)
         self.assertIn("/v31_manual_review_learning_notify/preview", source)

@@ -187,6 +187,7 @@ def planned_checks(limit: int) -> list[dict[str, Any]]:
         {"name": "system_status", "method": "GET", "path": "/v31_system_status", "token": True},
         {"name": "production_readiness", "method": "GET", "path": "/v31_production_readiness", "token": True},
         {"name": "data_pipeline_status", "method": "GET", "path": "/v31_data_pipeline_status", "token": True},
+        {"name": "trading_day_readiness", "method": "GET", "path": "/v31_trading_day_readiness", "token": True},
         {"name": "monitor_preview", "method": "GET", "path": "/v31_monitor_notify/preview?force=true", "token": True},
         {"name": "manual_reviews", "method": "GET", "path": f"/v31_manual_reviews?limit={limit}", "token": True},
         {"name": "manual_review_learning", "method": "GET", "path": f"/v31_manual_review_learning?limit={limit}", "token": True},
@@ -293,6 +294,7 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
         "system_status": "/v31_system_status",
         "production_readiness": "/v31_production_readiness",
         "data_pipeline_status": "/v31_data_pipeline_status",
+        "trading_day_readiness": "/v31_trading_day_readiness",
         "monitor_preview": "/v31_monitor_notify/preview?force=true",
         "manual_reviews": f"/v31_manual_reviews?{parse.urlencode({'limit': limit})}",
         "manual_review_learning": f"/v31_manual_review_learning?{parse.urlencode({'limit': limit})}",
@@ -338,6 +340,33 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
     ))
     checks.append(guardrail_check("pipeline_guardrails", pipeline, pipeline_endpoint))
 
+    trading_day_endpoint, trading_day_ok, trading_day_code, trading_day = responses["trading_day_readiness"]
+    checks.append(endpoint_ok_check(
+        "trading_day_readiness_ok",
+        trading_day_ok,
+        trading_day_code,
+        trading_day,
+        trading_day_endpoint,
+        expected_engine="V31_TRADING_DAY_READINESS",
+    ))
+    checks.append(AuditCheck(
+        "trading_day_readiness_not_action_required",
+        safe_get(trading_day, "status") != "ACTION_REQUIRED",
+        "FAIL",
+        f"status={safe_get(trading_day, 'status')} blockers={safe_get(trading_day, 'blockers', default=[])}",
+        status_code=trading_day_code,
+        endpoint=trading_day_endpoint,
+    ))
+    checks.append(AuditCheck(
+        "trading_day_readiness_pipeline_ready",
+        safe_get(trading_day, "status") != "WAIT_PIPELINE",
+        "WARN",
+        f"status={safe_get(trading_day, 'status')} warnings={safe_get(trading_day, 'warnings', default=[])}",
+        status_code=trading_day_code,
+        endpoint=trading_day_endpoint,
+    ))
+    checks.append(guardrail_check("trading_day_readiness_guardrails", trading_day, trading_day_endpoint))
+
     for name, expected_engine in [
         ("monitor_preview", "V31_PIPELINE_MONITOR_EMAIL"),
         ("manual_reviews", "V31_MANUAL_REVIEW_JOURNAL"),
@@ -360,6 +389,13 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "status": pipeline_status,
             "rows_found": safe_get(pipeline, "rows_found"),
             "master_snapshot_available": safe_get(pipeline, "master_snapshot_available"),
+            "freshness": safe_get(pipeline, "freshness", default={}),
+        },
+        "trading_day_readiness": {
+            "status": safe_get(responses["trading_day_readiness"][3], "status"),
+            "blockers": safe_get(responses["trading_day_readiness"][3], "blockers", default=[]),
+            "warnings": safe_get(responses["trading_day_readiness"][3], "warnings", default=[]),
+            "freshness": safe_get(responses["trading_day_readiness"][3], "freshness", default={}),
         },
         "manual_reviews": {
             "review_count": safe_get(responses["manual_reviews"][3], "review_count"),

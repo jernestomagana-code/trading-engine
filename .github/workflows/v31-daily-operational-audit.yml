@@ -139,6 +139,7 @@ jobs:
               f"- Workflow run: {__import__('os').environ.get('GITHUB_SERVER_URL')}/{__import__('os').environ.get('GITHUB_REPOSITORY')}/actions/runs/{__import__('os').environ.get('GITHUB_RUN_ID')}",
               f"- Base URL: `{payload.get('base_url')}`",
               f"- Pipeline: `{json.dumps(payload.get('pipeline', {}), sort_keys=True)}`",
+              f"- Trading day readiness: `{json.dumps(payload.get('trading_day_readiness', {}), sort_keys=True)}`",
               f"- Manual reviews: `{json.dumps(payload.get('manual_reviews', {}), sort_keys=True)}`",
               f"- Learning: `{json.dumps(payload.get('learning', {}), sort_keys=True)}`",
               "",

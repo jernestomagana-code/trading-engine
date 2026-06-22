@@ -98,6 +98,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_production_readiness",
     "/v31_risk_profile",
     "/v31_system_status",
+    "/v31_trading_day_readiness",
     "/v31_trade_decision/",
     "/gpt_v31_trade_decision/",
 )
@@ -21040,6 +21041,7 @@ def _v31_system_status_payload(tickers=None):
         "endpoints": {
             "ingest": "/v31_ingest_snapshot",
             "pipeline_status": "/v31_data_pipeline_status",
+            "trading_day_readiness": "/v31_trading_day_readiness",
             "trade_decision_example": "/v31_trade_decision/QQQ",
             "canonical_decision_example": "/v31_decision/QQQ",
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
@@ -21333,6 +21335,10 @@ def _v31_restore_durable_snapshot(force=False):
 
 
 def _v31_data_pipeline_status_payload():
+    master = _v29_discover_master_snapshot()
+    market = _v29_market_state(master)
+    max_age = 10 if market.get("is_regular_market_open") else 240
+    freshness = _v31_snapshot_freshness(master, max_age_minutes=max_age)
     status = _v31_system_status_payload()
     files = _v31_runtime_file_status()
     has_data = bool(status.get("master_snapshot_available"))
@@ -21347,6 +21353,7 @@ def _v31_data_pipeline_status_payload():
         "master_source": status.get("master_source"),
         "rows_found": status.get("rows_found"),
         "technical_count": status.get("technical_count"),
+        "freshness": freshness,
         "runtime_files": files,
         "durable_snapshot": {
             "table": _V31_DURABLE_SNAPSHOT_TABLE,
@@ -21385,6 +21392,197 @@ def _v31_ingest_snapshot_payload(payload):
         "v31_status": "/v31_system_status",
         "v31_pipeline_status": "/v31_data_pipeline_status",
         "not_order_instruction": True,
+    }
+
+
+def _v31_master_snapshot_timestamp(master):
+    master = master if isinstance(master, dict) else {}
+    data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    return (
+        data.get("received_at")
+        or data.get("generated_at")
+        or data.get("remote_ingested_at")
+        or data.get("updated_at")
+    )
+
+
+def _v31_snapshot_freshness(master, max_age_minutes=10):
+    try:
+        max_age_minutes = max(1, int(max_age_minutes))
+    except Exception:
+        max_age_minutes = 10
+
+    master = master if isinstance(master, dict) else {}
+    if not master.get("path"):
+        return {
+            "snapshot_freshness_version": "v31_snapshot_freshness_v1",
+            "status": "MISSING",
+            "ok": False,
+            "timestamp": None,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+            "stale_by_minutes": None,
+            "detail": "No master snapshot is available.",
+            "not_order_instruction": True,
+        }
+
+    timestamp = _v31_master_snapshot_timestamp(master)
+    parsed = _v31_parse_timestamp(timestamp)
+    if parsed is None:
+        return {
+            "snapshot_freshness_version": "v31_snapshot_freshness_v1",
+            "status": "UNKNOWN",
+            "ok": False,
+            "timestamp": timestamp,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+            "stale_by_minutes": None,
+            "detail": "Master snapshot exists but has no parseable timestamp.",
+            "not_order_instruction": True,
+        }
+
+    age_minutes = max(0, round((datetime.now(timezone.utc) - parsed).total_seconds() / 60, 2))
+    stale_by = round(age_minutes - max_age_minutes, 2)
+    is_fresh = age_minutes <= max_age_minutes
+    return {
+        "snapshot_freshness_version": "v31_snapshot_freshness_v1",
+        "status": "FRESH" if is_fresh else "STALE",
+        "ok": is_fresh,
+        "timestamp": timestamp,
+        "age_minutes": age_minutes,
+        "max_age_minutes": max_age_minutes,
+        "stale_by_minutes": max(stale_by, 0),
+        "detail": (
+            f"Snapshot age {age_minutes} minutes is within {max_age_minutes} minute limit."
+            if is_fresh else
+            f"Snapshot age {age_minutes} minutes exceeds {max_age_minutes} minute limit."
+        ),
+        "not_order_instruction": True,
+    }
+
+
+def _v31_trading_day_readiness_payload(
+    max_open_snapshot_age_minutes=10,
+    max_closed_snapshot_age_minutes=240,
+):
+    try:
+        max_open_snapshot_age_minutes = max(1, int(max_open_snapshot_age_minutes))
+    except Exception:
+        max_open_snapshot_age_minutes = 10
+    try:
+        max_closed_snapshot_age_minutes = max(1, int(max_closed_snapshot_age_minutes))
+    except Exception:
+        max_closed_snapshot_age_minutes = 240
+
+    master = _v29_discover_master_snapshot()
+    market = _v29_market_state(master)
+    market_open = bool(market.get("is_regular_market_open"))
+    max_age = max_open_snapshot_age_minutes if market_open else max_closed_snapshot_age_minutes
+    freshness = _v31_snapshot_freshness(master, max_age_minutes=max_age)
+    production = _v31_production_readiness_payload()
+    pipeline = _v31_data_pipeline_status_payload()
+    monitor = _v31_monitor_status_payload()
+    manual_reviews = _v31_manual_reviews_payload(limit=50)
+
+    blockers = []
+    warnings = []
+
+    if production.get("status") != "READY":
+        blockers.append("PRODUCTION_READINESS_BLOCKED")
+    if pipeline.get("status") != "OK":
+        if market_open:
+            blockers.append("PIPELINE_NOT_READY_DURING_MARKET")
+        else:
+            warnings.append("PIPELINE_NOT_READY")
+    if freshness.get("status") in {"MISSING", "UNKNOWN"}:
+        if market_open:
+            blockers.append(f"SNAPSHOT_{freshness.get('status')}")
+        else:
+            warnings.append(f"SNAPSHOT_{freshness.get('status')}")
+    elif freshness.get("status") == "STALE":
+        if market_open:
+            blockers.append("STALE_SNAPSHOT")
+        else:
+            warnings.append("STALE_SNAPSHOT_OUTSIDE_MARKET")
+
+    entry_ready_count = int((monitor.get("entry_ready_tickers") and len(monitor.get("entry_ready_tickers"))) or 0)
+    manual_review_ready_count = int(monitor.get("manual_review_ready_count") or 0)
+    risk_blocked_count = len(monitor.get("risk_blocked_tickers") or [])
+    wait_options_count = len(monitor.get("wait_options_tickers") or [])
+
+    if blockers:
+        status = "ACTION_REQUIRED"
+    elif pipeline.get("status") != "OK":
+        status = "WAIT_PIPELINE"
+    elif market.get("market_holiday"):
+        status = "WAIT_MARKET"
+    elif not market_open:
+        status = "WAIT_MARKET"
+    elif manual_review_ready_count > 0 or entry_ready_count > 0:
+        status = "READY_FOR_MANUAL_REVIEW"
+    else:
+        status = "READY_FOR_TRADING_DAY"
+
+    if status == "ACTION_REQUIRED":
+        next_action = "Resolver blockers antes de confiar en decisiones V31."
+    elif status == "WAIT_PIPELINE":
+        next_action = "Publicar un snapshot maestro fresco desde el bridge/publicador."
+    elif status == "WAIT_MARKET":
+        next_action = "Esperar apertura regular del mercado estadounidense."
+    elif status == "READY_FOR_MANUAL_REVIEW":
+        next_action = "Revisar tickers ENTRY_READY manualmente; no es autorización de operar."
+    else:
+        next_action = "Sistema listo para monitoreo del trading day; esperar setups accionables."
+
+    return {
+        "engine": "V31_TRADING_DAY_READINESS",
+        "trading_day_readiness_version": "v31_trading_day_readiness_v1",
+        "generated_at": _v29_now(),
+        "status": status,
+        "blockers": blockers,
+        "warnings": warnings,
+        "next_required_action": next_action,
+        "market": {
+            "is_regular_market_open": market_open,
+            "options_bidask_expected": bool(market.get("options_bidask_expected")),
+            "market_holiday": bool(market.get("market_holiday")),
+            "label": market.get("label"),
+            "market_regime": market.get("market_regime"),
+        },
+        "freshness": freshness,
+        "production_readiness": {
+            "status": production.get("status"),
+            "blocker_count": len(production.get("blockers") or []),
+        },
+        "pipeline": {
+            "status": pipeline.get("status"),
+            "master_snapshot_available": pipeline.get("master_snapshot_available"),
+            "rows_found": pipeline.get("rows_found"),
+            "technical_count": pipeline.get("technical_count"),
+            "master_source": pipeline.get("master_source"),
+        },
+        "monitor": {
+            "alert_level": monitor.get("alert_level"),
+            "manual_review_ready_count": manual_review_ready_count,
+            "entry_ready_tickers": monitor.get("entry_ready_tickers") or [],
+            "risk_blocked_tickers": monitor.get("risk_blocked_tickers") or [],
+            "wait_options_tickers": monitor.get("wait_options_tickers") or [],
+        },
+        "manual_reviews": {
+            "review_count": manual_reviews.get("review_count"),
+            "by_status": manual_reviews.get("by_status") or {},
+        },
+        "summary": {
+            "entry_ready_count": entry_ready_count,
+            "manual_review_ready_count": manual_review_ready_count,
+            "risk_blocked_count": risk_blocked_count,
+            "wait_options_count": wait_options_count,
+            "ready_for_manual_review": status == "READY_FOR_MANUAL_REVIEW",
+        },
+        "decision_support_only": True,
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
     }
 
 
@@ -22209,6 +22407,17 @@ async def v32_strategy_performance(limit: int = 1000):
 @app.get("/v31_data_pipeline_status")
 async def v31_data_pipeline_status():
     return _v31_data_pipeline_status_payload()
+
+
+@app.get("/v31_trading_day_readiness")
+async def v31_trading_day_readiness(
+    max_open_snapshot_age_minutes: int = 10,
+    max_closed_snapshot_age_minutes: int = 240,
+):
+    return _v31_trading_day_readiness_payload(
+        max_open_snapshot_age_minutes=max_open_snapshot_age_minutes,
+        max_closed_snapshot_age_minutes=max_closed_snapshot_age_minutes,
+    )
 
 
 @app.post("/v31_ingest_snapshot")
