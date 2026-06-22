@@ -90,6 +90,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_decision/",
     "/v31_manual_review",
     "/v31_manual_reviews",
+    "/v31_manual_review_learning",
     "/v31_evaluate_manual_reviews",
     "/v31_monitor_status",
     "/v31_outcome_tracking_status",
@@ -20161,6 +20162,150 @@ def _v31_manual_reviews_payload(limit=100):
     }
 
 
+def _v31_learning_count(counter, key):
+    key = str(key or "UNKNOWN").upper()
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _v31_learning_avg(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
+
+
+def _v31_manual_review_learning_item(review):
+    review = review if isinstance(review, dict) else {}
+    decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    latest = review.get("latest_manual_review_evaluation")
+    latest = latest if isinstance(latest, dict) else {}
+    return {
+        "review_id": review.get("review_id") or review.get("id"),
+        "signal_id": review.get("signal_id"),
+        "ticker": review.get("ticker") or decision.get("ticker"),
+        "strategy": review.get("strategy") or decision.get("strategy"),
+        "manual_status": review.get("status") or review.get("outcome"),
+        "learning_label": review.get("manual_review_learning_label"),
+        "current_paper_pnl_r": _v29_safe_float(review.get("current_paper_pnl_r"), None),
+        "mfe_r": _v29_safe_float(review.get("mfe_r"), None),
+        "mae_r": _v29_safe_float(review.get("mae_r"), None),
+        "evaluated_at": review.get("evaluated_at"),
+        "checkpoint": latest.get("checkpoint"),
+        "strike": contract.get("strike"),
+        "expiration": contract.get("expiration"),
+        "delta": contract.get("delta"),
+        "entry_mid": latest.get("entry_mid"),
+        "current_mid": latest.get("current_mid"),
+        "reason": review.get("reason"),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_manual_review_learning_group(group, items):
+    pnl_values = [_v29_safe_float(item.get("current_paper_pnl_r"), None) for item in items]
+    mfe_values = [_v29_safe_float(item.get("mfe_r"), None) for item in items]
+    mae_values = [_v29_safe_float(item.get("mae_r"), None) for item in items]
+    favorable = [value for value in pnl_values if value is not None and value > 0]
+    adverse = [value for value in pnl_values if value is not None and value < 0]
+    flat = [value for value in pnl_values if value is not None and value == 0]
+    return {
+        "group": group,
+        "review_count": len(items),
+        "evaluated_count": len([value for value in pnl_values if value is not None]),
+        "favorable_count": len(favorable),
+        "adverse_count": len(adverse),
+        "flat_count": len(flat),
+        "avg_paper_pnl_r": _v31_learning_avg(pnl_values),
+        "avg_mfe_r": _v31_learning_avg(mfe_values),
+        "avg_mae_r": _v31_learning_avg(mae_values),
+        "needs_more_data": len([value for value in pnl_values if value is not None]) < 30,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_manual_review_learning_payload(limit=500):
+    try:
+        limit = max(1, min(int(limit or 500), 1000))
+    except Exception:
+        limit = 500
+    reviews, review_sources = _v31_load_manual_reviews_with_durable(limit=1000)
+    reviews = reviews[-limit:]
+    evaluated_reviews = [
+        item for item in reviews
+        if item.get("manual_review_auto_evaluation_status") == "EVALUATED"
+        or item.get("latest_manual_review_evaluation")
+        or item.get("manual_review_learning_label")
+    ]
+    by_manual_status = {}
+    by_learning_label = {}
+    by_ticker = {}
+    by_strategy = {}
+    by_checkpoint = {}
+    learning_items = [_v31_manual_review_learning_item(item) for item in evaluated_reviews]
+    for item in learning_items:
+        _v31_learning_count(by_manual_status, item.get("manual_status"))
+        _v31_learning_count(by_learning_label, item.get("learning_label"))
+        _v31_learning_count(by_ticker, item.get("ticker"))
+        _v31_learning_count(by_strategy, item.get("strategy"))
+        _v31_learning_count(by_checkpoint, item.get("checkpoint"))
+
+    pnl_values = [item.get("current_paper_pnl_r") for item in learning_items]
+    mfe_values = [item.get("mfe_r") for item in learning_items]
+    mae_values = [item.get("mae_r") for item in learning_items]
+    evaluated_with_pnl = [item for item in learning_items if item.get("current_paper_pnl_r") is not None]
+    best_reviews = sorted(
+        evaluated_with_pnl,
+        key=lambda item: item.get("current_paper_pnl_r"),
+        reverse=True,
+    )[:10]
+    worst_reviews = sorted(
+        evaluated_with_pnl,
+        key=lambda item: item.get("current_paper_pnl_r"),
+    )[:10]
+
+    def grouped(counter_key):
+        grouped_items = {}
+        for item in learning_items:
+            key = str(item.get(counter_key) or "UNKNOWN").upper()
+            grouped_items.setdefault(key, []).append(item)
+        return [
+            _v31_manual_review_learning_group(key, grouped_items[key])
+            for key in sorted(grouped_items.keys())
+        ]
+
+    return {
+        "engine": "V31_MANUAL_REVIEW_LEARNING",
+        "manual_review_learning_version": "v31_manual_review_learning_v1",
+        "manual_review_version": _V31_MANUAL_REVIEW_VERSION,
+        "outcome_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "generated_at": _v29_now(),
+        "review_count": len(reviews),
+        "evaluated_count": len(evaluated_reviews),
+        "unevaluated_count": max(len(reviews) - len(evaluated_reviews), 0),
+        "by_manual_status": dict(sorted(by_manual_status.items())),
+        "by_learning_label": dict(sorted(by_learning_label.items())),
+        "by_ticker": dict(sorted(by_ticker.items())),
+        "by_strategy": dict(sorted(by_strategy.items())),
+        "by_checkpoint": dict(sorted(by_checkpoint.items())),
+        "avg_paper_pnl_r": _v31_learning_avg(pnl_values),
+        "avg_mfe_r": _v31_learning_avg(mfe_values),
+        "avg_mae_r": _v31_learning_avg(mae_values),
+        "best_reviews": best_reviews,
+        "worst_reviews": worst_reviews,
+        "strategy_summary": grouped("strategy"),
+        "ticker_summary": grouped("ticker"),
+        "label_summary": grouped("learning_label"),
+        "needs_more_data": len(evaluated_with_pnl) < 30,
+        "sources": review_sources,
+        "durable_storage": _durable_storage_summary(),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _v31_outcome_mid(source):
     source = source if isinstance(source, dict) else {}
     mid = _v29_safe_float(source.get("mid") or source.get("mark") or source.get("price") or source.get("option_price"), None)
@@ -21889,6 +22034,11 @@ async def v31_monitor_status():
 @app.get("/v31_manual_reviews")
 async def v31_manual_reviews(limit: int = 100):
     return _v31_manual_reviews_payload(limit=limit)
+
+
+@app.get("/v31_manual_review_learning")
+async def v31_manual_review_learning(limit: int = 500):
+    return _v31_manual_review_learning_payload(limit=limit)
 
 
 @app.post("/v31_manual_review")

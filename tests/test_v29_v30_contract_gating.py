@@ -904,6 +904,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             self.assertFalse(main._path_requires_read_auth("/decision_desk/ingest"))
             self.assertTrue(main._path_requires_read_auth("/v31_decision/SPY"))
             self.assertTrue(main._path_requires_read_auth("/v31_production_readiness"))
+            self.assertTrue(main._path_requires_read_auth("/v31_manual_review_learning"))
 
     def test_v31_dashboard_points_to_canonical_routes(self):
         complete_row = {
@@ -1538,6 +1539,91 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result_review["not_order_instruction"])
         save_reviews.assert_called_once()
         journal.assert_called_once()
+
+    def test_v31_manual_review_learning_summarizes_evaluated_reviews(self):
+        reviews = [
+            {
+                "outcome_tracking_version": "v31_manual_review_journal_v1",
+                "review_id": "MR-1",
+                "signal_id": "SIG-1",
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "status": "WATCHLIST",
+                "outcome": "WATCHLIST",
+                "manual_review_learning_label": "WATCHLIST_WORKED",
+                "manual_review_auto_evaluation_status": "EVALUATED",
+                "current_paper_pnl_r": 0.4,
+                "mfe_r": 0.4,
+                "mae_r": 0.0,
+                "evaluated_at": "2026-06-22T20:00:00+00:00",
+                "latest_manual_review_evaluation": {
+                    "checkpoint": "PLUS_1D",
+                    "entry_mid": 1.25,
+                    "current_mid": 0.75,
+                },
+                "decision": {
+                    "selected_contract": {
+                        "strike": 710,
+                        "expiration": "20260717",
+                        "delta": -0.20,
+                    }
+                },
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            },
+            {
+                "outcome_tracking_version": "v31_manual_review_journal_v1",
+                "review_id": "MR-2",
+                "signal_id": "SIG-2",
+                "ticker": "SPY",
+                "strategy": "NAKED_PUT",
+                "status": "REJECTED",
+                "outcome": "REJECTED",
+                "manual_review_learning_label": "RISK_AVOIDED",
+                "manual_review_auto_evaluation_status": "EVALUATED",
+                "current_paper_pnl_r": -0.2,
+                "mfe_r": 0.0,
+                "mae_r": -0.2,
+                "latest_manual_review_evaluation": {
+                    "checkpoint": "EOD",
+                    "entry_mid": 1.50,
+                    "current_mid": 1.80,
+                },
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            },
+            {
+                "outcome_tracking_version": "v31_manual_review_journal_v1",
+                "review_id": "MR-3",
+                "signal_id": "SIG-3",
+                "ticker": "IWM",
+                "strategy": "NAKED_PUT",
+                "status": "REVIEWING",
+                "outcome": "REVIEWING",
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            },
+        ]
+
+        with patch.object(main, "_v31_load_manual_reviews_with_durable", return_value=(reviews, {"durable_count": 3, "local_count": 0, "durable_available": True})):
+            payload = main._v31_manual_review_learning_payload(limit=10)
+
+        self.assertEqual(payload["engine"], "V31_MANUAL_REVIEW_LEARNING")
+        self.assertEqual(payload["review_count"], 3)
+        self.assertEqual(payload["evaluated_count"], 2)
+        self.assertEqual(payload["unevaluated_count"], 1)
+        self.assertEqual(payload["by_manual_status"], {"REJECTED": 1, "WATCHLIST": 1})
+        self.assertEqual(payload["by_learning_label"], {"RISK_AVOIDED": 1, "WATCHLIST_WORKED": 1})
+        self.assertEqual(payload["by_ticker"], {"QQQ": 1, "SPY": 1})
+        self.assertEqual(payload["by_strategy"], {"NAKED_PUT": 2})
+        self.assertEqual(payload["avg_paper_pnl_r"], 0.1)
+        self.assertEqual(payload["avg_mfe_r"], 0.2)
+        self.assertEqual(payload["avg_mae_r"], -0.1)
+        self.assertEqual(payload["best_reviews"][0]["ticker"], "QQQ")
+        self.assertEqual(payload["worst_reviews"][0]["ticker"], "SPY")
+        self.assertTrue(payload["needs_more_data"])
+        self.assertFalse(payload["execution_authorized"])
+        self.assertTrue(payload["not_order_instruction"])
 
 
 if __name__ == "__main__":
