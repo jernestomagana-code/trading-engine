@@ -1,0 +1,125 @@
+name: V31 Manual Review Evaluate
+
+on:
+  workflow_dispatch:
+    inputs:
+      checkpoint:
+        description: "Evaluation checkpoint to record"
+        required: true
+        default: "EOD"
+        type: choice
+        options:
+          - EOD
+          - PLUS_1D
+          - PLUS_5D
+      dry_run:
+        description: "Preview without persisting evaluation"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      limit:
+        description: "Maximum manual reviews to evaluate"
+        required: true
+        default: "100"
+  schedule:
+    # After regular US market close. The job records multiple learning
+    # checkpoints so reviews keep accumulating paper evidence over time.
+    - cron: "20 21 * * 1-5"
+
+jobs:
+  evaluate:
+    name: Evaluate V31 manual reviews
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select evaluation plan
+        id: selected
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "checkpoints=${{ inputs.checkpoint }}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+            echo "limit=${{ inputs.limit }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkpoints=EOD,PLUS_1D,PLUS_5D" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "limit=100" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Evaluate manual reviews
+        env:
+          READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+          CHECKPOINTS: ${{ steps.selected.outputs.checkpoints }}
+          DRY_RUN: ${{ steps.selected.outputs.dry_run }}
+          LIMIT: ${{ steps.selected.outputs.limit }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import error, parse, request
+
+          token = os.environ.get("READ_ACCESS_TOKEN", "").strip()
+          if not token:
+              print("Missing STOCK_ULTIMUS_READ_ACCESS_TOKEN secret.")
+              sys.exit(1)
+
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          checkpoints = [
+              item.strip().upper()
+              for item in os.environ.get("CHECKPOINTS", "EOD").split(",")
+              if item.strip()
+          ]
+          dry_run = os.environ.get("DRY_RUN", "false").strip().lower()
+          limit = os.environ.get("LIMIT", "100").strip()
+          summaries = []
+          for checkpoint in checkpoints:
+              query = parse.urlencode({
+                  "limit": limit,
+                  "checkpoint": checkpoint,
+                  "dry_run": dry_run,
+              })
+              url = base + "/v31_evaluate_manual_reviews?" + query
+              req = request.Request(
+                  url,
+                  data=b"",
+                  method="POST",
+                  headers={"X-Stock-Ultimus-Read-Token": token},
+              )
+              try:
+                  with request.urlopen(req, timeout=45) as resp:
+                      payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                      status_code = resp.status
+              except error.HTTPError as exc:
+                  body = exc.read().decode("utf-8", errors="replace")
+                  print(body)
+                  sys.exit(1)
+
+              summary = {
+                  "status_code": status_code,
+                  "engine": payload.get("engine"),
+                  "checkpoint": payload.get("checkpoint"),
+                  "dry_run": payload.get("dry_run"),
+                  "manual_reviews_found": payload.get("manual_reviews_found"),
+                  "evaluated_count": payload.get("evaluated_count"),
+                  "not_evaluated_count": payload.get("not_evaluated_count"),
+                  "saved_count": payload.get("saved_count"),
+                  "source": payload.get("source"),
+                  "sources": payload.get("sources"),
+                  "not_order_instruction": payload.get("not_order_instruction"),
+                  "execution_authorized": payload.get("execution_authorized"),
+              }
+              summaries.append(summary)
+
+              if status_code != 200:
+                  sys.exit(1)
+              if payload.get("not_order_instruction") is not True:
+                  print("No-order guardrail missing.")
+                  sys.exit(1)
+              if payload.get("execution_authorized") is not False:
+                  print("Execution authorization guardrail failed.")
+                  sys.exit(1)
+          print(json.dumps(summaries, indent=2, sort_keys=True))
+          PY
