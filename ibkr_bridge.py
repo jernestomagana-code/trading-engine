@@ -9,6 +9,8 @@ import nest_asyncio
 import sys
 from pathlib import Path
 
+import runtime_local_technical
+
 
 # === V26 REMOTE MASTER SNAPSHOT PUBLISHER ===
 import json as _v26_json
@@ -271,6 +273,12 @@ def _v283_publish_to_v28():
     runtime_data = _v283_load_runtime_jsons()
     rows = _v283_extract_options_rows(runtime_data)
     tech = _v283_extract_technical(runtime_data)
+    tech = runtime_local_technical.merge_local_technical_snapshot(
+        tech,
+        runtime_data,
+        options_rows=rows,
+        timeframe="1d",
+    )
 
     payload = {
         "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
@@ -670,6 +678,13 @@ STOCK_MARKET_DATA_WAIT_SECONDS = float(
 )
 HISTORICAL_DATA_TIMEOUT_SECONDS = float(
     _v283_os.environ.get("IBKR_HISTORICAL_DATA_TIMEOUT_SECONDS", "4")
+)
+LOCAL_TECHNICAL_HISTORICAL_DURATION = _v283_os.environ.get(
+    "IBKR_LOCAL_TECHNICAL_HISTORICAL_DURATION",
+    "90 D",
+)
+LOCAL_TECHNICAL_MAX_BARS = int(
+    _v283_os.environ.get("IBKR_LOCAL_TECHNICAL_MAX_BARS", "120")
 )
 
 # Mandamos opciones aunque estén incompletas, pero la decisión queda bloqueada.
@@ -1271,7 +1286,7 @@ def get_price_snapshot_historical(symbol, contract):
         bars = ib.reqHistoricalData(
             contract,
             endDateTime="",
-            durationStr="5 D",
+            durationStr=LOCAL_TECHNICAL_HISTORICAL_DURATION,
             barSizeSetting="1 day",
             whatToShow="TRADES",
             useRTH=True,
@@ -1288,6 +1303,20 @@ def get_price_snapshot_historical(symbol, contract):
         if close is None:
             return None
 
+        historical_bars = []
+        for bar in bars[-LOCAL_TECHNICAL_MAX_BARS:]:
+            try:
+                historical_bars.append({
+                    "timestamp": str(getattr(bar, "date", "")),
+                    "open": clean(getattr(bar, "open", None)),
+                    "high": clean(getattr(bar, "high", None)),
+                    "low": clean(getattr(bar, "low", None)),
+                    "close": clean(getattr(bar, "close", None)),
+                    "volume": clean(getattr(bar, "volume", None)),
+                })
+            except Exception:
+                pass
+
         return {
             "ticker": symbol,
             "price": close,
@@ -1297,7 +1326,10 @@ def get_price_snapshot_historical(symbol, contract):
             "close": close,
             "market_price": None,
             "source": "IBKR_HISTORICAL_V18_1_REMOTE_SNAPSHOT_INGEST",
-            "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK"
+            "price_source": "IBKR_HISTORICAL_CLOSE_FALLBACK",
+            "historical_bars": historical_bars,
+            "historical_bar_count": len(historical_bars),
+            "local_technical_candidate": len(historical_bars) >= 30,
         }
 
     except Exception:
@@ -3838,6 +3870,12 @@ def _v28_publish_master_snapshot(extra_payload=None):
     runtime_data = _v28_bridge_collect_runtime_json()
     options_rows = _v28_bridge_extract_options_rows(runtime_data)
     technical_snapshot = _v28_bridge_extract_technical_snapshot(runtime_data)
+    technical_snapshot = runtime_local_technical.merge_local_technical_snapshot(
+        technical_snapshot,
+        runtime_data,
+        options_rows=options_rows,
+        timeframe="1d",
+    )
 
     payload = {
         "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
