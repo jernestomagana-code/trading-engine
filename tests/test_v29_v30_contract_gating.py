@@ -745,6 +745,100 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["by_parameter_review_status"], {"PASS": 1})
         self.assertTrue(status["not_order_instruction"])
 
+    def test_v31_auto_evaluates_pending_outcome_from_current_snapshot(self):
+        pending = {
+            "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
+            "outcome": "PENDING",
+            "outcome_id": "SIG-2026-06-22-QQQ-NAKED_PUT-20260717-710",
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "paper_outcome": True,
+            "selected_contract": {
+                "strike": 710,
+                "expiration": "20260717",
+                "mid": 1.25,
+                "spread_pct": 11.76,
+                "delta": -0.20,
+            },
+            "not_order_instruction": True,
+        }
+        current_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "strike": 710,
+            "expiration": "20260717",
+            "bid": 0.70,
+            "ask": 0.80,
+            "mid": 0.75,
+            "spread_pct": 13.33,
+            "delta": -0.12,
+            "underlying_price": 725.0,
+        }
+        master = _master_snapshot([current_row])
+
+        result = main._v31_evaluate_pending_outcome(pending, master, checkpoint="PLUS_1D")
+
+        self.assertEqual(result["status"], "EVALUATED")
+        outcome = result["outcome"]
+        self.assertEqual(outcome["outcome"], "PENDING")
+        self.assertEqual(outcome["outcome_engine_version"], "v31_pending_outcome_auto_eval_v1")
+        self.assertEqual(outcome["current_paper_pnl_r"], 0.4)
+        self.assertEqual(outcome["mfe_r"], 0.4)
+        self.assertEqual(outcome["mae_r"], 0.0)
+        self.assertEqual(outcome["latest_auto_evaluation"]["checkpoint"], "PLUS_1D")
+        self.assertTrue(outcome["not_order_instruction"])
+        self.assertFalse(outcome["execution_authorized"])
+
+    def test_v31_auto_evaluate_pending_outcomes_persists_evaluated_paper_updates(self):
+        pending = {
+            "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
+            "outcome": "PENDING",
+            "outcome_id": "SIG-2026-06-22-QQQ-NAKED_PUT-20260717-710",
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "paper_outcome": True,
+            "selected_contract": {
+                "strike": 710,
+                "expiration": "20260717",
+                "mid": 1.25,
+                "delta": -0.20,
+            },
+            "not_order_instruction": True,
+        }
+        current_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "strike": 710,
+            "expiration": "20260717",
+            "bid": 0.70,
+            "ask": 0.80,
+            "mid": 0.75,
+            "spread_pct": 13.33,
+            "delta": -0.12,
+        }
+        master = _master_snapshot([current_row])
+
+        with patch.object(main, "_durable_supabase_fetch", return_value=[pending]), \
+                patch.object(main, "_v29_discover_master_snapshot", return_value=master), \
+                patch.object(main, "_journal_outcome", return_value={"saved": True, "status": "SAVED"}) as journal:
+            payload = main._v31_auto_evaluate_pending_outcomes(limit=10, checkpoint="EOD", dry_run=False)
+
+        self.assertEqual(payload["engine"], "V31_PENDING_OUTCOME_AUTO_EVALUATION")
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["saved_count"], 1)
+        self.assertTrue(payload["not_order_instruction"])
+        self.assertFalse(payload["execution_authorized"])
+        journal.assert_called_once()
+
+        with patch.object(main, "_durable_supabase_fetch", return_value=[pending]), \
+                patch.object(main, "_v29_discover_master_snapshot", return_value=master), \
+                patch.object(main, "_journal_outcome") as dry_journal:
+            dry_payload = main._v31_auto_evaluate_pending_outcomes(limit=10, checkpoint="EOD", dry_run=True)
+
+        self.assertEqual(dry_payload["evaluated_count"], 1)
+        self.assertEqual(dry_payload["saved_count"], 0)
+        dry_journal.assert_not_called()
+
     def test_v31_production_readiness_blocks_without_read_token(self):
         with patch.object(main, "REQUIRE_READ_AUTH", True), patch.object(
             main,
@@ -791,6 +885,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(readiness["read_auth"]["critical_endpoints_protected"])
         self.assertEqual(readiness["risk_profile"]["profile_version"], "v31_risk_profile_v1")
         self.assertEqual(readiness["outcome_tracking"]["version"], "v31_entry_ready_signal_outcome_v1")
+        self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_version"], "v31_pending_outcome_auto_eval_v1")
+        self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_endpoint"], "/v31_evaluate_pending_outcomes")
         self.assertTrue(readiness["token_rotation"]["required_for_hygiene"])
 
     def test_v31_ingest_endpoints_keep_snapshot_auth_separate_from_read_auth(self):

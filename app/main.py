@@ -19549,6 +19549,7 @@ async def gpt_v29_trade_decision(ticker: str):
 _V31_DECISION_VERSION = "v31_canonical_decision_engine"
 _V31_RULESET_VERSION = "v31.1_manual_review_risk_profile_outcomes"
 _V31_SNAPSHOT_VERSION = "v30_options_executable_contract"
+_V31_OUTCOME_EVALUATION_VERSION = "v31_pending_outcome_auto_eval_v1"
 
 
 def _v31_normalize_state(state):
@@ -19922,6 +19923,162 @@ def _v31_track_entry_ready_signal(decision, source="v31"):
     }
 
 
+def _v31_outcome_mid(source):
+    source = source if isinstance(source, dict) else {}
+    mid = _v29_safe_float(source.get("mid") or source.get("mark") or source.get("price") or source.get("option_price"), None)
+    if mid is not None and mid > 0:
+        return mid
+    bid = _v29_safe_float(source.get("bid"), None)
+    ask = _v29_safe_float(source.get("ask"), None)
+    if bid is not None and ask is not None and bid >= 0 and ask > 0:
+        return round((bid + ask) / 2.0, 4)
+    return None
+
+
+def _v31_current_underlying_price(row):
+    row = row if isinstance(row, dict) else {}
+    return _v29_safe_float(
+        row.get("underlying_price")
+        or row.get("latest_price")
+        or row.get("market_price")
+        or row.get("stock_price")
+        or row.get("price_underlying"),
+        None,
+    )
+
+
+def _v31_match_current_outcome_row(outcome, rows):
+    outcome = outcome if isinstance(outcome, dict) else {}
+    contract = outcome.get("selected_contract") if isinstance(outcome.get("selected_contract"), dict) else {}
+    ticker = _v29_safe_upper(outcome.get("ticker"), "")
+    strategy = _v29_safe_upper(outcome.get("strategy"), "")
+    expiration = str(contract.get("expiration") or "")
+    strike = _v29_safe_float(contract.get("strike"), None)
+    candidates = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_ticker = _v29_safe_upper(row.get("ticker") or row.get("symbol") or row.get("underlying"), "")
+        row_strategy = _v29_safe_upper(row.get("strategy"), "")
+        row_expiration = str(row.get("expiration") or row.get("expiry") or "")
+        row_strike = _v29_safe_float(row.get("strike"), None)
+        if ticker and row_ticker != ticker:
+            continue
+        if strategy and row_strategy and row_strategy != strategy:
+            continue
+        if expiration and row_expiration and row_expiration != expiration:
+            continue
+        if strike is not None and row_strike is not None and abs(row_strike - strike) > 0.0001:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda row: _v29_safe_float(row.get("spread_pct"), 9999) or 9999)[0]
+
+
+def _v31_evaluate_pending_outcome(outcome, master, checkpoint="EOD"):
+    outcome = dict(outcome or {})
+    if str(outcome.get("outcome_tracking_version") or "") != "v31_entry_ready_signal_outcome_v1":
+        return {"status": "SKIPPED", "reason": "NOT_V31_ENTRY_READY_OUTCOME", "outcome": outcome}
+    if str(outcome.get("outcome") or "").upper() != "PENDING":
+        return {"status": "SKIPPED", "reason": "OUTCOME_NOT_PENDING", "outcome": outcome}
+
+    contract = outcome.get("selected_contract") if isinstance(outcome.get("selected_contract"), dict) else {}
+    entry_mid = _v31_outcome_mid(contract)
+    if entry_mid is None or entry_mid <= 0:
+        return {"status": "NOT_EVALUATED", "reason": "ENTRY_MID_MISSING", "outcome": outcome}
+
+    current_row = _v31_match_current_outcome_row(outcome, (master or {}).get("rows") or [])
+    if not current_row:
+        return {"status": "NOT_EVALUATED", "reason": "CURRENT_OPTION_ROW_MISSING", "outcome": outcome}
+
+    current_mid = _v31_outcome_mid(current_row)
+    if current_mid is None or current_mid <= 0:
+        return {"status": "NOT_EVALUATED", "reason": "CURRENT_MID_MISSING", "outcome": outcome}
+
+    pnl_r = round((entry_mid - current_mid) / entry_mid, 4)
+    observed_mfe_r = round(max(pnl_r, 0.0), 4)
+    observed_mae_r = round(min(pnl_r, 0.0), 4)
+    existing_mfe = _v29_safe_float(outcome.get("mfe_r"), None)
+    existing_mae = _v29_safe_float(outcome.get("mae_r"), None)
+    updated_mfe = observed_mfe_r if existing_mfe is None else max(existing_mfe, observed_mfe_r)
+    updated_mae = observed_mae_r if existing_mae is None else min(existing_mae, observed_mae_r)
+    evaluation = {
+        "outcome_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "checkpoint": str(checkpoint or "EOD").upper(),
+        "evaluated_at": _v29_now(),
+        "entry_mid": entry_mid,
+        "current_mid": current_mid,
+        "current_paper_pnl_r": pnl_r,
+        "observed_mfe_r": observed_mfe_r,
+        "observed_mae_r": observed_mae_r,
+        "current_underlying_price": _v31_current_underlying_price(current_row),
+        "paper_outcome": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+    evaluations = list(outcome.get("auto_evaluations") or [])
+    evaluations.append(evaluation)
+    outcome.update({
+        "outcome": "PENDING",
+        "paper_outcome": True,
+        "outcome_auto_evaluation_status": "EVALUATED",
+        "latest_auto_evaluation": evaluation,
+        "auto_evaluations": evaluations[-20:],
+        "current_paper_pnl_r": pnl_r,
+        "mfe_r": round(updated_mfe, 4),
+        "mae_r": round(updated_mae, 4),
+        "evaluated_at": evaluation["evaluated_at"],
+        "outcome_engine_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    })
+    return {"status": "EVALUATED", "outcome": outcome, "evaluation": evaluation}
+
+
+def _v31_auto_evaluate_pending_outcomes(limit=100, checkpoint="EOD", dry_run=False):
+    bounded_limit = max(1, min(int(limit or 100), 500))
+    outcomes_data = _durable_supabase_fetch("outcome", limit=bounded_limit)
+    source = "durable_outcome_journal"
+    if outcomes_data is None:
+        outcomes_data = load_outcomes_from_file()
+        source = "local_outcomes_file"
+    pending = [
+        item for item in outcomes_data
+        if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
+        and str(item.get("outcome") or "").upper() == "PENDING"
+    ][-bounded_limit:]
+    master = _v29_discover_master_snapshot()
+    results = []
+    saved = 0
+    for item in pending:
+        result = _v31_evaluate_pending_outcome(item, master, checkpoint=checkpoint)
+        if result.get("status") == "EVALUATED" and not dry_run:
+            durable = _journal_outcome(result["outcome"], source="v31_auto_outcome_evaluation")
+            result["durable_storage"] = durable
+            if durable.get("saved"):
+                saved += 1
+        results.append(result)
+    evaluated = [item for item in results if item.get("status") == "EVALUATED"]
+    not_evaluated = [item for item in results if item.get("status") == "NOT_EVALUATED"]
+    return {
+        "engine": "V31_PENDING_OUTCOME_AUTO_EVALUATION",
+        "outcome_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "generated_at": _v29_now(),
+        "checkpoint": str(checkpoint or "EOD").upper(),
+        "dry_run": bool(dry_run),
+        "source": source,
+        "pending_found": len(pending),
+        "evaluated_count": len(evaluated),
+        "not_evaluated_count": len(not_evaluated),
+        "saved_count": saved,
+        "results": results[:100],
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _v31_production_readiness_checks():
     read_auth = _read_auth_summary()
     ingest_auth = _snapshot_ingest_auth_summary()
@@ -20027,6 +20184,8 @@ def _v31_production_readiness_payload():
         "outcome_tracking": {
             "version": "v31_entry_ready_signal_outcome_v1",
             "entry_ready_signals_are_recorded_as": "PENDING_PAPER_OUTCOMES",
+            "auto_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
+            "auto_evaluation_endpoint": "/v31_evaluate_pending_outcomes",
             "not_order_instruction": True,
         },
         "audit_log": {
@@ -21030,6 +21189,15 @@ async def v31_outcome_tracking_status():
         "durable_storage": _durable_storage_summary(),
         "not_order_instruction": True,
     }
+
+
+@app.post("/v31_evaluate_pending_outcomes")
+async def v31_evaluate_pending_outcomes(limit: int = 100, checkpoint: str = "EOD", dry_run: bool = False):
+    return _v31_auto_evaluate_pending_outcomes(
+        limit=limit,
+        checkpoint=checkpoint,
+        dry_run=dry_run,
+    )
 
 
 @app.get("/v32_strategy_performance")
