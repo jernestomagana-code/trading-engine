@@ -411,20 +411,20 @@
         <h1>Stock Ultimus Command Center</h1>
         <p>Decision support para opciones, con trazabilidad y revision manual.</p>
       </div>
-      <div class="updated">Actualizado<br><strong>18 junio 2026</strong></div>
+      <div class="updated">Actualizado<br><strong>20 junio 2026</strong></div>
     </header>
 
     <main>
       <section class="status-band" aria-label="Estado ejecutivo">
         <article class="status-summary">
           <div class="overline">Donde estamos</div>
-          <strong>V30 validado; V31 y V32 en construccion controlada</strong>
-          <p>El motor ya protege blockers, publica decisiones canonicas y registra resultados. La prioridad es consolidar arquitectura y probar integraciones reales.</p>
+          <strong>V30 validado; V31/V32 ya tienen guardrails y contrato compartido</strong>
+          <p>El motor protege blockers, publica decisiones canonicas, registra resultados y tiene gates de produccion. La prioridad es reducir legacy y probar datos reales.</p>
         </article>
         <article class="metric">
           <div class="overline">Prioridad</div>
           <div class="metric-value">V31</div>
-          <div class="metric-note">Una sola fuente de verdad.</div>
+          <div class="metric-note">Consolidar caminos legacy.</div>
         </article>
         <article class="metric">
           <div class="overline">Guard integral</div>
@@ -439,7 +439,7 @@
         <article class="metric">
           <div class="overline">Gates faltantes</div>
           <div class="metric-value">4</div>
-          <div class="metric-note">Arquitectura, IBKR, TV y storage.</div>
+          <div class="metric-note">Legacy, IBKR, TV y Supabase real.</div>
         </article>
       </section>
 
@@ -456,7 +456,7 @@
 
       <section class="board" aria-label="Tablero de avance">
         <div class="lane done">
-          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">4</span></div>
+          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">6</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="engine">
               <div class="item-top"><h4>V30 Contract Enrichment</h4><span class="tag">Motor</span></div>
@@ -478,6 +478,16 @@
               <p>La plataforma permanece como asistente de decision y revision manual.</p>
               <div class="evidence"><span class="dot"></span>Guardrail integrado</div>
             </article>
+            <article class="work-item" data-area="engine">
+              <div class="item-top"><h4>Contrato V31 Compartido</h4><span class="tag">Motor</span></div>
+              <p>Decision, contrato seleccionado, blockers y score components viven en modulos compartidos.</p>
+              <div class="evidence"><span class="dot"></span>Fixtures V31 pasan</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>Readiness Y Read-Auth</h4><span class="tag">Seguridad</span></div>
+              <p>Produccion queda bloqueada sin tokens, HTTPS, redaccion y politicas de acceso.</p>
+              <div class="evidence"><span class="dot"></span>Gates locales pasan</div>
+            </article>
           </div>
         </div>
 
@@ -486,13 +496,13 @@
           <div class="lane-items">
             <article class="work-item" data-area="engine">
               <div class="item-top"><h4>V31 Decision Canonica</h4><span class="state work">Prioridad</span></div>
-              <p>Endpoints, estados canonicos y publicacion runtime existen; falta extraer schemas y reglas compartidas.</p>
-              <div class="evidence"><span class="dot"></span>Paths V31 pasan</div>
+              <p>Endpoints y contrato compartido existen; falta reducir rutas historicas dentro de app/main.py.</p>
+              <div class="evidence"><span class="dot"></span>Paridad API/GPT/dashboard pasa</div>
             </article>
             <article class="work-item" data-area="data">
               <div class="item-top"><h4>V32 Outcomes</h4><span class="state work">Activo</span></div>
-              <p>Journaling, IDs estables, follow-ups, MFE/MAE y resumen de resultados funcionan localmente.</p>
-              <div class="evidence"><span class="dot"></span>Guard V32 pasa</div>
+              <p>Journaling, follow-ups, outcomes, auditoria redaccionada y adapter Supabase funcionan localmente.</p>
+              <div class="evidence"><span class="dot"></span>Guard V32 + adapter pasan</div>
             </article>
             <article class="work-item" data-area="signals">
               <div class="item-top"><h4>TradingView Strategy Signals</h4><span class="state work">Activo</span></div>
@@ -511,8 +521,8 @@
           <div class="lane-header"><h3>Falta Para Avanzar</h3><span class="count">4</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="engine">
-              <div class="item-top"><h4>Extraer Modulos V31</h4><span class="state wait">Siguiente</span></div>
-              <p>Separar decision schema, contract schema y blocker priority de app/main.py.</p>
+              <div class="item-top"><h4>Reducir Legacy En app/main.py</h4><span class="state wait">Siguiente</span></div>
+              <p>Eliminar duplicacion de caminos historicos para que V31 sea la decision final sin ambiguedad.</p>
               <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: una fuente de verdad</div>
             </article>
             <article class="work-item" data-area="data">
@@ -527,8 +537,8 @@
             </article>
             <article class="work-item" data-area="platform">
               <div class="item-top"><h4>Storage Durable V32</h4><span class="state wait">Pendiente</span></div>
-              <p>Definir persistencia, retencion, aislamiento y auditoria para decisions y outcomes.</p>
-              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: historia confiable</div>
+              <p>Aplicar SQL durable en Supabase/Postgres real y activar RUNTIME_STORAGE_MODE=supabase.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: backend real</div>
             </article>
           </div>
         </div>
@@ -540,10 +550,10 @@
           <table>
             <thead><tr><th style="width:22%">Gate</th><th style="width:28%">Para considerarlo listo</th><th>Evidencia requerida</th><th style="width:14%">Estado</th></tr></thead>
             <tbody>
-              <tr><td>V31 canonico</td><td>Una funcion/modulo posee la decision final.</td><td>Schemas compartidos y paridad API/GPT/dashboard.</td><td><span class="state work">En curso</span></td></tr>
+              <tr><td>V31 canonico</td><td>Una funcion/modulo posee la decision final.</td><td>Reducir rutas legacy restantes en app/main.py.</td><td><span class="state work">En curso</span></td></tr>
               <tr><td>IBKR real</td><td>Contrato ejecutable completo desde broker.</td><td>Snapshot sanitizado y decisiones reproducibles.</td><td><span class="state risk">Pendiente</span></td></tr>
               <tr><td>TradingView</td><td>Alertas reales llegan con contrato v1.</td><td>Forward test por estrategia y timeframe.</td><td><span class="state wait">Pendiente</span></td></tr>
-              <tr><td>V32 durable</td><td>Historia no depende de JSON runtime temporal.</td><td>READ_ACCESS_TOKEN, SQL Supabase/Postgres real y adapter validado.</td><td><span class="state wait">Pendiente</span></td></tr>
+              <tr><td>V32 durable</td><td>Historia no depende de JSON runtime temporal.</td><td>READ_ACCESS_TOKEN, SQL Supabase/Postgres aplicado y modo supabase activo.</td><td><span class="state wait">Pendiente</span></td></tr>
             </tbody>
           </table>
         </div>

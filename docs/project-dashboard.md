@@ -1,6 +1,6 @@
 # Stock Ultimus Project Dashboard
 
-Ultima actualizacion: 2026-06-19
+Ultima actualizacion: 2026-06-20
 
 Este tablero es el punto vivo para saber como vamos. Cada vez que avancemos en
 codigo, fixtures, documentacion o validacion, se debe actualizar esta pagina con
@@ -9,6 +9,10 @@ el nuevo estado, evidencia y siguiente accion.
 Vista visual amigable: `docs/project-dashboard.html`.
 
 Vista ejecutiva tipo Kanban: `docs/project-command-center.html`.
+
+Nota visual: el Command Center ya refleja que V31 tiene contrato compartido,
+V32 tiene adapter Supabase local validado, y que lo pendiente real es reducir
+legacy, validar IBKR real, forward test de TradingView y activar Supabase real.
 
 ## Estado Ejecutivo
 
