@@ -23,6 +23,34 @@
           "note": "Cuidado con limitar upside en lideres fuertes."
         }
       },
+      "strategy_parameters": {
+        "GLOBAL": {
+          "position_size_bias": "STANDARD_OR_REDUCED",
+          "max_spread_pct": 18.0,
+          "minimum_decision_score": 70
+        },
+        "CASH_SECURED_PUT": {
+          "priority": "PRIMARY",
+          "preferred_abs_delta_min": 0.14,
+          "preferred_abs_delta_max": 0.2,
+          "preferred_dte_min": 30,
+          "preferred_dte_max": 45,
+          "max_spread_pct": 16.0,
+          "minimum_decision_score": 75,
+          "minimum_canslim_score": 70,
+          "avoid_if": ["EARNINGS_SOON", "EVENT_RISK_ACTIVE", "SUPPORT_BROKEN"]
+        },
+        "COVERED_CALL": {
+          "priority": "CAUTION",
+          "preferred_abs_delta_min": 0.12,
+          "preferred_abs_delta_max": 0.2,
+          "preferred_dte_min": 25,
+          "preferred_dte_max": 45,
+          "max_spread_pct": 16.0,
+          "minimum_decision_score": 72,
+          "avoid_if": ["LIMITS_HIGH_CONVICTION_UPSIDE", "EARNINGS_SOON"]
+        }
+      },
       "required_confirmations": ["TECHNICAL_TREND_CONFIRMED", "LIQUID_OPTIONS", "EVENT_RISK_CLEAR"]
     },
     {
@@ -41,6 +69,43 @@
           "preferred_abs_delta_max": 0.25,
           "preferred_dte_min": 25,
           "preferred_dte_max": 55
+        }
+      },
+      "strategy_parameters": {
+        "GLOBAL": {
+          "position_size_bias": "STANDARD_OR_REDUCED",
+          "max_spread_pct": 18.0,
+          "minimum_decision_score": 70
+        },
+        "CASH_SECURED_PUT": {
+          "priority": "PRIMARY",
+          "preferred_abs_delta_min": 0.14,
+          "preferred_abs_delta_max": 0.22,
+          "preferred_dte_min": 30,
+          "preferred_dte_max": 60,
+          "max_spread_pct": 18.0,
+          "minimum_decision_score": 72,
+          "minimum_canslim_score": 68,
+          "avoid_if": ["RANGE_SUPPORT_LOST", "EVENT_RISK_ACTIVE"]
+        },
+        "COVERED_CALL": {
+          "priority": "PRIMARY",
+          "preferred_abs_delta_min": 0.15,
+          "preferred_abs_delta_max": 0.25,
+          "preferred_dte_min": 25,
+          "preferred_dte_max": 55,
+          "max_spread_pct": 18.0,
+          "minimum_decision_score": 70,
+          "avoid_if": ["NO_LONG_POSITION", "EVENT_RISK_ACTIVE"]
+        },
+        "IRON_CONDOR": {
+          "priority": "RESEARCH_ONLY",
+          "preferred_short_abs_delta_min": 0.12,
+          "preferred_short_abs_delta_max": 0.18,
+          "preferred_dte_min": 35,
+          "preferred_dte_max": 45,
+          "minimum_decision_score": 78,
+          "avoid_if": ["UNDEFINED_MAX_LOSS", "WIDE_WINGS", "MISSING_OUTCOME_METRICS"]
         }
       },
       "required_confirmations": ["RANGE_CONTEXT_CONFIRMED", "LIQUID_OPTIONS", "EVENT_RISK_CLEAR"]
@@ -62,6 +127,34 @@
           "note": "Puede ser defensivo si la posicion larga ya existe."
         }
       },
+      "strategy_parameters": {
+        "GLOBAL": {
+          "position_size_bias": "REDUCE",
+          "max_spread_pct": 14.0,
+          "minimum_decision_score": 78
+        },
+        "CASH_SECURED_PUT": {
+          "priority": "CAUTION",
+          "preferred_abs_delta_min": 0.1,
+          "preferred_abs_delta_max": 0.16,
+          "preferred_dte_min": 30,
+          "preferred_dte_max": 45,
+          "max_spread_pct": 14.0,
+          "minimum_decision_score": 82,
+          "minimum_canslim_score": 78,
+          "avoid_if": ["SUPPORT_BROKEN", "INDEX_BELOW_KEY_AVERAGE", "EVENT_RISK_ACTIVE"]
+        },
+        "COVERED_CALL": {
+          "priority": "PRIMARY_DEFENSIVE",
+          "preferred_abs_delta_min": 0.18,
+          "preferred_abs_delta_max": 0.3,
+          "preferred_dte_min": 21,
+          "preferred_dte_max": 45,
+          "max_spread_pct": 16.0,
+          "minimum_decision_score": 70,
+          "avoid_if": ["NO_LONG_POSITION", "ASSIGNMENT_UNACCEPTABLE"]
+        }
+      },
       "required_confirmations": ["TECHNICAL_DAMAGE_REVIEWED", "POSITION_CONTEXT_CLEAR", "EVENT_RISK_CLEAR"]
     },
     {
@@ -77,6 +170,39 @@
           "note": "Elevar estandar de liquidez y evitar operar antes de eventos binarios."
         }
       },
+      "strategy_parameters": {
+        "GLOBAL": {
+          "position_size_bias": "REDUCE_OR_BLOCK",
+          "max_spread_pct": 12.0,
+          "minimum_decision_score": 82
+        },
+        "CASH_SECURED_PUT": {
+          "priority": "CAUTION",
+          "preferred_abs_delta_min": 0.08,
+          "preferred_abs_delta_max": 0.14,
+          "preferred_dte_min": 35,
+          "preferred_dte_max": 60,
+          "max_spread_pct": 12.0,
+          "minimum_decision_score": 85,
+          "minimum_canslim_score": 80,
+          "avoid_if": ["BINARY_EVENT_WITHIN_WINDOW", "SPREADS_WIDE", "GAP_RISK_ELEVATED"]
+        },
+        "COVERED_CALL": {
+          "priority": "CAUTION",
+          "preferred_abs_delta_min": 0.16,
+          "preferred_abs_delta_max": 0.25,
+          "preferred_dte_min": 21,
+          "preferred_dte_max": 45,
+          "max_spread_pct": 12.0,
+          "minimum_decision_score": 75,
+          "avoid_if": ["NO_LONG_POSITION", "SPREADS_WIDE", "ASSIGNMENT_UNACCEPTABLE"]
+        },
+        "INTRADAY_INDEX_FUTURES": {
+          "priority": "BLOCKED_BY_DEFAULT",
+          "minimum_decision_score": 90,
+          "avoid_if": ["MAJOR_EVENT_WINDOW", "RISK_DAILY_STATUS_NOT_CLEAR", "PREMARKET_CONTEXT_MISSING"]
+        }
+      },
       "required_confirmations": ["EVENT_RISK_REVIEWED", "SPREADS_TIGHT", "SIZE_REDUCED_OR_BLOCKED"]
     },
     {
@@ -90,6 +216,22 @@
           "premarket_context_required": true,
           "risk_daily_status": "CLEAR",
           "portfolio_status": "CLEAR"
+        }
+      },
+      "strategy_parameters": {
+        "GLOBAL": {
+          "position_size_bias": "INTRADAY_ONLY",
+          "minimum_decision_score": 80
+        },
+        "INTRADAY_INDEX_FUTURES": {
+          "priority": "PRIMARY",
+          "premarket_context_required": true,
+          "risk_daily_status": "CLEAR",
+          "portfolio_status": "CLEAR",
+          "minimum_decision_score": 82,
+          "minimum_rr": 1.5,
+          "max_trades_standard": 3,
+          "avoid_if": ["NO_MAJOR_EVENT_WINDOW_FALSE", "RISK_DAILY_STATUS_NOT_CLEAR", "OPENING_RANGE_UNCLEAR"]
         }
       },
       "required_confirmations": ["PREMARKET_CONTEXT_CONFIRMED", "DAILY_RISK_CLEAR", "NO_MAJOR_EVENT_WINDOW"]

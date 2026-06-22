@@ -21,6 +21,9 @@ class StrategyRegimePolicyTests(unittest.TestCase):
         self.assertEqual(summary["regime_policy_version"], "strategy_regime_policy_v1")
         self.assertIn("BULLISH_LOW_VOL", summary["market_regimes"])
         self.assertIn("HIGH_VOL_EVENT_RISK", summary["market_regimes"])
+        self.assertTrue(summary["parameter_matrix_available"])
+        self.assertIn("CASH_SECURED_PUT", summary["strategy_parameter_coverage"]["BULLISH_LOW_VOL"])
+        self.assertIn("INTRADAY_INDEX_FUTURES", summary["strategy_parameter_coverage"]["INTRADAY_TREND"])
         self.assertEqual(summary["research_promotion_policy"]["minimum_closed_outcomes"], 30)
         self.assertIn("UNDEFINED_MAX_LOSS", summary["research_promotion_policy"]["blocked_if_any"])
         self.assertTrue(summary["manual_review_required"])
@@ -48,7 +51,25 @@ class StrategyRegimePolicyTests(unittest.TestCase):
         self.assertEqual(overlay["strategy_id"], "CASH_SECURED_PUT")
         self.assertEqual(overlay["regime_state"], "REGIME_ALIGNED")
         self.assertIn("cash_secured_put", overlay["parameter_bias"])
+        self.assertEqual(overlay["parameter_guidance_state"], "GUIDANCE_AVAILABLE")
+        self.assertEqual(overlay["strategy_parameters"]["priority"], "PRIMARY")
+        self.assertEqual(overlay["strategy_parameters"]["preferred_abs_delta_max"], 0.2)
+        self.assertEqual(overlay["strategy_parameters"]["preferred_dte_min"], 30)
+        self.assertEqual(overlay["global_parameters"]["minimum_decision_score"], 70)
         self.assertTrue(overlay["not_order_instruction"])
+
+    def test_regime_overlay_exposes_research_only_iron_condor_parameters(self):
+        overlay = strategy_regime_policy.regime_overlay(
+            "IRON_CONDOR",
+            "NEUTRAL_RANGE",
+            self.policy,
+        )
+
+        self.assertEqual(overlay["regime_state"], "REGIME_CAUTION")
+        self.assertEqual(overlay["strategy_parameters"]["priority"], "RESEARCH_ONLY")
+        self.assertEqual(overlay["strategy_parameters"]["preferred_short_abs_delta_max"], 0.18)
+        self.assertIn("MISSING_OUTCOME_METRICS", overlay["strategy_parameters"]["avoid_if"])
+        self.assertFalse(overlay["execution_authorized"])
 
     def test_research_promotion_requires_outcomes_regimes_and_no_hard_blockers(self):
         blocked = strategy_regime_policy.promotion_review(

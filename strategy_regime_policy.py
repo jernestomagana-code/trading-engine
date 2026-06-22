@@ -65,6 +65,7 @@ def validate_regime_policy(policy: dict[str, Any]) -> None:
         "caution_strategy_bias",
         "blocked_strategy_bias",
         "parameter_bias",
+        "strategy_parameters",
         "required_confirmations",
     }
     seen = set()
@@ -76,6 +77,24 @@ def validate_regime_policy(policy: dict[str, Any]) -> None:
         if rid in seen:
             raise ValueError(f"duplicate market regime {rid}")
         seen.add(rid)
+        parameters = item.get("strategy_parameters") or {}
+        if not isinstance(parameters, dict) or "GLOBAL" not in parameters:
+            raise ValueError(f"market regime {rid} missing GLOBAL strategy_parameters")
+        for strategy_id, guidance in parameters.items():
+            sid = canonical_strategy(strategy_id)
+            if sid not in {
+                "GLOBAL",
+                "CASH_SECURED_PUT",
+                "COVERED_CALL",
+                "IRON_CONDOR",
+                "INTRADAY_INDEX_FUTURES",
+                "CANSLIM_GROWTH_FILTER",
+            }:
+                raise ValueError(f"market regime {rid} has unknown strategy parameter {strategy_id}")
+            if not isinstance(guidance, dict):
+                raise ValueError(f"market regime {rid} strategy parameter {strategy_id} must be an object")
+            if guidance.get("execution_authorized") is True:
+                raise ValueError(f"market regime {rid} strategy parameter {strategy_id} cannot authorize execution")
 
     for rid in ["BULLISH_LOW_VOL", "NEUTRAL_RANGE", "BEARISH_OR_CORRECTION", "HIGH_VOL_EVENT_RISK", "INTRADAY_TREND"]:
         if rid not in seen:
@@ -99,6 +118,16 @@ def regime_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
         "ruleset_version": policy.get("ruleset_version"),
         "status": policy.get("status"),
         "market_regimes": [item.get("id") for item in regimes],
+        "parameter_matrix_available": all(
+            isinstance(item.get("strategy_parameters"), dict) and bool(item.get("strategy_parameters", {}).get("GLOBAL"))
+            for item in regimes
+        ),
+        "strategy_parameter_coverage": {
+            item.get("id"): sorted(
+                key for key in (item.get("strategy_parameters") or {}).keys() if key != "GLOBAL"
+            )
+            for item in regimes
+        },
         "research_promotion_policy": {
             "promotion_policy_version": promotion.get("promotion_policy_version"),
             "minimum_closed_outcomes": promotion.get("minimum_closed_outcomes"),
@@ -120,6 +149,8 @@ def regime_overlay(strategy: Any, regime: Any, policy: dict[str, Any]) -> dict[s
     allowed = [normalize(value) for value in item.get("allowed_strategy_bias") or []]
     caution = [normalize(value) for value in item.get("caution_strategy_bias") or []]
     blocked = [normalize(value) for value in item.get("blocked_strategy_bias") or []]
+    parameter_matrix = item.get("strategy_parameters") if isinstance(item.get("strategy_parameters"), dict) else {}
+    strategy_parameters = parameter_matrix.get(strategy_id) or {}
 
     if strategy_id in blocked:
         regime_state = "REGIME_BLOCKED"
@@ -137,6 +168,9 @@ def regime_overlay(strategy: Any, regime: Any, policy: dict[str, Any]) -> dict[s
         "regime_state": regime_state,
         "required_confirmations": item.get("required_confirmations") or [],
         "parameter_bias": item.get("parameter_bias") or {},
+        "global_parameters": parameter_matrix.get("GLOBAL") or {},
+        "strategy_parameters": strategy_parameters,
+        "parameter_guidance_state": "GUIDANCE_AVAILABLE" if strategy_parameters else "NO_STRATEGY_GUIDANCE",
         "manual_review_required": True,
         "not_order_instruction": True,
         "execution_authorized": False,
