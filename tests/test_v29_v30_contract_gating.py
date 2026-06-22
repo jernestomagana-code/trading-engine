@@ -1247,7 +1247,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("strike=710", sent_args[2])
         self.assertIn("bid/ask=1.2/1.35", sent_args[2])
         self.assertIn("delta=-0.2", sent_args[2])
+        self.assertIn("/v31_manual_review", sent_args[2])
+        self.assertIn("APPROVED_FOR_MANUAL_TRADE", sent_args[2])
+        self.assertIn("execution_authorized=false", sent_args[2])
         self.assertIn("/v31_decision/QQQ", sent_args[3])
+        self.assertIn("/v31_manual_review", sent_args[3])
         self.assertIn("710", sent_args[3])
         self.assertIn("1.35", sent_args[3])
         self.assertIn("-0.2", sent_args[3])
@@ -1319,6 +1323,100 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["email_sent"])
         self.assertFalse(result["dedupe"]["deduped"])
         send_email.assert_called_once()
+
+    def test_v31_manual_review_records_human_decision_without_authorizing_execution(self):
+        decision = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "decision_version": "V31",
+            "ruleset_version": "V31",
+            "snapshot_version": "V31",
+            "generated_at": "2026-06-22T14:00:00+00:00",
+            "manual_review_ready": True,
+            "technical_status": "CONFIRMED",
+            "risk_status": "PASS",
+            "main_blocker": None,
+            "blockers": [],
+            "selected_contract": {
+                "strike": 710,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 1.20,
+                "ask": 1.35,
+                "mid": 1.275,
+                "spread": 0.15,
+                "spread_pct": 11.76,
+                "delta": -0.20,
+            },
+        }
+
+        with patch.object(main, "_v31_load_manual_reviews", return_value=[]):
+            with patch.object(main, "_v31_save_manual_reviews", return_value=True) as save_reviews:
+                with patch.object(main, "_journal_outcome", return_value={"saved": True}) as journal:
+                    with patch.object(main, "_record_audit_event", return_value={"event_id": "AUD-1"}) as audit:
+                        result = main._v31_record_manual_review({
+                            "ticker": "QQQ",
+                            "status": "REJECTED",
+                            "reason": "Earnings too close; passing manually.",
+                            "actor": "ernesto",
+                            "decision": decision,
+                        })
+
+        review = result["review"]
+        self.assertEqual(result["engine"], "V31_MANUAL_REVIEW_JOURNAL")
+        self.assertEqual(result["status"], "RECORDED")
+        self.assertEqual(review["status"], "REJECTED")
+        self.assertEqual(review["outcome"], "REJECTED")
+        self.assertEqual(review["ticker"], "QQQ")
+        self.assertEqual(review["decision"]["selected_contract"]["strike"], 710)
+        self.assertFalse(review["can_operate"])
+        self.assertFalse(review["execution_authorized"])
+        self.assertTrue(review["not_order_instruction"])
+        self.assertEqual(review["outcome_tracking_version"], "v31_manual_review_journal_v1")
+        save_reviews.assert_called_once()
+        journal.assert_called_once()
+        audit.assert_called_once()
+
+    def test_v31_manual_review_prevents_approval_when_not_entry_ready(self):
+        decision = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "WAIT_OPTIONS_DATA",
+            "manual_review_ready": False,
+            "main_blocker": "WAIT_OPTIONS_DATA",
+            "blockers": ["OPTIONS_FIELDS_MISSING"],
+            "selected_contract": {},
+        }
+
+        with self.assertRaises(ValueError) as ctx:
+            main._v31_manual_review_payload({
+                "ticker": "QQQ",
+                "status": "APPROVED_FOR_MANUAL_TRADE",
+                "reason": "Trying to approve incomplete option data.",
+                "decision": decision,
+            })
+
+        self.assertEqual(str(ctx.exception), "APPROVAL_REQUIRES_ENTRY_READY")
+
+    def test_v31_manual_review_summary_limits_and_counts_reviews(self):
+        reviews = [
+            {"signal_id": "SIG-1", "status": "REVIEWING", "ticker": "QQQ"},
+            {"signal_id": "SIG-1", "status": "WATCHLIST", "ticker": "QQQ"},
+            {"signal_id": "SIG-2", "status": "REJECTED", "ticker": "SPY"},
+        ]
+
+        with patch.object(main, "_v31_load_manual_reviews", return_value=reviews):
+            payload = main._v31_manual_reviews_payload(limit=2)
+
+        self.assertEqual(payload["engine"], "V31_MANUAL_REVIEW_JOURNAL")
+        self.assertEqual(payload["review_count"], 3)
+        self.assertEqual(payload["by_status"]["WATCHLIST"], 1)
+        self.assertEqual(payload["by_status"]["REJECTED"], 1)
+        self.assertEqual(len(payload["recent_reviews"]), 2)
+        self.assertEqual(payload["latest_by_signal"]["SIG-1"]["status"], "WATCHLIST")
+        self.assertTrue(payload["not_order_instruction"])
+        self.assertFalse(payload["execution_authorized"])
 
 
 if __name__ == "__main__":
