@@ -7,11 +7,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import strategy_registry
+import strategy_input_contracts
 
 
 class StrategyRegistryTests(unittest.TestCase):
     def setUp(self):
         self.registry = strategy_registry.load_registry(ROOT / "config" / "strategy_registry_v1.json")
+        self.input_contracts = strategy_input_contracts.load_input_contracts(
+            ROOT / "config" / "strategy_input_contract_v1.json"
+        )
 
     def test_required_strategies_are_versioned_and_manual_only(self):
         summary = strategy_registry.playbook_summary(self.registry)
@@ -61,6 +65,42 @@ class StrategyRegistryTests(unittest.TestCase):
         )
 
         self.assertIn("WAIT_OPTIONS_DATA", overlay["strategy_blockers"])
+        self.assertFalse(overlay["execution_authorized"])
+
+    def test_strategy_input_contracts_do_not_require_tradingview_for_candidate_generation(self):
+        summary = strategy_input_contracts.input_contract_summary(self.input_contracts)
+
+        self.assertEqual(summary["contract_version"], "strategy_input_contract_v1")
+        self.assertTrue(summary["tradingview_not_required_for_candidate_generation"])
+        self.assertIn("CASH_SECURED_PUT", summary["tradingview_optional_confirmation"])
+        self.assertIn("COVERED_CALL", summary["tradingview_optional_confirmation"])
+        self.assertIn("INTRADAY_INDEX_FUTURES", summary["tradingview_preferred_but_not_exclusive"])
+        self.assertIn("CASH_SECURED_PUT", summary["local_or_ibkr_fallback_available"])
+        self.assertIn("INTRADAY_INDEX_FUTURES", summary["local_or_ibkr_fallback_available"])
+        self.assertTrue(summary["not_order_instruction"])
+        self.assertFalse(summary["execution_authorized"])
+
+    def test_cash_secured_put_contract_has_ibkr_candidate_and_local_technical_fallback(self):
+        contract = strategy_input_contracts.get_input_contract(self.input_contracts, "naked_put")
+
+        self.assertIsNotNone(contract)
+        self.assertEqual(contract["strategy_id"], "CASH_SECURED_PUT")
+        self.assertIn("IBKR_OPTION_CHAIN", contract["candidate_sources"])
+        self.assertIn("LOCAL_TECHNICAL_ENGINE", contract["confirmation_sources"])
+        self.assertIn("TRADINGVIEW_ALERT", contract["confirmation_sources"])
+        self.assertEqual(contract["tradingview_dependency"], "OPTIONAL_CONFIRMATION")
+        self.assertEqual(contract["state_when_missing"]["technical_confirmation"], "WAIT_TECHNICAL")
+        self.assertEqual(contract["state_when_missing"]["candidate_contract"], "WAIT_OPTIONS_DATA")
+        self.assertIn("Continue scanning IBKR candidates", contract["no_tradingview_alert_behavior"])
+
+    def test_input_overlay_never_authorizes_execution(self):
+        overlay = strategy_input_contracts.input_overlay("covered_call", self.input_contracts)
+
+        self.assertEqual(overlay["strategy_id"], "COVERED_CALL")
+        self.assertIn("IBKR_PORTFOLIO_POSITIONS", overlay["candidate_sources"])
+        self.assertIn("LOCAL_TECHNICAL_ENGINE", overlay["confirmation_sources"])
+        self.assertTrue(overlay["manual_review_required"])
+        self.assertTrue(overlay["not_order_instruction"])
         self.assertFalse(overlay["execution_authorized"])
 
 

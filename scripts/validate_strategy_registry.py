@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import strategy_registry
+import strategy_input_contracts
 import strategy_exit_playbook
 import strategy_regime_policy
 
@@ -36,6 +37,27 @@ def main() -> int:
     require(overlay["research_only"] is True, "research-only overlay missing")
     require("RESEARCH_ONLY" in overlay["strategy_blockers"], "research-only blocker missing")
     require(overlay["not_order_instruction"] is True, "no-order guard missing")
+
+    input_contracts = strategy_input_contracts.load_input_contracts(
+        ROOT / strategy_input_contracts.DEFAULT_INPUT_CONTRACT_PATH
+    )
+    input_summary = strategy_input_contracts.input_contract_summary(input_contracts)
+    require(
+        input_summary["tradingview_not_required_for_candidate_generation"] is True,
+        "candidate generation must not depend exclusively on TradingView",
+    )
+    require(
+        "CASH_SECURED_PUT" in input_summary["local_or_ibkr_fallback_available"],
+        "cash secured puts need local/IBKR fallback",
+    )
+    require(
+        "INTRADAY_INDEX_FUTURES" in input_summary["tradingview_preferred_but_not_exclusive"],
+        "futures should prefer but not require TradingView",
+    )
+    csp_input = strategy_input_contracts.get_input_contract(input_contracts, "NAKED_PUT")
+    require(csp_input["state_when_missing"]["technical_confirmation"] == "WAIT_TECHNICAL", "missing technical must wait technical")
+    require(csp_input["state_when_missing"]["candidate_contract"] == "WAIT_OPTIONS_DATA", "missing contract must wait options data")
+    require(csp_input["execution_authorized"] is False, "input contracts must never authorize execution")
 
     playbook = ROOT / "referencias/strategy_playbook_v1.md"
     require(playbook.exists(), "strategy playbook missing")
