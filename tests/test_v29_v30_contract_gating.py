@@ -1418,6 +1418,103 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(payload["not_order_instruction"])
         self.assertFalse(payload["execution_authorized"])
 
+    def test_v31_evaluates_manual_review_against_current_snapshot(self):
+        review = {
+            "outcome_tracking_version": "v31_manual_review_journal_v1",
+            "review_id": "MR-SIG-1",
+            "outcome_id": "SIG-1-MANUAL-REVIEW",
+            "signal_id": "SIG-1",
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "status": "WATCHLIST",
+            "outcome": "WATCHLIST",
+            "decision": {
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "selected_contract": {
+                    "strike": 710,
+                    "expiration": "20260717",
+                    "mid": 1.25,
+                    "delta": -0.20,
+                },
+            },
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+        current_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "strike": 710,
+            "expiration": "20260717",
+            "bid": 0.70,
+            "ask": 0.80,
+            "mid": 0.75,
+            "spread_pct": 13.33,
+            "delta": -0.12,
+            "underlying_price": 725.0,
+        }
+
+        result = main._v31_evaluate_manual_review(review, _master_snapshot([current_row]), checkpoint="PLUS_1D")
+
+        self.assertEqual(result["status"], "EVALUATED")
+        evaluated = result["review"]
+        self.assertEqual(evaluated["status"], "WATCHLIST")
+        self.assertEqual(evaluated["outcome"], "WATCHLIST")
+        self.assertEqual(evaluated["current_paper_pnl_r"], 0.4)
+        self.assertEqual(evaluated["manual_review_learning_label"], "WATCHLIST_WORKED")
+        self.assertEqual(evaluated["latest_manual_review_evaluation"]["checkpoint"], "PLUS_1D")
+        self.assertFalse(evaluated["execution_authorized"])
+        self.assertTrue(evaluated["not_order_instruction"])
+
+    def test_v31_auto_evaluate_manual_reviews_persists_learning_without_authorizing_execution(self):
+        review = {
+            "outcome_tracking_version": "v31_manual_review_journal_v1",
+            "review_id": "MR-SIG-2",
+            "outcome_id": "SIG-2-MANUAL-REVIEW",
+            "signal_id": "SIG-2",
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "status": "REJECTED",
+            "outcome": "REJECTED",
+            "decision": {
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "selected_contract": {
+                    "strike": 710,
+                    "expiration": "20260717",
+                    "mid": 1.25,
+                },
+            },
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+        current_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "strike": 710,
+            "expiration": "20260717",
+            "bid": 1.70,
+            "ask": 1.80,
+            "mid": 1.75,
+        }
+
+        with patch.object(main, "_v31_load_manual_reviews", return_value=[review]), \
+                patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([current_row])), \
+                patch.object(main, "_v31_save_manual_reviews", return_value=True) as save_reviews, \
+                patch.object(main, "_journal_outcome", return_value={"saved": True, "status": "SAVED"}) as journal:
+            payload = main._v31_auto_evaluate_manual_reviews(limit=10, checkpoint="EOD", dry_run=False)
+
+        self.assertEqual(payload["engine"], "V31_MANUAL_REVIEW_AUTO_EVALUATION")
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["saved_count"], 1)
+        result_review = payload["results"][0]["review"]
+        self.assertEqual(result_review["status"], "REJECTED")
+        self.assertEqual(result_review["manual_review_learning_label"], "RISK_AVOIDED")
+        self.assertFalse(result_review["execution_authorized"])
+        self.assertTrue(result_review["not_order_instruction"])
+        save_reviews.assert_called_once()
+        journal.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

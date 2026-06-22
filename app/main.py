@@ -90,6 +90,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_decision/",
     "/v31_manual_review",
     "/v31_manual_reviews",
+    "/v31_evaluate_manual_reviews",
     "/v31_monitor_status",
     "/v31_outcome_tracking_status",
     "/v31_production_readiness",
@@ -20284,6 +20285,134 @@ def _v31_auto_evaluate_pending_outcomes(limit=100, checkpoint="EOD", dry_run=Fal
     }
 
 
+def _v31_manual_review_as_outcome(review):
+    review = review if isinstance(review, dict) else {}
+    decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    return {
+        "outcome_tracking_version": "v31_entry_ready_signal_outcome_v1",
+        "outcome": "PENDING",
+        "outcome_id": review.get("outcome_id") or review.get("id") or review.get("review_id"),
+        "signal_id": review.get("signal_id"),
+        "ticker": review.get("ticker") or decision.get("ticker"),
+        "strategy": review.get("strategy") or decision.get("strategy"),
+        "paper_outcome": True,
+        "selected_contract": contract,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
+def _v31_manual_review_learning_label(review, pnl_r):
+    status = str((review or {}).get("status") or (review or {}).get("outcome") or "").upper()
+    if pnl_r is None:
+        return "NOT_EVALUATED"
+    if status == "REJECTED":
+        return "REJECTED_WINNER" if pnl_r > 0 else "RISK_AVOIDED"
+    if status == "WATCHLIST":
+        return "WATCHLIST_WORKED" if pnl_r > 0 else "WATCHLIST_AVOIDED_RISK"
+    if status == "APPROVED_FOR_MANUAL_TRADE":
+        return "APPROVED_WORKED" if pnl_r > 0 else "APPROVED_ADVERSE"
+    if status in {"REVIEWING", "RECEIVED"}:
+        return "REVIEWING_FAVORABLE" if pnl_r > 0 else "REVIEWING_ADVERSE"
+    return "EXPIRED_FAVORABLE" if pnl_r > 0 else "EXPIRED_ADVERSE"
+
+
+def _v31_evaluate_manual_review(review, master, checkpoint="EOD"):
+    review = dict(review or {})
+    if str(review.get("outcome_tracking_version") or "") != _V31_MANUAL_REVIEW_VERSION:
+        return {"status": "SKIPPED", "reason": "NOT_V31_MANUAL_REVIEW", "review": review}
+    if str(review.get("status") or "").upper() == "EXPIRED":
+        return {"status": "SKIPPED", "reason": "MANUAL_REVIEW_EXPIRED", "review": review}
+
+    proxy = _v31_manual_review_as_outcome(review)
+    result = _v31_evaluate_pending_outcome(proxy, master, checkpoint=checkpoint)
+    if result.get("status") != "EVALUATED":
+        return {
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "review": review,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+    evaluated = result.get("outcome") or {}
+    evaluation = dict(result.get("evaluation") or {})
+    original_status = str(review.get("status") or review.get("outcome") or "UNKNOWN").upper()
+    pnl_r = evaluated.get("current_paper_pnl_r")
+    evaluation.update({
+        "manual_review_status": original_status,
+        "manual_review_learning_label": _v31_manual_review_learning_label(review, pnl_r),
+        "manual_trade_review_only": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    })
+    evaluations = list(review.get("manual_review_auto_evaluations") or [])
+    evaluations.append(evaluation)
+    review.update({
+        "manual_review_auto_evaluation_status": "EVALUATED",
+        "latest_manual_review_evaluation": evaluation,
+        "manual_review_auto_evaluations": evaluations[-20:],
+        "manual_review_learning_label": evaluation.get("manual_review_learning_label"),
+        "current_paper_pnl_r": pnl_r,
+        "mfe_r": evaluated.get("mfe_r"),
+        "mae_r": evaluated.get("mae_r"),
+        "evaluated_at": evaluation.get("evaluated_at"),
+        "outcome_engine_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "status": original_status,
+        "outcome": original_status,
+        "paper_outcome": True,
+        "manual_trade_review_only": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    })
+    return {"status": "EVALUATED", "review": review, "evaluation": evaluation}
+
+
+def _v31_auto_evaluate_manual_reviews(limit=100, checkpoint="EOD", dry_run=False):
+    bounded_limit = max(1, min(int(limit or 100), 500))
+    updated_reviews = list(_v31_load_manual_reviews())
+    reviews = updated_reviews[-bounded_limit:]
+    master = _v29_discover_master_snapshot()
+    results = []
+    saved = 0
+    evaluated_updates = 0
+    by_id = {item.get("review_id") or item.get("id"): index for index, item in enumerate(updated_reviews)}
+    for item in reviews:
+        result = _v31_evaluate_manual_review(item, master, checkpoint=checkpoint)
+        if result.get("status") == "EVALUATED" and not dry_run:
+            review = result["review"]
+            key = review.get("review_id") or review.get("id")
+            if key in by_id:
+                updated_reviews[by_id[key]] = review
+                evaluated_updates += 1
+            durable = _journal_outcome(review, source="v31_manual_review_auto_evaluation")
+            result["durable_storage"] = durable
+            if durable.get("saved"):
+                saved += 1
+        results.append(result)
+    if evaluated_updates and not dry_run:
+        _v31_save_manual_reviews(updated_reviews)
+    evaluated = [item for item in results if item.get("status") == "EVALUATED"]
+    not_evaluated = [item for item in results if item.get("status") == "NOT_EVALUATED"]
+    return {
+        "engine": "V31_MANUAL_REVIEW_AUTO_EVALUATION",
+        "outcome_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
+        "manual_review_version": _V31_MANUAL_REVIEW_VERSION,
+        "generated_at": _v29_now(),
+        "checkpoint": str(checkpoint or "EOD").upper(),
+        "dry_run": bool(dry_run),
+        "manual_reviews_found": len(reviews),
+        "evaluated_count": len(evaluated),
+        "not_evaluated_count": len(not_evaluated),
+        "saved_count": saved,
+        "results": results[:100],
+        "manual_review_required": True,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _v31_production_readiness_checks():
     read_auth = _read_auth_summary()
     ingest_auth = _snapshot_ingest_auth_summary()
@@ -21665,6 +21794,15 @@ async def v31_outcome_tracking_status():
 @app.post("/v31_evaluate_pending_outcomes")
 async def v31_evaluate_pending_outcomes(limit: int = 100, checkpoint: str = "EOD", dry_run: bool = False):
     return _v31_auto_evaluate_pending_outcomes(
+        limit=limit,
+        checkpoint=checkpoint,
+        dry_run=dry_run,
+    )
+
+
+@app.post("/v31_evaluate_manual_reviews")
+async def v31_evaluate_manual_reviews(limit: int = 100, checkpoint: str = "EOD", dry_run: bool = False):
+    return _v31_auto_evaluate_manual_reviews(
         limit=limit,
         checkpoint=checkpoint,
         dry_run=dry_run,
