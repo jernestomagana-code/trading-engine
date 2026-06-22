@@ -1625,6 +1625,84 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(payload["execution_authorized"])
         self.assertTrue(payload["not_order_instruction"])
 
+    def test_v31_learning_notify_preview_includes_executive_summary_without_sending(self):
+        learning = {
+            "engine": "V31_MANUAL_REVIEW_LEARNING",
+            "review_count": 2,
+            "evaluated_count": 2,
+            "unevaluated_count": 0,
+            "needs_more_data": True,
+            "avg_paper_pnl_r": 0.1,
+            "avg_mfe_r": 0.2,
+            "avg_mae_r": -0.1,
+            "by_manual_status": {"WATCHLIST": 1, "REJECTED": 1},
+            "by_learning_label": {"WATCHLIST_WORKED": 1, "RISK_AVOIDED": 1},
+            "by_strategy": {"NAKED_PUT": 2},
+            "by_ticker": {"QQQ": 1, "SPY": 1},
+            "best_reviews": [{"ticker": "QQQ", "strategy": "NAKED_PUT", "manual_status": "WATCHLIST", "learning_label": "WATCHLIST_WORKED", "current_paper_pnl_r": 0.4}],
+            "worst_reviews": [{"ticker": "SPY", "strategy": "NAKED_PUT", "manual_status": "REJECTED", "learning_label": "RISK_AVOIDED", "current_paper_pnl_r": -0.2}],
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+        with patch.object(main, "_v31_manual_review_learning_payload", return_value=learning), \
+                patch.object(main, "send_resend_email") as send_email:
+            preview = main._v31_learning_notify_payload(dry_run=True)
+
+        self.assertEqual(preview["engine"], "V31_WEEKLY_LEARNING_EMAIL")
+        self.assertEqual(preview["status"], "preview")
+        self.assertFalse(preview["email_sent"])
+        self.assertIn("Weekly Learning", preview["subject"])
+        self.assertIn("WATCHLIST_WORKED", preview["text"])
+        self.assertIn("RISK_AVOIDED", preview["html"])
+        self.assertFalse(preview["execution_authorized"])
+        self.assertTrue(preview["not_order_instruction"])
+        send_email.assert_not_called()
+
+    def test_v31_learning_notify_sends_and_dedupes_weekly_email(self):
+        learning = {
+            "engine": "V31_MANUAL_REVIEW_LEARNING",
+            "review_count": 1,
+            "evaluated_count": 1,
+            "unevaluated_count": 0,
+            "needs_more_data": True,
+            "avg_paper_pnl_r": 0.0,
+            "avg_mfe_r": 0.0,
+            "avg_mae_r": 0.0,
+            "by_manual_status": {"REVIEWING": 1},
+            "by_learning_label": {"REVIEWING_ADVERSE": 1},
+            "by_strategy": {"NAKED_PUT": 1},
+            "by_ticker": {"SPY": 1},
+            "best_reviews": [],
+            "worst_reviews": [],
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+        with patch.object(main, "_v31_manual_review_learning_payload", return_value=learning), \
+                patch.object(main, "_v31_load_learning_notify_state", return_value={}), \
+                patch.object(main, "_v31_save_learning_notify_state", return_value=True), \
+                patch.object(main, "send_resend_email", return_value={"email_sent": True}) as send_email:
+            sent = main._v31_learning_notify_payload(to_email="test@example.com")
+
+        self.assertEqual(sent["status"], "sent")
+        self.assertTrue(sent["email_sent"])
+        self.assertFalse(sent["dedupe"]["deduped"])
+        self.assertFalse(sent["execution_authorized"])
+        self.assertTrue(sent["not_order_instruction"])
+        send_email.assert_called_once()
+
+        week_key = main._v31_learning_week_key()
+        with patch.object(main, "_v31_manual_review_learning_payload", return_value=learning), \
+                patch.object(main, "_v31_load_learning_notify_state", return_value={week_key: {"sent_at": main._v29_now()}}), \
+                patch.object(main, "send_resend_email") as deduped_email:
+            deduped = main._v31_learning_notify_payload()
+
+        self.assertEqual(deduped["status"], "skipped")
+        self.assertEqual(deduped["reason"], "DEDUPED_WEEKLY_LEARNING_EMAIL")
+        self.assertTrue(deduped["dedupe"]["deduped"])
+        deduped_email.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
