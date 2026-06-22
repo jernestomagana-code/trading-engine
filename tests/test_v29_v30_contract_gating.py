@@ -1114,6 +1114,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(monitor["pipeline_status"], "OK")
         self.assertEqual(monitor["manual_review_ready_count"], 1)
         self.assertEqual(monitor["entry_ready_tickers"], ["QQQ"])
+        self.assertEqual(monitor["entry_ready_decisions"][0]["contract"]["strike"], 710)
+        self.assertEqual(monitor["entry_ready_decisions"][0]["contract"]["bid"], 1.20)
+        self.assertEqual(monitor["entry_ready_decisions"][0]["contract"]["ask"], 1.35)
+        self.assertEqual(monitor["entry_ready_decisions"][0]["contract"]["delta"], -0.20)
+        self.assertFalse(monitor["entry_ready_decisions"][0]["can_operate"])
         self.assertIn("revision manual", monitor["message"])
         self.assertFalse(monitor["notification_sent"])
         self.assertTrue(monitor["not_order_instruction"])
@@ -1195,8 +1200,35 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "technical_count": 1,
             "manual_review_ready_count": 1,
             "entry_ready_tickers": ["QQQ"],
+            "entry_ready_decisions": [
+                {
+                    "ticker": "QQQ",
+                    "strategy": "NAKED_PUT",
+                    "final_state": "ENTRY_READY",
+                    "main_blocker": None,
+                    "manual_review_ready": True,
+                    "can_operate": False,
+                    "technical_status": "CONFIRMED",
+                    "risk_status": "PASS",
+                    "construction_status": "CONTRACT_SELECTED",
+                    "contract": {
+                        "strike": 710,
+                        "expiration": "20260717",
+                        "dte": 33,
+                        "bid": 1.20,
+                        "ask": 1.35,
+                        "mid": 1.275,
+                        "spread": 0.15,
+                        "spread_pct": 11.76,
+                        "delta": -0.20,
+                    },
+                    "not_order_instruction": True,
+                }
+            ],
             "risk_blocked_tickers": [],
+            "risk_blocked_decisions": [],
             "wait_options_tickers": [],
+            "wait_options_decisions": [],
             "message": "Hay setups ENTRY_READY para revision manual.",
             "next_required_action": "Abrir dashboard.",
             "not_order_instruction": True,
@@ -1211,6 +1243,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "sent")
         self.assertEqual(result["notify_reason"], "ACTION_REQUIRED")
         self.assertTrue(result["email_sent"])
+        sent_args = send_email.call_args.args
+        self.assertIn("strike=710", sent_args[2])
+        self.assertIn("bid/ask=1.2/1.35", sent_args[2])
+        self.assertIn("delta=-0.2", sent_args[2])
+        self.assertIn("/v31_decision/QQQ", sent_args[3])
+        self.assertIn("710", sent_args[3])
+        self.assertIn("1.35", sent_args[3])
+        self.assertIn("-0.2", sent_args[3])
         self.assertTrue(result["not_order_instruction"])
         send_email.assert_called_once()
 

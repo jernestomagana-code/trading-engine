@@ -20725,11 +20725,45 @@ def _v31_monitor_status_payload():
         "manual_review_ready_tickers": [d.get("ticker") for d in manual_ready],
         "risk_blocked_tickers": [d.get("ticker") for d in risk_blocked],
         "wait_options_tickers": [d.get("ticker") for d in wait_options],
+        "entry_ready_decisions": [_v31_monitor_decision_summary(d) for d in entry_ready],
+        "risk_blocked_decisions": [_v31_monitor_decision_summary(d) for d in risk_blocked],
+        "wait_options_decisions": [_v31_monitor_decision_summary(d) for d in wait_options],
         "summary": summary,
         "message": message,
         "next_required_action": pipeline.get("next_required_action"),
         "notification_sent": False,
         "notification_channel": None,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_monitor_decision_summary(decision):
+    contract = decision.get("selected_contract") or {}
+    risk_profile = decision.get("risk_profile") or {}
+    return {
+        "ticker": decision.get("ticker"),
+        "final_state": decision.get("final_state"),
+        "strategy": decision.get("strategy"),
+        "main_blocker": decision.get("main_blocker"),
+        "manual_review_ready": decision.get("manual_review_ready"),
+        "can_operate": False,
+        "technical_status": decision.get("technical_status"),
+        "risk_status": decision.get("risk_status"),
+        "construction_status": decision.get("construction_status"),
+        "required_missing_fields": decision.get("required_missing_fields") or [],
+        "risk_profile_status": risk_profile.get("status"),
+        "risk_profile_blockers": risk_profile.get("blockers") or [],
+        "contract": {
+            "strike": contract.get("strike"),
+            "expiration": contract.get("expiration"),
+            "dte": contract.get("dte"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid": contract.get("mid"),
+            "spread": contract.get("spread"),
+            "spread_pct": contract.get("spread_pct"),
+            "delta": contract.get("delta"),
+        },
         "not_order_instruction": True,
     }
 
@@ -20827,6 +20861,87 @@ def _v31_record_monitor_notification(monitor, notify_reason, status):
 
 def _v31_monitor_email_content(monitor):
     base_url = PUBLIC_BASE_URL or "https://trading-engine-p097.onrender.com"
+    entry_ready_decisions = monitor.get("entry_ready_decisions") or []
+    risk_blocked_decisions = monitor.get("risk_blocked_decisions") or []
+    wait_options_decisions = monitor.get("wait_options_decisions") or []
+
+    def decision_line(item):
+        contract = item.get("contract") or {}
+        fields = [
+            "{ticker} {strategy} {state}".format(
+                ticker=item.get("ticker"),
+                strategy=item.get("strategy"),
+                state=item.get("final_state"),
+            ),
+            "strike={strike}".format(strike=contract.get("strike")),
+            "exp={exp}".format(exp=contract.get("expiration")),
+            "dte={dte}".format(dte=contract.get("dte")),
+            "bid/ask={bid}/{ask}".format(bid=contract.get("bid"), ask=contract.get("ask")),
+            "mid={mid}".format(mid=contract.get("mid")),
+            "spread={spread} ({spread_pct}%)".format(
+                spread=contract.get("spread"),
+                spread_pct=contract.get("spread_pct"),
+            ),
+            "delta={delta}".format(delta=contract.get("delta")),
+            "technical={technical}".format(technical=item.get("technical_status")),
+            "risk={risk}".format(risk=item.get("risk_status")),
+            "blocker={blocker}".format(blocker=item.get("main_blocker")),
+            "can_operate=false",
+        ]
+        return " | ".join(str(field) for field in fields)
+
+    actionable_lines = [decision_line(item) for item in entry_ready_decisions]
+    risk_lines = [decision_line(item) for item in risk_blocked_decisions]
+    wait_options_lines = [decision_line(item) for item in wait_options_decisions]
+    actionable_text = "\n".join("- " + line for line in actionable_lines) or "- None"
+    risk_text = "\n".join("- " + line for line in risk_lines) or "- None"
+    wait_options_text = "\n".join("- " + line for line in wait_options_lines) or "- None"
+
+    def html_decision_rows(items):
+        rows = []
+        for item in items:
+            contract = item.get("contract") or {}
+            ticker = item.get("ticker")
+            rows.append("""
+            <tr>
+              <td><a href="{base}/v31_decision/{ticker}">{ticker}</a></td>
+              <td>{strategy}</td>
+              <td>{state}</td>
+              <td>{strike}</td>
+              <td>{expiration}</td>
+              <td>{dte}</td>
+              <td>{bid}</td>
+              <td>{ask}</td>
+              <td>{mid}</td>
+              <td>{spread_pct}</td>
+              <td>{delta}</td>
+              <td>{technical}</td>
+              <td>{risk}</td>
+              <td>{blocker}</td>
+            </tr>
+            """.format(
+                base=_v29_html_escape(base_url),
+                ticker=_v29_html_escape(ticker),
+                strategy=_v29_html_escape(item.get("strategy")),
+                state=_v29_html_escape(item.get("final_state")),
+                strike=_v29_html_escape(contract.get("strike")),
+                expiration=_v29_html_escape(contract.get("expiration")),
+                dte=_v29_html_escape(contract.get("dte")),
+                bid=_v29_html_escape(contract.get("bid")),
+                ask=_v29_html_escape(contract.get("ask")),
+                mid=_v29_html_escape(contract.get("mid")),
+                spread_pct=_v29_html_escape(contract.get("spread_pct")),
+                delta=_v29_html_escape(contract.get("delta")),
+                technical=_v29_html_escape(item.get("technical_status")),
+                risk=_v29_html_escape(item.get("risk_status")),
+                blocker=_v29_html_escape(item.get("main_blocker")),
+            ))
+        return "\n".join(rows) or "<tr><td colspan=\"14\">None</td></tr>"
+
+    entry_ready_rows = html_decision_rows(entry_ready_decisions)
+    risk_blocked_rows = html_decision_rows(risk_blocked_decisions)
+    wait_options_rows = html_decision_rows(wait_options_decisions)
+
     subject = "Stock Ultimus V31 Monitor: {level}".format(
         level=monitor.get("alert_level")
     )
@@ -20847,6 +20962,15 @@ def _v31_monitor_email_content(monitor):
         "ENTRY_READY: {tickers}".format(tickers=monitor.get("entry_ready_tickers")),
         "RISK_BLOCKED: {tickers}".format(tickers=monitor.get("risk_blocked_tickers")),
         "WAIT_OPTIONS_DATA: {tickers}".format(tickers=monitor.get("wait_options_tickers")),
+        "",
+        "ENTRY_READY detail:",
+        actionable_text,
+        "",
+        "RISK_BLOCKED detail:",
+        risk_text,
+        "",
+        "WAIT_OPTIONS_DATA detail:",
+        wait_options_text,
         "",
         "Dashboard: {base}/v31_dashboard".format(base=base_url),
         "Estado monitor: {base}/v31_monitor_status".format(base=base_url),
@@ -20869,6 +20993,21 @@ def _v31_monitor_email_content(monitor):
       <li>RISK_BLOCKED: {risk_blocked}</li>
       <li>WAIT_OPTIONS_DATA: {wait_options}</li>
     </ul>
+    <h3>ENTRY_READY detail</h3>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Strategy</th><th>State</th><th>Strike</th><th>Exp</th><th>DTE</th>
+          <th>Bid</th><th>Ask</th><th>Mid</th><th>Spread %</th><th>Delta</th>
+          <th>Technical</th><th>Risk</th><th>Blocker</th>
+        </tr>
+      </thead>
+      <tbody>{entry_ready_rows}</tbody>
+    </table>
+    <h3>RISK_BLOCKED detail</h3>
+    <table border="1" cellpadding="6" cellspacing="0"><tbody>{risk_blocked_rows}</tbody></table>
+    <h3>WAIT_OPTIONS_DATA detail</h3>
+    <table border="1" cellpadding="6" cellspacing="0"><tbody>{wait_options_rows}</tbody></table>
     <p><a href="{base}/v31_dashboard">Abrir dashboard V31</a></p>
     <p><a href="{base}/v31_monitor_status">Abrir estado del monitor</a></p>
     <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
@@ -20885,6 +21024,9 @@ def _v31_monitor_email_content(monitor):
         entry_ready=_v29_html_escape(monitor.get("entry_ready_tickers")),
         risk_blocked=_v29_html_escape(monitor.get("risk_blocked_tickers")),
         wait_options=_v29_html_escape(monitor.get("wait_options_tickers")),
+        entry_ready_rows=entry_ready_rows,
+        risk_blocked_rows=risk_blocked_rows,
+        wait_options_rows=wait_options_rows,
         base=_v29_html_escape(base_url),
     )
     return {
