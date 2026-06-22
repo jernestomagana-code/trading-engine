@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
@@ -115,9 +115,19 @@ except ModuleNotFoundError:
 app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 
 
+@app.get("/super_engine_bolsa_gpt_action_openapi.yaml", response_class=PlainTextResponse)
+def super_engine_bolsa_gpt_action_openapi():
+    """Serve the read-only ChatGPT Action schema for Super Engine Bolsa."""
+    schema_path = Path(__file__).resolve().parents[1] / "docs" / "super-engine-bolsa-gpt-action.openapi.yaml"
+    if not schema_path.exists():
+        raise HTTPException(status_code=404, detail="GPT Action OpenAPI schema not found")
+    return schema_path.read_text()
+
+
 READ_AUTH_PUBLIC_PATHS = {
     "/",
     "/health",
+    "/super_engine_bolsa_gpt_action_openapi.yaml",
 }
 READ_AUTH_PUBLIC_PREFIXES = (
     "/webhook",

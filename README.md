@@ -33,6 +33,10 @@ See `AGENTS.md` for the Codex agent workflow and V30 acceptance criteria.
 - `docs/strategy-intelligence-loop.md`: Morgan's research-to-rule loop for
   current market practice, elite trader/institutional research, intraday vs
   non-intraday strategy review, and versioned rule promotion.
+- `docs/super-engine-bolsa-gpt-action.md`: setup guide for connecting the
+  Super Engine Bolsa custom GPT to the V31 GPT-facing read endpoints.
+- `docs/super-engine-bolsa-gpt-action.openapi.yaml`: OpenAPI schema for the
+  ChatGPT Action that reads daily rankings and ticker decisions.
 - `strategy_intelligence.py`: shared V31 Strategy Intelligence helpers for
   registry lookup, source timestamps, freshness gates, score components, and
   daily ranking.
