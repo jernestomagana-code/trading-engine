@@ -11,6 +11,8 @@ ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
 MONITOR_NOTIFY_WORKFLOW = ROOT / ".github" / "workflows" / "v31-monitor-notify.yml"
 MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-review-evaluate.yml"
 WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-learning-email.yml"
+DAILY_OPERATIONAL_AUDIT_WORKFLOW = ROOT / ".github" / "workflows" / "v31-daily-operational-audit.yml"
+DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -140,6 +142,41 @@ class WeeklyLearningEmailWorkflowTests(unittest.TestCase):
         self.assertIn("execution_authorized", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+
+
+class DailyOperationalAuditWorkflowTests(unittest.TestCase):
+    def test_v31_daily_audit_workflow_is_read_only_and_guarded(self):
+        source = DAILY_OPERATIONAL_AUDIT_WORKFLOW.read_text()
+
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("cron:", source)
+        self.assertIn("tools/v31_daily_operational_audit.py", source)
+        self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
+        self.assertIn("READ_ACCESS_TOKEN", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertIn("uses_ingest_token", source)
+        self.assertIn("sends_email", source)
+        self.assertIn("touches_ibkr", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("ibkr_bridge.py", source)
+        self.assertNotIn("/v31_ingest_snapshot", source)
+
+    def test_v31_daily_audit_tool_never_uses_ingest_or_email_paths(self):
+        source = DAILY_OPERATIONAL_AUDIT_TOOL.read_text()
+
+        self.assertIn("V31_DAILY_OPERATIONAL_AUDIT", source)
+        self.assertIn("/v31_evaluate_manual_reviews", source)
+        self.assertIn("dry_run=true", source)
+        self.assertIn("/v31_manual_review_learning_notify/preview", source)
+        self.assertIn("/v31_monitor_notify/preview", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("send_resend_email", source)
+        self.assertNotIn("ib_insync", source)
 
 
 if __name__ == "__main__":

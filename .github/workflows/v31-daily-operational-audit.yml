@@ -1,0 +1,85 @@
+name: V31 Daily Operational Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan checks without calling production"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      limit:
+        description: "Manual review / learning rows to inspect"
+        required: false
+        default: "100"
+  schedule:
+    - cron: "30 12 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PUBLIC_BASE_URL: https://trading-engine-p097.onrender.com
+      READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+      LIMIT: ${{ github.event.inputs.limit || '100' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run V31 daily operational audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            "tools/v31_daily_operational_audit.py"
+            "--base-url" "${PUBLIC_BASE_URL}"
+            "--limit" "${LIMIT}"
+          )
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            args+=("--dry-run")
+          fi
+          python "${args[@]}" | tee /tmp/v31_daily_operational_audit.json
+
+      - name: Verify audit preserved no-order guardrails
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("/tmp/v31_daily_operational_audit.json").read_text())
+          print(json.dumps({
+              "status": payload.get("status"),
+              "summary": payload.get("summary"),
+              "not_order_instruction": payload.get("not_order_instruction"),
+              "execution_authorized": payload.get("execution_authorized"),
+              "uses_ingest_token": payload.get("uses_ingest_token"),
+              "sends_email": payload.get("sends_email"),
+              "touches_ibkr": payload.get("touches_ibkr"),
+          }, indent=2, sort_keys=True))
+
+          if payload.get("not_order_instruction") is not True:
+              raise SystemExit("Audit result lost not_order_instruction=true")
+          if payload.get("execution_authorized") is not False:
+              raise SystemExit("Audit result must keep execution_authorized=false")
+          if payload.get("uses_ingest_token") is not False:
+              raise SystemExit("Daily audit must not use ingest token")
+          if payload.get("sends_email") is not False:
+              raise SystemExit("Daily audit must not send email")
+          if payload.get("touches_ibkr") is not False:
+              raise SystemExit("Daily audit must not touch IBKR")
+          if payload.get("status") == "FAIL":
+              raise SystemExit("Daily operational audit failed")
+          PY
