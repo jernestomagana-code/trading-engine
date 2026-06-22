@@ -23,7 +23,7 @@ from typing import Any
 
 
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
-DEFAULT_READ_TOKEN_SERVICE = "stock-ultimus-read-access-token"
+DEFAULT_READ_TOKEN_SERVICE = "stock-ultimus-read-access"
 ALLOWED_STATUSES = (
     "RECEIVED",
     "REVIEWING",

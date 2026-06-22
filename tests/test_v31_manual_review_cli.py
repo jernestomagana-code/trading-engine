@@ -13,6 +13,11 @@ def _args(**overrides):
 
 
 class V31ManualReviewCliTests(unittest.TestCase):
+    def test_default_keychain_service_matches_production_read_token(self):
+        args = _args()
+
+        self.assertEqual(args.read_token_service, "stock-ultimus-read-access")
+
     def test_dry_run_record_does_not_read_token_or_send_request(self):
         args = _args(ticker="spy", status="REVIEWING", reason="Validating chart.", dry_run=True)
 
