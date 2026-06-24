@@ -1,6 +1,6 @@
 # Stock Ultimus Project Dashboard
 
-Ultima actualizacion: 2026-06-20
+Ultima actualizacion: 2026-06-23
 
 Este tablero es el punto vivo para saber como vamos. Cada vez que avancemos en
 codigo, fixtures, documentacion o validacion, se debe actualizar esta pagina con
@@ -9,6 +9,8 @@ el nuevo estado, evidencia y siguiente accion.
 Vista visual amigable: `docs/project-dashboard.html`.
 
 Vista ejecutiva tipo Kanban: `docs/project-command-center.html`.
+Guia para instalacion/comercializacion controlada:
+`docs/third-party-installation-guide.md`.
 
 Nota visual: el Command Center ya refleja que V31 tiene contrato compartido,
 V32 tiene adapter Supabase local validado, y que lo pendiente real es reducir
@@ -16,14 +18,17 @@ legacy, validar IBKR real, forward test de TradingView y activar Supabase real.
 
 ## Estado Ejecutivo
 
-Estado actual: V30 validado localmente; V31 y V32 activos con guardrails; integracion TradingView lista para forward test.
+Estado actual: base local validada; el proyecto aun no esta al 100% operativo
+porque faltan pruebas reales y despliegue seguro. V30 esta validado, V31/V32
+tienen guardrails y contratos compartidos, y TradingView esta listo para
+forward test.
 
 Resumen:
 
 - Prioridad activa: V31 Canonical Decision Contract.
 - Objetivo: exponer una decision canonica versionada sobre el motor validado,
   con blockers, contrato seleccionado, riesgo, explicacion y no-order guardrails.
-- Validacion local: pasando para V30, V31, V32 y señales TradingView.
+- Validacion local del 2026-06-23: pasando para V30, V31, V32 y señales TradingView.
 - V32 ya registra decisiones, follow-ups y outcomes con IDs estables y deduplicacion.
 - TradingView ya tiene contrato de señal, 6 fixtures y 6 scripts Pine validados.
 - Playbook de estrategia V1 definido para fuentes, frescura, blockers, ranking
@@ -50,16 +55,35 @@ Resumen:
   JSON local sigue como modo personal por defecto.
 - Read-auth middleware agregado para proteger dashboards, GPT/status,
   decisiones, auditoria, readiness, storage y superficies V31/V32 en produccion.
-- Riesgo principal: hay multiples caminos historicos de decision en
-  `app/main.py`; V31 ya expone contrato canonico, pero falta reducir caminos
-  legacy y validar con snapshot real IBKR sanitizado.
+- Riesgo principal: la base local pasa, pero el 100% requiere evidencia de
+  broker real, alertas reales, storage durable real y reduccion de rutas legacy.
 - Regla de seguridad: no hay ejecucion automatica de ordenes permitida.
+
+## Ruta Al 100%
+
+Definicion de 100% para el estado actual del proyecto: Stock Ultimus queda listo
+para uso personal operativo controlado cuando las decisiones V31 sean la fuente
+unica, los datos reales de IBKR/TradingView esten validados, V32 persista en
+storage durable real y la configuracion de produccion quede protegida. Uso
+comercial o multiusuario sigue fuera de alcance hasta compliance review.
+
+| Gate para 100% | Estado actual | Evidencia necesaria | Bloqueo |
+| --- | --- | --- | --- |
+| 1. V31 como fuente unica de decision | En curso | `app/main.py` sin rutas duplicadas que puedan producir decisiones divergentes; smoke API/GPT/dashboard pasando. | Trabajo de arquitectura local. |
+| 2. Snapshot real IBKR sanitizado | Pendiente externo | Capturar snapshot real fuera del repo, sanitizarlo y validar decisiones por ticker sin secretos ni datos de cuenta. | Requiere datos reales de IBKR. |
+| 3. Forward test TradingView | Pendiente externo | Cargar Pine Pro V2, emitir alertas reales y confirmar payloads aceptados por `/technical_snapshot`. | Requiere TradingView real. |
+| 4. Supabase/Postgres durable activo | Pendiente de configuracion | Aplicar `supabase/durable_storage_contract_v1.sql`, configurar `RUNTIME_STORAGE_MODE=supabase` y validar round-trip real. | Requiere backend real y credenciales seguras. |
+| 5. Read-auth/produccion verificada | Pendiente de Render | Configurar `READ_ACCESS_TOKEN`, webhook secret, HTTPS base URL y validar endpoints protegidos en produccion. | Requiere variables de entorno en Render. |
+| 6. V33/comercial readiness | Pendiente por diseno | Tenant/account isolation, auditoria exportable, disclosures, risk profiles y legal/compliance review. | No necesario para uso personal; obligatorio antes de multiusuario/comercial. |
+
+Lectura rapida: localmente vamos fuerte; para 100% faltan principalmente
+validaciones reales y endurecimiento de produccion.
 
 ## Semaforo
 
 | Area | Estado | Evidencia | Siguiente accion |
 | --- | --- | --- | --- |
-| Bridge IBKR | En progreso | `ibkr_bridge.py` contiene campos V30, calidad de datos y validacion de contrato ejecutable. | Revisar contra datos reales de IBKR cuando haya snapshot runtime. |
+| Bridge IBKR | En progreso | `ibkr_bridge.py` contiene campos V30, calidad de datos, entrypoint/cadencia y guardrails de mercado validados. | Revisar contra datos reales de IBKR cuando haya snapshot runtime. |
 | Cloud/FastAPI | En progreso | `app/main.py` expone V31 y V32: decisiones canonicas, historial, follow-ups y outcomes; V31 delega schema a `v31_contracts.py` y smoke valida paridad API/GPT/dashboard/ranking. | Reducir caminos legacy y validar snapshot real sanitizado. |
 | Decision/Riesgo | Validado localmente | El guard integral valida prioridad `WAIT_OPTIONS_DATA`, `ENTRY_READY`, estados V31 y reglas de strategy readiness. | Agregar pruebas automatizadas formales si se adopta pytest. |
 | Fixtures V30 | Validado | 7 fixtures V30 y 1 snapshot runtime sanitizado pasan con `scripts/check_v30_integrity.py`. | Mantener fixtures sincronizados con cambios de contrato. |
@@ -134,6 +158,7 @@ Resultado:
 - 7 fixtures V30 validados.
 - Guardrails de no-auto-order validados.
 - 34 archivos Python compilados.
+- Bridge entrypoint, cadence y market-state guardrails validados.
 - Privacidad de fixtures runtime validada.
 - 6 fixtures de señales TradingView validados.
 - Strategy Intelligence registry y notas Morgan validadas.
@@ -188,14 +213,21 @@ No bloqueo la validacion.
 | Playbook/registry/ranking/frescura, schema V31, compatibilidad de superficies y decision guards ya tienen fixtures. | Falta validacion con datos runtime reales sanitizados. | Capturar snapshot IBKR real sanitizado. |
 | Investigacion de traders top puede confundirse con copy-trading. | Riesgo operativo y de compliance si se replican trades o se elimina criterio propio. | Morgan debe convertir practicas externas en hipotesis testeables; nunca en instrucciones ni overrides. |
 
-## Proximas Acciones
+## Proximas Acciones Para Cerrar El 100%
 
-1. Seguir reduciendo caminos historicos de decision en `app/main.py`.
-2. Configurar `READ_ACCESS_TOKEN` en Render y validar acceso protegido.
-3. Aplicar SQL `durable_storage_contract_v1` en Supabase/Postgres real o mantener scope `personal`.
-4. Agregar fixture de snapshot real IBKR sanitizado cuando haya datos runtime.
-5. Capturar un snapshot real de IBKR fuera del repo y pasarlo por `scripts/sanitize_runtime_snapshot.py`.
-6. Configurar `RUNTIME_STORAGE_MODE=supabase` y validar round-trip contra backend real.
+1. Reducir caminos historicos de decision en `app/main.py` hasta que V31 sea la
+   fuente unica de verdad.
+2. Capturar un snapshot real de IBKR fuera del repo, sanitizarlo con
+   `scripts/sanitize_runtime_snapshot.py` y validar decisiones por ticker.
+3. Cargar Pine Pro V2 en TradingView y hacer forward test contra
+   `/technical_snapshot`.
+4. Aplicar `supabase/durable_storage_contract_v1.sql` en Supabase/Postgres real.
+5. Configurar `READ_ACCESS_TOKEN`, webhook secret, HTTPS base URL y limites de
+   email en Render.
+6. Activar `RUNTIME_STORAGE_MODE=supabase` y validar round-trip real de journals,
+   outcomes y audit events.
+7. Mantener V33 como bloqueado para multiusuario/comercial hasta tener
+   aislamiento, disclosures y compliance review.
 
 ## Registro De Avances
 
@@ -229,3 +261,5 @@ No bloqueo la validacion.
 | 2026-06-19 | Supabase runtime adapter agregado. | V32 decisions/outcomes/audit events pueden persistir via Supabase REST; `scripts/check_durable_storage_runtime.py` valida round-trip offline. |
 | 2026-06-19 | Read-auth middleware agregado. | `READ_ACCESS_TOKEN` protege dashboards, GPT/status, decisiones, auditoria, readiness y V31/V32; `scripts/check_read_auth_gate.py` valida la compuerta. |
 | 2026-06-19 | Se agregan fixtures de freshness por fuente. | `fixtures/strategy_intelligence/freshness_cases.json` cubre IBKR, TradingView, market regime, CANSLIM/fundamental y account context fresh/stale. |
+| 2026-06-22 | Se actualiza tablero con ruta explicita al 100%. | `scripts/check_v30_integrity.py` pasa: V30/V31/V32, TradingView, bridge guardrails, storage, read-auth y endpoint smoke validados localmente. |
+| 2026-06-23 | Se refresca tablero con corte diario. | `scripts/check_v30_integrity.py` vuelve a pasar; siguen abiertos los mismos gates reales para 100%: V31 unico, IBKR real, TradingView real, Supabase real y Render protegido. |

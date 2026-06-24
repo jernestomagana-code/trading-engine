@@ -545,14 +545,58 @@ CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "10"))
 
 ENGINE_URL = "https://trading-engine-p097.onrender.com/webhook/ibkr"
 
-WATCHLIST = [
+def _env_bool(name, default=False):
+    raw = _v283_os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name, default):
+    try:
+        return int(_v283_os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+def _env_float(name, default):
+    try:
+        return float(_v283_os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+def _env_symbols(name, default):
+    raw = _v283_os.environ.get(name)
+    if not raw:
+        return list(default)
+    symbols = [part.strip().upper() for part in raw.split(",") if part.strip()]
+    return symbols or list(default)
+
+
+DAILY_RADAR_FAST = _env_bool("DAILY_RADAR_FAST", False)
+
+DEFAULT_WATCHLIST = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "TLT"
 ]
 
-OPTION_SYMBOLS = [
+DEFAULT_OPTION_SYMBOLS = [
     "QQQ", "SPY", "NVDA", "TSLA", "NFLX", "META", "TLT"
 ]
+
+FAST_WATCHLIST = ["QQQ", "SPY", "NVDA", "TSLA", "NFLX", "TLT"]
+FAST_OPTION_SYMBOLS = ["QQQ", "SPY", "NVDA"]
+
+WATCHLIST = _env_symbols(
+    "STOCK_ULTIMUS_WATCHLIST",
+    FAST_WATCHLIST if DAILY_RADAR_FAST else DEFAULT_WATCHLIST,
+)
+
+OPTION_SYMBOLS = _env_symbols(
+    "STOCK_ULTIMUS_OPTION_SYMBOLS",
+    FAST_OPTION_SYMBOLS if DAILY_RADAR_FAST else DEFAULT_OPTION_SYMBOLS,
+)
 
 LOOP_SECONDS = 180
 
@@ -560,7 +604,10 @@ TARGET_DTE_MIN = 25
 TARGET_DTE_MAX = 65
 TARGET_DTE_IDEAL = 45
 
-MAX_OPTIONS_PER_SYMBOL = 8
+MAX_OPTIONS_PER_SYMBOL = _env_int(
+    "STOCK_ULTIMUS_MAX_OPTIONS_PER_SYMBOL",
+    2 if DAILY_RADAR_FAST else 8,
+)
 
 # 1 = live, 2 = frozen, 3 = delayed, 4 = delayed frozen
 MARKET_DATA_TYPE = 1
@@ -582,11 +629,20 @@ STANDARD_STRIKE_MULTIPLE = 5
 SHOW_IBKR_CONTRACT_ERRORS = False
 
 # Espera para que IBKR entregue bid/ask/greeks en opciones
-OPTION_MARKET_DATA_WAIT_SECONDS = 8.0
-OPTION_SECOND_PASS_WAIT_SECONDS = 5.0
+OPTION_MARKET_DATA_WAIT_SECONDS = _env_float(
+    "STOCK_ULTIMUS_OPTION_MARKET_DATA_WAIT_SECONDS",
+    3.0 if DAILY_RADAR_FAST else 8.0,
+)
+OPTION_SECOND_PASS_WAIT_SECONDS = _env_float(
+    "STOCK_ULTIMUS_OPTION_SECOND_PASS_WAIT_SECONDS",
+    2.0 if DAILY_RADAR_FAST else 5.0,
+)
 
 # Espera para fallback de market data en acciones
-STOCK_MARKET_DATA_WAIT_SECONDS = 2.0
+STOCK_MARKET_DATA_WAIT_SECONDS = _env_float(
+    "STOCK_ULTIMUS_STOCK_MARKET_DATA_WAIT_SECONDS",
+    1.0 if DAILY_RADAR_FAST else 2.0,
+)
 
 # Mandamos opciones aunque estén incompletas, pero la decisión queda bloqueada.
 SEND_OPTIONS_WITHOUT_GREEKS = True
@@ -3185,6 +3241,14 @@ print("IBKR ONLY + READY FOR TRADINGVIEW INTEGRATION")
 print("Naked Put + Covered Call activos")
 print("Decision safety locks enabled")
 print("Robust stock price fallback enabled")
+print(
+    "Daily radar fast mode:"
+    f" {DAILY_RADAR_FAST}"
+    f" | watchlist:{','.join(WATCHLIST)}"
+    f" | option_symbols:{','.join(OPTION_SYMBOLS)}"
+    f" | max_options_per_symbol:{MAX_OPTIONS_PER_SYMBOL}"
+    f" | option_wait:{OPTION_MARKET_DATA_WAIT_SECONDS}s"
+)
 print("")
 
 

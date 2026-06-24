@@ -322,6 +322,22 @@ async def smoke() -> None:
     v31_daily = await app_module.v31_daily_rankings()
     gpt_v31_daily = await app_module.gpt_v31_daily_rankings()
     assert_v31_ranking_surface_parity(v31_daily, gpt_v31_daily, surface_fixture)
+    data_readiness = gpt_v31_daily.get("data_readiness") or {}
+    if data_readiness.get("diagnostic_version") != "v31_data_readiness_diagnostic_v1":
+        raise AssertionError(f"GPT daily ranking must expose data readiness diagnostics: {gpt_v31_daily}")
+    if data_readiness.get("execution_authorized") is not False or data_readiness.get("not_order_instruction") is not True:
+        raise AssertionError(f"data readiness must preserve no-order guardrails: {data_readiness}")
+    answer_guidance = gpt_v31_daily.get("answer_guidance") or {}
+    if answer_guidance.get("guidance_version") != "super_engine_bolsa_daily_answer_v1":
+        raise AssertionError(f"GPT daily ranking must expose answer guidance: {gpt_v31_daily}")
+    if "top_recommendations" not in gpt_v31_daily or "blocked_or_waiting" not in gpt_v31_daily:
+        raise AssertionError(f"GPT daily ranking must expose compact recommendation buckets: {gpt_v31_daily}")
+
+    command_center = await app_module.v31_command_center_json()
+    if command_center.get("engine") != "V31_COMMAND_CENTER":
+        raise AssertionError(f"command center engine mismatch: {command_center}")
+    if command_center.get("execution_authorized") is not False or command_center.get("not_order_instruction") is not True:
+        raise AssertionError(f"command center must preserve no-order guardrails: {command_center}")
 
     monitor = await app_module.v30_monitor_status()
     if monitor.get("not_order_instruction") is not True:

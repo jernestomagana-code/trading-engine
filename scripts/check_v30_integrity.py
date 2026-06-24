@@ -566,7 +566,19 @@ def run_v29_engine_guard() -> list[str]:
                 "wait_technical",
                 master_snapshot(option_row(), technical_score=40),
                 "WAIT_TECHNICAL",
-                "TECHNICAL_NOT_CONFIRMED",
+                "TECHNICAL_SCORE_LOW",
+            ),
+            (
+                "technical_mismatch_naked_put",
+                master_snapshot(option_row(), technical_score=85, technical_overrides={"trend": "BEARISH"}),
+                "WAIT_TECHNICAL",
+                "TECHNICAL_STRATEGY_MISMATCH",
+            ),
+            (
+                "technical_mismatch_iron_condor",
+                master_snapshot(option_row(strategy="IRON_CONDOR"), technical_score=85, technical_overrides={"trend": "BULLISH"}),
+                "WAIT_TECHNICAL",
+                "TECHNICAL_STRATEGY_MISMATCH",
             ),
             (
                 "event_risk_blocked",
@@ -597,6 +609,12 @@ def run_v29_engine_guard() -> list[str]:
                 master_snapshot(option_row(), technical_overrides={"canslim": {"passes": False, "score": 42}}),
                 "RISK_BLOCKED",
                 "CANSLIM_BLOCKED",
+            ),
+            (
+                "covered_call_assignment_risk",
+                master_snapshot(option_row(strategy="COVERED_CALL"), technical_overrides={"ex_dividend_soon": True}),
+                "RISK_BLOCKED",
+                "COVERED_CALL_ASSIGNMENT_RISK",
             ),
             (
                 "manual_review_blocked",

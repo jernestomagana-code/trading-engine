@@ -79,6 +79,9 @@ def main() -> int:
     allowed = asyncio.run(call_middleware(configured, "/v31_system_status", {"x-stock-ultimus-read-token": "read-token-test"}))
     require(isinstance(allowed, dict) and allowed.get("status_code") == 200, f"sensitive read with token should pass: {allowed}")
 
+    api_key_alias = asyncio.run(call_middleware(configured, "/gpt_v31_daily_rankings", {"x-api-key": "read-token-test"}))
+    require(isinstance(api_key_alias, dict) and api_key_alias.get("status_code") == 200, f"x-api-key alias should pass: {api_key_alias}")
+
     bearer = asyncio.run(call_middleware(configured, "/read_auth_status", {"authorization": "Bearer read-token-test"}))
     require(isinstance(bearer, dict) and bearer.get("status_code") == 200, f"bearer token should pass: {bearer}")
     body = configured.read_auth_status()

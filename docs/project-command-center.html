@@ -411,20 +411,20 @@
         <h1>Stock Ultimus Command Center</h1>
         <p>Decision support para opciones, con trazabilidad y revision manual.</p>
       </div>
-      <div class="updated">Actualizado<br><strong>20 junio 2026</strong></div>
+      <div class="updated">Actualizado<br><strong>23 junio 2026</strong></div>
     </header>
 
     <main>
       <section class="status-band" aria-label="Estado ejecutivo">
         <article class="status-summary">
           <div class="overline">Donde estamos</div>
-          <strong>V30 validado; V31/V32 ya tienen guardrails y contrato compartido</strong>
-          <p>El motor protege blockers, publica decisiones canonicas, registra resultados y tiene gates de produccion. La prioridad es reducir legacy y probar datos reales.</p>
+          <strong>GPT Action conectada; el radar necesita datos frescos para salir de NO_DATA</strong>
+          <p>SUPER ENGINE BOLSA ya consulta Render con read-auth. El siguiente gate operativo es publicar snapshot IBKR/TradingView fresco para que el ranking diario tenga contratos auditables.</p>
         </article>
         <article class="metric">
           <div class="overline">Prioridad</div>
-          <div class="metric-value">V31</div>
-          <div class="metric-note">Consolidar caminos legacy.</div>
+          <div class="metric-value">Datos</div>
+          <div class="metric-note">IBKR + TradingView frescos.</div>
         </article>
         <article class="metric">
           <div class="overline">Guard integral</div>
@@ -437,9 +437,9 @@
           <div class="metric-note">Listos para forward test.</div>
         </article>
         <article class="metric">
-          <div class="overline">Gates faltantes</div>
-          <div class="metric-value">4</div>
-          <div class="metric-note">Legacy, IBKR, TV y Supabase real.</div>
+          <div class="overline">GPT Action</div>
+          <div class="metric-value">OK</div>
+          <div class="metric-note">getDailyRankings conectado.</div>
         </article>
       </section>
 
@@ -456,7 +456,7 @@
 
       <section class="board" aria-label="Tablero de avance">
         <div class="lane done">
-          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">6</span></div>
+          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">7</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="engine">
               <div class="item-top"><h4>V30 Contract Enrichment</h4><span class="tag">Motor</span></div>
@@ -488,11 +488,16 @@
               <p>Produccion queda bloqueada sin tokens, HTTPS, redaccion y politicas de acceso.</p>
               <div class="evidence"><span class="dot"></span>Gates locales pasan</div>
             </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>SUPER ENGINE BOLSA Action</h4><span class="tag">GPT</span></div>
+              <p>La Action usa read-auth y llama /gpt_v31_daily_rankings desde ChatGPT Builder.</p>
+              <div class="evidence"><span class="dot"></span>Called getDailyRankings</div>
+            </article>
           </div>
         </div>
 
         <div class="lane active">
-          <div class="lane-header"><h3>En Curso</h3><span class="count">4</span></div>
+          <div class="lane-header"><h3>En Curso</h3><span class="count">5</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="engine">
               <div class="item-top"><h4>V31 Decision Canonica</h4><span class="state work">Prioridad</span></div>
@@ -509,6 +514,11 @@
               <p>Contrato v1, contextos por estrategia, CANSLIM y scripts Pro V2 disponibles.</p>
               <div class="evidence"><span class="dot"></span>6 fixtures + 6 Pine</div>
             </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Daily Radar Data Readiness</h4><span class="state work">Activo</span></div>
+              <p>El endpoint GPT reporta data_readiness: snapshot, filas de opciones, tecnicos, frescura y siguiente accion.</p>
+              <div class="evidence"><span class="dot"></span>NO_DATA explicado sin inventar oportunidades</div>
+            </article>
             <article class="work-item" data-area="platform">
               <div class="item-top"><h4>Compatibilidad Legacy</h4><span class="state work">Activo</span></div>
               <p>Wrappers históricos mantienen metadata y paridad mientras V31 absorbe la decision final.</p>
@@ -518,7 +528,7 @@
         </div>
 
         <div class="lane next">
-          <div class="lane-header"><h3>Falta Para Avanzar</h3><span class="count">4</span></div>
+          <div class="lane-header"><h3>Falta Para El 100%</h3><span class="count">5</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="engine">
               <div class="item-top"><h4>Reducir Legacy En app/main.py</h4><span class="state wait">Siguiente</span></div>
@@ -527,7 +537,7 @@
             </article>
             <article class="work-item" data-area="data">
               <div class="item-top"><h4>Prueba Real Sanitizada IBKR</h4><span class="state risk">Bloqueo externo</span></div>
-              <p>Capturar un snapshot real fuera del repo, sanitizarlo y repetir decisiones por ticker.</p>
+              <p>Ejecutar ibkr_bridge.py, capturar contratos ejecutables frescos, sanitizar y repetir decisiones por ticker.</p>
               <div class="evidence"><span class="dot" style="background:var(--red)"></span>Gate: evidencia de broker</div>
             </article>
             <article class="work-item" data-area="signals">
@@ -540,20 +550,26 @@
               <p>Aplicar SQL durable en Supabase/Postgres real y activar RUNTIME_STORAGE_MODE=supabase.</p>
               <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: backend real</div>
             </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>Produccion Protegida Render</h4><span class="state wait">Pendiente</span></div>
+              <p>Configurar READ_ACCESS_TOKEN, webhook secret, HTTPS base URL y validar endpoints protegidos.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>Gate: acceso seguro</div>
+            </article>
           </div>
         </div>
       </section>
 
       <section class="lower-grid">
         <div class="section">
-          <div class="section-title"><h2>Puertas De Salida</h2><span class="state work">4 abiertas</span></div>
+          <div class="section-title"><h2>Puertas Para El 100%</h2><span class="state work">5 abiertas</span></div>
           <table>
             <thead><tr><th style="width:22%">Gate</th><th style="width:28%">Para considerarlo listo</th><th>Evidencia requerida</th><th style="width:14%">Estado</th></tr></thead>
             <tbody>
               <tr><td>V31 canonico</td><td>Una funcion/modulo posee la decision final.</td><td>Reducir rutas legacy restantes en app/main.py.</td><td><span class="state work">En curso</span></td></tr>
-              <tr><td>IBKR real</td><td>Contrato ejecutable completo desde broker.</td><td>Snapshot sanitizado y decisiones reproducibles.</td><td><span class="state risk">Pendiente</span></td></tr>
-              <tr><td>TradingView</td><td>Alertas reales llegan con contrato v1.</td><td>Forward test por estrategia y timeframe.</td><td><span class="state wait">Pendiente</span></td></tr>
+              <tr><td>IBKR real</td><td>Contrato ejecutable completo desde broker.</td><td>Snapshot fresco con strike, expiration, DTE, bid/ask/mid, spread_pct y delta.</td><td><span class="state risk">Pendiente</span></td></tr>
+              <tr><td>TradingView</td><td>Alertas reales llegan con contrato v1.</td><td>Forward test por estrategia y timeframe contra /technical_snapshot.</td><td><span class="state wait">Pendiente</span></td></tr>
               <tr><td>V32 durable</td><td>Historia no depende de JSON runtime temporal.</td><td>READ_ACCESS_TOKEN, SQL Supabase/Postgres aplicado y modo supabase activo.</td><td><span class="state wait">Pendiente</span></td></tr>
+              <tr><td>Produccion segura</td><td>Dashboards/GPT/status protegidos en Render.</td><td>Read token verificado; falta hardening comercial completo.</td><td><span class="state work">En curso</span></td></tr>
             </tbody>
           </table>
         </div>
@@ -561,10 +577,11 @@
         <aside class="section">
           <div class="section-title"><h2>Orden Recomendado</h2></div>
           <ol class="needs-list">
-            <li><span class="priority">1</span><div><strong>Consolidar V31</strong><p>Reduce riesgo de decisiones distintas entre superficies.</p></div></li>
-            <li><span class="priority">2</span><div><strong>Validar IBKR real</strong><p>Confirma que V30 funciona con datos del broker.</p></div></li>
-            <li><span class="priority">3</span><div><strong>Forward test TradingView</strong><p>Prueba señales reales sin habilitar órdenes.</p></div></li>
+            <li><span class="priority">1</span><div><strong>Refrescar datos reales</strong><p>Ejecutar IBKR bridge y TradingView forward test para salir de NO_DATA.</p></div></li>
+            <li><span class="priority">2</span><div><strong>Validar ranking GPT</strong><p>Preguntar oportunidades hoy y confirmar que data_readiness explica los blockers.</p></div></li>
+            <li><span class="priority">3</span><div><strong>Consolidar V31</strong><p>Reduce riesgo de decisiones distintas entre superficies.</p></div></li>
             <li><span class="priority">4</span><div><strong>Endurecer V32</strong><p>Migra resultados locales al contrato durable auditado.</p></div></li>
+            <li><span class="priority">5</span><div><strong>Verificar Render</strong><p>Confirma auth y endpoints protegidos en produccion.</p></div></li>
           </ol>
         </aside>
       </section>
@@ -572,6 +589,7 @@
       <div class="footer-links">
         <a href="./project-dashboard.html">Dashboard detallado</a>
         <a href="./project-dashboard.md">Bitacora</a>
+        <a href="./third-party-installation-guide.md">Guia de instalacion</a>
         <a href="./roadmap.md">Roadmap</a>
       </div>
     </main>

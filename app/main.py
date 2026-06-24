@@ -39,6 +39,7 @@ try:
         COVERED_CALL_READY_DELTA_MAX,
         COVERED_CALL_REVIEW_DELTA_MIN,
         COVERED_CALL_REVIEW_DELTA_MAX,
+        COVERED_CALL_EX_DIVIDEND_WINDOW_DAYS,
         IRON_CONDOR_ALLOWED_TICKERS,
         IRON_CONDOR_DTE_MIN,
         IRON_CONDOR_DTE_MAX,
@@ -86,6 +87,7 @@ except ModuleNotFoundError:
         COVERED_CALL_READY_DELTA_MAX,
         COVERED_CALL_REVIEW_DELTA_MIN,
         COVERED_CALL_REVIEW_DELTA_MAX,
+        COVERED_CALL_EX_DIVIDEND_WINDOW_DAYS,
         IRON_CONDOR_ALLOWED_TICKERS,
         IRON_CONDOR_DTE_MIN,
         IRON_CONDOR_DTE_MAX,
@@ -461,6 +463,7 @@ async def sensitive_read_auth_middleware(request: Request, call_next):
             )
         if not _valid_read_token(
             request.headers.get("x-stock-ultimus-read-token"),
+            request.headers.get("x-api-key"),
             request.headers.get("x-admin-debug-token"),
             request.headers.get("authorization"),
         ):
@@ -15282,6 +15285,9 @@ _STRATEGY_SIGNAL_OPTIONAL_FIELDS = [
     "canslim",
     "canslim_score",
     "canslim_passes",
+    "ex_dividend_soon",
+    "days_until_ex_dividend",
+    "ex_dividend_date",
 ]
 
 _CANSLIM_MIN_SCORE = 70
@@ -15658,18 +15664,60 @@ def _v29_technical_state(ticker, technical, strategy="UNKNOWN"):
 
     score = _v29_safe_float(t.get("score") or t.get("technical_score"), None)
     trend = _v29_safe_upper(t.get("trend") or t.get("bias") or t.get("technical_bias"), "UNKNOWN")
-
-    confirmed = score is not None and score >= _V29_MIN_TECH_SCORE
+    confirmation = _v29_technical_confirmation(strategy, t, score=score, trend=trend)
 
     return {
         "available": bool(t),
-        "confirmed": confirmed,
+        "confirmed": confirmation["ok"],
+        "confirmation_reason": confirmation["reason"],
         "score": score,
         "trend": trend,
         "strategy_context": t.get("selected_strategy_context") or t.get("strategy_context"),
         "available_strategy_contexts": t.get("available_strategy_contexts", []),
         "raw": t,
     }
+
+
+def _v29_strategy_matches_technical(strategy, technical, *, trend=None):
+    strategy = _v29_safe_upper(strategy, "UNKNOWN")
+    trend = _v29_safe_upper(
+        trend or (technical or {}).get("trend") or (technical or {}).get("bias") or (technical or {}).get("technical_bias"),
+        "UNKNOWN",
+    )
+
+    bullish_trends = {"BULLISH", "ALCISTA", "UP", "LONG"}
+    bearish_trends = {"BEARISH", "BAJISTA", "DOWN", "SHORT"}
+    neutral_trends = {"NEUTRAL", "RANGE", "SIDEWAYS", "LATERAL"}
+
+    if strategy in {"NAKED_PUT", "CASH_SECURED_PUT", "PUT", "SHORT_PUT", "BULL_PUT_SPREAD", "CSP"}:
+        return trend in bullish_trends
+    if strategy in {"COVERED_CALL", "SHORT_CALL", "BEAR_CALL_SPREAD"}:
+        return trend in bullish_trends | bearish_trends | neutral_trends
+    if strategy in {"IRON_CONDOR"}:
+        return trend in neutral_trends
+    return trend != "UNKNOWN"
+
+
+def _v29_technical_confirmation(strategy, technical, *, score=None, trend=None):
+    technical = technical or {}
+    score = _v29_safe_float(score if score is not None else technical.get("score") or technical.get("technical_score"), None)
+    trend = _v29_safe_upper(
+        trend or technical.get("trend") or technical.get("bias") or technical.get("technical_bias"),
+        "UNKNOWN",
+    )
+
+    if not technical:
+        return {"ok": False, "reason": "NO_TECHNICAL_SNAPSHOT"}
+    if trend == "UNKNOWN":
+        return {"ok": False, "reason": "TECHNICAL_TREND_UNKNOWN"}
+    if score is None:
+        return {"ok": False, "reason": "TECHNICAL_SCORE_MISSING"}
+    if score < _V29_MIN_TECH_SCORE:
+        return {"ok": False, "reason": "TECHNICAL_SCORE_LOW"}
+    if not _v29_strategy_matches_technical(strategy, technical, trend=trend):
+        return {"ok": False, "reason": "TECHNICAL_STRATEGY_MISMATCH"}
+
+    return {"ok": True, "reason": "TECHNICAL_CONFIRMED"}
 
 
 def _v29_strategy_signal_contract():
@@ -15691,6 +15739,8 @@ def _v29_strategy_signal_contract():
             "notes": [
                 "Technical confirmation is an input to deterministic blocker logic.",
                 "Missing or unconfirmed technical data keeps option candidates out of ENTRY_READY.",
+                "V29 also requires strategy-direction alignment; score alone is not enough.",
+                "Covered-call assignment risk is blocked when ex-dividend is within the configured safe window.",
             ],
         },
         "canslim": {
@@ -16389,6 +16439,41 @@ def _v29_finalize_decision(decision, master):
     return payload
 
 
+def _v29_days_until_ex_dividend(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        candidate = (
+            value.get("days_until")
+            or value.get("days_until_ex_dividend")
+            or value.get("days_to_ex_dividend")
+            or value.get("days_to_event")
+        )
+        return _v29_safe_float(candidate, None)
+
+    return _v29_safe_float(value, None)
+
+
+def _v29_covered_call_assignment_risk_flags(technical, row):
+    technical = technical or {}
+    row = row or {}
+    if bool(technical.get("ex_dividend_soon")) or bool(row.get("ex_dividend_soon")):
+        return ["COVERED_CALL_ASSIGNMENT_RISK"]
+
+    days = _v29_days_until_ex_dividend(technical.get("days_until_ex_dividend"))
+    if days is None:
+        days = _v29_days_until_ex_dividend(technical.get("ex_dividend"))
+    if days is None:
+        days = _v29_days_until_ex_dividend(row.get("days_until_ex_dividend"))
+    if days is None:
+        days = _v29_days_until_ex_dividend(row.get("ex_dividend"))
+
+    if days is not None and 0 <= days <= COVERED_CALL_EX_DIVIDEND_WINDOW_DAYS:
+        return ["COVERED_CALL_ASSIGNMENT_RISK"]
+
+    return []
+
+
 def _v29_strategy_risk_gate(quality_gate, technical_state, row=None, strategy="UNKNOWN"):
     technical_raw = technical_state.get("raw") if isinstance(technical_state, dict) else {}
     event_risk = bool(technical_raw.get("event_risk", False))
@@ -16400,6 +16485,8 @@ def _v29_strategy_risk_gate(quality_gate, technical_state, row=None, strategy="U
     blockers = []
     blockers.extend(shared_technical_event_blockers(event_risk=event_risk, earnings_soon=earnings_soon))
     blockers.extend(shared_liquidity_blockers(volume=volume, open_interest=open_interest))
+    if _v29_safe_upper(strategy, "UNKNOWN") == "COVERED_CALL":
+        blockers.extend(_v29_covered_call_assignment_risk_flags(technical_raw, row))
     blockers.extend(canslim_gate.get("blockers", []))
 
     return {
@@ -16409,6 +16496,7 @@ def _v29_strategy_risk_gate(quality_gate, technical_state, row=None, strategy="U
         "earnings_soon": earnings_soon,
         "volume": volume,
         "open_interest": open_interest,
+        "covered_call_assignment_risk": "COVERED_CALL_ASSIGNMENT_RISK" in blockers,
         "canslim": canslim_gate,
     }
 
@@ -16426,6 +16514,8 @@ def _canonical_strategy_risk_gate_from_sources(row, technical, strategy="UNKNOWN
     blockers = []
     blockers.extend(shared_technical_event_blockers(event_risk=event_risk, earnings_soon=earnings_soon))
     blockers.extend(shared_liquidity_blockers(volume=volume, open_interest=open_interest))
+    if _v29_safe_upper(strategy, "UNKNOWN") == "COVERED_CALL":
+        blockers.extend(_v29_covered_call_assignment_risk_flags(technical, row))
     blockers.extend(canslim_gate.get("blockers", []))
 
     return {
@@ -16435,6 +16525,7 @@ def _canonical_strategy_risk_gate_from_sources(row, technical, strategy="UNKNOWN
         "earnings_soon": earnings_soon,
         "volume": volume,
         "open_interest": open_interest,
+        "covered_call_assignment_risk": "COVERED_CALL_ASSIGNMENT_RISK" in blockers,
         "canslim": canslim_gate,
     }
 
@@ -16656,7 +16747,7 @@ def _v29_decide_ticker(ticker):
         decision = "WAIT_TECHNICAL"
         can_operate = False
         severity = "yellow"
-        blocker = "TECHNICAL_NOT_CONFIRMED"
+        blocker = tech_state.get("confirmation_reason") or "TECHNICAL_NOT_CONFIRMED"
         action = f"{ticker}: opciones evaluadas, pero falta confirmación técnica."
     elif not risk_manual["risk_ok"]:
         final_state = "RISK_BLOCKED"
@@ -16681,6 +16772,8 @@ def _v29_decide_ticker(ticker):
             action = f"{ticker}: contrato ejecutable, pero el open interest está por debajo del mínimo de {OPTION_MIN_OPEN_INTEREST_READY}."
         elif blocker in ["CANSLIM_BLOCKED", "CANSLIM_SCORE_BELOW_MIN"]:
             action = f"{ticker}: contrato y técnico disponibles, pero CANSLIM/fundamental filter bloquea la entrada."
+        elif blocker == "COVERED_CALL_ASSIGNMENT_RISK":
+            action = f"{ticker}: riesgo de assignment en covered call por dividendo cercano; revisar ventana antes de aprobar."
         else:
             action = f"{ticker}: contrato ejecutable, pero existe un bloqueo adicional de riesgo/liquidez."
     elif not manual_ok:
@@ -16738,7 +16831,7 @@ def _v29_decide_ticker(ticker):
         "technical_score": tech_state["score"],
         "options_score": options_score,
         "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
-        "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
+        "technical_fit": tech_state.get("confirmation_reason") if technical_ok else (tech_state.get("confirmation_reason") or "TECHNICAL_NOT_CONFIRMED"),
         "risk_fit": "RISK_CONFIRMED" if risk_ok else (risk_manual["risk_blocker"] or ",".join(strategy_risk["blockers"]) or "RISK_NOT_CONFIRMED"),
         "strategy_risk_fit": "STRATEGY_RISK_CONFIRMED" if strategy_risk["ok"] else ",".join(strategy_risk["blockers"]),
         "manual_review_fit": "NO_MANUAL_BLOCKERS" if manual_ok else "MANUAL_REVIEW_BLOCKED",
@@ -16936,6 +17029,661 @@ def _v31_daily_rankings(tickers=None):
         decision_version=_V31_DECISION_VERSION,
         ruleset_version=_V31_RULESET_VERSION,
     )
+
+
+def _v31_runtime_file_summary():
+    files = []
+    if not _V29_RUNTIME_DIR.exists():
+        return {
+            "runtime_dir_exists": False,
+            "file_count": 0,
+            "newest_file": None,
+            "newest_age_minutes": None,
+            "files": [],
+        }
+
+    now = _V29Datetime.now(_V29Timezone.utc)
+    for path in sorted(_V29_RUNTIME_DIR.glob("*.json")):
+        try:
+            modified = _V29Datetime.fromtimestamp(path.stat().st_mtime, tz=_V29Timezone.utc)
+            age_minutes = round((now - modified).total_seconds() / 60, 2)
+            files.append({
+                "name": path.name,
+                "modified_at": modified.isoformat(),
+                "age_minutes": age_minutes,
+            })
+        except Exception:
+            files.append({
+                "name": path.name,
+                "modified_at": None,
+                "age_minutes": None,
+            })
+
+    newest = min(
+        [item for item in files if item.get("age_minutes") is not None],
+        key=lambda item: item["age_minutes"],
+        default=None,
+    )
+    return {
+        "runtime_dir_exists": True,
+        "file_count": len(files),
+        "newest_file": (newest or {}).get("name"),
+        "newest_age_minutes": (newest or {}).get("age_minutes"),
+        "files": files[:20],
+    }
+
+
+def _v31_data_readiness_diagnostics(master=None, decisions=None):
+    master = master or _v29_discover_master_snapshot()
+    decisions = decisions or _v31_all_decisions()
+    rows = master.get("rows") or []
+    technical = master.get("technical") or {}
+    market = _v29_market_state(master)
+    runtime_files = _v31_runtime_file_summary()
+    states = {}
+    for decision in decisions:
+        state = decision.get("final_state") or "UNKNOWN"
+        states[state] = states.get(state, 0) + 1
+
+    snapshot_available = bool(master.get("path"))
+    option_rows_found = len(rows)
+    technical_count = len(technical)
+    wait_market_like_count = states.get("WAIT_MARKET", 0) + states.get("WAIT_MARKET_OPEN", 0)
+    all_wait_market = bool(decisions) and wait_market_like_count == len(decisions)
+    dominant_state = None
+    dominant_state_count = 0
+    if states:
+        dominant_state, dominant_state_count = max(states.items(), key=lambda item: item[1])
+    all_no_data = bool(decisions) and states.get("NO_DATA", 0) == len(decisions)
+    newest_age = runtime_files.get("newest_age_minutes")
+    stale_runtime = newest_age is None or newest_age > 90
+
+    blockers = []
+    if not snapshot_available:
+        blockers.append("MASTER_SNAPSHOT_MISSING")
+    if option_rows_found == 0:
+        blockers.append("NO_OPTION_ROWS")
+    if technical_count == 0:
+        blockers.append("NO_TECHNICAL_SNAPSHOT")
+    if stale_runtime:
+        blockers.append("RUNTIME_STALE_OR_UNKNOWN")
+    if all_no_data:
+        blockers.append("ALL_DEFAULT_TICKERS_NO_DATA")
+
+    if all_no_data:
+        status = "NO_DATA"
+        explanation = "El motor esta conectado, pero no tiene snapshot ejecutable fresco para convertir el radar en oportunidades."
+    elif all_wait_market and not blockers:
+        status = "READY_FOR_DECISION_REVIEW"
+        explanation = "El motor tiene datos, pero todos los candidatos estan esperando una ventana operativa confiable de mercado/opciones."
+    elif blockers:
+        status = "DEGRADED"
+        explanation = "Hay datos parciales o desactualizados; se requiere refrescar fuentes antes de priorizar oportunidades."
+    else:
+        status = "READY_FOR_DECISION_REVIEW"
+        explanation = "Hay snapshot y contexto tecnico suficientes para evaluar el ranking."
+
+    next_actions = []
+    if all_wait_market:
+        next_actions.append("Reconsultar durante una ventana regular de mercado/opciones con bid/ask confiable; no convertir WAIT_MARKET en oportunidad accionable.")
+    if stale_runtime or option_rows_found == 0:
+        next_actions.append("Ejecutar ibkr_bridge.py durante una ventana valida de mercado/opciones y publicar /v31_ingest_snapshot.")
+    if technical_count == 0:
+        next_actions.append("Enviar alertas TradingView al webhook /technical_snapshot o confirmar que el forward test este activo.")
+    if snapshot_available and option_rows_found > 0 and technical_count > 0:
+        next_actions.append("Revisar blockers por ticker en /gpt_v31_trade_decision/{ticker}.")
+    if not next_actions:
+        next_actions.append("Mantener monitoreo; no hay accion de orden autorizada.")
+
+    return {
+        "diagnostic_version": "v31_data_readiness_diagnostic_v1",
+        "status": status,
+        "explanation": explanation,
+        "main_blocker": blockers[0] if blockers else None,
+        "blockers": blockers,
+        "master_snapshot_available": snapshot_available,
+        "master_source": master.get("path"),
+        "option_rows_found": option_rows_found,
+        "technical_count": technical_count,
+        "technical_tickers": sorted(list(technical.keys())),
+        "default_tickers_evaluated": len(decisions),
+        "decision_state_counts": states,
+        "dominant_state": dominant_state,
+        "dominant_state_count": dominant_state_count,
+        "wait_market_like_count": wait_market_like_count,
+        "all_wait_market": all_wait_market,
+        "operational_readiness": "WAIT_MARKET_WINDOW" if all_wait_market else status,
+        "market": market,
+        "runtime_files": runtime_files,
+        "next_required_actions": next_actions,
+        "safe_to_invent_opportunities": False,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_gpt_daily_answer_guidance(rankings, diagnostics):
+    summary = rankings.get("summary") or {}
+    top_count = int(summary.get("top_manual_review") or 0)
+    status = diagnostics.get("status")
+    all_wait_market = diagnostics.get("all_wait_market") is True
+    if top_count > 0:
+        lead = "Hay candidatos para revision manual. ENTRY_READY no autoriza ordenes."
+    elif status == "NO_DATA":
+        lead = "No hay oportunidades disponibles porque faltan datos ejecutables frescos."
+    elif all_wait_market:
+        lead = "No hay oportunidades accionables ahora; el motor tiene datos, pero esta fuera de una ventana operativa confiable."
+    else:
+        lead = "No hay candidatos ENTRY_READY; revisar watchlist, bloqueadores y frescura."
+
+    return {
+        "guidance_version": "super_engine_bolsa_daily_answer_v1",
+        "lead_message": lead,
+        "must_call_action_first": True,
+        "suggested_first_line": lead,
+        "required_answer_sections": [
+            "Estado del motor",
+            "Oportunidades para revision manual",
+            "Bloqueadas o en espera",
+            "Datos faltantes y siguiente accion",
+            "Nota de no autorizacion de ordenes",
+        ],
+        "when_no_data": {
+            "say": "No hay oportunidades hoy con los datos actuales.",
+            "include": [
+                "diagnostico principal",
+                "snapshot maestro disponible",
+                "filas de opciones",
+                "senales tecnicas",
+                "acciones requeridas",
+            ],
+            "do_not_do": [
+                "inventar tickers",
+                "inferir precios",
+                "proponer strikes",
+                "marcar ENTRY_READY sin contrato ejecutable",
+            ],
+        },
+        "when_wait_market": {
+            "say": "No hay oportunidades accionables ahora; el motor tiene datos, pero esta fuera de una ventana operativa confiable.",
+            "include": [
+                "decision_state_counts",
+                "wait_market_like_count",
+                "market.label",
+                "cantidad de filas de opciones",
+                "cantidad de senales tecnicas",
+                "siguiente hora o ventana recomendada para reconsultar",
+            ],
+            "do_not_do": [
+                "usar Web Search para inventar oportunidades",
+                "convertir WAIT_MARKET_OPEN en ENTRY_READY",
+                "sugerir ordenes por contexto general de mercado",
+            ],
+        },
+        "manual_review_only": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_gpt_compact_contract(contract):
+    if not isinstance(contract, dict):
+        return None
+    keep = [
+        "ticker",
+        "strategy",
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+        "iv",
+        "volume",
+        "open_interest",
+        "data_quality",
+        "source_score",
+    ]
+    compact = {key: contract.get(key) for key in keep if contract.get(key) is not None}
+    return compact or None
+
+
+def _v31_gpt_compact_daily_item(item):
+    if not isinstance(item, dict):
+        return {}
+    score_components = item.get("score_components") if isinstance(item.get("score_components"), dict) else {}
+    option_quality = score_components.get("option_quality") if isinstance(score_components.get("option_quality"), dict) else {}
+    technical_fit = score_components.get("technical_fit") if isinstance(score_components.get("technical_fit"), dict) else {}
+    risk_fit = score_components.get("risk_fit") if isinstance(score_components.get("risk_fit"), dict) else {}
+    freshness = item.get("freshness") if isinstance(item.get("freshness"), dict) else {}
+    compact = {
+        "rank": item.get("rank"),
+        "overall_rank": item.get("overall_rank"),
+        "ticker": item.get("ticker"),
+        "strategy": item.get("strategy"),
+        "final_state": item.get("final_state"),
+        "main_blocker": item.get("main_blocker"),
+        "blockers": list(item.get("blockers") or [])[:8],
+        "required_missing_fields": list(item.get("required_missing_fields") or [])[:12],
+        "ranking_score": item.get("ranking_score"),
+        "ranking_label": item.get("ranking_label"),
+        "ready_for_manual_review": item.get("ready_for_manual_review") is True,
+        "blocked_from_actionable_ranking": item.get("blocked_from_actionable_ranking") is True,
+        "selected_contract": _v31_gpt_compact_contract(item.get("selected_contract")),
+        "quality": {
+            "technical": {
+                "score": technical_fit.get("score"),
+                "status": technical_fit.get("status"),
+                "notes": list(technical_fit.get("notes") or [])[:4],
+            },
+            "option": {
+                "score": option_quality.get("score"),
+                "status": option_quality.get("status"),
+                "notes": list(option_quality.get("notes") or [])[:8],
+            },
+            "risk": {
+                "score": risk_fit.get("score"),
+                "status": risk_fit.get("status"),
+                "notes": list(risk_fit.get("notes") or [])[:6],
+            },
+        },
+        "freshness": {
+            "aggregate_status": freshness.get("aggregate_status"),
+            "aggregate_score": freshness.get("aggregate_score"),
+            "all_required_fresh": freshness.get("all_required_fresh"),
+            "blockers": list(freshness.get("blockers") or [])[:6],
+        },
+        "next_required_action": item.get("next_required_action"),
+        "explanation": item.get("explanation"),
+    }
+    return {key: value for key, value in compact.items() if value not in [None, [], {}]}
+
+
+def _v31_gpt_compact_daily_payload(rankings, diagnostics):
+    top = [_v31_gpt_compact_daily_item(item) for item in rankings.get("top_manual_review") or []]
+    watchlist = [_v31_gpt_compact_daily_item(item) for item in rankings.get("watchlist") or []]
+    blocked = [_v31_gpt_compact_daily_item(item) for item in rankings.get("blocked") or []]
+    research = [_v31_gpt_compact_daily_item(item) for item in rankings.get("research_only") or []]
+    all_ranked_source = rankings.get("all_ranked") or []
+    if not all_ranked_source:
+        all_ranked_source = (
+            list(rankings.get("top_manual_review") or [])
+            + list(rankings.get("watchlist") or [])
+            + list(rankings.get("blocked") or [])
+            + list(rankings.get("research_only") or [])
+        )
+    all_ranked = [_v31_gpt_compact_daily_item(item) for item in all_ranked_source]
+    blocked_or_waiting = [
+        item for item in all_ranked
+        if item.get("final_state") in ["WAIT_OPTIONS_DATA", "WAIT_TECHNICAL", "WAIT_MARKET", "WAIT_ACCOUNT_CONTEXT", "RISK_BLOCKED", "NO_DATA", "MANUAL_REVIEW"]
+    ]
+    summary = dict(rankings.get("summary") or {})
+    summary.update({
+        "entry_ready": len(top),
+        "blocked_or_waiting": len(blocked_or_waiting),
+        "items": len(all_ranked),
+    })
+    return {
+        "engine": "V31_DAILY_RECOMMENDATION_ENGINE",
+        "ranking_version": rankings.get("ranking_version"),
+        "score_version": rankings.get("score_version"),
+        "generated_at": rankings.get("generated_at"),
+        "summary": summary,
+        "top_recommendations": top,
+        "top_manual_review": top,
+        "watchlist": watchlist,
+        "blocked_or_waiting": blocked_or_waiting,
+        "blocked": blocked,
+        "research_only": research,
+        "items": all_ranked,
+        "data_readiness": diagnostics,
+        "answer_guidance": _v31_gpt_daily_answer_guidance(rankings, diagnostics),
+        "risk_notes": [
+            "This is a manual-review ranking, not an order instruction.",
+            "ENTRY_READY means ready for manual validation only.",
+            "WAIT_OPTIONS_DATA, WAIT_TECHNICAL, WAIT_MARKET, RISK_BLOCKED, NO_DATA, and MANUAL_REVIEW are not trade authorization states.",
+        ],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_daily_now_answer(limit=5):
+    rankings = _v31_daily_rankings()
+    diagnostics = _v31_data_readiness_diagnostics()
+    payload = _v31_gpt_compact_daily_payload(rankings, diagnostics)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    states = diagnostics.get("decision_state_counts") if isinstance(diagnostics.get("decision_state_counts"), dict) else {}
+    top = payload.get("top_recommendations") if isinstance(payload.get("top_recommendations"), list) else []
+    blocked = payload.get("blocked_or_waiting") if isinstance(payload.get("blocked_or_waiting"), list) else []
+    limit = max(1, min(int(limit or 5), 20))
+
+    if top:
+        first_line = (
+            f"Hay {len(top)} oportunidad(es) para revision manual; ENTRY_READY no autoriza ordenes "
+            "y toda ejecucion es manual."
+        )
+    else:
+        state_label = diagnostics.get("operational_readiness") or diagnostics.get("status") or "UNKNOWN"
+        blocked_preview = ", ".join(str(item.get("ticker")) for item in blocked[:limit] if item.get("ticker")) or "sin tickers"
+        first_line = (
+            "Hoy no hay oportunidades accionables: "
+            f"estado {state_label}, entradas listas {summary.get('entry_ready', 0)}, "
+            f"revision manual {len(top)}, bloqueadas o en espera={len(blocked)} ({blocked_preview}); "
+            "no autoriza ordenes y toda ejecucion es manual."
+        )
+
+    lines = [
+        first_line,
+        "",
+        "Estado del motor:",
+        (
+            f"- {diagnostics.get('status')} / {diagnostics.get('operational_readiness')} | "
+            f"opciones={diagnostics.get('option_rows_found')} | tecnicos={diagnostics.get('technical_count')} | "
+            f"estados={states}"
+        ),
+        "",
+        "Oportunidades para revision manual:",
+    ]
+    if top:
+        for item in top[:limit]:
+            contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+            lines.append(
+                "- "
+                f"{item.get('ticker')} | {item.get('strategy')} | {item.get('final_state')} | "
+                f"score {item.get('ranking_score')} | contrato {contract or 'pendiente de validar'}"
+            )
+    else:
+        lines.append("- Ninguna en ENTRY_READY con los datos actuales.")
+
+    lines.extend(["", "Bloqueadas o en espera:"])
+    for item in blocked[:limit]:
+        missing = ", ".join(str(x) for x in item.get("required_missing_fields") or []) or "sin campos faltantes listados"
+        lines.append(
+            "- "
+            f"{item.get('ticker')} | {item.get('final_state')} | bloqueador {item.get('main_blocker')} | falta: {missing}"
+        )
+    if not blocked:
+        lines.append("- Sin bloqueadas/en espera reportadas.")
+
+    next_actions = diagnostics.get("next_required_actions") or []
+    lines.extend(["", "Datos faltantes y siguiente accion:"])
+    for action in next_actions[:limit]:
+        lines.append(f"- {action}")
+
+    lines.extend([
+        "",
+        "Nota: esto no autoriza ordenes. ENTRY_READY solo significa listo para revision manual.",
+    ])
+    answer = "\n".join(lines)
+    return {
+        "engine": "V31_DAILY_NOW_ANSWER",
+        "answer_version": "daily_now_answer_v1",
+        "generated_at": payload.get("generated_at"),
+        "response_mode": "copy_answer_to_user_exactly",
+        "first_line": first_line,
+        "answer_to_user": answer,
+        "daily_rankings_endpoint": "/gpt_v31_daily_rankings",
+        "manual_review_inbox_endpoint": "/v31_manual_review_inbox",
+        "outcome_evaluation_command": "python3 scripts/run_daily_outcome_evaluation.py --dry-run",
+        "data_readiness": diagnostics,
+        "summary": summary,
+        "top_recommendations": top[:limit],
+        "blocked_or_waiting": blocked[:limit],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_manual_review_payload():
+    rankings = _v31_daily_rankings()
+    diagnostics = _v31_data_readiness_diagnostics()
+    compact = _v31_gpt_compact_daily_payload(rankings, diagnostics)
+    review_items = []
+    for bucket in ["top_recommendations", "watchlist", "blocked_or_waiting"]:
+        for item in compact.get(bucket) or []:
+            review_items.append({
+                "bucket": bucket,
+                "ticker": item.get("ticker"),
+                "strategy": item.get("strategy"),
+                "final_state": item.get("final_state"),
+                "main_blocker": item.get("main_blocker"),
+                "ranking_score": item.get("ranking_score"),
+                "selected_contract": item.get("selected_contract"),
+                "required_missing_fields": item.get("required_missing_fields") or [],
+                "next_required_action": item.get("next_required_action"),
+            })
+    return {
+        "engine": "V31_MANUAL_REVIEW_INBOX",
+        "generated_at": _v29_now(),
+        "allowed_statuses": ["REVIEWING", "WATCHLIST", "REJECTED", "EXPIRED", "APPROVED_FOR_MANUAL_TRADE"],
+        "process": [
+            "Abrir esta inbox cuando llegue el recordatorio o antes de operar.",
+            "Marcar cada setup como REVIEWING, WATCHLIST, REJECTED, EXPIRED o APPROVED_FOR_MANUAL_TRADE.",
+            "Usar APPROVED_FOR_MANUAL_TRADE solo si el setup esta ENTRY_READY y validaste contrato, liquidez, spread, eventos, riesgo de cuenta y ticket manual en broker.",
+            "Despues correr: python3 scripts/run_daily_outcome_evaluation.py --dry-run.",
+        ],
+        "items": review_items,
+        "data_readiness": diagnostics,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_manual_review_inbox_html():
+    payload = _v31_manual_review_payload()
+    allowed = payload.get("allowed_statuses") or []
+    status_buttons = "".join(
+        f'<button type="button" data-status="{_v29_html_escape(status)}">{_v29_html_escape(status)}</button>'
+        for status in allowed
+    )
+    rows = ""
+    for idx, item in enumerate(payload.get("items") or []):
+        contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+        missing = ", ".join(item.get("required_missing_fields") or [])
+        rows += f"""
+        <article class="review-card" data-card-id="review-{idx}">
+          <div>
+            <strong>{_v29_html_escape(item.get('ticker'))}</strong>
+            <span>{_v29_html_escape(item.get('strategy'))}</span>
+            {_v29_badge(item.get('final_state'))}
+          </div>
+          <p>Bucket: {_v29_html_escape(item.get('bucket'))} · Score: {_v29_html_escape(item.get('ranking_score'))} · Bloqueador: {_v29_html_escape(item.get('main_blocker') or 'ninguno')}</p>
+          <p>Contrato: {_v29_html_escape(contract or 'pendiente/no seleccionado')}</p>
+          <p>Falta: {_v29_html_escape(missing or 'sin campos faltantes listados')}</p>
+          <p>Siguiente: {_v29_html_escape(item.get('next_required_action') or 'revision manual')}</p>
+          <div class="actions">{status_buttons}</div>
+          <p class="saved">Estado local: <span data-saved>sin marcar</span></p>
+        </article>
+        """
+    if not rows:
+        rows = "<p>No hay setups en la inbox con el snapshot actual.</p>"
+
+    process = "".join(f"<li>{_v29_html_escape(step)}</li>" for step in payload.get("process") or [])
+    allowed_text = ", ".join(allowed)
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+      <title>Stock Ultimus Manual Review Inbox</title>
+      <style>
+        body {{font-family: Inter, Arial, sans-serif; margin:0; background:#f7f8fa; color:#101828;}}
+        header {{background:#101828; color:white; padding:24px 32px;}}
+        main {{max-width:1120px; margin:0 auto; padding:24px;}}
+        h1 {{margin:0; font-size:26px; letter-spacing:0;}}
+        .panel {{background:white; border:1px solid #e5e7eb; border-radius:8px; padding:18px; margin-bottom:18px;}}
+        .review-card {{background:white; border:1px solid #d0d5dd; border-radius:8px; padding:16px; margin-bottom:12px;}}
+        .review-card strong {{font-size:18px; margin-right:8px;}}
+        .review-card span {{color:#475467; margin-right:8px;}}
+        .actions {{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;}}
+        button {{border:1px solid #98a2b3; background:#fff; border-radius:6px; padding:8px 10px; cursor:pointer; font-weight:700;}}
+        button.active {{background:#175cd3; color:white; border-color:#175cd3;}}
+        .saved {{font-size:13px; color:#475467;}}
+        code {{background:#eef2f6; padding:2px 6px; border-radius:4px;}}
+        a {{color:#175cd3; font-weight:700;}}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>Inbox rapida de revision manual</h1>
+        <p>Decision support solamente. No autoriza ordenes; toda ejecucion es manual.</p>
+      </header>
+      <main>
+        <section class="panel">
+          <h2>Proceso rapido de revision manual</h2>
+          <ol>{process}</ol>
+          <p>Estados permitidos: {_v29_html_escape(allowed_text)}</p>
+          <p><a href="/v31_manual_reviews">JSON</a> · <a href="/v32_outcomes_summary">Outcomes</a> · <code>python3 scripts/run_daily_outcome_evaluation.py --dry-run</code></p>
+        </section>
+        {rows}
+      </main>
+      <script>
+        const key = "stockUltimusManualReviewStatuses";
+        const saved = JSON.parse(localStorage.getItem(key) || "{{}}");
+        document.querySelectorAll(".review-card").forEach((card) => {{
+          const id = card.dataset.cardId;
+          const savedLabel = card.querySelector("[data-saved]");
+          const current = saved[id];
+          if (current) savedLabel.textContent = current;
+          card.querySelectorAll("button[data-status]").forEach((button) => {{
+            if (button.dataset.status === current) button.classList.add("active");
+            button.addEventListener("click", () => {{
+              saved[id] = button.dataset.status;
+              localStorage.setItem(key, JSON.stringify(saved));
+              card.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+              button.classList.add("active");
+              savedLabel.textContent = button.dataset.status;
+            }});
+          }});
+        }});
+      </script>
+    </body>
+    </html>
+    """
+
+
+def _v31_command_center_payload():
+    rankings = _v31_daily_rankings()
+    diagnostics = _v31_data_readiness_diagnostics()
+    compact = _v31_gpt_compact_daily_payload(rankings, diagnostics)
+    states = diagnostics.get("decision_state_counts") if isinstance(diagnostics.get("decision_state_counts"), dict) else {}
+    runtime_files = diagnostics.get("runtime_files") if isinstance(diagnostics.get("runtime_files"), dict) else {}
+    return {
+        "engine": "V31_COMMAND_CENTER",
+        "generated_at": _v29_now(),
+        "status": diagnostics.get("status"),
+        "operational_readiness": diagnostics.get("operational_readiness"),
+        "main_blocker": diagnostics.get("main_blocker"),
+        "summary": {
+            "items": compact.get("summary", {}).get("items"),
+            "entry_ready": compact.get("summary", {}).get("entry_ready"),
+            "blocked_or_waiting": compact.get("summary", {}).get("blocked_or_waiting"),
+            "states": states,
+            "option_rows_found": diagnostics.get("option_rows_found"),
+            "technical_count": diagnostics.get("technical_count"),
+            "snapshot": diagnostics.get("master_source"),
+            "newest_runtime_file": runtime_files.get("newest_file"),
+            "newest_runtime_age_minutes": runtime_files.get("newest_age_minutes"),
+        },
+        "top_recommendations": compact.get("top_recommendations"),
+        "blocked_or_waiting": compact.get("blocked_or_waiting"),
+        "next_required_actions": diagnostics.get("next_required_actions"),
+        "endpoints": {
+            "gpt_daily_rankings": "/gpt_v31_daily_rankings",
+            "system_status": "/v31_system_status",
+            "command_center_html": "/v31_command_center",
+            "command_center_json": "/v31_command_center.json",
+        },
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_command_center_html():
+    payload = _v31_command_center_payload()
+    summary = payload.get("summary") or {}
+    states = summary.get("states") or {}
+    top_rows = ""
+    for item in payload.get("top_recommendations") or []:
+        contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+        top_rows += f"""
+        <tr>
+          <td>{_v29_html_escape(item.get('ticker'))}</td>
+          <td>{_v29_html_escape(item.get('strategy'))}</td>
+          <td>{_v29_badge(item.get('final_state'))}</td>
+          <td>{_v29_html_escape(item.get('ranking_score'))}</td>
+          <td>{_v29_html_escape(contract.get('strike'))}</td>
+          <td>{_v29_html_escape(contract.get('expiration'))}</td>
+          <td>{_v29_html_escape(contract.get('bid'))} / {_v29_html_escape(contract.get('ask'))}</td>
+          <td>{_v29_html_escape(contract.get('delta'))}</td>
+          <td>{_v29_html_escape(item.get('main_blocker') or 'Manual review')}</td>
+        </tr>
+        """
+    blocked_rows = ""
+    for item in (payload.get("blocked_or_waiting") or [])[:12]:
+        blocked_rows += f"""
+        <tr>
+          <td>{_v29_html_escape(item.get('ticker'))}</td>
+          <td>{_v29_html_escape(item.get('strategy'))}</td>
+          <td>{_v29_badge(item.get('final_state'))}</td>
+          <td>{_v29_html_escape(item.get('main_blocker'))}</td>
+          <td>{_v29_html_escape(', '.join(item.get('required_missing_fields') or []))}</td>
+        </tr>
+        """
+    actions = "".join(f"<li>{_v29_html_escape(action)}</li>" for action in payload.get("next_required_actions") or [])
+    state_cards = "".join(
+        f'<div class="metric"><span>{_v29_html_escape(state)}</span><strong>{_v29_html_escape(count)}</strong></div>'
+        for state, count in sorted(states.items())
+    )
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+      <title>Stock Ultimus V31 Command Center</title>
+      <style>
+        body {{font-family: Inter, Arial, sans-serif; margin:0; background:#f6f7f9; color:#101828;}}
+        header {{background:#111827; color:white; padding:26px 32px;}}
+        h1 {{margin:0; font-size:28px; letter-spacing:0;}}
+        main {{padding:24px 32px 40px;}}
+        .grid {{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0;}}
+        .metric {{background:white; border:1px solid #e5e7eb; border-radius:8px; padding:14px;}}
+        .metric span {{display:block; color:#667085; font-size:12px; font-weight:700; text-transform:uppercase;}}
+        .metric strong {{display:block; font-size:26px; margin-top:6px;}}
+        table {{width:100%; border-collapse:collapse; background:white; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin:14px 0 24px;}}
+        th,td {{text-align:left; padding:12px; border-bottom:1px solid #eaecf0; font-size:13px; vertical-align:top;}}
+        th {{color:#667085; font-size:11px; text-transform:uppercase;}}
+        .note {{color:#475467; font-size:14px;}}
+        a {{color:#175cd3; font-weight:700;}}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>Stock Ultimus V31 Command Center</h1>
+        <p>{_v29_html_escape(payload.get('status'))} · {_v29_html_escape(payload.get('operational_readiness'))} · generado {_v29_html_escape(payload.get('generated_at'))}</p>
+      </header>
+      <main>
+        <section class="grid">
+          <div class="metric"><span>Evaluados</span><strong>{_v29_html_escape(summary.get('items'))}</strong></div>
+          <div class="metric"><span>Entry Ready</span><strong>{_v29_html_escape(summary.get('entry_ready'))}</strong></div>
+          <div class="metric"><span>Bloqueadas/espera</span><strong>{_v29_html_escape(summary.get('blocked_or_waiting'))}</strong></div>
+          <div class="metric"><span>Option rows</span><strong>{_v29_html_escape(summary.get('option_rows_found'))}</strong></div>
+        </section>
+        <section class="grid">{state_cards}</section>
+        <p class="note">Snapshot: {_v29_html_escape(summary.get('snapshot'))} · runtime mas reciente: {_v29_html_escape(summary.get('newest_runtime_file'))} ({_v29_html_escape(summary.get('newest_runtime_age_minutes'))} min)</p>
+        <h2>Oportunidades para revision manual</h2>
+        <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Score</th><th>Strike</th><th>Exp</th><th>Bid/Ask</th><th>Delta</th><th>Nota</th></tr></thead><tbody>{top_rows}</tbody></table>
+        <h2>Bloqueadas o en espera</h2>
+        <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Bloqueador</th><th>Campos faltantes</th></tr></thead><tbody>{blocked_rows}</tbody></table>
+        <h2>Siguientes acciones</h2>
+        <ul>{actions}</ul>
+        <p class="note">Decision support solamente. ENTRY_READY no autoriza ordenes. <a href="/v31_command_center.json">JSON</a> · <a href="/gpt_v31_daily_rankings">GPT payload</a></p>
+      </main>
+    </body>
+    </html>
+    """
 
 
 def _v29_html_escape(x):
@@ -17276,6 +18024,7 @@ async def v31_system_status():
     master = _v29_discover_master_snapshot()
     decisions = _v31_all_decisions()
     rankings = _v31_daily_rankings()
+    diagnostics = _v31_data_readiness_diagnostics(master, decisions)
 
     return {
         "engine": "V31_CANONICAL_DECISION_CONTRACT",
@@ -17295,10 +18044,11 @@ async def v31_system_status():
             "risk_blocked": sum(1 for d in decisions if d.get("final_state") == "RISK_BLOCKED"),
             "wait_technical": sum(1 for d in decisions if d.get("final_state") == "WAIT_TECHNICAL"),
             "wait_options": sum(1 for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"),
-            "wait_market": sum(1 for d in decisions if d.get("final_state") == "WAIT_MARKET"),
+            "wait_market": sum(1 for d in decisions if d.get("final_state") in ["WAIT_MARKET", "WAIT_MARKET_OPEN"]),
             "no_data": sum(1 for d in decisions if d.get("final_state") == "NO_DATA"),
             "daily_ranking": rankings.get("summary"),
         },
+        "data_readiness": diagnostics,
         "not_order_instruction": True,
         "endpoints": {
             "ingest": "/v31_ingest_snapshot",
@@ -17353,29 +18103,41 @@ async def gpt_v31_trade_decision(ticker: str):
 
 @app.get("/v31_daily_rankings")
 async def v31_daily_rankings():
-    return _v31_daily_rankings()
+    rankings = _v31_daily_rankings()
+    rankings["data_readiness"] = _v31_data_readiness_diagnostics()
+    return rankings
 
 
 @app.get("/gpt_v31_daily_rankings")
 async def gpt_v31_daily_rankings():
     rankings = _v31_daily_rankings()
-    return {
-        "engine": rankings.get("engine"),
-        "ranking_version": rankings.get("ranking_version"),
-        "score_version": rankings.get("score_version"),
-        "generated_at": rankings.get("generated_at"),
-        "summary": rankings.get("summary"),
-        "top_manual_review": rankings.get("top_manual_review"),
-        "watchlist": rankings.get("watchlist"),
-        "blocked": rankings.get("blocked"),
-        "research_only": rankings.get("research_only"),
-        "risk_notes": [
-            "This is a manual-review ranking, not an order instruction.",
-            "RADAR_ONLY and blocked candidates are excluded from top manual-review readiness.",
-        ],
-        "execution_authorized": False,
-        "not_order_instruction": True,
-    }
+    diagnostics = _v31_data_readiness_diagnostics()
+    return _v31_gpt_compact_daily_payload(rankings, diagnostics)
+
+
+@app.get("/gpt_v31_daily_now")
+async def gpt_v31_daily_now(limit: int = 5):
+    return _v31_daily_now_answer(limit=limit)
+
+
+@app.get("/v31_manual_reviews")
+async def v31_manual_reviews():
+    return _v31_manual_review_payload()
+
+
+@app.get("/v31_manual_review_inbox", response_class=_V29HTMLResponse)
+async def v31_manual_review_inbox():
+    return _v31_manual_review_inbox_html()
+
+
+@app.get("/v31_command_center.json")
+async def v31_command_center_json():
+    return _v31_command_center_payload()
+
+
+@app.get("/v31_command_center", response_class=_V29HTMLResponse)
+async def v31_command_center():
+    return _v31_command_center_html()
 
 
 @app.get("/v32_decision_history")

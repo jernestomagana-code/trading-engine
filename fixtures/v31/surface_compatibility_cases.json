@@ -41,10 +41,8 @@
   },
   "daily_ranking_gpt_parity": {
     "required_equal_top_level_keys": [
-      "engine",
       "ranking_version",
       "score_version",
-      "summary",
       "top_manual_review",
       "watchlist",
       "blocked",

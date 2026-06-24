@@ -1,0 +1,73 @@
+{
+  "note_version": "strategy_research_note_v1",
+  "created_at": "2026-06-24",
+  "owner": "Morgan",
+  "status": "ACTIVE_REVIEW",
+  "summary": "Market-strategy intelligence review for V30/V31 decision flow. Focus: covered call assignment guard, technical-direction alignment, and next-rule hygiene for Iron Condor and intraday strategy governance.",
+  "hypotheses": [
+    {
+      "id": "MORGAN-2026-06-24-001",
+      "stage": "REVIEWED_RULE",
+      "strategy": "COVERED_CALL",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Covered call assignment risk increases materially around ex-dividend when assignment can reduce expected premium, especially when the investor cannot tolerate assignment timing.",
+      "hypothesis": "Keep covered-call candidates blocked when ex-dividend is imminent by treating `ex_dividend_soon` or `days_until_ex_dividend<=5` as a hard risk blocker (`COVERED_CALL_ASSIGNMENT_RISK`).",
+      "required_data": [
+        "TRADINGVIEW_TECHNICAL.ex_dividend_soon",
+        "TRADINGVIEW_TECHNICAL.days_until_ex_dividend",
+        "MASTER_SNAPSHOT_OPTION_ROW.ex_dividend_soon",
+        "MASTER_SNAPSHOT_OPTION_ROW.days_until_ex_dividend",
+        "BROKER_DIVIDEND_CALENDAR_FEED_WHEN_AVAILABLE"
+      ],
+      "blocked_from_entry_ready_until": "Implemented in rule gate (`RISK_BLOCKED`) and verified by V29 guard fixture scenario.",
+      "promotion_requirements": [
+        "Persist ex-dividend fields consistently through broker and technical snapshots",
+        "Keep blocked state as `RISK_BLOCKED` even with complete option/technical confirmation",
+        "Dashboard and GPT payloads include explicit `covered_call_assignment_risk` reason flag",
+        "Fixture/guard coverage for true/false boundary cases"
+      ]
+    },
+    {
+      "id": "MORGAN-2026-06-24-002",
+      "stage": "REVIEWED_RULE",
+      "strategy": "NAKED_PUT",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Naked put readiness quality degrades if technical context is bullish for puts but signal context is bearish/neutral; direction-aware confirmation reduces low-quality prompts.",
+      "hypothesis": "Require strategy-specific technical direction compatibility before confirming technical readiness for each option strategy.",
+      "required_data": [
+        "TRADINGVIEW_TECHNICAL.trend",
+        "TRADINGVIEW_TECHNICAL.bias",
+        "TRADINGVIEW_TECHNICAL.technical_bias",
+        "TRADINGVIEW_TECHNICAL.selected_strategy_context"
+      ],
+      "blocked_from_entry_ready_until": "Rule already implemented in V29 technical confirmation path with explicit reason codes.",
+      "promotion_requirements": [
+        "Log technical mismatch reason with canonical blocker ordering",
+        "Add fixture coverage for trend-strategy mismatches by strategy family",
+        "Monitor mismatch frequency in outcomes to tune trend thresholds"
+      ]
+    },
+    {
+      "id": "MORGAN-2026-06-24-003",
+      "stage": "FORWARD_TEST",
+      "strategy": "IRON_CONDOR",
+      "time_horizon": "NON_INTRADAY",
+      "observed_practice": "Four-leg spread strategies are highly sensitive to execution quality and volatility regime without explicit max-risk and exit governance.",
+      "hypothesis": "Iron Condor should remain radar-only until multi-leg contract schema, max-risk envelope, and deterministic exit/invalidation rules are canonical and tested.",
+      "required_data": [
+        "FOUR_LEG_OPTION_CHAIN",
+        "NET_CREDIT",
+        "MAX_LOSS_RISK_BUDGET",
+        "VIX_OR_IVR_REGIME",
+        "RANGE_CONFIRMATION",
+        "INTRADAY_EVENT_AWARENESS_IF_APPLICABLE"
+      ],
+      "blocked_from_entry_ready_until": "Canonical multi-leg schema and exit governance are required for production readiness.",
+      "promotion_requirements": [
+        "Add four-leg strategy schema checks",
+        "Add forced-risk-cap fixture set (max risk, spread width, assignment window)",
+        "Pilot forward-test with radar-only outcome labels before any cap bump"
+      ]
+    }
+  ]
+}

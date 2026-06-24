@@ -49,6 +49,52 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_daily_now:
+    get:
+      operationId: getDailyNow
+      summary: Get a GPT-ready daily opportunity answer
+      description: >
+        Returns a safe Spanish answer for "what opportunities do I have today?"
+        The custom GPT should copy answer_to_user exactly unless the user asks
+        for deeper detail. This endpoint never authorizes orders.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+      responses:
+        "200":
+          description: GPT-ready daily answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyNow"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v31_command_center.json:
+    get:
+      operationId: getCommandCenter
+      summary: Get Stock Ultimus V31 command center
+      description: >
+        Returns an executive daily operating view built from the same V31 ranking
+        and data-readiness payload used by the GPT daily rankings.
+      responses:
+        "200":
+          description: V31 command center JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandCenter"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /gpt_v31_trade_decision/{ticker}:
     get:
       operationId: getTickerDecision
@@ -155,6 +201,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RankingItem"
+        top_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
         watchlist:
           type: array
           items:
@@ -163,7 +213,15 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RankingItem"
+        blocked_or_waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
         research_only:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        items:
           type: array
           items:
             $ref: "#/components/schemas/RankingItem"
@@ -171,6 +229,48 @@ components:
           type: array
           items:
             type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+    DailyNow:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        answer_version:
+          type: string
+        generated_at:
+          type: string
+        response_mode:
+          type: string
+          const: copy_answer_to_user_exactly
+        first_line:
+          type: string
+        answer_to_user:
+          type: string
+        daily_rankings_endpoint:
+          type: string
+        manual_review_inbox_endpoint:
+          type: string
+        outcome_evaluation_command:
+          type: string
+        summary:
+          type: object
+          additionalProperties: true
+        data_readiness:
+          type: object
+          additionalProperties: true
+        top_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        blocked_or_waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
         execution_authorized:
           type: boolean
           const: false
@@ -198,6 +298,10 @@ components:
           type: array
           items:
             type: string
+        required_missing_fields:
+          type: array
+          items:
+            type: string
         ranking_score:
           type:
             - number
@@ -208,6 +312,46 @@ components:
             - "null"
         selected_contract:
           $ref: "#/components/schemas/SelectedContract"
+    CommandCenter:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        generated_at:
+          type: string
+        status:
+          type:
+            - string
+            - "null"
+        operational_readiness:
+          type:
+            - string
+            - "null"
+        main_blocker:
+          type:
+            - string
+            - "null"
+        summary:
+          type: object
+          additionalProperties: true
+        top_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        blocked_or_waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        next_required_actions:
+          type: array
+          items:
+            type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
     TickerDecision:
       type: object
       additionalProperties: true
@@ -367,4 +511,3 @@ components:
           type:
             - number
             - "null"
-

@@ -208,7 +208,7 @@
     },
     "NVDA": {
       "final_state": "WAIT_TECHNICAL",
-      "main_blocker": "TECHNICAL_NOT_CONFIRMED"
+      "main_blocker": "TECHNICAL_SCORE_LOW"
     },
     "SPY": {
       "final_state": "MANUAL_REVIEW_BLOCKED",

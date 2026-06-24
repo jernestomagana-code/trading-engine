@@ -422,12 +422,13 @@
   <main>
     <section class="hero" aria-label="Resumen Stock Ultimus">
       <div class="hero-inner">
-        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-06-18</div>
-        <h1>V31 y V32 ya estan en marcha</h1>
+        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-06-23</div>
+        <h1>Base local validada; faltan gates reales para el 100%</h1>
         <p>
-          V30 esta validado localmente. El proyecto ya expone decisiones
-          canonicas V31, registra outcomes V32 y cuenta con senales TradingView
-          validadas, siempre bajo revision manual y sin ordenes automaticas.
+          V30, V31, V32, TradingView, seguridad y storage pasan localmente. Para
+          considerar el proyecto completo faltan IBKR real sanitizado,
+          forward test de TradingView, Supabase real, Render protegido y
+          reducir caminos legacy.
         </p>
       </div>
     </section>
@@ -436,7 +437,7 @@
       <article class="metric">
         <div class="metric-label">Prioridad activa</div>
         <div class="metric-value">V31</div>
-        <div class="metric-note">Contrato canonico y schemas compartidos.</div>
+        <div class="metric-note">Fuente unica de decision.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Validacion local</div>
@@ -449,9 +450,9 @@
         <div class="metric-note">Fixtures de estrategia y scripts Pine validados.</div>
       </article>
       <article class="metric">
-        <div class="metric-label">Guardrail clave</div>
-        <div class="metric-value">Manual</div>
-        <div class="metric-note">Sin ejecucion automatica de ordenes.</div>
+        <div class="metric-label">Gates para 100%</div>
+        <div class="metric-value">5</div>
+        <div class="metric-note">Legacy, IBKR, TV, Supabase y Render.</div>
       </article>
     </section>
 
@@ -466,7 +467,7 @@
             <div class="area-row">
               <div class="area-name">Bridge IBKR</div>
               <span class="status-pill is-work">En progreso</span>
-              <div class="area-text">Campos V30, calidad de datos y validacion de contrato ejecutable presentes en <span class="code">ibkr_bridge.py</span>.</div>
+              <div class="area-text">Campos V30, calidad de datos, entrypoint/cadencia y guardrails de mercado presentes en <span class="code">ibkr_bridge.py</span>.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Cloud/FastAPI</div>
@@ -496,7 +497,7 @@
             <div class="area-row">
               <div class="area-name">Seguridad</div>
               <span class="status-pill is-good">Alineado</span>
-              <div class="area-text">Guardrails cubren no-auto-order, secretos, readiness, retencion, aislamiento, storage durable y read-auth.</div>
+              <div class="area-text">Guardrails cubren no-auto-order, secretos, readiness, retencion, aislamiento, storage durable y read-auth; falta verificar Render real.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Documentacion</div>
@@ -559,6 +560,40 @@
             </div>
           </div>
         </section>
+
+        <section class="panel" aria-label="Ruta al 100 por ciento">
+          <div class="panel-title">
+            <h2>Ruta Al 100%</h2>
+            <span class="status-pill is-work">5 gates abiertos</span>
+          </div>
+          <div class="version-list">
+            <div class="version-row">
+              <strong>1. V31 unico</strong>
+              <span class="area-text">Reducir rutas legacy restantes en app/main.py.</span>
+              <span class="status-pill is-work">En curso</span>
+            </div>
+            <div class="version-row">
+              <strong>2. IBKR real</strong>
+              <span class="area-text">Snapshot real sanitizado y decisiones reproducibles por ticker.</span>
+              <span class="status-pill is-next">Pendiente</span>
+            </div>
+            <div class="version-row">
+              <strong>3. TradingView real</strong>
+              <span class="area-text">Forward test de Pine Pro V2 contra /technical_snapshot.</span>
+              <span class="status-pill is-next">Pendiente</span>
+            </div>
+            <div class="version-row">
+              <strong>4. Supabase real</strong>
+              <span class="area-text">SQL durable aplicado y RUNTIME_STORAGE_MODE=supabase validado.</span>
+              <span class="status-pill is-next">Pendiente</span>
+            </div>
+            <div class="version-row">
+              <strong>5. Render seguro</strong>
+              <span class="area-text">READ_ACCESS_TOKEN, webhook secret, HTTPS y smoke de endpoints protegidos.</span>
+              <span class="status-pill is-next">Pendiente</span>
+            </div>
+          </div>
+        </section>
       </div>
 
       <aside>
@@ -571,6 +606,7 @@
             <li>7 fixtures V30 validados.</li>
             <li>Guardrails de no-auto-order validados.</li>
             <li>34 archivos Python compilados.</li>
+            <li>Bridge entrypoint, cadence y market-state guardrails validados.</li>
             <li>Privacidad de fixtures runtime validada.</li>
             <li>6 fixtures de senales TradingView validados.</li>
             <li>6 scripts Pine de TradingView validados.</li>
@@ -584,7 +620,7 @@
             <li>Endpoint smoke V29/V31 validado.</li>
           </ul>
           <p class="small" style="margin-top:16px;">
-            Comando base: <span class="code">scripts/check_v30_integrity.py</span>
+            Comando del 2026-06-23: <span class="code">scripts/check_v30_integrity.py</span>
           </p>
         </section>
 
@@ -596,7 +632,9 @@
             <li><span class="number">1</span><span>Reducir caminos legacy de decision en app/main.py.</span></li>
             <li><span class="number">2</span><span>Capturar un snapshot real de IBKR y pasarlo por el sanitizador.</span></li>
             <li><span class="number">3</span><span>Hacer forward test de Pine Pro V2 contra /technical_snapshot.</span></li>
-            <li><span class="number">4</span><span>Configurar READ_ACCESS_TOKEN y validar accesos protegidos en Render.</span></li>
+            <li><span class="number">4</span><span>Aplicar SQL durable en Supabase/Postgres real.</span></li>
+            <li><span class="number">5</span><span>Configurar READ_ACCESS_TOKEN, webhook secret y validar accesos protegidos en Render.</span></li>
+            <li><span class="number">6</span><span>Activar RUNTIME_STORAGE_MODE=supabase y validar round-trip real.</span></li>
           </ol>
         </section>
 
@@ -651,6 +689,14 @@
           <div class="timeline-item">
             <time>2026-06-18</time>
             V32 journaling/outcomes y el paquete TradingView pasan validacion local.
+          </div>
+          <div class="timeline-item">
+            <time>2026-06-22</time>
+            Guard integral pasa y se agrega ruta explicita al 100%.
+          </div>
+          <div class="timeline-item">
+            <time>2026-06-23</time>
+            Guard integral vuelve a pasar; siguen abiertos los gates reales para el 100%.
           </div>
         </section>
       </aside>
