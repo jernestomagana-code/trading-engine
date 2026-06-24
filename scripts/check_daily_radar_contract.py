@@ -20,7 +20,13 @@ def load_app_module():
     module.__dict__["__file__"] = str(app_path)
     source = app_path.read_text()
     parsed = ast.parse(source)
-    wanted = {"_v31_data_readiness_payload", "_v31_gpt_daily_answer_guidance"}
+    wanted = {
+        "_v31_data_readiness_payload",
+        "_v31_gpt_daily_answer_guidance",
+        "_v31_gpt_compact_contract",
+        "_v31_gpt_compact_daily_item",
+        "_v31_gpt_compact_daily_payload",
+    }
     selected = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     extracted = ast.Module(body=selected, type_ignores=[])
     ast.fix_missing_locations(extracted)
@@ -82,6 +88,38 @@ def main() -> int:
     require(guidance["execution_authorized"] is False, guidance)
     require("ventana operativa confiable" in guidance["lead_message"], guidance)
     require("when_wait_market" in guidance, guidance)
+
+    compact = app._v31_gpt_compact_daily_payload({
+        "engine": "TEST_ENGINE",
+        "summary": {"total": 2, "manual_review_ready": 1, "entry_ready": 1},
+        "items": [
+            {
+                "rank": 1,
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "manual_review_ready": True,
+                "conviction_score": 100,
+                "evidence": {"options": {"contract": {"strike": 500, "bid": 1.0, "ask": 1.1}}},
+                "technical": {"large": "not needed"},
+            },
+            {
+                "rank": 2,
+                "ticker": "NVDA",
+                "strategy": "NAKED_PUT",
+                "final_state": "WAIT_OPTIONS_DATA",
+                "manual_review_ready": False,
+                "main_blocker": "WAIT_OPTIONS_DATA",
+                "evidence": {"options": {"contract": {"strike": 120}}},
+            },
+        ],
+    })
+    require(len(compact["top_recommendations"]) == 1, compact)
+    require(compact["top_recommendations"][0]["ticker"] == "QQQ", compact)
+    require(len(compact["blocked_or_waiting"]) == 1, compact)
+    require(compact["blocked_or_waiting"][0]["ticker"] == "NVDA", compact)
+    require("technical" not in compact["items"][0], compact)
+    require(compact["execution_authorized"] is False, compact)
 
     print("Validated GPT daily radar contract and WAIT_MARKET answer policy.")
     return 0

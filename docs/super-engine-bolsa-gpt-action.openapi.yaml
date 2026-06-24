@@ -35,10 +35,10 @@ paths:
       operationId: getDailyRankings
       summary: Get GPT-safe daily opportunity rankings
       description: >
-        Returns the daily ranking view for manual-review candidates, no-trade
-        candidates, all ranked items, data-readiness diagnostics, and answer
-        guidance. This is the primary endpoint for answering "what opportunities
-        do I have today?"
+        Returns a compact daily ranking view for manual-review candidates,
+        blocked/waiting candidates, all ranked items, data-readiness diagnostics,
+        and answer guidance. This is the primary endpoint for answering "what
+        opportunities do I have today?"
       responses:
         "200":
           description: GPT-safe daily rankings
@@ -168,6 +168,11 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RankingItem"
+        blocked_or_waiting:
+          type: array
+          description: Compact candidates that are not ENTRY_READY and must be explained as blocked or waiting.
+          items:
+            $ref: "#/components/schemas/RankingItem"
         top_manual_review:
           type: array
           deprecated: true
@@ -234,6 +239,14 @@ components:
           type:
             - string
             - "null"
+        why:
+          type:
+            - string
+            - "null"
+        instruction:
+          type:
+            - string
+            - "null"
         manual_review_ready:
           type: boolean
         can_operate:
@@ -246,6 +259,14 @@ components:
           type:
             - string
             - "null"
+        parameter_review_status:
+          type:
+            - string
+            - "null"
+        parameter_review_blockers:
+          type: array
+          items:
+            type: string
         selected_contract:
           $ref: "#/components/schemas/SelectedContract"
     DataReadiness:

@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--skip-bridge", action="store_true", help="Only read the current cloud radar.")
+    parser.add_argument("--full-bridge", action="store_true", help="Use the slower full IBKR option universe.")
     parser.add_argument("--allow-partial", action="store_true", help="Continue to cloud read even if the bridge refresh fails.")
     parser.add_argument("--json-out", help="Optional path to save the raw /gpt_v31_daily_rankings response.")
     parser.add_argument("--preview", type=int, default=5, help="Rows to print per ranking section.")
@@ -85,6 +86,8 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> int:
     env["IBKR_HOST"] = args.ibkr_host
     env["IBKR_PORT"] = str(args.ibkr_port)
     env["PYTHONUNBUFFERED"] = "1"
+    if not args.full_bridge:
+        env.setdefault("DAILY_RADAR_FAST", "1")
 
     cmd = [sys.executable, str(ROOT / "ibkr_bridge.py"), "--once"]
     print("Refrescando snapshot con ibkr_bridge.py --once ...")
@@ -186,7 +189,16 @@ def print_summary(payload: dict[str, Any], preview: int) -> None:
     guidance = payload.get("answer_guidance") or {}
     top = section_rows(payload, "top_recommendations", "top_manual_review")
     all_items = section_rows(payload, "items", "all_ranked")
-    no_trade = section_rows(payload, "no_trade", "blocked")
+    no_trade = section_rows(payload, "blocked_or_waiting", "no_trade", "blocked")
+    top = [
+        item for item in top
+        if item.get("final_state") == "ENTRY_READY" or item.get("manual_review_ready") is True
+    ]
+    if not no_trade:
+        no_trade = [
+            item for item in all_items
+            if item.get("final_state") != "ENTRY_READY" and item.get("manual_review_ready") is not True
+        ]
     top_ids = {(item.get("ticker"), item.get("strategy"), item.get("final_state")) for item in top}
     no_trade_ids = {(item.get("ticker"), item.get("strategy"), item.get("final_state")) for item in no_trade}
     watchlist = [

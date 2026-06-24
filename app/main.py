@@ -21468,6 +21468,109 @@ def _v31_daily_recommendations_payload(tickers=None):
     return payload
 
 
+def _v31_gpt_compact_contract(item):
+    item = item if isinstance(item, dict) else {}
+    contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+    if not contract:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        options = evidence.get("options") if isinstance(evidence.get("options"), dict) else {}
+        contract = options.get("contract") if isinstance(options.get("contract"), dict) else {}
+    if not contract:
+        contract = item.get("best_contract") if isinstance(item.get("best_contract"), dict) else {}
+    if not contract:
+        return None
+
+    keys = [
+        "ticker",
+        "strategy",
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+        "iv",
+        "volume",
+        "open_interest",
+        "quality",
+        "data_quality",
+    ]
+    return {key: contract.get(key) for key in keys if contract.get(key) is not None}
+
+
+def _v31_gpt_compact_daily_item(item):
+    item = item if isinstance(item, dict) else {}
+    parameter_review = item.get("parameter_review") if isinstance(item.get("parameter_review"), dict) else {}
+    compact = {
+        "rank": item.get("rank"),
+        "ticker": item.get("ticker"),
+        "strategy": item.get("strategy"),
+        "final_state": item.get("final_state"),
+        "recommendation_action": item.get("recommendation_action"),
+        "manual_review_ready": item.get("manual_review_ready"),
+        "main_blocker": item.get("main_blocker"),
+        "blockers": item.get("blockers") or [],
+        "required_missing_fields": item.get("required_missing_fields") or parameter_review.get("missing_fields") or [],
+        "conviction_score": item.get("conviction_score"),
+        "ranking_score": item.get("ranking_score"),
+        "score": item.get("score"),
+        "selected_contract": _v31_gpt_compact_contract(item),
+        "why": item.get("why"),
+        "instruction": item.get("instruction"),
+        "risk_note": item.get("risk_note"),
+        "parameter_review_status": parameter_review.get("status"),
+        "parameter_review_blockers": parameter_review.get("blockers") or [],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    return {key: value for key, value in compact.items() if value not in [None, [], {}]}
+
+
+def _v31_gpt_compact_daily_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    items = [_v31_gpt_compact_daily_item(item) for item in (payload.get("items") or [])]
+    top = [
+        item for item in items
+        if item.get("final_state") == "ENTRY_READY" or item.get("manual_review_ready") is True
+    ]
+    blocked_or_waiting = [
+        item for item in items
+        if item.get("final_state") != "ENTRY_READY" and item.get("manual_review_ready") is not True
+    ]
+    no_trade = [_v31_gpt_compact_daily_item(item) for item in (payload.get("no_trade") or [])]
+    seen = {(item.get("ticker"), item.get("strategy"), item.get("final_state")) for item in no_trade}
+    for item in blocked_or_waiting:
+        key = (item.get("ticker"), item.get("strategy"), item.get("final_state"))
+        if key not in seen:
+            no_trade.append(item)
+            seen.add(key)
+
+    return {
+        "engine": payload.get("engine"),
+        "recommendation_version": payload.get("recommendation_version"),
+        "generated_at": payload.get("generated_at"),
+        "status": payload.get("status"),
+        "summary": payload.get("summary") or {},
+        "data_readiness": payload.get("data_readiness") or {},
+        "answer_guidance": payload.get("answer_guidance") or {},
+        "top_recommendations": top,
+        "items": items,
+        "blocked_or_waiting": blocked_or_waiting,
+        "no_trade": no_trade,
+        "source_status": payload.get("source_status") or {},
+        "risk_notes": [
+            "ENTRY_READY significa listo para revision manual, no autorizacion de orden.",
+            "No inventar tickers, strikes, precios ni oportunidades fuera de este payload.",
+            "Los candidatos en WAIT_* o RISK_BLOCKED deben explicarse como bloqueados o en espera.",
+        ],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _strategy_registry():
     return shared_strategy_registry.load_registry()
 
@@ -22820,37 +22923,39 @@ async def v31_daily_recommendations():
 @app.get("/gpt_v31_daily_recommendations")
 async def gpt_v31_daily_recommendations():
     payload = _v31_daily_recommendations_payload()
+    gpt_payload = _v31_gpt_compact_daily_payload(payload)
     _record_audit_event(
         "GPT_DAILY_RECOMMENDATIONS_SERVED",
         {
             "recommendation_version": payload.get("recommendation_version"),
             "total": (payload.get("summary") or {}).get("total"),
             "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
-            "top_tickers": [item.get("ticker") for item in (payload.get("top_recommendations") or [])[:5]],
+            "top_tickers": [item.get("ticker") for item in (gpt_payload.get("top_recommendations") or [])[:5]],
             "not_order_instruction": True,
         },
         actor="system",
         source="gpt_v31_daily_recommendations",
     )
-    return payload
+    return gpt_payload
 
 
 @app.get("/gpt_v31_daily_rankings")
 async def gpt_v31_daily_rankings():
     payload = _v31_daily_recommendations_payload()
+    gpt_payload = _v31_gpt_compact_daily_payload(payload)
     _record_audit_event(
         "GPT_DAILY_RANKINGS_SERVED",
         {
             "recommendation_version": payload.get("recommendation_version"),
             "total": (payload.get("summary") or {}).get("total"),
             "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
-            "top_tickers": [item.get("ticker") for item in (payload.get("top_recommendations") or [])[:5]],
+            "top_tickers": [item.get("ticker") for item in (gpt_payload.get("top_recommendations") or [])[:5]],
             "not_order_instruction": True,
         },
         actor="system",
         source="gpt_v31_daily_rankings",
     )
-    return payload
+    return gpt_payload
 
 
 @app.get("/strategy_registry")
