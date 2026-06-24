@@ -23230,6 +23230,7 @@ async def v31_risk_profile():
         "risk_profile": _v31_risk_profile(),
         "description": "Perfil minimo que puede bloquear ENTRY_READY antes de revision manual.",
         "not_order_instruction": True,
+        "execution_authorized": False,
     }
 
 
@@ -23261,6 +23262,7 @@ async def v31_outcome_tracking_status():
         "recent_signals": tracked[-50:],
         "durable_storage": _durable_storage_summary(),
         "not_order_instruction": True,
+        "execution_authorized": False,
     }
 
 
