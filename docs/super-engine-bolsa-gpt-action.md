@@ -59,6 +59,16 @@ Super Engine Bolsa should call:
 GET /gpt_v31_daily_rankings
 ```
 
+If the GPT needs a ready-to-say institutional answer, it can call:
+
+```text
+GET /gpt_v31_daily_answer
+```
+
+That endpoint returns `answer_text`, already shaped for a Spanish daily
+opportunity response. The GPT may lightly rephrase it, but must not change
+tickers, states, blockers, contract values, or the no-order boundary.
+
 Then, for any ticker that needs detail, it should call:
 
 ```text
@@ -86,6 +96,8 @@ is available.
 
 Use /gpt_v31_daily_rankings for opportunity discovery. Use
 /gpt_v31_trade_decision/{ticker} for ticker-level detail.
+Use /gpt_v31_daily_answer when the user wants a concise, ready-to-read daily
+answer rather than raw ranking detail.
 Use /v31_command_center.json only for an executive status summary; do not treat
 it as a separate decision engine.
 
@@ -151,6 +163,21 @@ After token rotations or GPT Action edits, verify the integration with:
 python3 scripts/monitor_gpt_action_health.py
 ```
 
+Operational review surfaces:
+
+```text
+/v31_operating_suite
+/v31_manual_review_console
+/v31_manual_reviews
+/v31_outcome_tracking_status
+/v31_manual_review_learning
+/v31_risk_profile
+```
+
+`/v31_operating_suite` is the operator map: current command center, manual
+review journal, outcome tracking, learning summary, risk profile presets, and
+third-party readiness gates.
+
 ## Safe Response Pattern
 
 For a daily opportunity question, the GPT should answer in this shape:
@@ -168,6 +195,7 @@ Oportunidades para revision manual:
 Bloqueadas o en espera:
 - <ticker> | <final_state> | bloqueador <main_blocker>
   Falta: <required_missing_fields>
+  Riesgo: <risk_profile_blocked_checks, if present>
 
 Datos faltantes y siguiente accion:
 - Filas de opciones: <data_readiness.option_rows_found>

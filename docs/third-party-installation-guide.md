@@ -30,6 +30,8 @@ flowchart LR
 - Custom GPT Action schema served from
   `/super_engine_bolsa_gpt_action_openapi.yaml`.
 - ChatGPT Action authentication using `X-Stock-Ultimus-Read-Token`.
+- Operator suite at `/v31_operating_suite` for command center, manual review,
+  outcome tracking, learning, risk profiles, and commercial gates.
 - Optional TradingView alerts posting to `/technical_snapshot`.
 - Optional durable storage through Supabase/Postgres before commercial use.
 
@@ -65,8 +67,32 @@ Recommended for production:
 10. Run the local bridge once during a valid market/options window.
 11. Confirm `/gpt_v31_daily_rankings` returns a data readiness status and
     decisions without exposing secrets.
-12. Confirm every candidate remains manual-review only and
+12. Confirm `/gpt_v31_daily_answer` returns a safe Spanish response with
+    `execution_authorized=false`.
+13. Open `/v31_operating_suite` and confirm manual review, outcome tracking,
+    learning, and risk profile sections are present.
+14. Confirm every candidate remains manual-review only and
     `execution_authorized` is false.
+
+## Risk Profile Setup
+
+Choose one preset per customer/account:
+
+```text
+V31_RISK_PROFILE_PRESET=conservative
+V31_RISK_PROFILE_PRESET=balanced
+V31_RISK_PROFILE_PRESET=aggressive
+V31_RISK_PROFILE_PRESET=paper
+```
+
+`balanced` is the default. You can still override individual limits with
+`V31_MIN_DTE`, `V31_MAX_DTE`, `V31_MIN_ABS_DELTA`, `V31_MAX_ABS_DELTA`,
+`V31_MAX_SPREAD_PCT`, `V31_MAX_ABS_SPREAD`, `V31_MIN_BID`,
+`V31_MIN_OPTION_SCORE`, and `V31_MIN_TECH_SCORE`.
+
+For commercial installs, each customer should have a documented profile and a
+change log. A looser profile should be treated as a research/paper setting until
+enough audited outcomes exist.
 
 ## Operating Model
 
@@ -78,8 +104,12 @@ Daily flow:
 4. Ask the GPT: "Que oportunidades tengo hoy?"
 5. Review `top_manual_review`, `watchlist`, `blocked`, `research_only`, and
    `data_readiness`.
-6. For any candidate, open ticker detail before acting.
-7. Manually validate sizing, spread, liquidity, event risk, account risk, and
+6. Open `/v31_manual_review_console` to record reviewing, watchlist, rejection,
+   expiration, or manual approval.
+7. Use `/v31_outcome_tracking_status`, `/v31_evaluate_pending_outcomes`, and
+   `/v31_manual_review_learning` to track what happened after signals.
+8. For any candidate, open ticker detail before acting.
+9. Manually validate sizing, spread, liquidity, event risk, account risk, and
    broker data.
 
 ## Commercial Readiness Gates
@@ -95,6 +125,17 @@ Before selling this as a managed product, require:
 - Paper-trading or simulation mode for onboarding.
 - Support process for stale data, broker outages, token rotation, and incident
   logs.
+
+## Customer Handoff Checklist
+
+- Confirm GPT Action uses only the customer's backend URL and read token.
+- Confirm the bridge publishes only that customer's account/watchlist snapshot.
+- Confirm `/v31_operating_suite` shows the correct active risk profile.
+- Confirm `/v31_manual_review_console` records manual decisions.
+- Confirm outcome tracking is durable before using results for parameter
+  changes.
+- Confirm the customer has written disclosures and a support path for data
+  outages.
 
 ## Expected GPT Behavior
 

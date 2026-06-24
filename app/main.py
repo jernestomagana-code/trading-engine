@@ -19739,6 +19739,56 @@ _V31_DECISION_VERSION = "v31_canonical_decision_engine"
 _V31_RULESET_VERSION = "v31.1_manual_review_risk_profile_outcomes"
 _V31_SNAPSHOT_VERSION = "v30_options_executable_contract"
 _V31_OUTCOME_EVALUATION_VERSION = "v31_pending_outcome_auto_eval_v1"
+_V31_RISK_PROFILE_PRESETS = {
+    "conservative": {
+        "profile_name": "conservative_manual_review",
+        "min_dte": 7,
+        "max_dte": 60,
+        "min_abs_delta": 0.08,
+        "max_abs_delta": 0.30,
+        "max_spread_pct": 12.0,
+        "max_abs_spread": 0.25,
+        "min_bid": 0.10,
+        "min_option_score": 78,
+        "min_technical_score": 70,
+    },
+    "balanced": {
+        "profile_name": "balanced_manual_review",
+        "min_dte": 1,
+        "max_dte": 75,
+        "min_abs_delta": 0.05,
+        "max_abs_delta": 0.40,
+        "max_spread_pct": _V29_MAX_SPREAD_PCT,
+        "max_abs_spread": _V29_MAX_ABS_SPREAD,
+        "min_bid": _V29_MIN_BID,
+        "min_option_score": _V29_MIN_OPTION_SCORE,
+        "min_technical_score": _V29_MIN_TECH_SCORE,
+    },
+    "aggressive": {
+        "profile_name": "aggressive_manual_review",
+        "min_dte": 1,
+        "max_dte": 90,
+        "min_abs_delta": 0.03,
+        "max_abs_delta": 0.50,
+        "max_spread_pct": 25.0,
+        "max_abs_spread": 0.60,
+        "min_bid": 0.03,
+        "min_option_score": 60,
+        "min_technical_score": 55,
+    },
+    "paper": {
+        "profile_name": "paper_forward_test",
+        "min_dte": 1,
+        "max_dte": 120,
+        "min_abs_delta": 0.01,
+        "max_abs_delta": 0.60,
+        "max_spread_pct": 35.0,
+        "max_abs_spread": 1.00,
+        "min_bid": 0.01,
+        "min_option_score": 40,
+        "min_technical_score": 40,
+    },
+}
 
 
 def _v31_normalize_state(state):
@@ -19876,7 +19926,18 @@ def _v31_env_int(name, default):
         return default
 
 
-def _v31_risk_profile():
+def _v31_active_risk_profile_name():
+    return _v29_safe_upper(os.getenv("V31_RISK_PROFILE_PRESET", "balanced"), "BALANCED").lower()
+
+
+def _v31_risk_profile_preset(name=None):
+    key = _v29_safe_upper(name or _v31_active_risk_profile_name(), "BALANCED").lower()
+    if key not in _V31_RISK_PROFILE_PRESETS:
+        key = "balanced"
+    return key, dict(_V31_RISK_PROFILE_PRESETS[key])
+
+
+def _v31_risk_profile(name=None):
     """Runtime-tunable risk profile for manual-review readiness.
 
     Defaults are intentionally close to the existing V29 quality gate so this
@@ -19893,18 +19954,21 @@ def _v31_risk_profile():
         for item in os.getenv("V31_BLOCKED_TICKERS", "").split(",")
         if item.strip()
     ]
+    preset_name, preset = _v31_risk_profile_preset(name)
     return {
         "profile_version": "v31_risk_profile_v1",
-        "profile_name": os.getenv("V31_RISK_PROFILE_NAME", "personal_manual_review"),
-        "min_dte": _v31_env_int("V31_MIN_DTE", 1),
-        "max_dte": _v31_env_int("V31_MAX_DTE", 75),
-        "min_abs_delta": _v31_env_float("V31_MIN_ABS_DELTA", 0.05),
-        "max_abs_delta": _v31_env_float("V31_MAX_ABS_DELTA", 0.40),
-        "max_spread_pct": _v31_env_float("V31_MAX_SPREAD_PCT", _V29_MAX_SPREAD_PCT),
-        "max_abs_spread": _v31_env_float("V31_MAX_ABS_SPREAD", _V29_MAX_ABS_SPREAD),
-        "min_bid": _v31_env_float("V31_MIN_BID", _V29_MIN_BID),
-        "min_option_score": _v31_env_float("V31_MIN_OPTION_SCORE", _V29_MIN_OPTION_SCORE),
-        "min_technical_score": _v31_env_float("V31_MIN_TECH_SCORE", _V29_MIN_TECH_SCORE),
+        "preset": preset_name,
+        "available_presets": sorted(_V31_RISK_PROFILE_PRESETS.keys()),
+        "profile_name": os.getenv("V31_RISK_PROFILE_NAME", preset["profile_name"]),
+        "min_dte": _v31_env_int("V31_MIN_DTE", preset["min_dte"]),
+        "max_dte": _v31_env_int("V31_MAX_DTE", preset["max_dte"]),
+        "min_abs_delta": _v31_env_float("V31_MIN_ABS_DELTA", preset["min_abs_delta"]),
+        "max_abs_delta": _v31_env_float("V31_MAX_ABS_DELTA", preset["max_abs_delta"]),
+        "max_spread_pct": _v31_env_float("V31_MAX_SPREAD_PCT", preset["max_spread_pct"]),
+        "max_abs_spread": _v31_env_float("V31_MAX_ABS_SPREAD", preset["max_abs_spread"]),
+        "min_bid": _v31_env_float("V31_MIN_BID", preset["min_bid"]),
+        "min_option_score": _v31_env_float("V31_MIN_OPTION_SCORE", preset["min_option_score"]),
+        "min_technical_score": _v31_env_float("V31_MIN_TECH_SCORE", preset["min_technical_score"]),
         "allowed_strategies": allowed_strategies,
         "blocked_tickers": blocked_tickers,
         "not_order_instruction": True,
@@ -20553,6 +20617,18 @@ def _v31_manual_review_console_html(message="", error=""):
         contract = decision.get("selected_contract") or {}
         latest = decision.get("latest_manual_review") or {}
         latest_status = latest.get("status") or "UNREVIEWED"
+        risk_profile = decision.get("risk_profile") if isinstance(decision.get("risk_profile"), dict) else {}
+        risk_checks = risk_profile.get("blocked_checks") if isinstance(risk_profile.get("blocked_checks"), list) else []
+        risk_detail = ""
+        if risk_checks:
+            first_risk = risk_checks[0]
+            risk_detail = "{name}: {field} {value} requiere {comparator} {limit}".format(
+                name=first_risk.get("name"),
+                field=first_risk.get("field"),
+                value=first_risk.get("value"),
+                comparator=first_risk.get("comparator"),
+                limit=first_risk.get("limit"),
+            )
         rows.append("""
         <tr>
           <td><a href="/v31_decision/{ticker}">{ticker}</a></td>
@@ -20561,7 +20637,7 @@ def _v31_manual_review_console_html(message="", error=""):
           <td>{review_status}<div class="muted">{reviewed_at}</div></td>
           <td>{strike}</td><td>{expiration}</td><td>{dte}</td>
           <td>{bid}</td><td>{ask}</td><td>{mid}</td><td>{spread_pct}</td><td>{delta}</td>
-          <td>{technical}</td><td>{risk}</td><td>{blocker}</td>
+          <td>{technical}</td><td>{risk}<div class="muted">{risk_detail}</div></td><td>{blocker}</td>
           <td class="actions">{forms}</td>
         </tr>
         """.format(
@@ -20580,6 +20656,7 @@ def _v31_manual_review_console_html(message="", error=""):
             delta=_v29_html_escape(contract.get("delta")),
             technical=_v29_html_escape(decision.get("technical_status")),
             risk=_v29_html_escape(decision.get("risk_status")),
+            risk_detail=_v29_html_escape(risk_detail),
             blocker=_v29_html_escape(decision.get("main_blocker")),
             forms=_v31_manual_review_action_forms(decision),
         ))
@@ -20983,6 +21060,90 @@ def _v31_learning_email_content(learning):
             "learning": "{base}/v31_manual_review_learning".format(base=base_url),
             "manual_reviews": "{base}/v31_manual_reviews".format(base=base_url),
         },
+    }
+
+
+def _v31_operating_suite_payload():
+    command = _v31_command_center_payload()
+    readiness = _v31_trading_day_readiness_payload()
+    manual_reviews = _v31_manual_reviews_payload(limit=100)
+    learning = _v31_manual_review_learning_payload(limit=500)
+    outcome_data = _durable_supabase_fetch("outcome", limit=500)
+    if outcome_data is None:
+        outcome_data = load_outcomes_from_file()
+    tracked_outcomes = [
+        item for item in (outcome_data or [])
+        if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
+    ]
+    pending_outcomes = [
+        item for item in tracked_outcomes
+        if str(item.get("outcome") or "").upper() == "PENDING"
+    ]
+    return {
+        "engine": "V31_OPERATING_SUITE",
+        "suite_version": "v31_operating_suite_v1",
+        "generated_at": _v29_now(),
+        "status": readiness.get("status"),
+        "command_center": {
+            "status": command.get("status"),
+            "operational_readiness": command.get("operational_readiness"),
+            "summary": command.get("summary"),
+            "top_recommendations": command.get("top_recommendations") or [],
+            "blocked_or_waiting": command.get("blocked_or_waiting") or [],
+        },
+        "manual_review": {
+            "console": "/v31_manual_review_console",
+            "journal": "/v31_manual_reviews",
+            "record_endpoint": "POST /v31_manual_review",
+            "allowed_statuses": list(_V31_MANUAL_REVIEW_STATUSES),
+            "review_count": manual_reviews.get("review_count"),
+            "by_status": manual_reviews.get("by_status") or {},
+        },
+        "outcome_tracking": {
+            "status_endpoint": "/v31_outcome_tracking_status",
+            "auto_evaluate_endpoint": "POST /v31_evaluate_pending_outcomes",
+            "manual_review_auto_evaluate_endpoint": "POST /v31_evaluate_manual_reviews",
+            "tracked_entry_ready_signals": len(tracked_outcomes),
+            "pending_entry_ready_signals": len(pending_outcomes),
+        },
+        "learning": {
+            "endpoint": "/v31_manual_review_learning",
+            "notify_preview": "/v31_manual_review_learning_notify/preview",
+            "evaluated_count": learning.get("evaluated_count"),
+            "needs_more_data": learning.get("needs_more_data"),
+            "avg_paper_pnl_r": learning.get("avg_paper_pnl_r"),
+            "by_learning_label": learning.get("by_learning_label") or {},
+        },
+        "risk_profiles": {
+            "active": _v31_risk_profile(),
+            "available": {
+                name: {
+                    **preset,
+                    "not_order_instruction": True,
+                }
+                for name, preset in sorted(_V31_RISK_PROFILE_PRESETS.items())
+            },
+            "configure_with_env": "V31_RISK_PROFILE_PRESET=conservative|balanced|aggressive|paper plus optional V31_* overrides",
+        },
+        "gpt_answer": {
+            "endpoint": "/gpt_v31_daily_answer",
+            "primary_rankings_endpoint": "/gpt_v31_daily_rankings",
+            "instructions_doc": "/super_engine_bolsa_gpt_action_openapi.yaml",
+        },
+        "third_party_installation": {
+            "guide": "docs/third-party-installation-guide.md",
+            "required_gates": [
+                "legal_compliance_review",
+                "customer_account_isolation",
+                "separate_tokens_per_customer",
+                "durable_audit_logging",
+                "risk_profile_per_customer",
+                "no_auto_order_execution",
+            ],
+        },
+        "readiness": readiness,
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -21572,6 +21733,7 @@ def _v31_system_status_payload(tickers=None):
             "daily_recommendations": "/v31_daily_recommendations",
             "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
             "gpt_daily_rankings": "/gpt_v31_daily_rankings",
+            "gpt_daily_answer": "/gpt_v31_daily_answer",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -21580,6 +21742,7 @@ def _v31_system_status_payload(tickers=None):
             "dashboard": "/v31_dashboard",
             "dashboard_ticker_example": "/v31_dashboard/QQQ",
             "risk_profile": "/v31_risk_profile",
+            "operating_suite": "/v31_operating_suite",
             "outcome_tracking": "/v31_outcome_tracking_status",
             "legacy_v29_dashboard": "/v29_dashboard",
         },
@@ -21743,6 +21906,116 @@ def _v31_gpt_compact_daily_payload(payload):
             "No inventar tickers, strikes, precios ni oportunidades fuera de este payload.",
             "Los candidatos en WAIT_* o RISK_BLOCKED deben explicarse como bloqueados o en espera.",
         ],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_format_gpt_contract(contract):
+    contract = contract if isinstance(contract, dict) else {}
+    if not contract:
+        return "sin contrato seleccionado"
+    fields = [
+        "strike {value}".format(value=contract.get("strike")),
+        "exp {value}".format(value=contract.get("expiration")),
+        "DTE {value}".format(value=contract.get("dte")),
+        "bid/ask {bid}/{ask}".format(bid=contract.get("bid"), ask=contract.get("ask")),
+        "delta {value}".format(value=contract.get("delta")),
+    ]
+    return ", ".join(str(item) for item in fields if "None" not in str(item))
+
+
+def _v31_gpt_institutional_answer_payload(limit=5):
+    try:
+        limit = max(1, min(int(limit or 5), 10))
+    except Exception:
+        limit = 5
+    payload = _v31_daily_recommendations_payload()
+    compact = _v31_gpt_compact_daily_payload(payload)
+    readiness = compact.get("data_readiness") if isinstance(compact.get("data_readiness"), dict) else {}
+    summary = compact.get("summary") if isinstance(compact.get("summary"), dict) else {}
+    top = (compact.get("top_recommendations") or [])[:limit]
+    blocked = (compact.get("blocked_or_waiting") or [])[:limit]
+
+    lines = [
+        "Estado del motor: {status} / {operational}".format(
+            status=readiness.get("status") or compact.get("status"),
+            operational=readiness.get("operational_readiness") or "UNKNOWN",
+        ),
+        "Resumen: total={total}, ENTRY_READY={entry}, RISK_BLOCKED={risk}, WAIT_OPTIONS_DATA={wait_options}, WAIT_TECHNICAL={wait_tech}.".format(
+            total=summary.get("total"),
+            entry=summary.get("entry_ready"),
+            risk=summary.get("risk_blocked"),
+            wait_options=summary.get("wait_options_data"),
+            wait_tech=summary.get("wait_technical"),
+        ),
+        "",
+        "Oportunidades para revision manual:",
+    ]
+    if top:
+        for item in top:
+            lines.append("- {ticker} | {strategy} | {state} | score={score} | {contract}".format(
+                ticker=item.get("ticker"),
+                strategy=item.get("strategy"),
+                state=item.get("final_state"),
+                score=item.get("conviction_score") or item.get("ranking_score") or item.get("score"),
+                contract=_v31_format_gpt_contract(item.get("selected_contract")),
+            ))
+    else:
+        lines.append("- Ninguna con los datos actuales.")
+
+    lines.extend(["", "Bloqueadas o en espera:"])
+    if blocked:
+        for item in blocked:
+            risk_checks = item.get("risk_profile_blocked_checks") if isinstance(item.get("risk_profile_blocked_checks"), list) else []
+            risk_detail = ""
+            if risk_checks:
+                first = risk_checks[0]
+                risk_detail = " | riesgo={name} {field}={value} requiere {comparator} {limit}".format(
+                    name=first.get("name"),
+                    field=first.get("field"),
+                    value=first.get("value"),
+                    comparator=first.get("comparator"),
+                    limit=first.get("limit"),
+                )
+            missing = item.get("required_missing_fields") or []
+            lines.append("- {ticker} | {state} | blocker={blocker} | faltante={missing}{risk_detail}".format(
+                ticker=item.get("ticker"),
+                state=item.get("final_state"),
+                blocker=item.get("main_blocker"),
+                missing=missing,
+                risk_detail=risk_detail,
+            ))
+    else:
+        lines.append("- Ninguna.")
+
+    next_actions = readiness.get("next_required_actions") or []
+    lines.extend([
+        "",
+        "Datos y siguiente accion:",
+        "- opciones={options}, tecnicos={technical}, blocker_principal={blocker}".format(
+            options=readiness.get("option_rows_found"),
+            technical=readiness.get("technical_count"),
+            blocker=readiness.get("main_blocker"),
+        ),
+        "- siguiente={actions}".format(actions=next_actions),
+        "",
+        "Nota: esto no autoriza ordenes. ENTRY_READY significa listo para revision manual; validar broker, sizing, liquidez, spread, evento y riesgo antes de cualquier accion humana.",
+    ])
+
+    return {
+        "engine": "SUPER_ENGINE_BOLSA_INSTITUTIONAL_ANSWER",
+        "answer_version": "super_engine_bolsa_answer_v2",
+        "generated_at": payload.get("generated_at") or _v29_now(),
+        "answer_text": "\n".join(lines),
+        "summary": summary,
+        "data_readiness": readiness,
+        "top_recommendations": top,
+        "blocked_or_waiting": blocked,
+        "source_endpoint": "/gpt_v31_daily_rankings",
+        "manual_review_console": "/v31_manual_review_console",
+        "outcome_tracking": "/v31_outcome_tracking_status",
+        "risk_profile": "/v31_risk_profile",
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -23256,6 +23529,24 @@ async def gpt_v31_daily_rankings():
     return gpt_payload
 
 
+@app.get("/gpt_v31_daily_answer")
+async def gpt_v31_daily_answer(limit: int = 5):
+    payload = _v31_gpt_institutional_answer_payload(limit=limit)
+    _record_audit_event(
+        "GPT_DAILY_ANSWER_SERVED",
+        {
+            "answer_version": payload.get("answer_version"),
+            "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
+            "top_count": len(payload.get("top_recommendations") or []),
+            "blocked_count": len(payload.get("blocked_or_waiting") or []),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_answer",
+    )
+    return payload
+
+
 @app.get("/v31_command_center.json")
 async def v31_command_center_json():
     return _v31_command_center_payload()
@@ -23400,15 +23691,24 @@ async def v31_production_readiness():
 
 
 @app.get("/v31_risk_profile")
-async def v31_risk_profile():
+async def v31_risk_profile(profile: str = ""):
     return {
         "engine": "V31_RISK_PROFILE",
         "generated_at": _v29_now(),
-        "risk_profile": _v31_risk_profile(),
+        "risk_profile": _v31_risk_profile(profile or None),
+        "available_profiles": {
+            name: preset
+            for name, preset in sorted(_V31_RISK_PROFILE_PRESETS.items())
+        },
         "description": "Perfil minimo que puede bloquear ENTRY_READY antes de revision manual.",
         "not_order_instruction": True,
         "execution_authorized": False,
     }
+
+
+@app.get("/v31_operating_suite")
+async def v31_operating_suite():
+    return _v31_operating_suite_payload()
 
 
 @app.get("/v31_outcome_tracking_status")

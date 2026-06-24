@@ -484,11 +484,13 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["daily_recommendations"], "/v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["gpt_daily_recommendations"], "/gpt_v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["gpt_daily_rankings"], "/gpt_v31_daily_rankings")
+        self.assertEqual(status["endpoints"]["gpt_daily_answer"], "/gpt_v31_daily_answer")
         self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
         self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
         self.assertEqual(status["endpoints"]["strategy_exit_playbook"], "/strategy_exit_playbook")
         self.assertEqual(status["endpoints"]["strategy_regime_policy"], "/strategy_regime_policy")
         self.assertEqual(status["endpoints"]["risk_profile"], "/v31_risk_profile")
+        self.assertEqual(status["endpoints"]["operating_suite"], "/v31_operating_suite")
         self.assertEqual(status["endpoints"]["outcome_tracking"], "/v31_outcome_tracking_status")
         self.assertEqual(status["decisions"][0]["final_state"], "WAIT_OPTIONS_DATA")
         self.assertIn("risk_profile", status)
@@ -517,6 +519,94 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_RANKINGS_SERVED")
+
+    def test_gpt_daily_answer_returns_safe_institutional_text(self):
+        payload = {
+            "engine": "V31_DAILY_RECOMMENDATION_ENGINE",
+            "generated_at": "2026-06-24T16:00:00+00:00",
+            "summary": {"total": 1, "manual_review_ready": 1, "entry_ready": 1},
+            "data_readiness": {
+                "status": "READY_FOR_DECISION_REVIEW",
+                "operational_readiness": "READY_FOR_DECISION_REVIEW",
+                "option_rows_found": 1,
+                "technical_count": 1,
+                "next_required_actions": ["Revisar manualmente."],
+            },
+            "items": [
+                {
+                    "ticker": "QQQ",
+                    "strategy": "NAKED_PUT",
+                    "final_state": "ENTRY_READY",
+                    "manual_review_ready": True,
+                    "conviction_score": 1200,
+                    "selected_contract": {
+                        "strike": 645,
+                        "expiration": "20260731",
+                        "dte": 37,
+                        "bid": 6.1,
+                        "ask": 6.2,
+                        "delta": -0.14,
+                    },
+                }
+            ],
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_daily_recommendations_payload", return_value=payload), patch.object(
+            main,
+            "_record_audit_event",
+        ) as audit:
+            result = asyncio.run(main.gpt_v31_daily_answer(limit=3))
+
+        self.assertEqual(result["engine"], "SUPER_ENGINE_BOLSA_INSTITUTIONAL_ANSWER")
+        self.assertIn("Oportunidades para revision manual", result["answer_text"])
+        self.assertIn("QQQ", result["answer_text"])
+        self.assertIn("no autoriza ordenes", result["answer_text"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[0], "GPT_DAILY_ANSWER_SERVED")
+
+    def test_v31_risk_profile_presets_are_selectable(self):
+        conservative = main._v31_risk_profile("conservative")
+        paper = main._v31_risk_profile("paper")
+
+        self.assertEqual(conservative["preset"], "conservative")
+        self.assertEqual(paper["preset"], "paper")
+        self.assertLess(conservative["max_abs_spread"], paper["max_abs_spread"])
+        self.assertIn("balanced", conservative["available_presets"])
+
+    def test_v31_operating_suite_groups_product_surfaces(self):
+        with patch.object(main, "_v31_command_center_payload", return_value={
+            "status": "READY_FOR_DECISION_REVIEW",
+            "operational_readiness": "READY_FOR_DECISION_REVIEW",
+            "summary": {"entry_ready": 1},
+            "top_recommendations": [{"ticker": "QQQ"}],
+            "blocked_or_waiting": [],
+        }), patch.object(main, "_v31_trading_day_readiness_payload", return_value={
+            "status": "READY_FOR_MANUAL_REVIEW",
+        }), patch.object(main, "_v31_manual_reviews_payload", return_value={
+            "review_count": 2,
+            "by_status": {"REVIEWING": 1, "REJECTED": 1},
+        }), patch.object(main, "_v31_manual_review_learning_payload", return_value={
+            "evaluated_count": 1,
+            "needs_more_data": True,
+            "avg_paper_pnl_r": 0.2,
+            "by_learning_label": {"FAVORABLE_AFTER_REJECTION": 1},
+        }), patch.object(main, "_durable_supabase_fetch", return_value=[]), patch.object(
+            main,
+            "load_outcomes_from_file",
+            return_value=[],
+        ):
+            suite = main._v31_operating_suite_payload()
+
+        self.assertEqual(suite["engine"], "V31_OPERATING_SUITE")
+        self.assertIn("manual_review", suite)
+        self.assertIn("outcome_tracking", suite)
+        self.assertIn("learning", suite)
+        self.assertIn("risk_profiles", suite)
+        self.assertIn("third_party_installation", suite)
+        self.assertFalse(suite["execution_authorized"])
 
     def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):
         with patch.object(main, "_v29_discover_master_snapshot", return_value={
