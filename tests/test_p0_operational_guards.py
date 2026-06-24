@@ -215,5 +215,29 @@ class DailyOperationalAuditWorkflowTests(unittest.TestCase):
         self.assertNotIn("ib_insync", source)
 
 
+class LocalDailyEvaluationRunnerTests(unittest.TestCase):
+    def test_local_daily_outcome_runner_uses_only_read_protected_endpoints(self):
+        source = (ROOT / "scripts" / "run_daily_outcome_evaluation.py").read_text()
+
+        self.assertIn("/v31_evaluate_pending_outcomes", source)
+        self.assertIn("/v31_evaluate_manual_reviews", source)
+        self.assertIn("/v32_strategy_performance", source)
+        self.assertIn("/v31_manual_review_learning", source)
+        self.assertIn("/gpt_v31_daily_answer", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("ibkr_bridge.py", source)
+
+    def test_gpt_action_monitor_checks_ready_answer_endpoint(self):
+        source = (ROOT / "scripts" / "monitor_gpt_action_health.py").read_text()
+
+        self.assertIn("/gpt_v31_daily_answer", source)
+        self.assertIn("daily_answer_ok", source)
+        self.assertIn("daily_answer_no_order_guardrail", source)
+
+
 if __name__ == "__main__":
     unittest.main()

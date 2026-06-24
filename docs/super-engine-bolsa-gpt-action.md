@@ -53,20 +53,20 @@ When the user asks:
 Que oportunidades tengo hoy?
 ```
 
-Super Engine Bolsa should call:
-
-```text
-GET /gpt_v31_daily_rankings
-```
-
-If the GPT needs a ready-to-say institutional answer, it can call:
+Super Engine Bolsa should call this first for a natural-language answer:
 
 ```text
 GET /gpt_v31_daily_answer
 ```
 
-That endpoint returns `answer_text`, already shaped for a Spanish daily
-opportunity response. The GPT may lightly rephrase it, but must not change
+For raw rankings or cross-checking, it can call:
+
+```text
+GET /gpt_v31_daily_rankings
+```
+
+`/gpt_v31_daily_answer` returns `answer_text`, already shaped for a Spanish
+daily opportunity response. The GPT may lightly rephrase it, but must not change
 tickers, states, blockers, contract values, or the no-order boundary.
 
 Then, for any ticker that needs detail, it should call:
@@ -94,10 +94,9 @@ portfolio actions, blocked tickers, or ticker-specific analysis, first query the
 Stock Ultimus Action endpoints. Do not answer from memory when live backend data
 is available.
 
-Use /gpt_v31_daily_rankings for opportunity discovery. Use
+Use /gpt_v31_daily_answer first for opportunity discovery questions. Use
+/gpt_v31_daily_rankings when the user asks for raw ranking detail. Use
 /gpt_v31_trade_decision/{ticker} for ticker-level detail.
-Use /gpt_v31_daily_answer when the user wants a concise, ready-to-read daily
-answer rather than raw ranking detail.
 Use /v31_command_center.json only for an executive status summary; do not treat
 it as a separate decision engine.
 
@@ -172,11 +171,18 @@ Operational review surfaces:
 /v31_outcome_tracking_status
 /v31_manual_review_learning
 /v31_risk_profile
+/v32_strategy_performance_dashboard
 ```
 
 `/v31_operating_suite` is the operator map: current command center, manual
 review journal, outcome tracking, learning summary, risk profile presets, and
 third-party readiness gates.
+
+After manual reviews are recorded, use the local daily evaluation runner:
+
+```bash
+python3 scripts/run_daily_outcome_evaluation.py
+```
 
 ## Safe Response Pattern
 

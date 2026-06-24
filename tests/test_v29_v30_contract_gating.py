@@ -608,6 +608,48 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("third_party_installation", suite)
         self.assertFalse(suite["execution_authorized"])
 
+    def test_v32_strategy_performance_dashboard_is_manual_review_only(self):
+        with patch.object(main, "_v32_strategy_performance_payload", return_value={
+            "generated_at": "2026-06-24T16:00:00+00:00",
+            "summary": {
+                "strategy_count": 1,
+                "decision_count": 2,
+                "outcome_count": 3,
+                "closed_outcomes": 2,
+                "strategy_regime_group_count": 1,
+            },
+            "strategies": [
+                {
+                    "strategy": "CASH_SECURED_PUT",
+                    "closed_outcomes": 2,
+                    "wins": 1,
+                    "losses": 1,
+                    "win_rate": 50.0,
+                    "expectancy_r": 0.1,
+                    "avg_mfe_r": 0.6,
+                    "avg_mae_r": -0.3,
+                    "evidence_level": "INSUFFICIENT_SAMPLE",
+                    "parameter_review_ready": False,
+                }
+            ],
+            "strategy_regime_performance": [
+                {
+                    "group": "CASH_SECURED_PUT::BULLISH_LOW_VOL",
+                    "closed_outcomes": 2,
+                    "win_rate": 50.0,
+                    "expectancy_r": 0.1,
+                    "avg_mfe_r": 0.6,
+                    "avg_mae_r": -0.3,
+                    "evidence_level": "INSUFFICIENT_SAMPLE",
+                }
+            ],
+        }):
+            html = main._v32_strategy_performance_dashboard_html(limit=100)
+
+        self.assertIn("V32 Strategy Performance", html)
+        self.assertIn("CASH_SECURED_PUT", html)
+        self.assertIn("No autoriza", html)
+
     def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):
         with patch.object(main, "_v29_discover_master_snapshot", return_value={
             "path": None,

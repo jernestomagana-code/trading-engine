@@ -49,8 +49,9 @@ python3 scripts/monitor_gpt_action_health.py
 
 This checks that `/gpt_v31_daily_rankings` rejects unauthenticated requests,
 accepts the current read token, returns data-readiness diagnostics, exposes
-`top_recommendations` and `blocked_or_waiting`, and preserves no-order
-guardrails. It writes a redacted latest health record to:
+`top_recommendations` and `blocked_or_waiting`, verifies
+`/gpt_v31_daily_answer`, and preserves no-order guardrails. It writes a redacted
+latest health record to:
 
 ```bash
 runtime/gpt_action_health_latest.json
@@ -94,6 +95,38 @@ The same-source executive view is available after deploy at:
 
 It is derived from the same recommendation payload used by
 `/gpt_v31_daily_rankings`, so it should agree with Super Engine Bolsa.
+
+## Daily Outcome Evaluation
+
+After market close, or the next morning after a fresh snapshot exists, run:
+
+```bash
+python3 scripts/run_daily_outcome_evaluation.py
+```
+
+Preview without writing evaluations:
+
+```bash
+python3 scripts/run_daily_outcome_evaluation.py --dry-run --no-write
+```
+
+The runner calls:
+
+- `POST /v31_evaluate_pending_outcomes`
+- `POST /v31_evaluate_manual_reviews`
+- `GET /v32_strategy_performance`
+- `GET /v31_manual_review_learning`
+- `GET /gpt_v31_daily_answer`
+
+It verifies `not_order_instruction=true` and `execution_authorized=false` for
+the evaluation endpoints. It never uses ingest tokens, does not touch IBKR, and
+does not place orders.
+
+The executive performance dashboard is:
+
+```text
+/v32_strategy_performance_dashboard
+```
 
 ## Launchd Template
 
@@ -143,6 +176,7 @@ Before relying on automation, run:
 python3 scripts/check_daily_radar_contract.py
 python3 scripts/verify_production_read_auth.py
 python3 scripts/monitor_gpt_action_health.py --no-write
+python3 scripts/run_daily_outcome_evaluation.py --dry-run --no-write
 python3 scripts/run_daily_radar.py --skip-bridge --preview 3
 ```
 
@@ -154,7 +188,7 @@ que oportunidades tengo hoy?
 
 Expected behavior:
 
-- It calls the Stock Ultimus Action before answering.
+- It calls `/gpt_v31_daily_answer` or another Stock Ultimus Action endpoint before answering.
 - It does not use Web Search to invent tickers.
 - It reports `NO_DATA`, `WAIT_MARKET_WINDOW`, blockers, or manual-review
   candidates exactly as returned by the backend.

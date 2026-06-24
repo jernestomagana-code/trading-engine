@@ -1151,6 +1151,120 @@ def _v32_strategy_performance_payload(limit=1000):
     return payload
 
 
+def _v32_strategy_performance_dashboard_html(limit=1000):
+    payload = _v32_strategy_performance_payload(limit=limit)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    rows = []
+    for item in payload.get("strategies") or []:
+        rows.append("""
+        <tr>
+          <td>{strategy}</td>
+          <td>{closed}</td>
+          <td>{wins}</td>
+          <td>{losses}</td>
+          <td>{win_rate}</td>
+          <td>{expectancy}</td>
+          <td>{mfe}</td>
+          <td>{mae}</td>
+          <td>{evidence}</td>
+          <td>{ready}</td>
+        </tr>
+        """.format(
+            strategy=_v29_html_escape(item.get("strategy")),
+            closed=_v29_html_escape(item.get("closed_outcomes")),
+            wins=_v29_html_escape(item.get("wins")),
+            losses=_v29_html_escape(item.get("losses")),
+            win_rate=_v29_html_escape(item.get("win_rate")),
+            expectancy=_v29_html_escape(item.get("expectancy_r")),
+            mfe=_v29_html_escape(item.get("avg_mfe_r")),
+            mae=_v29_html_escape(item.get("avg_mae_r")),
+            evidence=_v29_html_escape(item.get("evidence_level")),
+            ready="Si" if item.get("parameter_review_ready") else "No",
+        ))
+
+    regime_rows = []
+    for item in (payload.get("strategy_regime_performance") or [])[:50]:
+        regime_rows.append("""
+        <tr>
+          <td>{group}</td><td>{closed}</td><td>{win_rate}</td><td>{expectancy}</td><td>{mfe}</td><td>{mae}</td><td>{evidence}</td>
+        </tr>
+        """.format(
+            group=_v29_html_escape(item.get("group")),
+            closed=_v29_html_escape(item.get("closed_outcomes")),
+            win_rate=_v29_html_escape(item.get("win_rate")),
+            expectancy=_v29_html_escape(item.get("expectancy_r")),
+            mfe=_v29_html_escape(item.get("avg_mfe_r")),
+            mae=_v29_html_escape(item.get("avg_mae_r")),
+            evidence=_v29_html_escape(item.get("evidence_level")),
+        ))
+
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>V32 Strategy Performance</title>
+      <style>
+        body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#0f172a; }}
+        .hero {{ background:#111827; color:white; padding:28px 34px; }}
+        .hero h1 {{ margin:0 0 8px 0; font-size:30px; }}
+        .wrap {{ padding:24px 34px 48px; }}
+        .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:13px 15px; border-radius:8px; line-height:1.45; margin-bottom:22px; }}
+        .grid {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:20px; }}
+        .metric {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:16px; }}
+        .metric span {{ display:block; color:#64748b; font-size:12px; text-transform:uppercase; font-weight:800; }}
+        .metric strong {{ display:block; font-size:26px; margin-top:6px; }}
+        .card {{ background:white; border:1px solid #e2e8f0; border-radius:8px; overflow:auto; margin:18px 0; }}
+        table {{ width:100%; border-collapse:collapse; min-width:900px; }}
+        th, td {{ padding:11px 12px; border-bottom:1px solid #e2e8f0; text-align:left; font-size:13px; }}
+        th {{ background:#f1f5f9; color:#475569; text-transform:uppercase; font-size:11px; }}
+        a {{ color:#2563eb; font-weight:800; }}
+      </style>
+    </head>
+    <body>
+      <div class="hero">
+        <h1>V32 Strategy Performance</h1>
+        <div>Generado: {generated} · <a href="/v32_strategy_performance">JSON</a> · <a href="/v31_operating_suite">Operating Suite</a></div>
+      </div>
+      <div class="wrap">
+        <div class="guardrail">Evidencia para revisión de parámetros. No autoriza órdenes, no sustituye validación manual y requiere muestra suficiente antes de cambiar reglas.</div>
+        <div class="grid">
+          <div class="metric"><span>Estrategias</span><strong>{strategy_count}</strong></div>
+          <div class="metric"><span>Decisiones</span><strong>{decision_count}</strong></div>
+          <div class="metric"><span>Outcomes</span><strong>{outcome_count}</strong></div>
+          <div class="metric"><span>Cerrados</span><strong>{closed}</strong></div>
+          <div class="metric"><span>Regimenes</span><strong>{regime_count}</strong></div>
+        </div>
+        <h2>Performance por estrategia</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Strategy</th><th>Closed</th><th>Wins</th><th>Losses</th><th>Win %</th><th>Expectancy R</th><th>Avg MFE R</th><th>Avg MAE R</th><th>Evidence</th><th>Review Ready</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>
+        <h2>Performance por estrategia/regimen</h2>
+        <div class="card">
+          <table>
+            <thead><tr><th>Group</th><th>Closed</th><th>Win %</th><th>Expectancy R</th><th>Avg MFE R</th><th>Avg MAE R</th><th>Evidence</th></tr></thead>
+            <tbody>{regime_rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </body>
+    </html>
+    """.format(
+        generated=_v29_html_escape(payload.get("generated_at")),
+        strategy_count=_v29_html_escape(summary.get("strategy_count")),
+        decision_count=_v29_html_escape(summary.get("decision_count")),
+        outcome_count=_v29_html_escape(summary.get("outcome_count")),
+        closed=_v29_html_escape(summary.get("closed_outcomes")),
+        regime_count=_v29_html_escape(summary.get("strategy_regime_group_count")),
+        rows="".join(rows) or '<tr><td colspan="10">Sin estrategias disponibles.</td></tr>',
+        regime_rows="".join(regime_rows) or '<tr><td colspan="7">Sin evidencia por regimen.</td></tr>',
+    )
+
+
 def row_to_intraday_futures_alert_event(row):
     if not isinstance(row, dict):
         return {}
@@ -21109,6 +21223,8 @@ def _v31_operating_suite_payload():
         "learning": {
             "endpoint": "/v31_manual_review_learning",
             "notify_preview": "/v31_manual_review_learning_notify/preview",
+            "performance_dashboard": "/v32_strategy_performance_dashboard",
+            "performance_json": "/v32_strategy_performance",
             "evaluated_count": learning.get("evaluated_count"),
             "needs_more_data": learning.get("needs_more_data"),
             "avg_paper_pnl_r": learning.get("avg_paper_pnl_r"),
@@ -23764,6 +23880,11 @@ async def v31_evaluate_manual_reviews(limit: int = 100, checkpoint: str = "EOD",
 @app.get("/v32_strategy_performance")
 async def v32_strategy_performance(limit: int = 1000):
     return _v32_strategy_performance_payload(limit)
+
+
+@app.get("/v32_strategy_performance_dashboard", response_class=_V29HTMLResponse)
+async def v32_strategy_performance_dashboard(limit: int = 1000):
+    return _V29HTMLResponse(_v32_strategy_performance_dashboard_html(limit=limit))
 
 
 @app.get("/v31_data_pipeline_status")
