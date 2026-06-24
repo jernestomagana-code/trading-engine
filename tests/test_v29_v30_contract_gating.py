@@ -483,6 +483,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["gpt_trade_decision_example"], "/gpt_v31_trade_decision/QQQ")
         self.assertEqual(status["endpoints"]["daily_recommendations"], "/v31_daily_recommendations")
         self.assertEqual(status["endpoints"]["gpt_daily_recommendations"], "/gpt_v31_daily_recommendations")
+        self.assertEqual(status["endpoints"]["gpt_daily_rankings"], "/gpt_v31_daily_rankings")
         self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
         self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
         self.assertEqual(status["endpoints"]["strategy_exit_playbook"], "/strategy_exit_playbook")
@@ -493,6 +494,25 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("risk_profile", status)
         self.assertIn("outcome_tracking", status)
         self.assertTrue(status["not_order_instruction"])
+
+    def test_gpt_daily_rankings_endpoint_serves_recommendations_payload(self):
+        payload = {
+            "engine": "V31_DAILY_RECOMMENDATION_ENGINE",
+            "recommendation_version": "test",
+            "summary": {"total": 1, "manual_review_ready": 0},
+            "top_recommendations": [{"ticker": "QQQ"}],
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_daily_recommendations_payload", return_value=payload), patch.object(
+            main,
+            "_record_audit_event",
+        ) as audit:
+            result = asyncio.run(main.gpt_v31_daily_rankings())
+
+        self.assertEqual(result, payload)
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[0], "GPT_DAILY_RANKINGS_SERVED")
 
     def test_v31_daily_recommendations_preserve_wait_options_priority(self):
         incomplete_row = {
