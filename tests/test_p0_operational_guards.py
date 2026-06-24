@@ -46,6 +46,24 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertIn("X-Snapshot-Ingest-Token", source)
 
+    def test_fast_option_universe_covers_default_radar(self):
+        tree = ast.parse(BRIDGE.read_text(), filename=str(BRIDGE))
+        module_vars = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                try:
+                    module_vars[node.targets[0].id] = ast.literal_eval(node.value)
+                except Exception:
+                    continue
+
+        default_watchlist = set(module_vars["DEFAULT_WATCHLIST"])
+        default_option_symbols = set(module_vars["DEFAULT_OPTION_SYMBOLS"])
+        self.assertEqual(default_watchlist, default_option_symbols)
+
+        source = BRIDGE.read_text()
+        self.assertIn("FAST_WATCHLIST = list(DEFAULT_WATCHLIST)", source)
+        self.assertIn("FAST_OPTION_SYMBOLS = list(DEFAULT_OPTION_SYMBOLS)", source)
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):
