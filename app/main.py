@@ -35,6 +35,7 @@ import hmac
 import requests
 
 import audit_log as shared_audit_log
+import broker_check as shared_broker_check
 import daily_recommendations as shared_daily_recommendations
 import durable_storage as shared_durable_storage
 import local_technical_engine as shared_local_technical_engine
@@ -20307,6 +20308,58 @@ def _v31_apply_risk_profile_gate(decision):
     return decision
 
 
+def _v31_broker_check_for_decision(decision):
+    master = _v29_discover_master_snapshot()
+    snapshot = master.get("data") if isinstance(master.get("data"), dict) else {}
+    return shared_broker_check.broker_check_for_ticker(
+        snapshot,
+        decision.get("ticker"),
+        decision.get("strategy"),
+    )
+
+
+def _v31_apply_broker_check_gate(decision):
+    broker = _v31_broker_check_for_decision(decision)
+    if isinstance(broker, dict):
+        decision["broker_check"] = broker
+    else:
+        decision["broker_check"] = {
+            "broker_check_version": shared_broker_check.BROKER_CHECK_VERSION,
+            "ticker": decision.get("ticker"),
+            "strategy": decision.get("strategy"),
+            "status": "UNKNOWN",
+            "ok_for_manual_review": True,
+            "blockers": [],
+            "warnings": ["BROKER_CHECK_NOT_AVAILABLE_IN_SNAPSHOT"],
+            "manual_broker_ticket_still_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        return decision
+
+    status = _v29_safe_upper(broker.get("status"), "UNKNOWN")
+    if decision.get("final_state") == "ENTRY_READY" and status == "BLOCKED":
+        blockers = list(decision.get("blockers") or [])
+        blockers.append("BROKER_CHECK_BLOCKED")
+        blockers.extend(broker.get("blockers") or [])
+        deduped = []
+        for blocker in blockers:
+            if blocker and blocker not in deduped:
+                deduped.append(blocker)
+        decision["final_state"] = "RISK_BLOCKED"
+        decision["decision"] = "RISK_BLOCKED"
+        decision["main_blocker"] = "RISK_BLOCKED"
+        decision["blockers"] = deduped
+        decision["risk_status"] = "RISK_BLOCKED"
+        decision["risk_blocker"] = "BROKER_CHECK_BLOCKED"
+        decision["manual_review_ready"] = False
+        decision["explanation"] = (
+            f"{decision.get('ticker')}: RISK_BLOCKED por broker_check. "
+            "El contexto IBKR disponible no soporta este setup para revision manual."
+        )
+    return decision
+
+
 def _v31_finalize_decision_support_contract(decision):
     state = _v31_normalize_state(decision.get("final_state"))
     decision["final_state"] = state
@@ -20505,6 +20558,7 @@ def _v31_manual_review_signal_id(decision, ticker):
 def _v31_manual_review_decision_summary(decision):
     decision = decision if isinstance(decision, dict) else {}
     contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
     return {
         "ticker": decision.get("ticker"),
         "strategy": decision.get("strategy"),
@@ -20515,6 +20569,16 @@ def _v31_manual_review_decision_summary(decision):
         "risk_status": decision.get("risk_status"),
         "manual_review_ready": decision.get("manual_review_ready") is True,
         "can_operate": False,
+        "broker_check": {
+            "broker_check_version": broker.get("broker_check_version"),
+            "status": broker.get("status"),
+            "ok_for_manual_review": broker.get("ok_for_manual_review"),
+            "blockers": broker.get("blockers") or [],
+            "warnings": broker.get("warnings") or [],
+            "manual_broker_ticket_still_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
         "selected_contract": {
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
@@ -20549,6 +20613,9 @@ def _v31_manual_review_payload(payload):
         or decision_summary.get("manual_review_ready") is not True
     ):
         raise ValueError("APPROVAL_REQUIRES_ENTRY_READY")
+    broker_summary = decision_summary.get("broker_check") if isinstance(decision_summary.get("broker_check"), dict) else {}
+    if status == "APPROVED_FOR_MANUAL_TRADE" and _v29_safe_upper(broker_summary.get("status"), "UNKNOWN") == "BLOCKED":
+        raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_NOT_BLOCKED")
 
     now = _v29_now()
     signal_id = payload.get("signal_id") or _v31_manual_review_signal_id(decision, ticker)
@@ -20684,6 +20751,20 @@ def _v31_manual_review_status_badge(status):
     )
 
 
+def _v31_broker_status_badge(status):
+    status = _v29_safe_upper(status, "UNKNOWN")
+    colors = {
+        "OK": "#16a34a",
+        "WARNING": "#d97706",
+        "BLOCKED": "#dc2626",
+        "UNKNOWN": "#64748b",
+    }
+    return '<span class="badge" style="background:{color};">{status}</span>'.format(
+        color=colors.get(status, "#64748b"),
+        status=_v29_html_escape(status),
+    )
+
+
 def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console/record", button_style="compact"):
     ticker = decision.get("ticker")
     state = decision.get("final_state")
@@ -20738,6 +20819,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
     cards = []
     for decision in decisions:
         contract = decision.get("selected_contract") or {}
+        broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
         latest = decision.get("latest_manual_review") or {}
         latest_status = latest.get("status") or "UNREVIEWED"
         if _v29_safe_upper(latest_status, "UNREVIEWED") in reviewed_statuses:
@@ -20755,6 +20837,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             <span class="state">{state}</span>
             <span>{technical}</span>
             <span>{risk}</span>
+            <span>{broker_status}</span>
           </div>
           <dl class="contract-grid">
             <div><dt>Strike</dt><dd>{strike}</dd></div>
@@ -20774,6 +20857,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             state=_v29_html_escape(decision.get("final_state")),
             technical=_v29_html_escape(decision.get("technical_status")),
             risk=_v29_html_escape(decision.get("risk_status")),
+            broker_status=_v29_html_escape("Broker " + _v29_safe_upper(broker.get("status"), "UNKNOWN")),
             strike=_v29_html_escape(contract.get("strike")),
             expiration=_v29_html_escape(contract.get("expiration")),
             dte=_v29_html_escape(contract.get("dte")),
@@ -20899,6 +20983,8 @@ def _v31_manual_review_console_html(message="", error=""):
         latest = decision.get("latest_manual_review") or {}
         latest_status = latest.get("status") or "UNREVIEWED"
         risk_profile = decision.get("risk_profile") if isinstance(decision.get("risk_profile"), dict) else {}
+        broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
+        broker_detail = ", ".join((broker.get("blockers") or broker.get("warnings") or [])[:2])
         risk_checks = risk_profile.get("blocked_checks") if isinstance(risk_profile.get("blocked_checks"), list) else []
         risk_detail = ""
         if risk_checks:
@@ -20918,7 +21004,7 @@ def _v31_manual_review_console_html(message="", error=""):
           <td>{review_status}<div class="muted">{reviewed_at}</div></td>
           <td>{strike}</td><td>{expiration}</td><td>{dte}</td>
           <td>{bid}</td><td>{ask}</td><td>{mid}</td><td>{spread_pct}</td><td>{delta}</td>
-          <td>{technical}</td><td>{risk}<div class="muted">{risk_detail}</div></td><td>{blocker}</td>
+          <td>{technical}</td><td>{risk}<div class="muted">{risk_detail}</div></td><td>{broker}<div class="muted">{broker_detail}</div></td><td>{blocker}</td>
           <td class="actions">{forms}</td>
         </tr>
         """.format(
@@ -20938,6 +21024,8 @@ def _v31_manual_review_console_html(message="", error=""):
             technical=_v29_html_escape(decision.get("technical_status")),
             risk=_v29_html_escape(decision.get("risk_status")),
             risk_detail=_v29_html_escape(risk_detail),
+            broker=_v31_broker_status_badge(broker.get("status")),
+            broker_detail=_v29_html_escape(broker_detail),
             blocker=_v29_html_escape(decision.get("main_blocker")),
             forms=_v31_manual_review_action_forms(decision),
         ))
@@ -21005,7 +21093,7 @@ def _v31_manual_review_console_html(message="", error=""):
             <thead>
               <tr>
                 <th>Ticker</th><th>Strategy</th><th>State</th><th>Review</th><th>Strike</th><th>Exp</th><th>DTE</th>
-                <th>Bid</th><th>Ask</th><th>Mid</th><th>Spread %</th><th>Delta</th><th>Technical</th><th>Risk</th><th>Blocker</th><th>Acción</th>
+                <th>Bid</th><th>Ask</th><th>Mid</th><th>Spread %</th><th>Delta</th><th>Technical</th><th>Risk</th><th>Broker</th><th>Blocker</th><th>Acción</th>
               </tr>
             </thead>
             <tbody>{rows}</tbody>
@@ -21025,7 +21113,7 @@ def _v31_manual_review_console_html(message="", error=""):
         now=_v29_html_escape(_v29_now()),
         message_html=message_html,
         error_html=error_html,
-        rows="".join(rows) or '<tr><td colspan="16">No hay setups accionables ahora.</td></tr>',
+        rows="".join(rows) or '<tr><td colspan="17">No hay setups accionables ahora.</td></tr>',
         recent_rows="".join(recent_rows) or '<tr><td colspan="5">Sin revisiones registradas.</td></tr>',
     )
 
@@ -21953,7 +22041,9 @@ def _v31_canonical_decision(ticker):
         "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
         "master_source": d.get("master_source"),
     }
-    return _v31_finalize_decision_support_contract(_v31_apply_risk_profile_gate(decision))
+    decision = _v31_apply_risk_profile_gate(decision)
+    decision = _v31_apply_broker_check_gate(decision)
+    return _v31_finalize_decision_support_contract(decision)
 
 
 def _v31_all_decisions(tickers=None):
@@ -21965,6 +22055,8 @@ def _v31_all_decisions(tickers=None):
 def _v31_system_status_payload(tickers=None):
     master = _v29_discover_master_snapshot()
     market = _v29_market_state(master)
+    master_data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    broker_check_summary = master_data.get("broker_check_summary") if isinstance(master_data.get("broker_check_summary"), dict) else {}
     decisions = _v31_all_decisions(tickers)
     states = [
         "ENTRY_READY",
@@ -21995,6 +22087,7 @@ def _v31_system_status_payload(tickers=None):
         "technical_tickers": sorted(list(master.get("technical", {}).keys())),
         "market": market,
         "risk_profile": _v31_risk_profile(),
+        "broker_check_summary": broker_check_summary,
         "outcome_tracking": {
             "version": "v31_entry_ready_signal_outcome_v1",
             "entry_ready_signals_are_recorded_as": "PENDING_PAPER_OUTCOMES",
@@ -22124,6 +22217,7 @@ def _v31_gpt_compact_daily_item(item):
     item = item if isinstance(item, dict) else {}
     parameter_review = item.get("parameter_review") if isinstance(item.get("parameter_review"), dict) else {}
     risk_profile = item.get("risk_profile") if isinstance(item.get("risk_profile"), dict) else {}
+    broker = item.get("broker_check") if isinstance(item.get("broker_check"), dict) else {}
     compact = {
         "rank": item.get("rank"),
         "ticker": item.get("ticker"),
@@ -22145,6 +22239,9 @@ def _v31_gpt_compact_daily_item(item):
         "risk_profile_status": risk_profile.get("status"),
         "risk_profile_blockers": risk_profile.get("blockers") or [],
         "risk_profile_blocked_checks": risk_profile.get("blocked_checks") or item.get("risk_blocked_details") or [],
+        "broker_check_status": broker.get("status"),
+        "broker_check_blockers": broker.get("blockers") or [],
+        "broker_check_warnings": broker.get("warnings") or [],
         "parameter_review_status": parameter_review.get("status"),
         "parameter_review_blockers": parameter_review.get("blockers") or [],
         "execution_authorized": False,

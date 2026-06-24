@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import runtime_local_technical
+import broker_check
 
 
 DEFAULT_REMOTE_URL = "https://trading-engine-p097.onrender.com"
@@ -226,12 +227,22 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         options_rows=options_rows,
         timeframe="1d",
     )
+    broker_enriched = broker_check.merge_broker_checks(
+        {
+            "options_rows": options_rows,
+            "runtime_data": runtime_data,
+            **runtime_data,
+        },
+        rows=options_rows,
+    )
 
     return {
         "source": "LOCAL_RUNTIME_V31_PUBLISHER",
         "generated_at": now_iso(),
         "options_rows": json_safe(options_rows),
         "technical_snapshot": json_safe(technical_snapshot),
+        "broker_checks": json_safe(broker_enriched.get("broker_checks") or []),
+        "broker_check_summary": json_safe(broker_enriched.get("broker_check_summary") or {}),
         "market": {
             "status": "MANUAL_RUNTIME_PUBLISH",
             "label": "Runtime snapshot publisher; validate market state manually.",
