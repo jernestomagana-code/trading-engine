@@ -30,6 +30,9 @@ Default production server:
 https://trading-engine-p097.onrender.com
 ```
 
+Disable Web Search in the custom GPT. The GPT should use the Stock Ultimus
+Action as the source of truth for opportunities.
+
 ## Authentication
 
 Production read surfaces require a read token. Configure the GPT Action
@@ -67,7 +70,7 @@ The daily endpoint includes two GPT-facing control blocks:
 - `data_readiness`: operational diagnosis for snapshot freshness, option rows,
   technical snapshots, decision state counts, and required next actions.
 - `answer_guidance`: response policy for daily opportunity questions,
-  especially when the engine returns `NO_DATA`.
+  especially when the engine returns `NO_DATA` or `WAIT_MARKET_WINDOW`.
 
 ## Recommended GPT Instructions
 
@@ -94,6 +97,12 @@ are available with the current data, summarize data_readiness.main_blocker,
 option_rows_found, technical_count, runtime freshness, and next_required_actions.
 Do not infer tickers, strikes, premiums, or direction from general market memory.
 
+When data_readiness.operational_readiness = WAIT_MARKET_WINDOW, explain that the
+engine has data but it is outside a reliable market/options window. Summarize
+decision_state_counts, wait_market_like_count, market.label, option rows,
+technical snapshots, and next_required_actions. Do not convert WAIT_MARKET into
+ENTRY_READY.
+
 Treat final_state as authoritative. Do not override deterministic blocker
 logic. If final_state is not ENTRY_READY, explain the blocker and the next
 validation step instead of suggesting an entry.
@@ -117,6 +126,22 @@ snapshot, account/risk context, market window, or runtime freshness.
 Always remind the user to manually validate sizing, liquidity, spread, event
 risk, account risk, and broker data before acting.
 ```
+
+## Local Daily Radar Command
+
+For local operation, use:
+
+```bash
+python3 scripts/run_daily_radar.py --preview 5
+```
+
+To read production without refreshing IBKR:
+
+```bash
+python3 scripts/run_daily_radar.py --skip-bridge --preview 5
+```
+
+See `docs/daily-radar-runbook.md` for schedules and validation.
 
 ## Safe Response Pattern
 

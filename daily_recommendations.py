@@ -207,6 +207,8 @@ def build_daily_recommendations(
         "entry_ready": sum(1 for item in sorted_items if item["final_state"] == "ENTRY_READY"),
         "wait_options_data": sum(1 for item in sorted_items if item["final_state"] == "WAIT_OPTIONS_DATA"),
         "wait_technical": sum(1 for item in sorted_items if item["final_state"] == "WAIT_TECHNICAL"),
+        "wait_market": sum(1 for item in sorted_items if item["final_state"] == "WAIT_MARKET"),
+        "wait_account_context": sum(1 for item in sorted_items if item["final_state"] == "WAIT_ACCOUNT_CONTEXT"),
         "risk_blocked": sum(1 for item in sorted_items if item["final_state"] == "RISK_BLOCKED"),
         "no_data": sum(1 for item in sorted_items if item["final_state"] == "NO_DATA"),
     }

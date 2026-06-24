@@ -21571,6 +21571,23 @@ def _v31_data_readiness_payload(status=None):
     technical_count = int(status.get("technical_count") or 0)
     total = int(summary.get("total") or 0)
     no_data = int(summary.get("no_data") or 0)
+    state_summary_keys = [
+        "entry_ready",
+        "manual_review",
+        "risk_blocked",
+        "wait_options_data",
+        "wait_technical",
+        "wait_market",
+        "wait_account_context",
+        "no_data",
+    ]
+    dominant_state, dominant_state_count = max(
+        ((key, int(summary.get(key) or 0)) for key in state_summary_keys if key in summary),
+        key=lambda item: item[1],
+        default=(None, 0),
+    )
+    wait_market = int(summary.get("wait_market") or 0)
+    all_wait_market = bool(total) and wait_market == total
     runtime_files = _v31_runtime_file_status()
     existing_files = [item for item in runtime_files if item.get("exists")]
     newest = min(
@@ -21596,6 +21613,9 @@ def _v31_data_readiness_payload(status=None):
     if total and no_data == total:
         diagnostic_status = "NO_DATA"
         explanation = "El motor esta conectado, pero no tiene datos ejecutables frescos para convertir el radar en oportunidades."
+    elif all_wait_market and not blockers:
+        diagnostic_status = "READY_FOR_DECISION_REVIEW"
+        explanation = "El motor tiene datos, pero todos los candidatos estan esperando una ventana operativa confiable de mercado/opciones."
     elif blockers:
         diagnostic_status = "DEGRADED"
         explanation = "Hay datos parciales o desactualizados; se requiere refrescar fuentes antes de priorizar oportunidades."
@@ -21604,6 +21624,8 @@ def _v31_data_readiness_payload(status=None):
         explanation = "Hay snapshot y contexto suficientes para evaluar el ranking diario."
 
     next_actions = []
+    if all_wait_market:
+        next_actions.append("Reconsultar durante una ventana regular de mercado/opciones con bid/ask confiable; no convertir WAIT_MARKET en oportunidad accionable.")
     if stale_runtime or rows_found == 0:
         next_actions.append("Ejecutar ibkr_bridge.py durante una ventana valida de mercado/opciones y publicar /v31_ingest_snapshot.")
     if technical_count == 0:
@@ -21626,18 +21648,14 @@ def _v31_data_readiness_payload(status=None):
         "technical_tickers": status.get("technical_tickers") or [],
         "decision_state_counts": {
             key: summary.get(key)
-            for key in [
-                "entry_ready",
-                "manual_review",
-                "risk_blocked",
-                "wait_options_data",
-                "wait_technical",
-                "wait_market",
-                "wait_account_context",
-                "no_data",
-            ]
+            for key in state_summary_keys
             if key in summary
         },
+        "dominant_state": dominant_state,
+        "dominant_state_count": dominant_state_count,
+        "wait_market_like_count": wait_market,
+        "all_wait_market": all_wait_market,
+        "operational_readiness": "WAIT_MARKET_WINDOW" if all_wait_market else diagnostic_status,
         "market": status.get("market") or {},
         "runtime_files": {
             "file_count": len(existing_files),
@@ -21655,16 +21673,21 @@ def _v31_data_readiness_payload(status=None):
 def _v31_gpt_daily_answer_guidance(payload, data_readiness):
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     top_count = int(summary.get("manual_review_ready") or summary.get("entry_ready") or 0)
+    all_wait_market = data_readiness.get("all_wait_market") is True
     if top_count > 0:
         lead = "Hay candidatos para revision manual. ENTRY_READY no autoriza ordenes."
     elif data_readiness.get("status") == "NO_DATA":
         lead = "No hay oportunidades disponibles porque faltan datos ejecutables frescos."
+    elif all_wait_market:
+        lead = "No hay oportunidades accionables ahora; el motor tiene datos, pero esta fuera de una ventana operativa confiable."
     else:
         lead = "No hay candidatos ENTRY_READY; revisar watchlist, bloqueadores y frescura."
 
     return {
         "guidance_version": "super_engine_bolsa_daily_answer_v1",
         "lead_message": lead,
+        "must_call_action_first": True,
+        "suggested_first_line": lead,
         "required_answer_sections": [
             "Estado del motor",
             "Oportunidades para revision manual",
@@ -21686,6 +21709,22 @@ def _v31_gpt_daily_answer_guidance(payload, data_readiness):
                 "inferir precios",
                 "proponer strikes",
                 "marcar ENTRY_READY sin contrato ejecutable",
+            ],
+        },
+        "when_wait_market": {
+            "say": "No hay oportunidades accionables ahora; el motor tiene datos, pero esta fuera de una ventana operativa confiable.",
+            "include": [
+                "decision_state_counts",
+                "wait_market_like_count",
+                "market.label",
+                "cantidad de filas de opciones",
+                "cantidad de senales tecnicas",
+                "siguiente hora o ventana recomendada para reconsultar",
+            ],
+            "do_not_do": [
+                "usar Web Search para inventar oportunidades",
+                "convertir WAIT_MARKET en ENTRY_READY",
+                "sugerir ordenes por contexto general de mercado",
             ],
         },
         "manual_review_only": True,
