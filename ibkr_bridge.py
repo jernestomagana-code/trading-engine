@@ -1751,6 +1751,16 @@ def score_option_candidate(*args, **kwargs):
     return result
 
 
+def option_chain_symbol_match_rank(symbol, chain):
+    trading_class = str(getattr(chain, "tradingClass", "") or "").upper()
+    symbol = str(symbol or "").upper()
+    if trading_class == symbol:
+        return 0
+    if trading_class.endswith(symbol) and trading_class != symbol:
+        return 2
+    return 1
+
+
 def get_option_chain(symbol):
     try:
         stock = stock_contract(symbol)
@@ -1783,6 +1793,7 @@ def get_option_chain(symbol):
                         "chain": chain,
                         "expiry": expiry,
                         "dte": dte,
+                        "symbol_match_rank": option_chain_symbol_match_rank(symbol, chain),
                         "is_smart": chain.exchange == "SMART",
                         "strike_count": len(strikes)
                     }
@@ -1792,6 +1803,7 @@ def get_option_chain(symbol):
             selected = sorted(
                 usable,
                 key=lambda x: (
+                    x["symbol_match_rank"],
                     0 if x["is_smart"] else 1,
                     abs(x["dte"] - TARGET_DTE_IDEAL),
                     -x["strike_count"]
@@ -1823,6 +1835,7 @@ def get_option_chain(symbol):
                                 "chain": chain,
                                 "expiry": exp,
                                 "dte": dte,
+                                "symbol_match_rank": option_chain_symbol_match_rank(symbol, chain),
                                 "is_smart": chain.exchange == "SMART",
                                 "strike_count": len(strikes)
                             }
@@ -1835,6 +1848,7 @@ def get_option_chain(symbol):
             selected = sorted(
                 fallback,
                 key=lambda x: (
+                    x["symbol_match_rank"],
                     0 if x["is_smart"] else 1,
                     abs(x["dte"] - TARGET_DTE_IDEAL),
                     -x["strike_count"]

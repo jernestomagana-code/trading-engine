@@ -64,6 +64,13 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("FAST_WATCHLIST = list(DEFAULT_WATCHLIST)", source)
         self.assertIn("FAST_OPTION_SYMBOLS = list(DEFAULT_OPTION_SYMBOLS)", source)
 
+    def test_option_chain_selection_prefers_exact_trading_class(self):
+        source = BRIDGE.read_text()
+        self.assertIn("def option_chain_symbol_match_rank", source)
+        self.assertIn("trading_class == symbol", source)
+        self.assertIn("trading_class.endswith(symbol)", source)
+        self.assertIn('x["symbol_match_rank"]', source)
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):
