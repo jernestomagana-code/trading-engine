@@ -603,8 +603,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(result["brief_version"], "super_engine_bolsa_daily_brief_v1")
         self.assertEqual(result["response_mode"], "copy_answer_to_user_exactly")
-        self.assertEqual(result["answer_to_user"], answer_payload["answer_text"])
-        self.assertEqual(result["display_text"], answer_payload["answer_text"])
+        self.assertIn(answer_payload["answer_text"], result["answer_to_user"])
+        self.assertEqual(result["display_text"], result["answer_to_user"])
+        self.assertTrue(result["answer_to_user"].startswith("Hoy no hay oportunidades accionables:"))
         self.assertIn("WAIT_MARKET_WINDOW", result["display_text"])
         self.assertIn("no autoriza ordenes", result["display_text"])
         self.assertFalse(result["execution_authorized"])
@@ -634,7 +635,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         body = getattr(result, "body", None)
         rendered = body.decode("utf-8") if body is not None else str(result)
-        self.assertEqual(rendered, answer_payload["answer_text"])
+        self.assertIn(answer_payload["answer_text"], rendered)
+        self.assertTrue(rendered.startswith("Hoy no hay oportunidades accionables:"))
+        self.assertIn("no autoriza ordenes", rendered.splitlines()[0])
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_PLAIN_SERVED")
 

@@ -22441,6 +22441,32 @@ def _v31_gpt_daily_brief_payload(limit=5):
     readiness = answer.get("data_readiness") if isinstance(answer.get("data_readiness"), dict) else {}
     summary = answer.get("summary") if isinstance(answer.get("summary"), dict) else {}
     brief_text = str(answer.get("answer_text") or "").strip()
+    blocked_or_waiting = answer.get("blocked_or_waiting") if isinstance(answer.get("blocked_or_waiting"), list) else []
+    blocked_tickers = [
+        str(item.get("ticker") or "").strip()
+        for item in blocked_or_waiting
+        if isinstance(item, dict) and str(item.get("ticker") or "").strip()
+    ][:limit]
+    entry_ready_count = summary.get("entry_ready") or 0
+    manual_review_count = summary.get("manual_review_ready") or 0
+    waiting_count = len(blocked_or_waiting)
+    if entry_ready_count:
+        lead_line = (
+            "Hay oportunidades para revision manual: "
+            f"ENTRY_READY={entry_ready_count}, manual_review_ready={manual_review_count}; "
+            "esto no autoriza ordenes y toda ejecucion es manual."
+        )
+    else:
+        waiting_fragment = f", bloqueadas/en espera={waiting_count}" if waiting_count else ""
+        tickers_fragment = f" ({', '.join(blocked_tickers)})" if blocked_tickers else ""
+        lead_line = (
+            "Hoy no hay oportunidades accionables: "
+            f"motor={readiness.get('status')}, readiness={readiness.get('operational_readiness')}, "
+            f"ENTRY_READY=0, manual_review_ready={manual_review_count}{waiting_fragment}{tickers_fragment}; "
+            "no autoriza ordenes y toda ejecucion es manual."
+        )
+    if brief_text and not brief_text.startswith(lead_line):
+        brief_text = f"{lead_line}\n\n{brief_text}"
     return {
         "brief_version": "super_engine_bolsa_daily_brief_v1",
         "response_mode": "copy_answer_to_user_exactly",
