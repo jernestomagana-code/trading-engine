@@ -18962,19 +18962,60 @@ def _v29_spread_metrics(row):
     return spread, mid, spread_pct
 
 
+def _v29_derived_option_score(row, bid, ask, mid, spread_pct, delta, strike, dte, expiration):
+    explicit = _v29_safe_float(
+        row.get("score") or row.get("options_score") or row.get("option_score"),
+        None,
+    )
+    if explicit is not None and explicit > 0:
+        return explicit, "EXPLICIT"
+
+    required_values = [bid, ask, mid, spread_pct, delta, strike, dte, expiration]
+    if any(value in [None, "", "None"] for value in required_values):
+        return 0, "MISSING_EXECUTABLE_FIELDS"
+
+    score = 70.0
+    abs_delta = abs(delta)
+    if 0.12 <= abs_delta <= 0.30:
+        score += 12
+    elif 0.08 <= abs_delta < 0.12 or 0.30 < abs_delta <= 0.40:
+        score += 4
+    else:
+        score -= 10
+
+    if 20 <= dte <= 55:
+        score += 8
+    elif 10 <= dte < 20 or 55 < dte <= 75:
+        score += 2
+    else:
+        score -= 8
+
+    if spread_pct <= _V29_MAX_SPREAD_PCT:
+        score += max(0, min(10, (_V29_MAX_SPREAD_PCT - spread_pct) / 2))
+    else:
+        score -= min(25, spread_pct - _V29_MAX_SPREAD_PCT)
+
+    if mid >= 0.5:
+        score += 5
+    elif mid < 0.2:
+        score -= 10
+
+    return round(max(0, min(score, 100)), 2), "DERIVED_FROM_CONTRACT_FIELDS"
+
+
 def _v29_quality_gate(row):
     missing = []
 
     bid = _v29_safe_float(row.get("bid"), None)
     ask = _v29_safe_float(row.get("ask"), None)
     price = _v29_safe_float(row.get("price"), None)
-    score = _v29_safe_float(row.get("score"), 0)
     delta = _v29_safe_float(row.get("delta"), None)
     strike = _v29_safe_float(row.get("strike"), None)
     dte = _v29_safe_float(row.get("dte"), None)
     expiration = row.get("expiration")
 
     spread, mid, spread_pct = _v29_spread_metrics(row)
+    score, score_source = _v29_derived_option_score(row, bid, ask, mid, spread_pct, delta, strike, dte, expiration)
 
     if bid is None or bid < _V29_MIN_BID:
         missing.append("bid")
@@ -19026,6 +19067,8 @@ def _v29_quality_gate(row):
         "iv": _v29_safe_float(row.get("iv") or row.get("implied_volatility"), None),
         "volume": _v29_safe_float(row.get("volume"), None),
         "open_interest": _v29_safe_float(row.get("open_interest") or row.get("oi"), None),
+        "option_score": score,
+        "option_score_source": score_source,
     }
 
 
@@ -19260,7 +19303,7 @@ def _v29_decide_ticker(ticker):
 
     q = _v29_quality_gate(best)
     strategy = _v29_safe_upper(best.get("strategy"), "UNKNOWN")
-    options_score = _v29_safe_float(best.get("score"), 0)
+    options_score = q.get("option_score")
     selected_contract = {
         "ticker": ticker,
         "strategy": strategy,
@@ -19279,6 +19322,8 @@ def _v29_decide_ticker(ticker):
         "iv": q.get("iv"),
         "volume": q.get("volume"),
         "open_interest": q.get("open_interest"),
+        "option_score": q.get("option_score"),
+        "option_score_source": q.get("option_score_source"),
         "data_quality": best.get("data_quality"),
         "quality": q.get("quality"),
         "missing": q.get("missing"),
@@ -21495,6 +21540,8 @@ def _v31_gpt_compact_contract(item):
         "iv",
         "volume",
         "open_interest",
+        "option_score",
+        "option_score_source",
         "quality",
         "data_quality",
     ]

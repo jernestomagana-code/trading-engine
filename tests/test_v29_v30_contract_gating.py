@@ -500,7 +500,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "engine": "V31_DAILY_RECOMMENDATION_ENGINE",
             "recommendation_version": "test",
             "summary": {"total": 1, "manual_review_ready": 0},
-            "top_recommendations": [{"ticker": "QQQ"}],
+            "items": [{"ticker": "QQQ", "final_state": "ENTRY_READY", "manual_review_ready": True}],
             "not_order_instruction": True,
         }
 
@@ -510,7 +510,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         ) as audit:
             result = asyncio.run(main.gpt_v31_daily_rankings())
 
-        self.assertEqual(result, payload)
+        self.assertEqual(result["engine"], payload["engine"])
+        self.assertEqual(result["summary"]["total"], 1)
+        self.assertEqual(result["top_recommendations"][0]["ticker"], "QQQ")
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_RANKINGS_SERVED")
 

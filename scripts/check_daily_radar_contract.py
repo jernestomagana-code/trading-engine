@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import math
 import sys
 import types
 from pathlib import Path
@@ -27,6 +28,10 @@ def load_app_module():
         "_v31_gpt_compact_daily_item",
         "_v31_gpt_compact_daily_payload",
         "_v31_command_center_payload",
+        "_v29_safe_float",
+        "_v29_spread_metrics",
+        "_v29_derived_option_score",
+        "_v29_quality_gate",
     }
     selected = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     extracted = ast.Module(body=selected, type_ignores=[])
@@ -43,6 +48,41 @@ def require(condition, message):
 def main() -> int:
     app = load_app_module()
     app._v29_now = lambda: "2026-06-24T00:00:00+00:00"
+    app._v29_math = math
+    app._V29_MIN_BID = 0.05
+    app._V29_MIN_ASK = 0.05
+    app._V29_MIN_OPTION_SCORE = 70
+    app._V29_MAX_SPREAD_PCT = 18.0
+    app._V29_MAX_ABS_SPREAD = 0.35
+
+    derived_quality = app._v29_quality_gate({
+        "ticker": "NVDA",
+        "strategy": "NAKED_PUT",
+        "strike": 118,
+        "expiration": "2026-07-17",
+        "dte": 35,
+        "bid": 1.32,
+        "ask": 1.49,
+        "mid": 1.405,
+        "delta": -0.26,
+    })
+    require(derived_quality["option_score"] >= app._V29_MIN_OPTION_SCORE, derived_quality)
+    require(derived_quality["option_score_source"] == "DERIVED_FROM_CONTRACT_FIELDS", derived_quality)
+    require("option_score" not in derived_quality["missing"], derived_quality)
+    require(derived_quality["executable"] is True, derived_quality)
+
+    wide_quality = app._v29_quality_gate({
+        "ticker": "WIDE",
+        "strategy": "NAKED_PUT",
+        "strike": 100,
+        "expiration": "2026-07-17",
+        "dte": 35,
+        "bid": 1.0,
+        "ask": 1.7,
+        "delta": -0.25,
+    })
+    require("spread_too_wide" in wide_quality["missing"], wide_quality)
+    require(wide_quality["executable"] is False, wide_quality)
     app._v31_runtime_file_status = lambda: [
         {
             "exists": True,
