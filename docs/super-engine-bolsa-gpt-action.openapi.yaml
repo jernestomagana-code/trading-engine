@@ -146,11 +146,9 @@ paths:
       operationId: getDailyNow
       summary: Get current ready-to-send daily answer
       description: >
-        Returns the current exact Spanish answer the Custom GPT should send to
-        the user for today's opportunity radar. Prefer this endpoint for live
-        GPT conversations because answer_to_user and first_line are
-        self-contained and safe. Copy answer_to_user completely. Decision
-        support only; no order authorization.
+        Returns the current exact Spanish answer for today's opportunity radar.
+        Prefer this endpoint for live GPT conversations. Copy answer_to_user
+        completely. Decision support only; no order authorization.
       parameters:
         - name: limit
           in: query
