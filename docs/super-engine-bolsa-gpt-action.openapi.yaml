@@ -141,6 +141,38 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_daily_now:
+    get:
+      operationId: getDailyNow
+      summary: Get current ready-to-send plain-text daily answer
+      description: >
+        Returns the current exact Spanish text the Custom GPT should send to
+        the user for today's opportunity radar. Prefer this endpoint for live
+        GPT conversations because the first line is self-contained and safe
+        even if ChatGPT returns only one line. Decision support only; no order
+        authorization.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of manual-review and blocked/waiting items to include.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        "200":
+          description: Current plain-text daily answer to return verbatim to the user
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Copy this complete text verbatim as the user-facing answer.
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v31_command_center.json:
     get:
       operationId: getCommandCenter

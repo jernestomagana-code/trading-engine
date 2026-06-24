@@ -22145,6 +22145,7 @@ def _v31_system_status_payload(tickers=None):
             "gpt_daily_answer": "/gpt_v31_daily_answer",
             "gpt_daily_brief": "/gpt_v31_daily_brief",
             "gpt_daily_plain": "/gpt_v31_daily_plain",
+            "gpt_daily_now": "/gpt_v31_daily_now",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -24050,6 +24051,25 @@ async def gpt_v31_daily_plain(limit: int = 5):
         },
         actor="system",
         source="gpt_v31_daily_plain",
+    )
+    return PlainTextResponse(answer_to_user)
+
+
+@app.get("/gpt_v31_daily_now", response_class=PlainTextResponse)
+async def gpt_v31_daily_now(limit: int = 5):
+    payload = _v31_gpt_daily_brief_payload(limit=limit)
+    answer_to_user = str(payload.get("answer_to_user") or "").strip()
+    _record_audit_event(
+        "GPT_DAILY_NOW_SERVED",
+        {
+            "brief_version": payload.get("brief_version"),
+            "status": payload.get("status"),
+            "operational_readiness": payload.get("operational_readiness"),
+            "text_length": len(answer_to_user),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_now",
     )
     return PlainTextResponse(answer_to_user)
 
