@@ -98,6 +98,28 @@ It is derived from the same recommendation payload used by
 
 ## Daily Outcome Evaluation
 
+## Daily Manual Review
+
+Use the fast inbox first:
+
+```text
+/v31_manual_review_inbox
+```
+
+It shows `ENTRY_READY` setups as cards with large buttons. Use the full console
+only when you need blocked/waiting detail:
+
+```text
+/v31_manual_review_console
+```
+
+Record each setup as `REVIEWING`, `WATCHLIST`, `REJECTED`, `EXPIRED`, or
+`APPROVED_FOR_MANUAL_TRADE`. Approval still means you manually validated broker
+ticket, sizing, liquidity, event risk, and account risk; it is not an automated
+order.
+
+## Daily Outcome Evaluation
+
 After market close, or the next morning after a fresh snapshot exists, run:
 
 ```bash

@@ -25,6 +25,9 @@ def main() -> int:
         "@app.post(\"/read_auth_login\")",
         "@app.get(\"/v31_manual_review_console\"",
         "@app.post(\"/v31_manual_review_console/record\")",
+        "@app.get(\"/v31_manual_review_inbox\"",
+        "@app.post(\"/v31_manual_review_inbox/record\")",
+        "Daily Review Inbox",
         "APPROVAL_REQUIRES_ENTRY_READY",
         "execution_authorized\": False",
         "not_order_instruction\": True",
@@ -46,8 +49,12 @@ def main() -> int:
         "Esta consola registra tu revisión humana. No coloca órdenes" in source,
         "console must display no-order guardrail",
     )
+    require(
+        "Marca tu revisión humana. Esta pantalla no coloca órdenes" in source,
+        "inbox must display no-order guardrail",
+    )
 
-    print("Validated V31 manual review console routes, cookie auth, email link, and no-order guardrails.")
+    print("Validated V31 manual review console/inbox routes, cookie auth, email link, and no-order guardrails.")
     return 0
 
 

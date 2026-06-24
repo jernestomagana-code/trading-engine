@@ -10,6 +10,7 @@ decision-support engine connected to a custom GPT.
 - GPT Action schema: `/super_engine_bolsa_gpt_action_openapi.yaml`.
 - Daily GPT answer endpoint: `/gpt_v31_daily_answer`.
 - Operator console: `/v31_operating_suite`.
+- Fast manual review inbox: `/v31_manual_review_inbox`.
 - Manual review console: `/v31_manual_review_console`.
 - Outcome evaluation: `scripts/run_daily_outcome_evaluation.py`.
 - Performance dashboard: `/v32_strategy_performance_dashboard`.
@@ -30,7 +31,8 @@ decision-support engine connected to a custom GPT.
 9. Run `scripts/monitor_gpt_action_health.py --no-write`.
 10. Run `scripts/run_daily_outcome_evaluation.py --dry-run`.
 11. Open `/v31_operating_suite` and confirm all sections are present.
-12. Open `/v32_strategy_performance_dashboard` and confirm it renders.
+12. Open `/v31_manual_review_inbox` and confirm ENTRY_READY cards render.
+13. Open `/v32_strategy_performance_dashboard` and confirm it renders.
 
 ## GPT Behavior
 
@@ -58,6 +60,15 @@ Morning:
 python3 scripts/run_daily_radar.py --preview 5
 python3 scripts/monitor_gpt_action_health.py --no-write
 ```
+
+Manual review:
+
+```text
+/v31_manual_review_inbox
+```
+
+Use the full `/v31_manual_review_console` when you need blocked/waiting
+diagnostics.
 
 After market close or the next morning:
 

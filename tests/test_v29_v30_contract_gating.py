@@ -608,6 +608,35 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("third_party_installation", suite)
         self.assertFalse(suite["execution_authorized"])
 
+    def test_manual_review_inbox_renders_entry_ready_cards(self):
+        decision = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "manual_review_ready": True,
+            "technical_status": "CONFIRMED",
+            "risk_status": "PASS",
+            "explanation": "QQQ listo para revision manual.",
+            "selected_contract": {
+                "strike": 645,
+                "expiration": "20260731",
+                "dte": 37,
+                "bid": 6.1,
+                "ask": 6.2,
+                "spread_pct": 0.8,
+                "delta": -0.14,
+            },
+        }
+
+        with patch.object(main, "_v31_manual_review_console_decisions", return_value=([decision], {"recent_reviews": []})):
+            html = main._v31_manual_review_inbox_html()
+
+        self.assertIn("Daily Review Inbox", html)
+        self.assertIn("QQQ", html)
+        self.assertIn("Approve", html)
+        self.assertIn("/v31_manual_review_inbox/record", html)
+        self.assertIn("no autoriza ejecución automática", html)
+
     def test_v32_strategy_performance_dashboard_is_manual_review_only(self):
         with patch.object(main, "_v32_strategy_performance_payload", return_value={
             "generated_at": "2026-06-24T16:00:00+00:00",

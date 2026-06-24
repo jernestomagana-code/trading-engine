@@ -20684,7 +20684,7 @@ def _v31_manual_review_status_badge(status):
     )
 
 
-def _v31_manual_review_action_forms(decision):
+def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console/record", button_style="compact"):
     ticker = decision.get("ticker")
     state = decision.get("final_state")
     allowed = ["REVIEWING", "WATCHLIST", "REJECTED", "EXPIRED"]
@@ -20708,13 +20708,15 @@ def _v31_manual_review_action_forms(decision):
     for status in allowed:
         css = "approve" if status == "APPROVED_FOR_MANUAL_TRADE" else status.lower()
         forms.append("""
-          <form method="post" action="/v31_manual_review_console/record" class="action-form">
+          <form method="post" action="{action}" class="action-form {button_style}">
             <input type="hidden" name="ticker" value="{ticker}">
             <input type="hidden" name="status" value="{status}">
             <input type="hidden" name="reason" value="{reason}">
             <button class="{css}" type="submit">{label}</button>
           </form>
         """.format(
+            action=_v29_html_escape(action),
+            button_style=_v29_html_escape(button_style),
             ticker=_v29_html_escape(ticker),
             status=_v29_html_escape(status),
             reason=_v29_html_escape(reasons.get(status, "")),
@@ -20722,6 +20724,144 @@ def _v31_manual_review_action_forms(decision):
             label=_v29_html_escape(labels.get(status, status)),
         ))
     return "".join(forms)
+
+
+def _v31_manual_review_inbox_cards(show_all=False):
+    decisions, _ = _v31_manual_review_console_decisions()
+    if not show_all:
+        decisions = [
+            item for item in decisions
+            if item.get("final_state") == "ENTRY_READY" and item.get("manual_review_ready") is True
+        ]
+    cards = []
+    for decision in decisions:
+        contract = decision.get("selected_contract") or {}
+        latest = decision.get("latest_manual_review") or {}
+        latest_status = latest.get("status") or "UNREVIEWED"
+        cards.append("""
+        <article class="setup-card">
+          <header>
+            <div>
+              <a class="ticker" href="/v31_decision/{ticker}">{ticker}</a>
+              <span class="strategy">{strategy}</span>
+            </div>
+            <div>{review_status}</div>
+          </header>
+          <div class="state-row">
+            <span class="state">{state}</span>
+            <span>{technical}</span>
+            <span>{risk}</span>
+          </div>
+          <dl class="contract-grid">
+            <div><dt>Strike</dt><dd>{strike}</dd></div>
+            <div><dt>Exp</dt><dd>{expiration}</dd></div>
+            <div><dt>DTE</dt><dd>{dte}</dd></div>
+            <div><dt>Bid/Ask</dt><dd>{bid}/{ask}</dd></div>
+            <div><dt>Spread %</dt><dd>{spread_pct}</dd></div>
+            <div><dt>Delta</dt><dd>{delta}</dd></div>
+          </dl>
+          <p class="why">{why}</p>
+          <div class="button-row">{forms}</div>
+        </article>
+        """.format(
+            ticker=_v29_html_escape(decision.get("ticker")),
+            strategy=_v29_html_escape(decision.get("strategy")),
+            review_status=_v31_manual_review_status_badge(latest_status),
+            state=_v29_html_escape(decision.get("final_state")),
+            technical=_v29_html_escape(decision.get("technical_status")),
+            risk=_v29_html_escape(decision.get("risk_status")),
+            strike=_v29_html_escape(contract.get("strike")),
+            expiration=_v29_html_escape(contract.get("expiration")),
+            dte=_v29_html_escape(contract.get("dte")),
+            bid=_v29_html_escape(contract.get("bid")),
+            ask=_v29_html_escape(contract.get("ask")),
+            spread_pct=_v29_html_escape(contract.get("spread_pct")),
+            delta=_v29_html_escape(contract.get("delta")),
+            why=_v29_html_escape(decision.get("explanation")),
+            forms=_v31_manual_review_action_forms(
+                decision,
+                action="/v31_manual_review_inbox/record",
+                button_style="large",
+            ),
+        ))
+    return cards
+
+
+def _v31_manual_review_inbox_html(message="", error="", show_all=False):
+    cards = _v31_manual_review_inbox_cards(show_all=show_all)
+    message_html = '<div class="notice ok">{}</div>'.format(_v29_html_escape(message)) if message else ""
+    error_html = '<div class="notice error">{}</div>'.format(_v29_html_escape(error)) if error else ""
+    mode_link = "/v31_manual_review_inbox" if show_all else "/v31_manual_review_inbox?show_all=true"
+    mode_text = "Ver solo ENTRY_READY" if show_all else "Ver tambien bloqueadas/en espera"
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Daily Review Inbox</title>
+      <style>
+        body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#111827; }}
+        .hero {{ background:#111827; color:white; padding:24px 28px; }}
+        .hero h1 {{ margin:0 0 6px 0; font-size:28px; letter-spacing:0; }}
+        .hero a {{ color:#bfdbfe; font-weight:800; }}
+        .wrap {{ max-width:1160px; margin:0 auto; padding:22px 18px 44px; }}
+        .notice {{ padding:12px 14px; border-radius:8px; margin-bottom:14px; font-weight:800; }}
+        .notice.ok {{ background:#dcfce7; color:#166534; }}
+        .notice.error {{ background:#fee2e2; color:#991b1b; }}
+        .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:12px 14px; border-radius:8px; margin-bottom:18px; line-height:1.45; }}
+        .toolbar {{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }}
+        .toolbar a {{ color:#2563eb; font-weight:800; }}
+        .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }}
+        .setup-card {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; box-shadow:0 10px 24px rgba(15,23,42,.06); }}
+        .setup-card header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:12px; }}
+        .ticker {{ font-size:26px; font-weight:900; color:#111827; text-decoration:none; }}
+        .strategy {{ display:block; color:#64748b; font-size:12px; font-weight:800; margin-top:2px; }}
+        .badge {{ display:inline-block; color:white; padding:5px 8px; border-radius:999px; font-size:11px; font-weight:900; }}
+        .state-row {{ display:flex; gap:7px; flex-wrap:wrap; margin-bottom:12px; }}
+        .state-row span {{ background:#eef2ff; color:#3730a3; border-radius:999px; padding:5px 8px; font-size:11px; font-weight:900; }}
+        .state-row .state {{ background:#dcfce7; color:#166534; }}
+        .contract-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:0 0 12px 0; }}
+        .contract-grid div {{ border:1px solid #e5e7eb; border-radius:8px; padding:9px; min-width:0; }}
+        dt {{ color:#64748b; font-size:11px; font-weight:800; text-transform:uppercase; }}
+        dd {{ margin:3px 0 0; font-size:15px; font-weight:900; overflow-wrap:anywhere; }}
+        .why {{ color:#475569; font-size:13px; line-height:1.42; min-height:36px; }}
+        .button-row {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }}
+        .action-form.large {{ margin:0; }}
+        .action-form.large button {{ width:100%; min-height:46px; }}
+        button {{ border:0; color:white; border-radius:8px; padding:9px 10px; font-weight:900; cursor:pointer; }}
+        button.approve {{ background:#16a34a; }}
+        button.reviewing {{ background:#d97706; }}
+        button.watchlist {{ background:#2563eb; }}
+        button.rejected {{ background:#dc2626; }}
+        button.expired {{ background:#475569; }}
+        .empty {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:22px; color:#64748b; font-weight:800; }}
+      </style>
+    </head>
+    <body>
+      <div class="hero">
+        <h1>Daily Review Inbox</h1>
+        <div>Revision rapida · <a href="/v31_manual_review_console">Consola completa</a> · <a href="/v31_operating_suite">Operating Suite</a> · <a href="/read_auth_logout">Logout</a></div>
+      </div>
+      <main class="wrap">
+        {message_html}{error_html}
+        <div class="guardrail">Marca tu revisión humana. Esta pantalla no coloca órdenes, no autoriza ejecución automática y no reemplaza validar manualmente el ticket en TWS.</div>
+        <div class="toolbar">
+          <strong>{count} setups en esta vista</strong>
+          <a href="{mode_link}">{mode_text}</a>
+        </div>
+        <section class="cards">{cards}</section>
+      </main>
+    </body>
+    </html>
+    """.format(
+        message_html=message_html,
+        error_html=error_html,
+        count=len(cards),
+        mode_link=_v29_html_escape(mode_link),
+        mode_text=_v29_html_escape(mode_text),
+        cards="".join(cards) or '<div class="empty">No hay ENTRY_READY pendientes para revision rapida.</div>',
+    )
 
 
 def _v31_manual_review_console_html(message="", error=""):
@@ -21206,6 +21346,7 @@ def _v31_operating_suite_payload():
             "blocked_or_waiting": command.get("blocked_or_waiting") or [],
         },
         "manual_review": {
+            "inbox": "/v31_manual_review_inbox",
             "console": "/v31_manual_review_console",
             "journal": "/v31_manual_reviews",
             "record_endpoint": "POST /v31_manual_review",
@@ -23946,6 +24087,11 @@ async def v31_manual_review_console(message: str = "", error: str = ""):
     return _V29HTMLResponse(_v31_manual_review_console_html(message=message, error=error))
 
 
+@app.get("/v31_manual_review_inbox", response_class=_V29HTMLResponse)
+async def v31_manual_review_inbox(message: str = "", error: str = "", show_all: bool = False):
+    return _V29HTMLResponse(_v31_manual_review_inbox_html(message=message, error=error, show_all=show_all))
+
+
 @app.post("/v31_manual_review_console/record")
 async def v31_manual_review_console_record(request: Request):
     raw = (await request.body()).decode("utf-8", errors="replace")
@@ -23964,6 +24110,28 @@ async def v31_manual_review_console_record(request: Request):
     except ValueError as exc:
         return RedirectResponse(
             url="/v31_manual_review_console?{}".format(urllib.parse.urlencode({"error": str(exc)})),
+            status_code=303,
+        )
+
+
+@app.post("/v31_manual_review_inbox/record")
+async def v31_manual_review_inbox_record(request: Request):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    form = urllib.parse.parse_qs(raw)
+    try:
+        result = _v31_manual_review_console_record_from_form(form)
+        review = result.get("review") or {}
+        message = "{ticker} registrado como {status}".format(
+            ticker=review.get("ticker"),
+            status=review.get("status"),
+        )
+        return RedirectResponse(
+            url="/v31_manual_review_inbox?{}".format(urllib.parse.urlencode({"message": message})),
+            status_code=303,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            url="/v31_manual_review_inbox?{}".format(urllib.parse.urlencode({"error": str(exc)})),
             status_code=303,
         )
 
