@@ -21401,6 +21401,7 @@ def _v31_system_status_payload(tickers=None):
             "gpt_trade_decision_example": "/gpt_v31_trade_decision/QQQ",
             "daily_recommendations": "/v31_daily_recommendations",
             "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
+            "gpt_daily_rankings": "/gpt_v31_daily_rankings",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -22648,6 +22649,24 @@ async def gpt_v31_daily_recommendations():
         },
         actor="system",
         source="gpt_v31_daily_recommendations",
+    )
+    return payload
+
+
+@app.get("/gpt_v31_daily_rankings")
+async def gpt_v31_daily_rankings():
+    payload = _v31_daily_recommendations_payload()
+    _record_audit_event(
+        "GPT_DAILY_RANKINGS_SERVED",
+        {
+            "recommendation_version": payload.get("recommendation_version"),
+            "total": (payload.get("summary") or {}).get("total"),
+            "manual_review_ready": (payload.get("summary") or {}).get("manual_review_ready"),
+            "top_tickers": [item.get("ticker") for item in (payload.get("top_recommendations") or [])[:5]],
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_rankings",
     )
     return payload
 
