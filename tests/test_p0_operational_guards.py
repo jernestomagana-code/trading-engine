@@ -71,6 +71,26 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("trading_class.endswith(symbol)", source)
         self.assertIn('x["symbol_match_rank"]', source)
 
+    def test_bridge_account_context_is_sanitized_for_broker_checks(self):
+        source = BRIDGE.read_text()
+        self.assertIn("def _bridge_account_context_snapshot", source)
+        self.assertIn("ib.accountSummary()", source)
+        self.assertIn('"NetLiquidation": "net_liquidation"', source)
+        self.assertIn('"BuyingPower": "buying_power"', source)
+        self.assertIn('"AvailableFunds": "available_funds"', source)
+        self.assertIn('"sensitive_identifiers_excluded": True', source)
+
+        tree = ast.parse(source, filename=str(BRIDGE))
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        function_source = ast.get_source_segment(source, functions["_bridge_account_context_snapshot"]) or ""
+        self.assertNotIn("account_id", function_source)
+        self.assertNotIn("acctCode", function_source)
+        self.assertNotIn("accountNumber", function_source)
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):

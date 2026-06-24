@@ -266,6 +266,115 @@ def _v283_extract_technical(data):
 
     return tech
 
+def _bridge_cycle_position_rows():
+    rows = []
+    try:
+        for item in V17_SUMMARY_ROWS:
+            if not isinstance(item, dict):
+                continue
+            if (
+                item.get("asset_class") == "POSITION"
+                or item.get("engine_layer") == "IBKR_PORTFOLIO_COMMANDER"
+                or item.get("position_size") is not None
+            ):
+                rows.append(dict(item))
+    except Exception:
+        pass
+    return rows
+
+def _bridge_account_context_snapshot():
+    """Read non-sensitive IBKR account capacity fields for broker checks."""
+    fields = {
+        "NetLiquidation": "net_liquidation",
+        "BuyingPower": "buying_power",
+        "AvailableFunds": "available_funds",
+        "ExcessLiquidity": "excess_liquidity",
+        "TotalCashValue": "total_cash_value",
+        "InitMarginReq": "initial_margin_required",
+        "MaintMarginReq": "maintenance_margin_required",
+        "GrossPositionValue": "gross_position_value",
+        "Cushion": "cushion",
+    }
+    context = {
+        "account_context_version": "ibkr_account_context_v1",
+        "source": "IBKR_ACCOUNT_SUMMARY_SANITIZED",
+        "generated_at": _v283_now(),
+        "available": False,
+        "currency": None,
+        "net_liquidation": None,
+        "buying_power": None,
+        "available_funds": None,
+        "excess_liquidity": None,
+        "total_cash_value": None,
+        "initial_margin_required": None,
+        "maintenance_margin_required": None,
+        "gross_position_value": None,
+        "cushion": None,
+        "sensitive_identifiers_excluded": True,
+        "not_order_instruction": True,
+    }
+    try:
+        summary = ib.accountSummary()
+    except Exception as exc:
+        context["error"] = str(exc)[:160]
+        return context
+
+    preferred = []
+    fallback = []
+    for item in summary or []:
+        tag = getattr(item, "tag", None)
+        mapped = fields.get(tag)
+        if not mapped:
+            continue
+        currency = str(getattr(item, "currency", "") or "").upper()
+        row = (mapped, getattr(item, "value", None), currency)
+        if currency in ["BASE", "USD", ""]:
+            preferred.append(row)
+        else:
+            fallback.append(row)
+
+    for mapped, value, currency in preferred + fallback:
+        if context.get(mapped) is not None:
+            continue
+        parsed = safe_round(value, 4)
+        if parsed is None:
+            continue
+        context[mapped] = parsed
+        if not context.get("currency") and currency:
+            context["currency"] = currency
+
+    context["available_capacity"] = (
+        context.get("available_funds")
+        if context.get("available_funds") is not None
+        else context.get("buying_power")
+        if context.get("buying_power") is not None
+        else context.get("excess_liquidity")
+    )
+    context["available"] = any(
+        context.get(key) is not None
+        for key in [
+            "net_liquidation",
+            "buying_power",
+            "available_funds",
+            "excess_liquidity",
+            "total_cash_value",
+        ]
+    )
+    return context
+
+def _bridge_broker_snapshot_context(options_rows, runtime_data=None, technical_snapshot=None):
+    runtime_data = runtime_data if isinstance(runtime_data, dict) else {}
+    account_context = _bridge_account_context_snapshot()
+    positions = _bridge_cycle_position_rows()
+    return {
+        "options_rows": options_rows if isinstance(options_rows, list) else [],
+        "technical_snapshot": technical_snapshot if isinstance(technical_snapshot, dict) else {},
+        "account_context": account_context,
+        "positions": positions,
+        "runtime_data": runtime_data,
+        **runtime_data,
+    }
+
 def _v283_publish_to_v28():
     if _v283_requests is None:
         print("V28.3 OFFICIAL V28 PUBLISH SKIPPED | requests unavailable")
@@ -280,20 +389,16 @@ def _v283_publish_to_v28():
         options_rows=rows,
         timeframe="1d",
     )
-    broker_enriched = broker_check.merge_broker_checks(
-        {
-            "options_rows": rows,
-            "runtime_data": runtime_data,
-            **runtime_data,
-        },
-        rows=rows,
-    )
+    broker_context = _bridge_broker_snapshot_context(rows, runtime_data, tech)
+    broker_enriched = broker_check.merge_broker_checks(broker_context, rows=rows)
 
     payload = {
         "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
         "generated_at": _v283_now(),
         "options_rows": rows,
         "technical_snapshot": tech,
+        "account_context": broker_context.get("account_context") or {},
+        "positions": broker_context.get("positions") or [],
         "broker_checks": broker_enriched.get("broker_checks") or [],
         "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
         "market": bridge_market_snapshot("IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET"),
@@ -477,15 +582,9 @@ def _v26_build_master_snapshot(extra_payload=None):
     ctx = _v26_discover_runtime_context()
     options_rows = _v26_extract_options_rows_from_context(ctx)
     technical_snapshot = _v26_extract_technical_snapshot_from_context(ctx)
-    broker_enriched = broker_check.merge_broker_checks(
-        {
-            "options_rows": options_rows,
-            "technical_snapshot": technical_snapshot,
-            "runtime_context": ctx,
-            **ctx,
-        },
-        rows=options_rows,
-    )
+    broker_context = _bridge_broker_snapshot_context(options_rows, ctx, technical_snapshot)
+    broker_context["runtime_context"] = ctx
+    broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
 
     tickers = set()
 
@@ -512,6 +611,8 @@ def _v26_build_master_snapshot(extra_payload=None):
         "runtime_context_files": list(ctx.keys()),
         "options_rows": options_rows,
         "technical_snapshot": technical_snapshot,
+        "account_context": broker_context.get("account_context") or {},
+        "positions": broker_context.get("positions") or [],
         "broker_checks": broker_enriched.get("broker_checks") or [],
         "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
         "tickers_detected": sorted(tickers),
@@ -3968,21 +4069,16 @@ def _v28_publish_master_snapshot(extra_payload=None):
         options_rows=options_rows,
         timeframe="1d",
     )
-    broker_enriched = broker_check.merge_broker_checks(
-        {
-            "options_rows": options_rows,
-            "technical_snapshot": technical_snapshot,
-            "runtime_data": runtime_data,
-            **runtime_data,
-        },
-        rows=options_rows,
-    )
+    broker_context = _bridge_broker_snapshot_context(options_rows, runtime_data, technical_snapshot)
+    broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
 
     payload = {
         "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
         "generated_at": _v28_bridge_now(),
         "options_rows": _v28_bridge_json_safe(options_rows),
         "technical_snapshot": _v28_bridge_json_safe(technical_snapshot),
+        "account_context": _v28_bridge_json_safe(broker_context.get("account_context") or {}),
+        "positions": _v28_bridge_json_safe(broker_context.get("positions") or []),
         "broker_checks": _v28_bridge_json_safe(broker_enriched.get("broker_checks") or []),
         "broker_check_summary": _v28_bridge_json_safe(broker_enriched.get("broker_check_summary") or {}),
         "market": _v28_bridge_market_snapshot(),
