@@ -20733,11 +20733,15 @@ def _v31_manual_review_inbox_cards(show_all=False):
             item for item in decisions
             if item.get("final_state") == "ENTRY_READY" and item.get("manual_review_ready") is True
         ]
+    reviewed_statuses = {"REVIEWING", "WATCHLIST", "REJECTED", "EXPIRED", "APPROVED_FOR_MANUAL_TRADE"}
+    reviewed_count = 0
     cards = []
     for decision in decisions:
         contract = decision.get("selected_contract") or {}
         latest = decision.get("latest_manual_review") or {}
         latest_status = latest.get("status") or "UNREVIEWED"
+        if _v29_safe_upper(latest_status, "UNREVIEWED") in reviewed_statuses:
+            reviewed_count += 1
         cards.append("""
         <article class="setup-card">
           <header>
@@ -20784,11 +20788,15 @@ def _v31_manual_review_inbox_cards(show_all=False):
                 button_style="large",
             ),
         ))
-    return cards
+    return cards, {
+        "total": len(decisions),
+        "reviewed": reviewed_count,
+        "pending": max(len(decisions) - reviewed_count, 0),
+    }
 
 
 def _v31_manual_review_inbox_html(message="", error="", show_all=False):
-    cards = _v31_manual_review_inbox_cards(show_all=show_all)
+    cards, progress = _v31_manual_review_inbox_cards(show_all=show_all)
     message_html = '<div class="notice ok">{}</div>'.format(_v29_html_escape(message)) if message else ""
     error_html = '<div class="notice error">{}</div>'.format(_v29_html_escape(error)) if error else ""
     mode_link = "/v31_manual_review_inbox" if show_all else "/v31_manual_review_inbox?show_all=true"
@@ -20812,6 +20820,13 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:12px 14px; border-radius:8px; margin-bottom:18px; line-height:1.45; }}
         .toolbar {{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }}
         .toolbar a {{ color:#2563eb; font-weight:800; }}
+        .progress {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:14px; }}
+        .progress div {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:12px; }}
+        .progress span {{ color:#64748b; font-size:11px; font-weight:900; text-transform:uppercase; }}
+        .progress strong {{ display:block; font-size:24px; margin-top:3px; }}
+        .next-step {{ background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:12px 14px; margin-bottom:16px; line-height:1.45; }}
+        .next-step code {{ background:white; border:1px solid #c7d2fe; border-radius:6px; padding:2px 5px; }}
+        .next-step a {{ color:#2563eb; font-weight:900; }}
         .cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }}
         .setup-card {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; box-shadow:0 10px 24px rgba(15,23,42,.06); }}
         .setup-card header {{ display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:12px; }}
@@ -20846,6 +20861,15 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
       <main class="wrap">
         {message_html}{error_html}
         <div class="guardrail">Marca tu revisión humana. Esta pantalla no coloca órdenes, no autoriza ejecución automática y no reemplaza validar manualmente el ticket en TWS.</div>
+        <section class="progress">
+          <div><span>Total</span><strong>{total}</strong></div>
+          <div><span>Revisados</span><strong>{reviewed}</strong></div>
+          <div><span>Pendientes</span><strong>{pending}</strong></div>
+        </section>
+        <div class="next-step">
+          Después de marcar la revisión, valida outcomes con <code>python3 scripts/run_daily_outcome_evaluation.py --dry-run</code>.
+          También puedes revisar <a href="/v31_manual_review_learning">learning</a> y <a href="/v32_strategy_performance_dashboard">performance</a>.
+        </div>
         <div class="toolbar">
           <strong>{count} setups en esta vista</strong>
           <a href="{mode_link}">{mode_text}</a>
@@ -20858,6 +20882,9 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         message_html=message_html,
         error_html=error_html,
         count=len(cards),
+        total=_v29_html_escape(progress.get("total")),
+        reviewed=_v29_html_escape(progress.get("reviewed")),
+        pending=_v29_html_escape(progress.get("pending")),
         mode_link=_v29_html_escape(mode_link),
         mode_text=_v29_html_escape(mode_text),
         cards="".join(cards) or '<div class="empty">No hay ENTRY_READY pendientes para revision rapida.</div>',

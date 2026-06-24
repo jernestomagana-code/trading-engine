@@ -636,6 +636,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("Approve", html)
         self.assertIn("/v31_manual_review_inbox/record", html)
         self.assertIn("no autoriza ejecución automática", html)
+        self.assertIn("Pendientes", html)
+        self.assertIn("scripts/run_daily_outcome_evaluation.py --dry-run", html)
+        self.assertIn("/v32_strategy_performance_dashboard", html)
 
     def test_v32_strategy_performance_dashboard_is_manual_review_only(self):
         with patch.object(main, "_v32_strategy_performance_payload", return_value={
