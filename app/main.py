@@ -21364,7 +21364,7 @@ def _v31_system_status_payload(tickers=None):
 
     summary = {state.lower(): sum(1 for d in decisions if d.get("final_state") == state) for state in states}
 
-    return {
+    payload = {
         "engine": "V31_CANONICAL_DECISION_ENGINE",
         "decision_version": _V31_DECISION_VERSION,
         "ruleset_version": _V31_RULESET_VERSION,
@@ -21416,6 +21416,8 @@ def _v31_system_status_payload(tickers=None):
         "decisions": decisions,
         "not_order_instruction": True,
     }
+    payload["data_readiness"] = _v31_data_readiness_payload(payload)
+    return payload
 
 
 def _v31_daily_recommendations_payload(tickers=None):
@@ -21460,6 +21462,8 @@ def _v31_daily_recommendations_payload(tickers=None):
         "ruleset_version": status.get("ruleset_version"),
         "snapshot_version": status.get("snapshot_version"),
     }
+    payload["data_readiness"] = status.get("data_readiness") or _v31_data_readiness_payload(status)
+    payload["answer_guidance"] = _v31_gpt_daily_answer_guidance(payload, payload["data_readiness"])
     payload["durable_storage"] = _durable_storage_summary()
     return payload
 
@@ -21539,7 +21543,16 @@ def _v31_runtime_file_status():
             "received_at": None,
             "generated_at": None,
             "source": None,
+            "modified_at": None,
+            "age_minutes": None,
         }
+        if path.exists():
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+                item["modified_at"] = modified.isoformat()
+                item["age_minutes"] = round((datetime.now(timezone.utc) - modified).total_seconds() / 60, 2)
+            except Exception:
+                pass
         data = _v29_load_json_file(path)
         if isinstance(data, dict):
             item["rows_found"] = len(_v29_extract_options_rows_from_obj(data))
@@ -21549,6 +21562,136 @@ def _v31_runtime_file_status():
             item["source"] = data.get("source")
         files.append(item)
     return files
+
+
+def _v31_data_readiness_payload(status=None):
+    status = status if isinstance(status, dict) else _v31_system_status_payload()
+    summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
+    rows_found = int(status.get("rows_found") or 0)
+    technical_count = int(status.get("technical_count") or 0)
+    total = int(summary.get("total") or 0)
+    no_data = int(summary.get("no_data") or 0)
+    runtime_files = _v31_runtime_file_status()
+    existing_files = [item for item in runtime_files if item.get("exists")]
+    newest = min(
+        [item for item in existing_files if item.get("age_minutes") is not None],
+        key=lambda item: item.get("age_minutes"),
+        default=None,
+    )
+    newest_age = (newest or {}).get("age_minutes")
+    stale_runtime = newest_age is None or newest_age > 90
+
+    blockers = []
+    if not status.get("master_snapshot_available"):
+        blockers.append("MASTER_SNAPSHOT_MISSING")
+    if rows_found == 0:
+        blockers.append("NO_OPTION_ROWS")
+    if technical_count == 0:
+        blockers.append("NO_TECHNICAL_SNAPSHOT")
+    if stale_runtime:
+        blockers.append("RUNTIME_STALE_OR_UNKNOWN")
+    if total and no_data == total:
+        blockers.append("ALL_DEFAULT_TICKERS_NO_DATA")
+
+    if total and no_data == total:
+        diagnostic_status = "NO_DATA"
+        explanation = "El motor esta conectado, pero no tiene datos ejecutables frescos para convertir el radar en oportunidades."
+    elif blockers:
+        diagnostic_status = "DEGRADED"
+        explanation = "Hay datos parciales o desactualizados; se requiere refrescar fuentes antes de priorizar oportunidades."
+    else:
+        diagnostic_status = "READY_FOR_DECISION_REVIEW"
+        explanation = "Hay snapshot y contexto suficientes para evaluar el ranking diario."
+
+    next_actions = []
+    if stale_runtime or rows_found == 0:
+        next_actions.append("Ejecutar ibkr_bridge.py durante una ventana valida de mercado/opciones y publicar /v31_ingest_snapshot.")
+    if technical_count == 0:
+        next_actions.append("Enviar alertas TradingView al webhook /technical_snapshot o confirmar que el forward test este activo.")
+    if rows_found > 0 and technical_count > 0:
+        next_actions.append("Revisar blockers por ticker en /gpt_v31_trade_decision/{ticker}.")
+    if not next_actions:
+        next_actions.append("Mantener monitoreo; no hay accion de orden autorizada.")
+
+    return {
+        "diagnostic_version": "v31_data_readiness_diagnostic_v1",
+        "status": diagnostic_status,
+        "explanation": explanation,
+        "main_blocker": blockers[0] if blockers else None,
+        "blockers": blockers,
+        "master_snapshot_available": bool(status.get("master_snapshot_available")),
+        "master_source": status.get("master_source"),
+        "option_rows_found": rows_found,
+        "technical_count": technical_count,
+        "technical_tickers": status.get("technical_tickers") or [],
+        "decision_state_counts": {
+            key: summary.get(key)
+            for key in [
+                "entry_ready",
+                "manual_review",
+                "risk_blocked",
+                "wait_options_data",
+                "wait_technical",
+                "wait_market",
+                "wait_account_context",
+                "no_data",
+            ]
+            if key in summary
+        },
+        "market": status.get("market") or {},
+        "runtime_files": {
+            "file_count": len(existing_files),
+            "newest_file": (newest or {}).get("path"),
+            "newest_age_minutes": newest_age,
+            "files": runtime_files,
+        },
+        "next_required_actions": next_actions,
+        "safe_to_invent_opportunities": False,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_gpt_daily_answer_guidance(payload, data_readiness):
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    top_count = int(summary.get("manual_review_ready") or summary.get("entry_ready") or 0)
+    if top_count > 0:
+        lead = "Hay candidatos para revision manual. ENTRY_READY no autoriza ordenes."
+    elif data_readiness.get("status") == "NO_DATA":
+        lead = "No hay oportunidades disponibles porque faltan datos ejecutables frescos."
+    else:
+        lead = "No hay candidatos ENTRY_READY; revisar watchlist, bloqueadores y frescura."
+
+    return {
+        "guidance_version": "super_engine_bolsa_daily_answer_v1",
+        "lead_message": lead,
+        "required_answer_sections": [
+            "Estado del motor",
+            "Oportunidades para revision manual",
+            "Bloqueadas o en espera",
+            "Datos faltantes y siguiente accion",
+            "Nota de no autorizacion de ordenes",
+        ],
+        "when_no_data": {
+            "say": "No hay oportunidades hoy con los datos actuales.",
+            "include": [
+                "diagnostico principal",
+                "snapshot maestro disponible",
+                "filas de opciones",
+                "senales tecnicas",
+                "acciones requeridas",
+            ],
+            "do_not_do": [
+                "inventar tickers",
+                "inferir precios",
+                "proponer strikes",
+                "marcar ENTRY_READY sin contrato ejecutable",
+            ],
+        },
+        "manual_review_only": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
 
 
 _V31_DURABLE_SNAPSHOT_TABLE = "stock_ultimus_v31_snapshots"
