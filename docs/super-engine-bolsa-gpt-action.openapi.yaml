@@ -35,9 +35,10 @@ paths:
       operationId: getDailyRankings
       summary: Get GPT-safe daily opportunity rankings
       description: >
-        Returns the daily ranking view for manual review, watchlist, blocked, and
-        research-only candidates. This is the primary endpoint for answering
-        "what opportunities do I have today?"
+        Returns the daily ranking view for manual-review candidates, no-trade
+        candidates, all ranked items, data-readiness diagnostics, and answer
+        guidance. This is the primary endpoint for answering "what opportunities
+        do I have today?"
       responses:
         "200":
           description: GPT-safe daily rankings
@@ -151,16 +152,35 @@ components:
         summary:
           type: object
           additionalProperties: true
+        data_readiness:
+          $ref: "#/components/schemas/DataReadiness"
+        answer_guidance:
+          $ref: "#/components/schemas/AnswerGuidance"
+        top_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        no_trade:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
         top_manual_review:
           type: array
+          deprecated: true
           items:
             $ref: "#/components/schemas/RankingItem"
         watchlist:
           type: array
+          deprecated: true
           items:
             $ref: "#/components/schemas/RankingItem"
         blocked:
           type: array
+          deprecated: true
           items:
             $ref: "#/components/schemas/RankingItem"
         research_only:
@@ -206,8 +226,104 @@ components:
           type:
             - string
             - "null"
+        conviction_score:
+          type:
+            - number
+            - "null"
+        recommendation_action:
+          type:
+            - string
+            - "null"
+        manual_review_ready:
+          type: boolean
+        can_operate:
+          type: boolean
+        required_missing_fields:
+          type: array
+          items:
+            type: string
+        next_required_action:
+          type:
+            - string
+            - "null"
         selected_contract:
           $ref: "#/components/schemas/SelectedContract"
+    DataReadiness:
+      type: object
+      additionalProperties: true
+      properties:
+        diagnostic_version:
+          type: string
+        status:
+          type: string
+          description: NO_DATA, DEGRADED, or READY_FOR_DECISION_REVIEW.
+        operational_readiness:
+          type:
+            - string
+            - "null"
+          description: May be WAIT_MARKET_WINDOW when data exists but timing is not actionable.
+        explanation:
+          type:
+            - string
+            - "null"
+        main_blocker:
+          type:
+            - string
+            - "null"
+        blockers:
+          type: array
+          items:
+            type: string
+        master_snapshot_available:
+          type: boolean
+        option_rows_found:
+          type: integer
+        technical_count:
+          type: integer
+        decision_state_counts:
+          type: object
+          additionalProperties: true
+        dominant_state:
+          type:
+            - string
+            - "null"
+        dominant_state_count:
+          type: integer
+        wait_market_like_count:
+          type: integer
+        all_wait_market:
+          type: boolean
+        next_required_actions:
+          type: array
+          items:
+            type: string
+        safe_to_invent_opportunities:
+          type: boolean
+          const: false
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+    AnswerGuidance:
+      type: object
+      additionalProperties: true
+      properties:
+        guidance_version:
+          type: string
+        lead_message:
+          type: string
+        must_call_action_first:
+          type: boolean
+        suggested_first_line:
+          type: string
+        manual_review_only:
+          type: boolean
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
     TickerDecision:
       type: object
       additionalProperties: true
@@ -367,4 +483,3 @@ components:
           type:
             - number
             - "null"
-
