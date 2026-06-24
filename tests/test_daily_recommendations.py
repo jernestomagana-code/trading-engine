@@ -79,6 +79,44 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["evidence"]["fundamental"]["canslim"]["passes"], False)
         self.assertFalse(payload["items"][0]["can_operate"])
 
+    def test_risk_blocked_preserves_profile_details(self):
+        payload = daily.build_daily_recommendations(
+            [
+                {
+                    "ticker": "MSFT",
+                    "strategy": "NAKED_PUT",
+                    "final_state": "RISK_BLOCKED",
+                    "main_blocker": "RISK_BLOCKED",
+                    "blockers": ["RISK_PROFILE_SPREAD_PCT_TOO_WIDE"],
+                    "risk_blocker": "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+                    "risk_profile": {
+                        "status": "BLOCKED",
+                        "primary_blocker": "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+                        "blockers": ["RISK_PROFILE_SPREAD_PCT_TOO_WIDE"],
+                        "blocked_checks": [
+                            {
+                                "name": "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+                                "field": "selected_contract.spread_pct",
+                                "value": 12.5,
+                                "comparator": "<=",
+                                "limit": 10.0,
+                                "status": "BLOCKED",
+                            }
+                        ],
+                    },
+                    "not_order_instruction": True,
+                }
+            ],
+            generated_at="2026-06-19T00:00:00+00:00",
+        )
+
+        item = payload["items"][0]
+        self.assertEqual(item["recommendation_action"], "DO_NOT_TRADE_RISK_BLOCKED")
+        self.assertEqual(item["risk_profile"]["primary_blocker"], "RISK_PROFILE_SPREAD_PCT_TOO_WIDE")
+        self.assertEqual(item["risk_profile"]["blocked_checks"][0]["field"], "selected_contract.spread_pct")
+        self.assertEqual(item["risk_blocked_details"][0]["limit"], 10.0)
+        self.assertFalse(item["can_operate"])
+
 
 if __name__ == "__main__":
     unittest.main()

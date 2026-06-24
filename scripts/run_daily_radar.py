@@ -151,6 +151,25 @@ def selected_contract(item: dict[str, Any]) -> dict[str, Any]:
     return contract
 
 
+def risk_profile_summary(item: dict[str, Any]) -> str | None:
+    risk_profile = item.get("risk_profile") if isinstance(item.get("risk_profile"), dict) else {}
+    blocker = item.get("risk_blocker") or risk_profile.get("primary_blocker")
+    checks = risk_profile.get("blocked_checks")
+    if not isinstance(checks, list):
+        checks = item.get("risk_blocked_details") if isinstance(item.get("risk_blocked_details"), list) else []
+    if not blocker and not checks:
+        return None
+    if not checks:
+        return str(blocker)
+    first = checks[0] if isinstance(checks[0], dict) else {}
+    field = first.get("field")
+    value = first.get("value")
+    comparator = first.get("comparator")
+    limit = first.get("limit")
+    detail = "/".join(str(part) for part in [field, value, comparator, limit] if part not in [None, ""])
+    return f"{blocker or first.get('name')}({detail})" if detail else str(blocker or first.get("name"))
+
+
 def short_row(item: dict[str, Any]) -> str:
     contract = selected_contract(item)
     parts = [
@@ -170,6 +189,9 @@ def short_row(item: dict[str, Any]) -> str:
     blocker = item.get("main_blocker")
     if blocker:
         parts.append(f"blocker={blocker}")
+    risk_detail = risk_profile_summary(item)
+    if risk_detail:
+        parts.append(f"risk={risk_detail}")
     return " | ".join(parts)
 
 
@@ -254,6 +276,8 @@ def redacted_audit_record(payload: dict[str, Any]) -> dict[str, Any]:
                 "strategy": item.get("strategy"),
                 "final_state": item.get("final_state"),
                 "main_blocker": item.get("main_blocker"),
+                "risk_blocker": item.get("risk_blocker"),
+                "risk_profile": item.get("risk_profile"),
                 "required_missing_fields": item.get("required_missing_fields"),
                 "selected_contract": selected_contract(item),
             }

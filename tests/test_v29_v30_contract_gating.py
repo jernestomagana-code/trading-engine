@@ -705,7 +705,13 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(blocked["final_state"], "RISK_BLOCKED")
         self.assertEqual(blocked["main_blocker"], "RISK_BLOCKED")
+        self.assertEqual(blocked["risk_blocker"], "RISK_PROFILE_DELTA_TOO_HIGH")
         self.assertIn("RISK_PROFILE_DELTA_TOO_HIGH", blocked["blockers"])
+        self.assertEqual(blocked["risk_profile"]["primary_blocker"], "RISK_PROFILE_DELTA_TOO_HIGH")
+        self.assertEqual(blocked["risk_profile"]["blocked_checks"][0]["field"], "selected_contract.abs_delta")
+        self.assertEqual(blocked["risk_profile"]["blocked_checks"][0]["value"], 0.5)
+        self.assertEqual(blocked["risk_profile"]["blocked_checks"][0]["limit"], 0.3)
+        self.assertIn("RISK_PROFILE_DELTA_TOO_HIGH", blocked["explanation"])
         self.assertFalse(blocked["manual_review_ready"])
         self.assertFalse(blocked["can_operate"])
 
@@ -719,6 +725,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(wait_options["final_state"], "WAIT_OPTIONS_DATA")
         self.assertEqual(wait_options["main_blocker"], "WAIT_OPTIONS_DATA")
         self.assertIn("WAIT_OPTIONS_DATA", wait_options["blockers"])
+        self.assertNotIn("risk_blocker", wait_options)
         self.assertFalse(wait_options["manual_review_ready"])
         self.assertFalse(wait_options["can_operate"])
 

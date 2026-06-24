@@ -94,6 +94,21 @@ def _options(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _risk_profile(decision: dict[str, Any]) -> dict[str, Any]:
+    risk_profile = decision.get("risk_profile") if isinstance(decision.get("risk_profile"), dict) else {}
+    blocked_checks = risk_profile.get("blocked_checks")
+    if not isinstance(blocked_checks, list):
+        blocked_checks = []
+    return {
+        "status": risk_profile.get("status"),
+        "primary_blocker": risk_profile.get("primary_blocker") or decision.get("risk_blocker"),
+        "blockers": risk_profile.get("blockers") or [],
+        "blocked_checks": blocked_checks,
+        "notes": risk_profile.get("notes") or [],
+        "not_order_instruction": True,
+    }
+
+
 def action_for_state(state: str) -> str:
     return {
         "ENTRY_READY": "REVIEW_MANUALLY",
@@ -147,6 +162,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
     ticker = _upper(decision.get("ticker"), "UNKNOWN")
     strategy = _upper(decision.get("strategy"), "UNKNOWN")
     score = conviction_score(decision)
+    risk_profile = _risk_profile(decision)
     item = {
         "rank": rank,
         "ticker": ticker,
@@ -164,6 +180,9 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "instruction": instruction_for_state(state, ticker, strategy),
         "why": decision.get("explanation"),
         "risk_note": decision.get("risk_note") or "Decision support solamente; no es orden ni autorizacion de ejecucion.",
+        "risk_profile": risk_profile,
+        "risk_blocker": decision.get("risk_blocker"),
+        "risk_blocked_details": decision.get("risk_blocked_details") or risk_profile.get("blocked_checks") or [],
         "evidence": {
             "technical": _technical(decision),
             "fundamental": _fundamental(decision),

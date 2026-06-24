@@ -19915,6 +19915,18 @@ def _v31_profile_value(value):
     return _v29_safe_float(value, None)
 
 
+def _v31_risk_check(name, field, value, comparator, limit, blocked, note):
+    return {
+        "name": name,
+        "field": field,
+        "value": value,
+        "comparator": comparator,
+        "limit": limit,
+        "status": "BLOCKED" if blocked else "PASS",
+        "note": note,
+    }
+
+
 def _v31_evaluate_risk_profile(decision, profile=None):
     profile = profile or _v31_risk_profile()
     contract = decision.get("selected_contract") or {}
@@ -19922,45 +19934,145 @@ def _v31_evaluate_risk_profile(decision, profile=None):
     ticker = _v29_safe_upper(decision.get("ticker"), "UNKNOWN")
     blockers = []
     notes = []
+    checks = []
 
     if profile.get("allowed_strategies") and strategy not in profile["allowed_strategies"]:
         blockers.append("RISK_PROFILE_STRATEGY_NOT_ALLOWED")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_STRATEGY_NOT_ALLOWED",
+            "strategy",
+            strategy,
+            "in",
+            profile.get("allowed_strategies"),
+            True,
+            "Strategy is not enabled in the active V31 risk profile.",
+        ))
     if ticker in (profile.get("blocked_tickers") or []):
         blockers.append("RISK_PROFILE_TICKER_BLOCKED")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_TICKER_BLOCKED",
+            "ticker",
+            ticker,
+            "not_in",
+            profile.get("blocked_tickers"),
+            True,
+            "Ticker is explicitly blocked by the active V31 risk profile.",
+        ))
 
     dte = _v31_profile_value(contract.get("dte"))
     if dte is not None:
         if dte < profile["min_dte"]:
             blockers.append("RISK_PROFILE_DTE_TOO_LOW")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_DTE_TOO_LOW",
+                "selected_contract.dte",
+                dte,
+                ">=",
+                profile["min_dte"],
+                True,
+                "Contract DTE is below the profile minimum.",
+            ))
         if dte > profile["max_dte"]:
             blockers.append("RISK_PROFILE_DTE_TOO_HIGH")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_DTE_TOO_HIGH",
+                "selected_contract.dte",
+                dte,
+                "<=",
+                profile["max_dte"],
+                True,
+                "Contract DTE is above the profile maximum.",
+            ))
 
     delta = _v31_profile_value(contract.get("delta"))
     if delta is not None:
         abs_delta = abs(delta)
         if abs_delta < profile["min_abs_delta"]:
             blockers.append("RISK_PROFILE_DELTA_TOO_LOW")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_DELTA_TOO_LOW",
+                "selected_contract.abs_delta",
+                round(abs_delta, 6),
+                ">=",
+                profile["min_abs_delta"],
+                True,
+                "Absolute delta is below the profile range.",
+            ))
         if abs_delta > profile["max_abs_delta"]:
             blockers.append("RISK_PROFILE_DELTA_TOO_HIGH")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_DELTA_TOO_HIGH",
+                "selected_contract.abs_delta",
+                round(abs_delta, 6),
+                "<=",
+                profile["max_abs_delta"],
+                True,
+                "Absolute delta is above the profile range.",
+            ))
 
     spread = _v31_profile_value(contract.get("spread"))
     spread_pct = _v31_profile_value(contract.get("spread_pct"))
     if spread is not None and spread > profile["max_abs_spread"]:
         blockers.append("RISK_PROFILE_SPREAD_TOO_WIDE")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_SPREAD_TOO_WIDE",
+            "selected_contract.spread",
+            spread,
+            "<=",
+            profile["max_abs_spread"],
+            True,
+            "Absolute bid/ask spread is wider than the profile allows.",
+        ))
     if spread_pct is not None and spread_pct > profile["max_spread_pct"]:
         blockers.append("RISK_PROFILE_SPREAD_PCT_TOO_WIDE")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+            "selected_contract.spread_pct",
+            spread_pct,
+            "<=",
+            profile["max_spread_pct"],
+            True,
+            "Bid/ask spread percentage is wider than the profile allows.",
+        ))
 
     bid = _v31_profile_value(contract.get("bid"))
     if bid is not None and bid < profile["min_bid"]:
         blockers.append("RISK_PROFILE_BID_TOO_LOW")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_BID_TOO_LOW",
+            "selected_contract.bid",
+            bid,
+            ">=",
+            profile["min_bid"],
+            True,
+            "Bid is below the minimum executable premium threshold.",
+        ))
 
     option_score = _v31_profile_value(decision.get("source_decision", {}).get("options_score") or decision.get("options_score"))
     if option_score is not None and option_score < profile["min_option_score"]:
         blockers.append("RISK_PROFILE_OPTION_SCORE_TOO_LOW")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_OPTION_SCORE_TOO_LOW",
+            "options_score",
+            option_score,
+            ">=",
+            profile["min_option_score"],
+            True,
+            "Option score is below the active profile minimum.",
+        ))
 
     technical_score = _v31_profile_value(decision.get("technical", {}).get("score") if isinstance(decision.get("technical"), dict) else None)
     if technical_score is not None and technical_score < profile["min_technical_score"]:
         blockers.append("RISK_PROFILE_TECH_SCORE_TOO_LOW")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_TECH_SCORE_TOO_LOW",
+            "technical.score",
+            technical_score,
+            ">=",
+            profile["min_technical_score"],
+            True,
+            "Technical score is below the active profile minimum.",
+        ))
 
     if blockers:
         notes.append("Risk profile blocked manual-review readiness; no execution is authorized.")
@@ -19975,7 +20087,9 @@ def _v31_evaluate_risk_profile(decision, profile=None):
     return {
         "profile": profile,
         "status": "BLOCKED" if deduped else "PASS",
+        "primary_blocker": deduped[0] if deduped else None,
         "blockers": deduped,
+        "blocked_checks": checks,
         "notes": notes,
         "not_order_instruction": True,
     }
@@ -19995,11 +20109,22 @@ def _v31_apply_risk_profile_gate(decision):
         decision["decision"] = "RISK_BLOCKED"
         decision["main_blocker"] = "RISK_BLOCKED"
         decision["blockers"] = deduped or ["RISK_BLOCKED"]
+        decision["risk_blocker"] = risk_profile.get("primary_blocker")
+        decision["risk_blocked_details"] = risk_profile.get("blocked_checks") or []
         decision["manual_review_ready"] = False
         decision["risk_status"] = "RISK_BLOCKED"
+        first_detail = (decision["risk_blocked_details"] or [{}])[0]
+        detail_text = ""
+        if first_detail:
+            detail_text = (
+                f" Motivo principal: {first_detail.get('name')} "
+                f"({first_detail.get('field')}={first_detail.get('value')} "
+                f"requiere {first_detail.get('comparator')} {first_detail.get('limit')})."
+            )
         decision["explanation"] = (
             f"{decision.get('ticker')}: RISK_BLOCKED por perfil de riesgo V31. "
             "Revisar risk_profile.blockers antes de considerar revision manual."
+            f"{detail_text}"
         )
     return decision
 
@@ -21551,6 +21676,7 @@ def _v31_gpt_compact_contract(item):
 def _v31_gpt_compact_daily_item(item):
     item = item if isinstance(item, dict) else {}
     parameter_review = item.get("parameter_review") if isinstance(item.get("parameter_review"), dict) else {}
+    risk_profile = item.get("risk_profile") if isinstance(item.get("risk_profile"), dict) else {}
     compact = {
         "rank": item.get("rank"),
         "ticker": item.get("ticker"),
@@ -21568,6 +21694,10 @@ def _v31_gpt_compact_daily_item(item):
         "why": item.get("why"),
         "instruction": item.get("instruction"),
         "risk_note": item.get("risk_note"),
+        "risk_blocker": item.get("risk_blocker") or risk_profile.get("primary_blocker"),
+        "risk_profile_status": risk_profile.get("status"),
+        "risk_profile_blockers": risk_profile.get("blockers") or [],
+        "risk_profile_blocked_checks": risk_profile.get("blocked_checks") or item.get("risk_blocked_details") or [],
         "parameter_review_status": parameter_review.get("status"),
         "parameter_review_blockers": parameter_review.get("blockers") or [],
         "execution_authorized": False,
