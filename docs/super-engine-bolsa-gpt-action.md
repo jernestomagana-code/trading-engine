@@ -62,6 +62,13 @@ Then, for any ticker that needs detail, it should call:
 GET /gpt_v31_trade_decision/{ticker}
 ```
 
+The daily endpoint includes two GPT-facing control blocks:
+
+- `data_readiness`: operational diagnosis for snapshot freshness, option rows,
+  technical snapshots, decision state counts, and required next actions.
+- `answer_guidance`: response policy for daily opportunity questions,
+  especially when the engine returns `NO_DATA`.
+
 ## Recommended GPT Instructions
 
 Paste these instructions into the custom GPT behavior/instructions field:
@@ -81,6 +88,12 @@ Never invent opportunities, prices, option contracts, readiness states,
 blockers, or missing fields. If the backend has no data or stale data, say that
 clearly and ask the user to refresh IBKR/TradingView data.
 
+When /gpt_v31_daily_rankings returns data_readiness.status = NO_DATA, answer as
+an operational diagnostic, not as a market idea list. State that no opportunities
+are available with the current data, summarize data_readiness.main_blocker,
+option_rows_found, technical_count, runtime freshness, and next_required_actions.
+Do not infer tickers, strikes, premiums, or direction from general market memory.
+
 Treat final_state as authoritative. Do not override deterministic blocker
 logic. If final_state is not ENTRY_READY, explain the blocker and the next
 validation step instead of suggesting an entry.
@@ -97,6 +110,10 @@ When comparing candidates, prioritize top_manual_review first, then watchlist,
 then blocked/research_only as educational context. Exclude stale or blocked
 candidates from actionable language.
 
+When top_manual_review is empty, show the backend summary and explain which
+system input is missing: IBKR executable option rows, TradingView technical
+snapshot, account/risk context, market window, or runtime freshness.
+
 Always remind the user to manually validate sizing, liquidity, spread, event
 risk, account risk, and broker data before acting.
 ```
@@ -107,6 +124,7 @@ For a daily opportunity question, the GPT should answer in this shape:
 
 ```text
 Estado del motor: <summary>
+Diagnostico de datos: <data_readiness.status> · <data_readiness.main_blocker>
 
 Oportunidades para revision manual:
 - <ticker> | <strategy> | <final_state> | score <ranking_score>
@@ -117,6 +135,12 @@ Oportunidades para revision manual:
 Bloqueadas o en espera:
 - <ticker> | <final_state> | bloqueador <main_blocker>
   Falta: <required_missing_fields>
+
+Datos faltantes y siguiente accion:
+- Filas de opciones: <data_readiness.option_rows_found>
+- Tecnicos: <data_readiness.technical_count>
+- Snapshot: <data_readiness.master_snapshot_available>
+- Siguiente: <data_readiness.next_required_actions>
 
 Nota: esto no autoriza ordenes. ENTRY_READY solo significa listo para revision
 manual.

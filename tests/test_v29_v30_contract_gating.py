@@ -514,6 +514,23 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_RANKINGS_SERVED")
 
+    def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):
+        with patch.object(main, "_v29_discover_master_snapshot", return_value={
+            "path": None,
+            "data": {},
+            "rows": [],
+            "technical": {},
+            "score": 0,
+        }):
+            payload = main._v31_daily_recommendations_payload(["QQQ"])
+
+        self.assertEqual(payload["data_readiness"]["diagnostic_version"], "v31_data_readiness_diagnostic_v1")
+        self.assertEqual(payload["data_readiness"]["status"], "NO_DATA")
+        self.assertIn("NO_OPTION_ROWS", payload["data_readiness"]["blockers"])
+        self.assertEqual(payload["answer_guidance"]["guidance_version"], "super_engine_bolsa_daily_answer_v1")
+        self.assertFalse(payload["answer_guidance"]["execution_authorized"])
+        self.assertTrue(payload["answer_guidance"]["not_order_instruction"])
+
     def test_v31_daily_recommendations_preserve_wait_options_priority(self):
         incomplete_row = {
             "ticker": "QQQ",
