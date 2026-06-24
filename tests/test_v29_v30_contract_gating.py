@@ -1277,12 +1277,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "technical_snapshot": {"QQQ": {"score": 80}},
             "market": {"is_regular_market_open": True},
             "account_id": "SENSITIVE",
+            "account_context": {"net_liquidation": 123456, "buying_power": 50000},
             "positions": [{"ticker": "TLT", "size": 700}],
         })
 
         self.assertEqual(durable["source"], "UNIT_TEST")
         self.assertTrue(durable["not_order_instruction"])
         self.assertNotIn("account_id", durable)
+        self.assertNotIn("account_context", durable)
         self.assertNotIn("positions", durable)
 
     def test_v31_persist_uses_singleton_supabase_row(self):
