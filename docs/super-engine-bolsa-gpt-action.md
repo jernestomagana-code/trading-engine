@@ -86,6 +86,8 @@ is available.
 
 Use /gpt_v31_daily_rankings for opportunity discovery. Use
 /gpt_v31_trade_decision/{ticker} for ticker-level detail.
+Use /v31_command_center.json only for an executive status summary; do not treat
+it as a separate decision engine.
 
 Never invent opportunities, prices, option contracts, readiness states,
 blockers, or missing fields. If the backend has no data or stale data, say that
@@ -115,9 +117,9 @@ For each opportunity, show: ticker, strategy, final_state, ranking_score when
 available, selected_contract, main_blocker, required_missing_fields, freshness,
 and next_required_action.
 
-When comparing candidates, prioritize top_manual_review first, then watchlist,
-then blocked/research_only as educational context. Exclude stale or blocked
-candidates from actionable language.
+When comparing candidates, prioritize top_recommendations/top_manual_review
+first, then watchlist, then blocked_or_waiting/research_only as educational
+context. Exclude stale or blocked candidates from actionable language.
 
 When top_manual_review is empty, show the backend summary and explain which
 system input is missing: IBKR executable option rows, TradingView technical
@@ -142,6 +144,12 @@ python3 scripts/run_daily_radar.py --skip-bridge --preview 5
 ```
 
 See `docs/daily-radar-runbook.md` for schedules and validation.
+
+After token rotations or GPT Action edits, verify the integration with:
+
+```bash
+python3 scripts/monitor_gpt_action_health.py
+```
 
 ## Safe Response Pattern
 

@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 INGEST_KEYCHAIN_SERVICE = "stock-ultimus-snapshot-ingest"
 READ_KEYCHAIN_SERVICE = "stock-ultimus-read-access-token"
+DEFAULT_AUDIT_PATH = ROOT / "runtime" / "daily_radar_audit.jsonl"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-bridge", action="store_true", help="Use the slower full IBKR option universe.")
     parser.add_argument("--allow-partial", action="store_true", help="Continue to cloud read even if the bridge refresh fails.")
     parser.add_argument("--json-out", help="Optional path to save the raw /gpt_v31_daily_rankings response.")
+    parser.add_argument(
+        "--audit-out",
+        default=os.getenv("STOCK_ULTIMUS_DAILY_RADAR_AUDIT", str(DEFAULT_AUDIT_PATH)),
+        help="Append a redacted daily radar audit record to this JSONL path. Use empty string to disable.",
+    )
     parser.add_argument("--preview", type=int, default=5, help="Rows to print per ranking section.")
     return parser.parse_args()
 
@@ -183,6 +189,93 @@ def print_section(title: str, rows: list[dict[str, Any]], preview: int) -> None:
         print(f"- ... {len(rows) - preview} mas")
 
 
+def wait_options_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    wait_rows = [item for item in rows if item.get("final_state") == "WAIT_OPTIONS_DATA"]
+    missing_counts: dict[str, int] = {}
+    blockers: dict[str, int] = {}
+    tickers: list[str] = []
+    for item in wait_rows:
+        ticker = item.get("ticker")
+        if ticker:
+            tickers.append(str(ticker))
+        for field in item.get("required_missing_fields") or []:
+            key = str(field)
+            missing_counts[key] = missing_counts.get(key, 0) + 1
+        blocker = item.get("main_blocker")
+        if blocker:
+            blockers[str(blocker)] = blockers.get(str(blocker), 0) + 1
+        contract = selected_contract(item)
+        for field in ["strike", "expiration", "dte", "bid", "ask", "mid", "spread", "spread_pct", "delta"]:
+            if contract and contract.get(field) in [None, ""]:
+                missing_counts[field] = missing_counts.get(field, 0) + 1
+
+    return {
+        "count": len(wait_rows),
+        "tickers": sorted(set(tickers)),
+        "top_missing_fields": sorted(missing_counts.items(), key=lambda item: (-item[1], item[0]))[:12],
+        "top_blockers": sorted(blockers.items(), key=lambda item: (-item[1], item[0]))[:8],
+    }
+
+
+def redacted_audit_record(payload: dict[str, Any]) -> dict[str, Any]:
+    readiness = payload.get("data_readiness") if isinstance(payload.get("data_readiness"), dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    rows = section_rows(payload, "items", "all_ranked")
+    top = section_rows(payload, "top_recommendations", "top_manual_review")
+    blocked_or_waiting = section_rows(payload, "blocked_or_waiting", "no_trade", "blocked")
+    return {
+        "audit_version": "daily_radar_audit_v1",
+        "generated_at": payload.get("generated_at"),
+        "engine": payload.get("engine"),
+        "summary": summary,
+        "data_readiness": {
+            "status": readiness.get("status"),
+            "operational_readiness": readiness.get("operational_readiness"),
+            "main_blocker": readiness.get("main_blocker"),
+            "blockers": readiness.get("blockers"),
+            "option_rows_found": readiness.get("option_rows_found"),
+            "technical_count": readiness.get("technical_count"),
+            "decision_state_counts": readiness.get("decision_state_counts"),
+        },
+        "top_manual_review": [
+            {
+                "ticker": item.get("ticker"),
+                "strategy": item.get("strategy"),
+                "final_state": item.get("final_state"),
+                "ranking_score": item.get("ranking_score") or item.get("conviction_score") or item.get("score"),
+                "main_blocker": item.get("main_blocker"),
+                "selected_contract": selected_contract(item),
+            }
+            for item in top
+        ],
+        "blocked_or_waiting": [
+            {
+                "ticker": item.get("ticker"),
+                "strategy": item.get("strategy"),
+                "final_state": item.get("final_state"),
+                "main_blocker": item.get("main_blocker"),
+                "required_missing_fields": item.get("required_missing_fields"),
+                "selected_contract": selected_contract(item),
+            }
+            for item in blocked_or_waiting
+        ],
+        "wait_options_diagnostics": wait_options_diagnostics(rows),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def append_audit(path_text: str, payload: dict[str, Any]) -> None:
+    if not path_text:
+        return
+    path = Path(path_text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = redacted_audit_record(payload)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    print(f"Auditoria diaria agregada en {path}")
+
+
 def print_summary(payload: dict[str, Any], preview: int) -> None:
     readiness = payload.get("data_readiness") or {}
     summary = payload.get("summary") or {}
@@ -223,6 +316,17 @@ def print_summary(payload: dict[str, Any], preview: int) -> None:
     print_section("Oportunidades para revision manual", top, preview)
     print_section("Watchlist", watchlist, preview)
     print_section("No trade / bloqueadas", no_trade, preview)
+
+    wait_diag = wait_options_diagnostics(all_items)
+    if wait_diag["count"]:
+        print("\nDiagnostico WAIT_OPTIONS_DATA:")
+        print(f"- Tickers: {', '.join(wait_diag['tickers'])}")
+        if wait_diag["top_missing_fields"]:
+            fields = ", ".join(f"{name}={count}" for name, count in wait_diag["top_missing_fields"])
+            print(f"- Campos faltantes frecuentes: {fields}")
+        if wait_diag["top_blockers"]:
+            blockers = ", ".join(f"{name}={count}" for name, count in wait_diag["top_blockers"])
+            print(f"- Bloqueadores frecuentes: {blockers}")
 
     next_actions = readiness.get("next_required_actions") or []
     if next_actions:
@@ -267,6 +371,7 @@ def main() -> int:
         out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         print(f"Respuesta JSON guardada en {out_path}")
 
+    append_audit(args.audit_out, payload)
     print_summary(payload, args.preview)
     return 0
 

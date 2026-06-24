@@ -21571,6 +21571,127 @@ def _v31_gpt_compact_daily_payload(payload):
     }
 
 
+def _v31_command_center_payload():
+    payload = _v31_daily_recommendations_payload()
+    compact = _v31_gpt_compact_daily_payload(payload)
+    readiness = compact.get("data_readiness") if isinstance(compact.get("data_readiness"), dict) else {}
+    source_status = compact.get("source_status") if isinstance(compact.get("source_status"), dict) else {}
+    summary = compact.get("summary") if isinstance(compact.get("summary"), dict) else {}
+    return {
+        "engine": "V31_COMMAND_CENTER",
+        "generated_at": payload.get("generated_at") or _v29_now(),
+        "status": readiness.get("status") or payload.get("status"),
+        "operational_readiness": readiness.get("operational_readiness"),
+        "main_blocker": readiness.get("main_blocker"),
+        "summary": {
+            **summary,
+            "items": len(compact.get("items") or []),
+            "entry_ready": len(compact.get("top_recommendations") or []),
+            "blocked_or_waiting": len(compact.get("blocked_or_waiting") or []),
+            "option_rows_found": readiness.get("option_rows_found") or source_status.get("rows_found"),
+            "technical_count": readiness.get("technical_count") or source_status.get("technical_count"),
+            "snapshot": source_status.get("master_source"),
+            "decision_state_counts": readiness.get("decision_state_counts") or {},
+        },
+        "top_recommendations": compact.get("top_recommendations") or [],
+        "blocked_or_waiting": compact.get("blocked_or_waiting") or [],
+        "next_required_actions": readiness.get("next_required_actions") or [],
+        "endpoints": {
+            "gpt_daily_rankings": "/gpt_v31_daily_rankings",
+            "daily_recommendations": "/v31_daily_recommendations",
+            "system_status": "/v31_system_status",
+            "command_center_html": "/v31_command_center",
+            "command_center_json": "/v31_command_center.json",
+        },
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_command_center_html():
+    payload = _v31_command_center_payload()
+    summary = payload.get("summary") or {}
+    states = summary.get("decision_state_counts") or {}
+    top_rows = ""
+    for item in payload.get("top_recommendations") or []:
+        contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+        top_rows += f"""
+        <tr>
+          <td>{_v29_html_escape(item.get('ticker'))}</td>
+          <td>{_v29_html_escape(item.get('strategy'))}</td>
+          <td>{_v29_badge(item.get('final_state'))}</td>
+          <td>{_v29_html_escape(item.get('conviction_score') or item.get('ranking_score') or item.get('score'))}</td>
+          <td>{_v29_html_escape(contract.get('strike'))}</td>
+          <td>{_v29_html_escape(contract.get('expiration'))}</td>
+          <td>{_v29_html_escape(contract.get('bid'))} / {_v29_html_escape(contract.get('ask'))}</td>
+          <td>{_v29_html_escape(contract.get('delta'))}</td>
+          <td>{_v29_html_escape(item.get('main_blocker') or 'Manual review')}</td>
+        </tr>
+        """
+    blocked_rows = ""
+    for item in (payload.get("blocked_or_waiting") or [])[:16]:
+        blocked_rows += f"""
+        <tr>
+          <td>{_v29_html_escape(item.get('ticker'))}</td>
+          <td>{_v29_html_escape(item.get('strategy'))}</td>
+          <td>{_v29_badge(item.get('final_state'))}</td>
+          <td>{_v29_html_escape(item.get('main_blocker'))}</td>
+          <td>{_v29_html_escape(', '.join(item.get('required_missing_fields') or []))}</td>
+        </tr>
+        """
+    actions = "".join(f"<li>{_v29_html_escape(action)}</li>" for action in payload.get("next_required_actions") or [])
+    state_cards = "".join(
+        f'<div class="metric"><span>{_v29_html_escape(state)}</span><strong>{_v29_html_escape(count)}</strong></div>'
+        for state, count in sorted(states.items())
+    )
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+      <title>Stock Ultimus V31 Command Center</title>
+      <style>
+        body {{font-family: Inter, Arial, sans-serif; margin:0; background:#f6f7f9; color:#101828;}}
+        header {{background:#111827; color:white; padding:26px 32px;}}
+        h1 {{margin:0; font-size:28px; letter-spacing:0;}}
+        main {{padding:24px 32px 40px;}}
+        .grid {{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0;}}
+        .metric {{background:white; border:1px solid #e5e7eb; border-radius:8px; padding:14px;}}
+        .metric span {{display:block; color:#667085; font-size:12px; font-weight:700; text-transform:uppercase;}}
+        .metric strong {{display:block; font-size:26px; margin-top:6px;}}
+        table {{width:100%; border-collapse:collapse; background:white; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin:14px 0 24px;}}
+        th,td {{text-align:left; padding:12px; border-bottom:1px solid #eaecf0; font-size:13px; vertical-align:top;}}
+        th {{color:#667085; font-size:11px; text-transform:uppercase;}}
+        .note {{color:#475467; font-size:14px;}}
+        a {{color:#175cd3; font-weight:700;}}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>Stock Ultimus V31 Command Center</h1>
+        <p>{_v29_html_escape(payload.get('status'))} · {_v29_html_escape(payload.get('operational_readiness'))} · generado {_v29_html_escape(payload.get('generated_at'))}</p>
+      </header>
+      <main>
+        <section class="grid">
+          <div class="metric"><span>Evaluados</span><strong>{_v29_html_escape(summary.get('items'))}</strong></div>
+          <div class="metric"><span>Entry Ready</span><strong>{_v29_html_escape(summary.get('entry_ready'))}</strong></div>
+          <div class="metric"><span>Bloqueadas/espera</span><strong>{_v29_html_escape(summary.get('blocked_or_waiting'))}</strong></div>
+          <div class="metric"><span>Option rows</span><strong>{_v29_html_escape(summary.get('option_rows_found'))}</strong></div>
+        </section>
+        <section class="grid">{state_cards}</section>
+        <p class="note">Snapshot: {_v29_html_escape(summary.get('snapshot'))}</p>
+        <h2>Oportunidades para revision manual</h2>
+        <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Score</th><th>Strike</th><th>Exp</th><th>Bid/Ask</th><th>Delta</th><th>Nota</th></tr></thead><tbody>{top_rows}</tbody></table>
+        <h2>Bloqueadas o en espera</h2>
+        <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Bloqueador</th><th>Campos faltantes</th></tr></thead><tbody>{blocked_rows}</tbody></table>
+        <h2>Siguientes acciones</h2>
+        <ul>{actions}</ul>
+        <p class="note">Decision support solamente. ENTRY_READY no autoriza ordenes. <a href="/v31_command_center.json">JSON</a> · <a href="/gpt_v31_daily_rankings">GPT payload</a></p>
+      </main>
+    </body>
+    </html>
+    """
+
+
 def _strategy_registry():
     return shared_strategy_registry.load_registry()
 
@@ -22956,6 +23077,16 @@ async def gpt_v31_daily_rankings():
         source="gpt_v31_daily_rankings",
     )
     return gpt_payload
+
+
+@app.get("/v31_command_center.json")
+async def v31_command_center_json():
+    return _v31_command_center_payload()
+
+
+@app.get("/v31_command_center", response_class=_V29HTMLResponse)
+async def v31_command_center():
+    return _v31_command_center_html()
 
 
 @app.get("/strategy_registry")

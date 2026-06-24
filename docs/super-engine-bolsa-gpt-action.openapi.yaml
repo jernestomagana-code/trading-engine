@@ -50,6 +50,24 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v31_command_center.json:
+    get:
+      operationId: getCommandCenter
+      summary: Get Stock Ultimus V31 command center
+      description: >
+        Returns an executive daily operating view built from the same V31
+        recommendation payload and data-readiness diagnostics used by GPT.
+      responses:
+        "200":
+          description: V31 command center JSON
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandCenter"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /gpt_v31_trade_decision/{ticker}:
     get:
       operationId: getTickerDecision
@@ -193,6 +211,46 @@ components:
           items:
             $ref: "#/components/schemas/RankingItem"
         risk_notes:
+          type: array
+          items:
+            type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+    CommandCenter:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+        generated_at:
+          type: string
+        status:
+          type:
+            - string
+            - "null"
+        operational_readiness:
+          type:
+            - string
+            - "null"
+        main_blocker:
+          type:
+            - string
+            - "null"
+        summary:
+          type: object
+          additionalProperties: true
+        top_recommendations:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        blocked_or_waiting:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        next_required_actions:
           type: array
           items:
             type: string

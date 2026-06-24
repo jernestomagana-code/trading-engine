@@ -23,6 +23,12 @@ Save the raw GPT-facing response for audit:
 python3 scripts/run_daily_radar.py --json-out runtime/daily_radar_latest.json
 ```
 
+Append a redacted daily audit record:
+
+```bash
+python3 scripts/run_daily_radar.py --audit-out runtime/daily_radar_audit.jsonl
+```
+
 The helper reads secrets from environment variables first, then from macOS
 Keychain:
 
@@ -32,6 +38,28 @@ Keychain:
   service `stock-ultimus-read-access-token`
 
 The script never places orders and never prints tokens.
+
+## GPT Action Health
+
+After a deploy, GPT Builder schema import, or `READ_ACCESS_TOKEN` rotation, run:
+
+```bash
+python3 scripts/monitor_gpt_action_health.py
+```
+
+This checks that `/gpt_v31_daily_rankings` rejects unauthenticated requests,
+accepts the current read token, returns data-readiness diagnostics, exposes
+`top_recommendations` and `blocked_or_waiting`, and preserves no-order
+guardrails. It writes a redacted latest health record to:
+
+```bash
+runtime/gpt_action_health_latest.json
+```
+
+If the authenticated request returns 401, the backend token and the hidden API
+key inside the Super Engine Bolsa GPT Action are out of sync. Re-copy the
+Keychain value into the GPT Action authentication field without pasting it into
+prompts, docs, screenshots, or logs.
 
 ## Suggested Windows
 
@@ -43,6 +71,29 @@ Use windows when IBKR can provide reliable bid/ask option data:
 
 If the engine returns `WAIT_MARKET_WINDOW`, recheck during a valid market/options
 window. Do not convert `WAIT_MARKET` into an actionable opportunity.
+
+## WAIT_OPTIONS_DATA Review
+
+When the radar prints `WAIT_OPTIONS_DATA`, do not promote the ticker manually.
+Use the printed diagnostic:
+
+- `Campos faltantes frecuentes` identifies missing executable option fields.
+- `Bloqueadores frecuentes` shows dominant blocker labels.
+- Required option fields remain `strike`, `expiration`, `dte`, `bid`, `ask`,
+  `mid`, `spread`, `spread_pct`, and `delta`.
+
+The corrective action is to refresh or enrich IBKR option-chain data, not to
+change the decision state.
+
+## Command Center
+
+The same-source executive view is available after deploy at:
+
+- JSON: `/v31_command_center.json`
+- HTML: `/v31_command_center`
+
+It is derived from the same recommendation payload used by
+`/gpt_v31_daily_rankings`, so it should agree with Super Engine Bolsa.
 
 ## Launchd Template
 
@@ -91,6 +142,7 @@ Before relying on automation, run:
 ```bash
 python3 scripts/check_daily_radar_contract.py
 python3 scripts/verify_production_read_auth.py
+python3 scripts/monitor_gpt_action_health.py --no-write
 python3 scripts/run_daily_radar.py --skip-bridge --preview 3
 ```
 

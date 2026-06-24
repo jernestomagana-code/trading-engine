@@ -26,6 +26,7 @@ def load_app_module():
         "_v31_gpt_compact_contract",
         "_v31_gpt_compact_daily_item",
         "_v31_gpt_compact_daily_payload",
+        "_v31_command_center_payload",
     }
     selected = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     extracted = ast.Module(body=selected, type_ignores=[])
@@ -41,6 +42,7 @@ def require(condition, message):
 
 def main() -> int:
     app = load_app_module()
+    app._v29_now = lambda: "2026-06-24T00:00:00+00:00"
     app._v31_runtime_file_status = lambda: [
         {
             "exists": True,
@@ -120,6 +122,40 @@ def main() -> int:
     require(compact["blocked_or_waiting"][0]["ticker"] == "NVDA", compact)
     require("technical" not in compact["items"][0], compact)
     require(compact["execution_authorized"] is False, compact)
+
+    app._v31_daily_recommendations_payload = lambda: {
+        "engine": "TEST_ENGINE",
+        "generated_at": "2026-06-24T00:00:00+00:00",
+        "status": "OK",
+        "summary": {"total": 2, "manual_review_ready": 1, "entry_ready": 1},
+        "data_readiness": diagnostics,
+        "source_status": {"master_source": "runtime/test_master_snapshot.json", "rows_found": 2, "technical_count": 1},
+        "items": [
+            {
+                "rank": 1,
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "manual_review_ready": True,
+                "conviction_score": 100,
+                "evidence": {"options": {"contract": {"strike": 500, "bid": 1.0, "ask": 1.1}}},
+            },
+            {
+                "rank": 2,
+                "ticker": "NVDA",
+                "strategy": "NAKED_PUT",
+                "final_state": "WAIT_OPTIONS_DATA",
+                "manual_review_ready": False,
+                "main_blocker": "WAIT_OPTIONS_DATA",
+            },
+        ],
+    }
+    command_center = app._v31_command_center_payload()
+    require(command_center["engine"] == "V31_COMMAND_CENTER", command_center)
+    require(command_center["summary"]["entry_ready"] == 1, command_center)
+    require(command_center["summary"]["blocked_or_waiting"] == 1, command_center)
+    require(command_center["execution_authorized"] is False, command_center)
+    require(command_center["not_order_instruction"] is True, command_center)
 
     print("Validated GPT daily radar contract and WAIT_MARKET answer policy.")
     return 0
