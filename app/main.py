@@ -22143,6 +22143,7 @@ def _v31_system_status_payload(tickers=None):
             "gpt_daily_recommendations": "/gpt_v31_daily_recommendations",
             "gpt_daily_rankings": "/gpt_v31_daily_rankings",
             "gpt_daily_answer": "/gpt_v31_daily_answer",
+            "gpt_daily_brief": "/gpt_v31_daily_brief",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -22429,6 +22430,33 @@ def _v31_gpt_institutional_answer_payload(limit=5):
         "manual_review_console": "/v31_manual_review_console",
         "outcome_tracking": "/v31_outcome_tracking_status",
         "risk_profile": "/v31_risk_profile",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_gpt_daily_brief_payload(limit=5):
+    answer = _v31_gpt_institutional_answer_payload(limit=limit)
+    readiness = answer.get("data_readiness") if isinstance(answer.get("data_readiness"), dict) else {}
+    summary = answer.get("summary") if isinstance(answer.get("summary"), dict) else {}
+    brief_text = str(answer.get("answer_text") or "").strip()
+    return {
+        "brief_version": "super_engine_bolsa_daily_brief_v1",
+        "generated_at": answer.get("generated_at") or _v29_now(),
+        "status": readiness.get("status"),
+        "operational_readiness": readiness.get("operational_readiness"),
+        "main_blocker": readiness.get("main_blocker"),
+        "summary": {
+            "total": summary.get("total"),
+            "entry_ready": summary.get("entry_ready"),
+            "risk_blocked": summary.get("risk_blocked"),
+            "wait_options_data": summary.get("wait_options_data"),
+            "wait_technical": summary.get("wait_technical"),
+            "manual_review_ready": summary.get("manual_review_ready"),
+        },
+        "brief_text": brief_text,
+        "display_text": brief_text,
+        "instruction_to_gpt": "Responde al usuario copiando display_text. No agregues oportunidades fuera de este payload.",
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -23956,6 +23984,24 @@ async def gpt_v31_daily_answer(limit: int = 5):
         },
         actor="system",
         source="gpt_v31_daily_answer",
+    )
+    return payload
+
+
+@app.get("/gpt_v31_daily_brief")
+async def gpt_v31_daily_brief(limit: int = 5):
+    payload = _v31_gpt_daily_brief_payload(limit=limit)
+    _record_audit_event(
+        "GPT_DAILY_BRIEF_SERVED",
+        {
+            "brief_version": payload.get("brief_version"),
+            "status": payload.get("status"),
+            "operational_readiness": payload.get("operational_readiness"),
+            "text_length": len(payload.get("brief_text") or ""),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_brief",
     )
     return payload
 

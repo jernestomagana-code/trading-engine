@@ -79,6 +79,36 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_daily_brief:
+    get:
+      operationId: getDailyBrief
+      summary: Get ultra-compact daily brief for Super Engine Bolsa
+      description: >
+        Returns a minimal JSON object with display_text already shaped for the
+        Custom GPT. Use this first when ChatGPT should answer "what
+        opportunities do I have today?" without processing the full supporting
+        recommendation payload.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of manual-review and blocked/waiting items to include.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        "200":
+          description: Ultra-compact daily brief
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyBrief"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v31_command_center.json:
     get:
       operationId: getCommandCenter
@@ -274,6 +304,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RankingItem"
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+    DailyBrief:
+      type: object
+      additionalProperties: false
+      properties:
+        brief_version:
+          type: string
+        generated_at:
+          type: string
+        status:
+          type:
+            - string
+            - "null"
+        operational_readiness:
+          type:
+            - string
+            - "null"
+        main_blocker:
+          type:
+            - string
+            - "null"
+        summary:
+          type: object
+          additionalProperties: true
+        brief_text:
+          type: string
+        display_text:
+          type: string
+          description: Spanish text safe for the GPT to copy directly to the user.
+        instruction_to_gpt:
+          type: string
         execution_authorized:
           type: boolean
           const: false
