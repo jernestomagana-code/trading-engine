@@ -144,13 +144,13 @@ paths:
   /gpt_v31_daily_now:
     get:
       operationId: getDailyNow
-      summary: Get current ready-to-send plain-text daily answer
+      summary: Get current ready-to-send daily answer
       description: >
-        Returns the current exact Spanish text the Custom GPT should send to
+        Returns the current exact Spanish answer the Custom GPT should send to
         the user for today's opportunity radar. Prefer this endpoint for live
-        GPT conversations because the first line is self-contained and safe
-        even if ChatGPT returns only one line. Decision support only; no order
-        authorization.
+        GPT conversations because answer_to_user and first_line are
+        self-contained and safe. Copy answer_to_user completely. Decision
+        support only; no order authorization.
       parameters:
         - name: limit
           in: query
@@ -163,12 +163,41 @@ paths:
             default: 5
       responses:
         "200":
-          description: Current plain-text daily answer to return verbatim to the user
+          description: Current daily answer to return verbatim to the user
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                description: Copy this complete text verbatim as the user-facing answer.
+                type: object
+                required:
+                  - response_mode
+                  - answer_to_user
+                  - first_line
+                  - execution_authorized
+                  - not_order_instruction
+                properties:
+                  response_mode:
+                    type: string
+                    enum: [copy_answer_to_user_exactly]
+                  answer_to_user:
+                    type: string
+                    description: Copy this complete text verbatim as the user-facing answer.
+                  first_line:
+                    type: string
+                    description: Safe complete first line if the answer must be shortened.
+                  status:
+                    type: string
+                  operational_readiness:
+                    type: string
+                  summary:
+                    type: object
+                  execution_authorized:
+                    type: boolean
+                    enum: [false]
+                  not_order_instruction:
+                    type: boolean
+                    enum: [true]
+                  instruction_to_gpt:
+                    type: string
         "401":
           $ref: "#/components/responses/UnauthorizedRead"
         "503":

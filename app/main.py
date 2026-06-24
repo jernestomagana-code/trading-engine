@@ -24057,7 +24057,7 @@ async def gpt_v31_daily_plain(limit: int = 5):
     return PlainTextResponse(answer_to_user)
 
 
-@app.get("/gpt_v31_daily_now", response_class=PlainTextResponse)
+@app.get("/gpt_v31_daily_now")
 async def gpt_v31_daily_now(limit: int = 5):
     payload = _v31_gpt_daily_brief_payload(limit=limit)
     answer_to_user = str(payload.get("answer_to_user") or "").strip()
@@ -24073,7 +24073,17 @@ async def gpt_v31_daily_now(limit: int = 5):
         actor="system",
         source="gpt_v31_daily_now",
     )
-    return PlainTextResponse(answer_to_user)
+    return {
+        "response_mode": "copy_answer_to_user_exactly",
+        "answer_to_user": answer_to_user,
+        "first_line": answer_to_user.splitlines()[0] if answer_to_user else "",
+        "status": payload.get("status"),
+        "operational_readiness": payload.get("operational_readiness"),
+        "summary": payload.get("summary"),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+        "instruction_to_gpt": "Responde al usuario copiando answer_to_user completo. Si necesitas abreviar, copia first_line completa. No inventes oportunidades.",
+    }
 
 
 @app.get("/v31_command_center.json")

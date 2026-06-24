@@ -664,12 +664,15 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         ) as audit:
             result = asyncio.run(main.gpt_v31_daily_now(limit=3))
 
-        body = getattr(result, "body", None)
-        rendered = body.decode("utf-8") if body is not None else str(result)
+        rendered = result["answer_to_user"]
+        self.assertEqual(result["response_mode"], "copy_answer_to_user_exactly")
         self.assertTrue(rendered.startswith("Hoy no hay oportunidades accionables:"))
+        self.assertEqual(result["first_line"], rendered.splitlines()[0])
         self.assertIn("estado wait market window", rendered.splitlines()[0])
         self.assertNotIn("READY_FOR_DECISION_REVIEW", rendered.splitlines()[0])
         self.assertIn("no autoriza ordenes", rendered.splitlines()[0])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_NOW_SERVED")
 
