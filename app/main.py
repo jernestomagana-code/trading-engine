@@ -137,6 +137,22 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_trade_decision/",
     "/gpt_v31_trade_decision/",
 )
+READ_AUTH_BROWSER_LOGIN_PREFIXES = (
+    "/dashboard",
+    "/intraday_futures/dashboard",
+    "/intraday_futures/premarket",
+    "/v23_dashboard",
+    "/v24",
+    "/v27",
+    "/v28_dashboard",
+    "/v29_dashboard",
+    "/v31_command_center",
+    "/v31_dashboard",
+    "/v31_manual_review_console",
+    "/v31_manual_review_inbox",
+    "/v31_operating_suite",
+    "/v32_strategy_performance_dashboard",
+)
 
 
 def legacy_endpoint_meta(version=None):
@@ -252,6 +268,19 @@ def _path_requires_read_auth(path):
     return any(path.startswith(prefix) for prefix in READ_AUTH_SENSITIVE_PREFIXES)
 
 
+def _read_auth_login_redirect(request: Request):
+    if request.method.upper() != "GET":
+        return None
+    path = request.url.path
+    if not any(path.startswith(prefix) for prefix in READ_AUTH_BROWSER_LOGIN_PREFIXES):
+        return None
+    next_path = path
+    if request.url.query:
+        next_path = "{}?{}".format(path, request.url.query)
+    login_url = "/read_auth_login?{}".format(urllib.parse.urlencode({"next": next_path}))
+    return RedirectResponse(url=login_url, status_code=303)
+
+
 @app.middleware("http")
 async def sensitive_read_auth_middleware(request: Request, call_next):
     if _path_requires_read_auth(request.url.path):
@@ -266,6 +295,9 @@ async def sensitive_read_auth_middleware(request: Request, call_next):
             )
         request_token = _request_read_token(request)
         if not request_token or not any(hmac.compare_digest(str(request_token), str(token)) for token in allowed_tokens):
+            redirect = _read_auth_login_redirect(request)
+            if redirect is not None:
+                return redirect
             return JSONResponse(
                 status_code=401,
                 content={

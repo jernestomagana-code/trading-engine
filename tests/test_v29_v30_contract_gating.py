@@ -109,6 +109,18 @@ class _FakeRequest:
         self.cookies = cookies or {}
 
 
+class _FakeUrl:
+    def __init__(self, path, query=""):
+        self.path = path
+        self.query = query
+
+
+class _FakeBrowserRequest:
+    def __init__(self, path, query="", method="GET"):
+        self.method = method
+        self.url = _FakeUrl(path, query)
+
+
 def _master_snapshot(rows):
     return {
         "path": "unit-test-master.json",
@@ -1202,6 +1214,21 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_version"], "v31_pending_outcome_auto_eval_v1")
         self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_endpoint"], "/v31_evaluate_pending_outcomes")
         self.assertTrue(readiness["token_rotation"]["required_for_hygiene"])
+
+    def test_read_auth_browser_endpoint_redirects_to_login(self):
+        request = _FakeBrowserRequest("/v31_manual_review_inbox")
+
+        response = main._read_auth_login_redirect(request)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.url, "/read_auth_login?next=%2Fv31_manual_review_inbox")
+
+    def test_read_auth_gpt_endpoint_does_not_redirect_to_login(self):
+        request = _FakeBrowserRequest("/gpt_v31_daily_answer")
+
+        response = main._read_auth_login_redirect(request)
+
+        self.assertIsNone(response)
 
     def test_v31_ingest_endpoints_keep_snapshot_auth_separate_from_read_auth(self):
         with patch.object(main, "REQUIRE_READ_AUTH", True):
