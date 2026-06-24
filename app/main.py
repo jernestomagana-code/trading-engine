@@ -22451,19 +22451,21 @@ def _v31_gpt_daily_brief_payload(limit=5):
     entry_ready_count = summary.get("entry_ready") or 0
     manual_review_count = summary.get("manual_review_ready") or 0
     waiting_count = len(blocked_or_waiting)
+    status_label = str(readiness.get("status") or "sin estado").replace("_", " ").lower()
+    readiness_label = str(readiness.get("operational_readiness") or "sin readiness").replace("_", " ").lower()
     if entry_ready_count:
         lead_line = (
             "Hay oportunidades para revision manual: "
-            f"ENTRY_READY={entry_ready_count}, manual_review_ready={manual_review_count}; "
+            f"entradas listas={entry_ready_count}, revision manual={manual_review_count}; "
             "esto no autoriza ordenes y toda ejecucion es manual."
         )
     else:
-        waiting_fragment = f", bloqueadas/en espera={waiting_count}" if waiting_count else ""
+        waiting_fragment = f", bloqueadas o en espera={waiting_count}" if waiting_count else ""
         tickers_fragment = f" ({', '.join(blocked_tickers)})" if blocked_tickers else ""
         lead_line = (
             "Hoy no hay oportunidades accionables: "
-            f"motor={readiness.get('status')}, readiness={readiness.get('operational_readiness')}, "
-            f"ENTRY_READY=0, manual_review_ready={manual_review_count}{waiting_fragment}{tickers_fragment}; "
+            f"motor {status_label}, estado {readiness_label}, "
+            f"entradas listas 0, revision manual {manual_review_count}{waiting_fragment}{tickers_fragment}; "
             "no autoriza ordenes y toda ejecucion es manual."
         )
     if brief_text and not brief_text.startswith(lead_line):
