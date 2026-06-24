@@ -109,6 +109,38 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_daily_plain:
+    get:
+      operationId: getDailyPlain
+      summary: Get ready-to-send plain-text daily answer
+      description: >
+        Returns the exact Spanish text the Custom GPT should send to the user
+        for questions like "what opportunities do I have today?". Use this
+        before JSON endpoints when the user wants the daily radar or
+        opportunities. The returned text is decision support only and does not
+        authorize orders.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of manual-review and blocked/waiting items to include.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 5
+      responses:
+        "200":
+          description: Plain-text daily answer to return verbatim to the user
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Copy this complete text verbatim as the user-facing answer.
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v31_command_center.json:
     get:
       operationId: getCommandCenter
@@ -315,6 +347,12 @@ components:
       properties:
         brief_version:
           type: string
+        response_mode:
+          type: string
+          description: Instructs the Custom GPT to copy the prepared answer without summarizing.
+        answer_to_user:
+          type: string
+          description: Primary field. Copy this complete Spanish text verbatim to the user.
         generated_at:
           type: string
         status:
@@ -336,7 +374,7 @@ components:
           type: string
         display_text:
           type: string
-          description: Spanish text safe for the GPT to copy directly to the user.
+          description: Backward-compatible copy of answer_to_user.
         instruction_to_gpt:
           type: string
         execution_authorized:

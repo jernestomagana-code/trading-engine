@@ -22144,6 +22144,7 @@ def _v31_system_status_payload(tickers=None):
             "gpt_daily_rankings": "/gpt_v31_daily_rankings",
             "gpt_daily_answer": "/gpt_v31_daily_answer",
             "gpt_daily_brief": "/gpt_v31_daily_brief",
+            "gpt_daily_plain": "/gpt_v31_daily_plain",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -22442,6 +22443,8 @@ def _v31_gpt_daily_brief_payload(limit=5):
     brief_text = str(answer.get("answer_text") or "").strip()
     return {
         "brief_version": "super_engine_bolsa_daily_brief_v1",
+        "response_mode": "copy_answer_to_user_exactly",
+        "answer_to_user": brief_text,
         "generated_at": answer.get("generated_at") or _v29_now(),
         "status": readiness.get("status"),
         "operational_readiness": readiness.get("operational_readiness"),
@@ -22456,7 +22459,7 @@ def _v31_gpt_daily_brief_payload(limit=5):
         },
         "brief_text": brief_text,
         "display_text": brief_text,
-        "instruction_to_gpt": "Responde al usuario copiando display_text. No agregues oportunidades fuera de este payload.",
+        "instruction_to_gpt": "Responde al usuario copiando answer_to_user completo. No lo resumas ni agregues oportunidades fuera de este payload.",
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -24004,6 +24007,25 @@ async def gpt_v31_daily_brief(limit: int = 5):
         source="gpt_v31_daily_brief",
     )
     return payload
+
+
+@app.get("/gpt_v31_daily_plain", response_class=PlainTextResponse)
+async def gpt_v31_daily_plain(limit: int = 5):
+    payload = _v31_gpt_daily_brief_payload(limit=limit)
+    answer_to_user = str(payload.get("answer_to_user") or "").strip()
+    _record_audit_event(
+        "GPT_DAILY_PLAIN_SERVED",
+        {
+            "brief_version": payload.get("brief_version"),
+            "status": payload.get("status"),
+            "operational_readiness": payload.get("operational_readiness"),
+            "text_length": len(answer_to_user),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_daily_plain",
+    )
+    return PlainTextResponse(answer_to_user)
 
 
 @app.get("/v31_command_center.json")

@@ -498,6 +498,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(status["endpoints"]["gpt_daily_rankings"], "/gpt_v31_daily_rankings")
         self.assertEqual(status["endpoints"]["gpt_daily_answer"], "/gpt_v31_daily_answer")
         self.assertEqual(status["endpoints"]["gpt_daily_brief"], "/gpt_v31_daily_brief")
+        self.assertEqual(status["endpoints"]["gpt_daily_plain"], "/gpt_v31_daily_plain")
         self.assertEqual(status["endpoints"]["strategy_registry"], "/strategy_registry")
         self.assertEqual(status["endpoints"]["strategy_playbook"], "/strategy_playbook")
         self.assertEqual(status["endpoints"]["strategy_exit_playbook"], "/strategy_exit_playbook")
@@ -601,6 +602,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             result = asyncio.run(main.gpt_v31_daily_brief(limit=3))
 
         self.assertEqual(result["brief_version"], "super_engine_bolsa_daily_brief_v1")
+        self.assertEqual(result["response_mode"], "copy_answer_to_user_exactly")
+        self.assertEqual(result["answer_to_user"], answer_payload["answer_text"])
         self.assertEqual(result["display_text"], answer_payload["answer_text"])
         self.assertIn("WAIT_MARKET_WINDOW", result["display_text"])
         self.assertIn("no autoriza ordenes", result["display_text"])
@@ -608,6 +611,32 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_BRIEF_SERVED")
+
+    def test_gpt_daily_plain_returns_ready_to_send_text(self):
+        answer_payload = {
+            "generated_at": "2026-06-24T16:00:00+00:00",
+            "answer_text": "Estado del motor: READY_FOR_DECISION_REVIEW / WAIT_MARKET_WINDOW\n\nNota: esto no autoriza ordenes.",
+            "summary": {"total": 10, "entry_ready": 0, "manual_review_ready": 0},
+            "data_readiness": {
+                "status": "READY_FOR_DECISION_REVIEW",
+                "operational_readiness": "WAIT_MARKET_WINDOW",
+                "main_blocker": "WAIT_MARKET",
+            },
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_gpt_institutional_answer_payload", return_value=answer_payload), patch.object(
+            main,
+            "_record_audit_event",
+        ) as audit:
+            result = asyncio.run(main.gpt_v31_daily_plain(limit=3))
+
+        body = getattr(result, "body", None)
+        rendered = body.decode("utf-8") if body is not None else str(result)
+        self.assertEqual(rendered, answer_payload["answer_text"])
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[0], "GPT_DAILY_PLAIN_SERVED")
 
     def test_v31_risk_profile_presets_are_selectable(self):
         conservative = main._v31_risk_profile("conservative")
