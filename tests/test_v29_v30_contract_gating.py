@@ -893,6 +893,89 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(wait_options["manual_review_ready"])
         self.assertFalse(wait_options["can_operate"])
 
+    def test_v31_broker_check_blocks_entry_ready_when_account_context_conflicts(self):
+        complete_row = {
+            "ticker": "TSLA",
+            "strategy": "COVERED_CALL",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 440,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 13.20,
+            "ask": 13.35,
+            "mid": 13.275,
+            "spread": 0.15,
+            "spread_pct": 1.13,
+            "delta": 0.34,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"] = {
+            "TSLA": {
+                "ticker": "TSLA",
+                "trend": "BULLISH",
+                "score": 80,
+            }
+        }
+        master["data"]["broker_checks"] = [
+            {
+                "broker_check_version": "broker_check_v1",
+                "ticker": "TSLA",
+                "strategy": "COVERED_CALL",
+                "status": "BLOCKED",
+                "ok_for_manual_review": False,
+                "blockers": ["BROKER_COVERED_CALL_SHARES_INSUFFICIENT"],
+                "warnings": [],
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
+        ]
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v31_canonical_decision("TSLA")
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertEqual(decision["main_blocker"], "RISK_BLOCKED")
+        self.assertEqual(decision["risk_blocker"], "BROKER_CHECK_BLOCKED")
+        self.assertIn("BROKER_CHECK_BLOCKED", decision["blockers"])
+        self.assertIn("BROKER_COVERED_CALL_SHARES_INSUFFICIENT", decision["blockers"])
+        self.assertEqual(decision["broker_check"]["status"], "BLOCKED")
+        self.assertFalse(decision["manual_review_ready"])
+        self.assertFalse(decision["can_operate"])
+
+    def test_v31_manual_approval_rejects_blocked_broker_check(self):
+        decision = {
+            "ticker": "TSLA",
+            "strategy": "COVERED_CALL",
+            "final_state": "ENTRY_READY",
+            "manual_review_ready": True,
+            "broker_check": {
+                "status": "BLOCKED",
+                "blockers": ["BROKER_COVERED_CALL_SHARES_INSUFFICIENT"],
+                "warnings": [],
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            },
+            "selected_contract": {
+                "strike": 440,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 13.20,
+                "ask": 13.35,
+                "mid": 13.275,
+                "spread": 0.15,
+                "spread_pct": 1.13,
+                "delta": 0.34,
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRES_BROKER_CHECK_NOT_BLOCKED"):
+            main._v31_manual_review_payload({
+                "ticker": "TSLA",
+                "status": "APPROVED_FOR_MANUAL_TRADE",
+                "decision": decision,
+            })
+
     def test_v31_entry_ready_signal_tracking_creates_pending_paper_outcome(self):
         complete_row = {
             "ticker": "QQQ",

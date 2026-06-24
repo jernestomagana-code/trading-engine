@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import runtime_local_technical
+import broker_check
 
 
 # === V26 REMOTE MASTER SNAPSHOT PUBLISHER ===
@@ -279,12 +280,22 @@ def _v283_publish_to_v28():
         options_rows=rows,
         timeframe="1d",
     )
+    broker_enriched = broker_check.merge_broker_checks(
+        {
+            "options_rows": rows,
+            "runtime_data": runtime_data,
+            **runtime_data,
+        },
+        rows=rows,
+    )
 
     payload = {
         "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
         "generated_at": _v283_now(),
         "options_rows": rows,
         "technical_snapshot": tech,
+        "broker_checks": broker_enriched.get("broker_checks") or [],
+        "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
         "market": bridge_market_snapshot("IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET"),
         "bridge_status": "LIVE_IBKR_AFTER_V26_PUBLISH",
         "runtime_files_seen": sorted(list(runtime_data.keys())),
@@ -466,6 +477,15 @@ def _v26_build_master_snapshot(extra_payload=None):
     ctx = _v26_discover_runtime_context()
     options_rows = _v26_extract_options_rows_from_context(ctx)
     technical_snapshot = _v26_extract_technical_snapshot_from_context(ctx)
+    broker_enriched = broker_check.merge_broker_checks(
+        {
+            "options_rows": options_rows,
+            "technical_snapshot": technical_snapshot,
+            "runtime_context": ctx,
+            **ctx,
+        },
+        rows=options_rows,
+    )
 
     tickers = set()
 
@@ -492,6 +512,8 @@ def _v26_build_master_snapshot(extra_payload=None):
         "runtime_context_files": list(ctx.keys()),
         "options_rows": options_rows,
         "technical_snapshot": technical_snapshot,
+        "broker_checks": broker_enriched.get("broker_checks") or [],
+        "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
         "tickers_detected": sorted(tickers),
         "diagnostics": {
             "options_rows_found": len(options_rows),
@@ -3946,15 +3968,27 @@ def _v28_publish_master_snapshot(extra_payload=None):
         options_rows=options_rows,
         timeframe="1d",
     )
+    broker_enriched = broker_check.merge_broker_checks(
+        {
+            "options_rows": options_rows,
+            "technical_snapshot": technical_snapshot,
+            "runtime_data": runtime_data,
+            **runtime_data,
+        },
+        rows=options_rows,
+    )
 
     payload = {
         "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
         "generated_at": _v28_bridge_now(),
         "options_rows": _v28_bridge_json_safe(options_rows),
         "technical_snapshot": _v28_bridge_json_safe(technical_snapshot),
+        "broker_checks": _v28_bridge_json_safe(broker_enriched.get("broker_checks") or []),
+        "broker_check_summary": _v28_bridge_json_safe(broker_enriched.get("broker_check_summary") or {}),
         "market": _v28_bridge_market_snapshot(),
         "runtime_files_seen": sorted(list(runtime_data.keys())),
         "bridge_status": "PUBLISHED_FROM_LOCAL_IBKR",
+        "not_order_instruction": True,
     }
 
     if isinstance(extra_payload, dict):

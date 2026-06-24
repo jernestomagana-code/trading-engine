@@ -109,6 +109,20 @@ def _risk_profile(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _broker_check(decision: dict[str, Any]) -> dict[str, Any]:
+    broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
+    return {
+        "status": broker.get("status"),
+        "ok_for_manual_review": broker.get("ok_for_manual_review"),
+        "blockers": broker.get("blockers") or [],
+        "warnings": broker.get("warnings") or [],
+        "checks": broker.get("checks") or [],
+        "manual_broker_ticket_still_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def action_for_state(state: str) -> str:
     return {
         "ENTRY_READY": "REVIEW_MANUALLY",
@@ -163,6 +177,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
     strategy = _upper(decision.get("strategy"), "UNKNOWN")
     score = conviction_score(decision)
     risk_profile = _risk_profile(decision)
+    broker_check = _broker_check(decision)
     item = {
         "rank": rank,
         "ticker": ticker,
@@ -181,12 +196,14 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "why": decision.get("explanation"),
         "risk_note": decision.get("risk_note") or "Decision support solamente; no es orden ni autorizacion de ejecucion.",
         "risk_profile": risk_profile,
+        "broker_check": broker_check,
         "risk_blocker": decision.get("risk_blocker"),
         "risk_blocked_details": decision.get("risk_blocked_details") or risk_profile.get("blocked_checks") or [],
         "evidence": {
             "technical": _technical(decision),
             "fundamental": _fundamental(decision),
             "options": _options(decision),
+            "broker": broker_check,
             "market": decision.get("market") if isinstance(decision.get("market"), dict) else {},
         },
         "source": {
