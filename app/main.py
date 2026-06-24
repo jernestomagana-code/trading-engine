@@ -226,6 +226,9 @@ def _request_read_token(request: Request):
     header_token = request.headers.get("X-Stock-Ultimus-Read-Token")
     if header_token:
         return header_token
+    gpt_action_token = request.headers.get("X-Api-Key")
+    if gpt_action_token:
+        return gpt_action_token
     cookie_token = request.cookies.get("stock_ultimus_read_token")
     if cookie_token:
         return cookie_token

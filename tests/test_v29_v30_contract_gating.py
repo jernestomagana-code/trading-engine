@@ -103,6 +103,12 @@ def _load_main_module():
 main = _load_main_module()
 
 
+class _FakeRequest:
+    def __init__(self, headers=None, cookies=None):
+        self.headers = headers or {}
+        self.cookies = cookies or {}
+
+
 def _master_snapshot(rows):
     return {
         "path": "unit-test-master.json",
@@ -125,6 +131,11 @@ def _master_snapshot(rows):
 
 
 class V29V30ContractGatingTests(unittest.TestCase):
+    def test_request_read_token_accepts_gpt_action_api_key_header(self):
+        request = _FakeRequest(headers={"X-Api-Key": "read-token-test"})
+
+        self.assertEqual(main._request_read_token(request), "read-token-test")
+
     def test_confirmed_technical_with_incomplete_option_data_waits_for_options(self):
         incomplete_row = {
             "ticker": "QQQ",
