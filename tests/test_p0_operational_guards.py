@@ -91,6 +91,21 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertNotIn("acctCode", function_source)
         self.assertNotIn("accountNumber", function_source)
 
+    def test_bridge_positions_feed_broker_snapshot_context(self):
+        source = BRIDGE.read_text()
+        tree = ast.parse(source, filename=str(BRIDGE))
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        send_positions_source = ast.get_source_segment(source, functions["send_positions"]) or ""
+        broker_context_source = ast.get_source_segment(source, functions["_bridge_cycle_position_rows"]) or ""
+
+        self.assertIn("v17_store_row(payload)", send_positions_source)
+        self.assertIn("IBKR_PORTFOLIO_COMMANDER", broker_context_source)
+        self.assertIn("position_size", broker_context_source)
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):
