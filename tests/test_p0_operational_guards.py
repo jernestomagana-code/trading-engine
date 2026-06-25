@@ -106,6 +106,21 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("IBKR_PORTFOLIO_COMMANDER", broker_context_source)
         self.assertIn("position_size", broker_context_source)
 
+    def test_legacy_bridge_outputs_never_advertise_can_operate_true(self):
+        source = BRIDGE.read_text()
+        self.assertNotIn("can_operate:{nba.get('can_operate')}", source)
+        self.assertIn("manual_review_ready:{nba.get('manual_review_ready')}", source)
+        self.assertIn('"can_operate_count": 0', source)
+        self.assertIn("def v18_can_operate", source)
+        self.assertIn("return False", ast.get_source_segment(
+            source,
+            {
+                node.name: node
+                for node in ast.parse(source, filename=str(BRIDGE)).body
+                if isinstance(node, ast.FunctionDef)
+            }["v18_can_operate"],
+        ) or "")
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):
