@@ -19267,6 +19267,61 @@ def _v29_best_row_for_ticker(ticker, rows):
     return best, enriched, executable
 
 
+def _v29_contract_candidate_summary(row):
+    row = row if isinstance(row, dict) else {}
+    q = row.get("v29_quality_gate") if isinstance(row.get("v29_quality_gate"), dict) else _v29_quality_gate(row)
+    return {
+        "ticker": _v29_safe_upper(row.get("ticker"), "UNKNOWN"),
+        "strategy": _v29_safe_upper(row.get("strategy"), "UNKNOWN"),
+        "strike": q.get("strike"),
+        "expiration": q.get("expiration"),
+        "dte": q.get("dte"),
+        "bid": q.get("bid"),
+        "ask": q.get("ask"),
+        "mid": q.get("mid"),
+        "spread": q.get("spread"),
+        "spread_pct": q.get("spread_pct"),
+        "delta": q.get("delta"),
+        "iv": q.get("iv"),
+        "volume": q.get("volume"),
+        "open_interest": q.get("open_interest"),
+        "option_score": q.get("option_score"),
+        "option_score_source": q.get("option_score_source"),
+        "quality": q.get("quality"),
+        "executable": q.get("executable"),
+        "missing": q.get("missing") or [],
+        "selection_score": round(_v29_score_row(row), 4),
+        "not_order_instruction": True,
+    }
+
+
+def _v29_contract_alternatives(best, enriched_rows, limit=5):
+    best = best if isinstance(best, dict) else {}
+    rows = enriched_rows if isinstance(enriched_rows, list) else []
+    selected_key = (
+        _v29_safe_upper(best.get("ticker"), "UNKNOWN"),
+        _v29_safe_upper(best.get("strategy"), "UNKNOWN"),
+        _v29_safe_float(best.get("strike"), None),
+        str(best.get("expiration") or ""),
+    )
+    alternatives = []
+    seen = set()
+    for row in sorted(rows, key=_v29_score_row, reverse=True):
+        key = (
+            _v29_safe_upper(row.get("ticker"), "UNKNOWN"),
+            _v29_safe_upper(row.get("strategy"), "UNKNOWN"),
+            _v29_safe_float(row.get("strike"), None),
+            str(row.get("expiration") or ""),
+        )
+        if key == selected_key or key in seen:
+            continue
+        seen.add(key)
+        alternatives.append(_v29_contract_candidate_summary(row))
+        if len(alternatives) >= limit:
+            break
+    return alternatives
+
+
 def _v29_technical_state(ticker, technical, strategy="UNKNOWN"):
     ticker = _v29_safe_upper(ticker)
     root = technical.get(ticker) or {}
@@ -19451,6 +19506,7 @@ def _v29_decide_ticker(ticker):
     q = _v29_quality_gate(best)
     strategy = _v29_safe_upper(best.get("strategy"), "UNKNOWN")
     options_score = q.get("option_score")
+    contract_alternatives = _v29_contract_alternatives(best, ticker_rows)
     selected_contract = {
         "ticker": ticker,
         "strategy": strategy,
@@ -19571,6 +19627,7 @@ def _v29_decide_ticker(ticker):
             **selected_contract,
             "manual_review_ready": manual_review_ready,
         },
+        "contract_alternatives": contract_alternatives,
         "best_row": best,
         "best_row_quality": q,
         "rows_found_for_ticker": len(ticker_rows),
@@ -22105,6 +22162,7 @@ def _v31_canonical_decision(ticker):
         "construction_status": _v31_status_from_v29(d, "construction"),
         "options_score": d.get("options_score"),
         "selected_contract": d.get("selected_contract"),
+        "contract_alternatives": d.get("contract_alternatives") or [],
         "selected_structure": None,
         "source_decision": {
             "engine": d.get("engine"),
@@ -22314,6 +22372,8 @@ def _v31_gpt_compact_daily_item(item):
         "ranking_score": item.get("ranking_score"),
         "score": item.get("score"),
         "selected_contract": _v31_gpt_compact_contract(item),
+        "option_data_diagnostic": item.get("option_data_diagnostic") if isinstance(item.get("option_data_diagnostic"), dict) else {},
+        "contract_alternatives": item.get("contract_alternatives") or [],
         "why": item.get("why"),
         "instruction": item.get("instruction"),
         "risk_note": item.get("risk_note"),
@@ -22431,6 +22491,7 @@ def _v31_gpt_institutional_answer_payload(limit=5):
     if blocked:
         for item in blocked:
             risk_checks = item.get("risk_profile_blocked_checks") if isinstance(item.get("risk_profile_blocked_checks"), list) else []
+            option_diag = item.get("option_data_diagnostic") if isinstance(item.get("option_data_diagnostic"), dict) else {}
             risk_detail = ""
             if risk_checks:
                 first = risk_checks[0]
@@ -22441,13 +22502,20 @@ def _v31_gpt_institutional_answer_payload(limit=5):
                     comparator=first.get("comparator"),
                     limit=first.get("limit"),
                 )
+            option_detail = ""
+            if item.get("final_state") == "WAIT_OPTIONS_DATA" and option_diag:
+                option_detail = " | opciones={cause}; accion={action}".format(
+                    cause=option_diag.get("primary_cause"),
+                    action=option_diag.get("suggested_action"),
+                )
             missing = item.get("required_missing_fields") or []
-            lines.append("- {ticker} | {state} | blocker={blocker} | faltante={missing}{risk_detail}".format(
+            lines.append("- {ticker} | {state} | blocker={blocker} | faltante={missing}{risk_detail}{option_detail}".format(
                 ticker=item.get("ticker"),
                 state=item.get("final_state"),
                 blocker=item.get("main_blocker"),
                 missing=missing,
                 risk_detail=risk_detail,
+                option_detail=option_detail,
             ))
     else:
         lines.append("- Ninguna.")

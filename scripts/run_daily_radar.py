@@ -216,6 +216,7 @@ def wait_options_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     missing_counts: dict[str, int] = {}
     blockers: dict[str, int] = {}
     tickers: list[str] = []
+    details = []
     for item in wait_rows:
         ticker = item.get("ticker")
         if ticker:
@@ -230,12 +231,33 @@ def wait_options_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for field in ["strike", "expiration", "dte", "bid", "ask", "mid", "spread", "spread_pct", "delta"]:
             if contract and contract.get(field) in [None, ""]:
                 missing_counts[field] = missing_counts.get(field, 0) + 1
+        diagnostic = item.get("option_data_diagnostic") if isinstance(item.get("option_data_diagnostic"), dict) else {}
+        checks = item.get("risk_profile_blocked_checks") if isinstance(item.get("risk_profile_blocked_checks"), list) else []
+        contract_checks = [
+            check for check in checks
+            if isinstance(check, dict) and str(check.get("field") or "").startswith("selected_contract.")
+        ]
+        details.append({
+            "ticker": ticker,
+            "strategy": item.get("strategy"),
+            "primary_cause": diagnostic.get("primary_cause") or item.get("risk_blocker") or item.get("main_blocker"),
+            "missing_fields": item.get("required_missing_fields") or [],
+            "contract": {
+                key: contract.get(key)
+                for key in ["strike", "expiration", "dte", "bid", "ask", "mid", "spread", "spread_pct", "delta", "quality"]
+                if contract.get(key) is not None
+            },
+            "contract_threshold_checks": diagnostic.get("contract_threshold_checks") or contract_checks,
+            "has_executable_alternative": diagnostic.get("has_executable_alternative"),
+            "suggested_action": diagnostic.get("suggested_action"),
+        })
 
     return {
         "count": len(wait_rows),
         "tickers": sorted(set(tickers)),
         "top_missing_fields": sorted(missing_counts.items(), key=lambda item: (-item[1], item[0]))[:12],
         "top_blockers": sorted(blockers.items(), key=lambda item: (-item[1], item[0]))[:8],
+        "details": details,
     }
 
 
@@ -280,6 +302,8 @@ def redacted_audit_record(payload: dict[str, Any]) -> dict[str, Any]:
                 "risk_profile": item.get("risk_profile"),
                 "required_missing_fields": item.get("required_missing_fields"),
                 "selected_contract": selected_contract(item),
+                "option_data_diagnostic": item.get("option_data_diagnostic"),
+                "contract_alternatives": item.get("contract_alternatives") or [],
             }
             for item in blocked_or_waiting
         ],
@@ -351,6 +375,35 @@ def print_summary(payload: dict[str, Any], preview: int) -> None:
         if wait_diag["top_blockers"]:
             blockers = ", ".join(f"{name}={count}" for name, count in wait_diag["top_blockers"])
             print(f"- Bloqueadores frecuentes: {blockers}")
+        for detail in wait_diag.get("details", [])[:preview]:
+            contract = detail.get("contract") or {}
+            checks = detail.get("contract_threshold_checks") or []
+            threshold = ""
+            if checks:
+                first = checks[0]
+                threshold = (
+                    f" | regla={first.get('field')} {first.get('value')} "
+                    f"{first.get('comparator')} {first.get('limit')}"
+                )
+            action = detail.get("suggested_action")
+            action_text = f" | accion={action}" if action else ""
+            print(
+                "- {ticker} {strategy}: causa={cause} faltante={missing} "
+                "contrato={strike}/{exp} bid/ask={bid}/{ask} spread={spread} pct={spread_pct}{threshold}{action}".format(
+                    ticker=detail.get("ticker"),
+                    strategy=detail.get("strategy"),
+                    cause=detail.get("primary_cause"),
+                    missing=detail.get("missing_fields"),
+                    strike=contract.get("strike"),
+                    exp=contract.get("expiration"),
+                    bid=contract.get("bid"),
+                    ask=contract.get("ask"),
+                    spread=contract.get("spread"),
+                    spread_pct=contract.get("spread_pct"),
+                    threshold=threshold,
+                    action=action_text,
+                )
+            )
 
     next_actions = readiness.get("next_required_actions") or []
     if next_actions:

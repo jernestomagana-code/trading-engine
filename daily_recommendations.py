@@ -123,6 +123,76 @@ def _broker_check(decision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_contract_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    candidate = candidate if isinstance(candidate, dict) else {}
+    keys = [
+        "ticker",
+        "strategy",
+        "strike",
+        "expiration",
+        "dte",
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+        "iv",
+        "volume",
+        "open_interest",
+        "option_score",
+        "quality",
+        "executable",
+        "missing",
+        "selection_score",
+    ]
+    return {key: candidate.get(key) for key in keys if candidate.get(key) not in [None, [], {}]}
+
+
+def _option_data_diagnostic(decision: dict[str, Any], risk_profile: dict[str, Any]) -> dict[str, Any]:
+    state = _upper(decision.get("final_state"), "NO_DATA")
+    missing = list(decision.get("required_missing_fields") or [])
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    blocked_checks = risk_profile.get("blocked_checks") if isinstance(risk_profile.get("blocked_checks"), list) else []
+    contract_checks = [
+        check for check in blocked_checks
+        if isinstance(check, dict) and str(check.get("field") or "").startswith("selected_contract.")
+    ]
+    alternatives = [
+        _compact_contract_candidate(candidate)
+        for candidate in (decision.get("contract_alternatives") or [])[:5]
+        if isinstance(candidate, dict)
+    ]
+
+    primary_cause = None
+    suggested_action = None
+    if state == "WAIT_OPTIONS_DATA":
+        if "spread_too_wide" in missing or any("SPREAD" in str(check.get("name") or "") for check in contract_checks):
+            primary_cause = "SPREAD_TOO_WIDE"
+            suggested_action = "Refresh option chain during a more liquid options window or inspect listed alternatives; do not promote until spread rules pass."
+        elif missing:
+            primary_cause = "MISSING_EXECUTABLE_OPTION_FIELDS"
+            suggested_action = "Refresh/enrich IBKR option data until bid, ask, mid, spread, spread_pct, delta, DTE, expiration and strike are complete."
+        else:
+            primary_cause = "OPTIONS_NOT_EXECUTABLE"
+            suggested_action = "Inspect selected_contract quality and alternate contracts before manual review."
+    else:
+        primary_cause = "NOT_WAIT_OPTIONS_DATA"
+        suggested_action = "No option-data remediation required for this state."
+
+    return {
+        "status": state,
+        "primary_cause": primary_cause,
+        "missing_fields": missing,
+        "selected_contract": _compact_contract_candidate(contract),
+        "contract_threshold_checks": contract_checks,
+        "alternatives": alternatives,
+        "has_executable_alternative": any(candidate.get("executable") is True for candidate in alternatives),
+        "suggested_action": suggested_action,
+        "not_order_instruction": True,
+    }
+
+
 def action_for_state(state: str) -> str:
     return {
         "ENTRY_READY": "REVIEW_MANUALLY",
@@ -178,6 +248,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
     score = conviction_score(decision)
     risk_profile = _risk_profile(decision)
     broker_check = _broker_check(decision)
+    option_data_diagnostic = _option_data_diagnostic(decision, risk_profile)
     item = {
         "rank": rank,
         "ticker": ticker,
@@ -196,6 +267,8 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "why": decision.get("explanation"),
         "risk_note": decision.get("risk_note") or "Decision support solamente; no es orden ni autorizacion de ejecucion.",
         "risk_profile": risk_profile,
+        "option_data_diagnostic": option_data_diagnostic,
+        "contract_alternatives": option_data_diagnostic.get("alternatives") or [],
         "broker_check": broker_check,
         "risk_blocker": decision.get("risk_blocker"),
         "risk_blocked_details": decision.get("risk_blocked_details") or risk_profile.get("blocked_checks") or [],
@@ -203,6 +276,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
             "technical": _technical(decision),
             "fundamental": _fundamental(decision),
             "options": _options(decision),
+            "option_data_diagnostic": option_data_diagnostic,
             "broker": broker_check,
             "market": decision.get("market") if isinstance(decision.get("market"), dict) else {},
         },

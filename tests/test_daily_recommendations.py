@@ -117,6 +117,77 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertEqual(item["risk_blocked_details"][0]["limit"], 10.0)
         self.assertFalse(item["can_operate"])
 
+    def test_wait_options_data_exposes_diagnostic_and_alternatives(self):
+        payload = daily.build_daily_recommendations(
+            [
+                {
+                    "ticker": "TSLA",
+                    "strategy": "NAKED_PUT",
+                    "final_state": "WAIT_OPTIONS_DATA",
+                    "main_blocker": "WAIT_OPTIONS_DATA",
+                    "blockers": ["WAIT_OPTIONS_DATA"],
+                    "required_missing_fields": ["spread_too_wide"],
+                    "selected_contract": {
+                        "ticker": "TSLA",
+                        "strategy": "NAKED_PUT",
+                        "strike": 335,
+                        "expiration": "20260807",
+                        "dte": 43,
+                        "bid": 6.45,
+                        "ask": 9.4,
+                        "mid": 7.925,
+                        "spread": 2.95,
+                        "spread_pct": 37.22,
+                        "delta": -0.2158,
+                        "quality": "NOT_EXECUTABLE",
+                    },
+                    "risk_profile": {
+                        "status": "BLOCKED",
+                        "primary_blocker": "RISK_PROFILE_SPREAD_TOO_WIDE",
+                        "blockers": ["RISK_PROFILE_SPREAD_TOO_WIDE"],
+                        "blocked_checks": [
+                            {
+                                "name": "RISK_PROFILE_SPREAD_TOO_WIDE",
+                                "field": "selected_contract.spread",
+                                "value": 2.95,
+                                "comparator": "<=",
+                                "limit": 0.35,
+                                "status": "BLOCKED",
+                            }
+                        ],
+                    },
+                    "contract_alternatives": [
+                        {
+                            "ticker": "TSLA",
+                            "strategy": "NAKED_PUT",
+                            "strike": 330,
+                            "expiration": "20260807",
+                            "bid": 5.8,
+                            "ask": 6.05,
+                            "spread": 0.25,
+                            "spread_pct": 4.22,
+                            "delta": -0.19,
+                            "quality": "EXECUTABLE",
+                            "executable": True,
+                            "selection_score": 1180.0,
+                        }
+                    ],
+                    "not_order_instruction": True,
+                }
+            ],
+            generated_at="2026-06-25T00:00:00+00:00",
+        )
+
+        item = payload["items"][0]
+        diagnostic = item["option_data_diagnostic"]
+        self.assertEqual(item["final_state"], "WAIT_OPTIONS_DATA")
+        self.assertEqual(diagnostic["primary_cause"], "SPREAD_TOO_WIDE")
+        self.assertEqual(diagnostic["contract_threshold_checks"][0]["limit"], 0.35)
+        self.assertTrue(diagnostic["has_executable_alternative"])
+        self.assertEqual(item["contract_alternatives"][0]["strike"], 330)
+        self.assertFalse(item["can_operate"])
+        self.assertTrue(item["not_order_instruction"])
+
 
 if __name__ == "__main__":
     unittest.main()

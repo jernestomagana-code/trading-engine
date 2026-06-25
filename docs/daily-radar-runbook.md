@@ -127,6 +127,10 @@ Use the printed diagnostic:
 
 - `Campos faltantes frecuentes` identifies missing executable option fields.
 - `Bloqueadores frecuentes` shows dominant blocker labels.
+- Per-ticker detail shows selected contract bid/ask, spread, threshold rule, and
+  remediation action.
+- `contract_alternatives`, when present in JSON, are candidates to inspect only;
+  they do not override blocker priority or authorize a trade.
 - Required option fields remain `strike`, `expiration`, `dte`, `bid`, `ask`,
   `mid`, `spread`, `spread_pct`, and `delta`.
 
