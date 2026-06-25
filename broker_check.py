@@ -15,6 +15,11 @@ from typing import Any
 
 BROKER_CHECK_VERSION = "broker_check_v1"
 DEFAULT_CONTRACT_MULTIPLIER = 100
+DEFAULT_BROKER_CHECK_MAX_AGE_MINUTES = 15
+DEFAULT_MAX_TRADE_CAPACITY_PCT = 25.0
+DEFAULT_MAX_UNDERLYING_CONCENTRATION_PCT = 50.0
+DEFAULT_WARN_UNDERLYING_CONCENTRATION_PCT = 35.0
+DEFAULT_MAX_SHORT_PUTS_PER_TICKER = 1
 
 
 def now_iso() -> str:
@@ -33,6 +38,59 @@ def safe_float(value: Any, default: float | None = None) -> float | None:
 def safe_upper(value: Any, default: str = "") -> str:
     text = str(value or "").strip().upper()
     return text or default
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def age_minutes(value: Any, now: datetime | None = None) -> float | None:
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return round((now.astimezone(timezone.utc) - parsed).total_seconds() / 60.0, 2)
+
+
+def broker_check_freshness(check: dict[str, Any], *, max_age_minutes: int = DEFAULT_BROKER_CHECK_MAX_AGE_MINUTES) -> dict[str, Any]:
+    check = check if isinstance(check, dict) else {}
+    generated_at = check.get("generated_at")
+    age = age_minutes(generated_at)
+    status = "UNKNOWN"
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if age is None:
+        warnings.append("BROKER_CHECK_TIMESTAMP_MISSING")
+    elif age > max_age_minutes:
+        status = "STALE"
+        blockers.append("BROKER_CHECK_STALE")
+    else:
+        status = "FRESH"
+    if status == "UNKNOWN":
+        status = "WARNING"
+    return {
+        "freshness_version": "broker_check_freshness_v1",
+        "status": status,
+        "ok": status == "FRESH",
+        "generated_at": generated_at,
+        "age_minutes": age,
+        "max_age_minutes": max_age_minutes,
+        "blockers": blockers,
+        "warnings": warnings,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
 
 
 def strategy_family(strategy: Any) -> str:
@@ -163,6 +221,8 @@ def _position_summary(ticker: str, positions: list[dict[str, Any]]) -> dict[str,
     ticker = safe_upper(ticker)
     underlying_shares = 0.0
     option_positions = []
+    short_put_count = 0
+    short_call_count = 0
     underlying_market_value = 0.0
     position_rows = []
     for row in positions:
@@ -174,6 +234,11 @@ def _position_summary(ticker: str, positions: list[dict[str, Any]]) -> dict[str,
             underlying_shares += qty
             underlying_market_value += abs(safe_float(row.get("market_value"), 0.0) or 0.0)
         elif safe_upper(row.get("sec_type")) in ["OPT", "OPTION"]:
+            right = safe_upper(row.get("right"))
+            if right == "P" and qty < 0:
+                short_put_count += abs(qty)
+            if right == "C" and qty < 0:
+                short_call_count += abs(qty)
             option_positions.append({
                 "right": row.get("right"),
                 "strike": row.get("strike"),
@@ -184,6 +249,8 @@ def _position_summary(ticker: str, positions: list[dict[str, Any]]) -> dict[str,
         "underlying_shares": underlying_shares,
         "underlying_market_value": underlying_market_value or None,
         "option_position_count": len(option_positions),
+        "short_put_count": short_put_count,
+        "short_call_count": short_call_count,
         "option_positions": option_positions[:20],
         "positions_found": len(position_rows),
     }
@@ -195,11 +262,13 @@ def build_broker_check(
     positions: list[dict[str, Any]] | None = None,
     account_context: dict[str, Any] | None = None,
     generated_at: str | None = None,
+    policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one broker-context check for a candidate row."""
     row = row if isinstance(row, dict) else {}
     positions = positions if isinstance(positions, list) else []
     account_context = account_context if isinstance(account_context, dict) else {}
+    policy = policy if isinstance(policy, dict) else {}
 
     ticker = safe_upper(row.get("ticker") or row.get("symbol"), "UNKNOWN")
     strategy = safe_upper(row.get("strategy") or row.get("strategy_hint"), "UNKNOWN")
@@ -214,6 +283,10 @@ def build_broker_check(
     pos = _position_summary(ticker, positions)
     capacity = safe_float(account_context.get("available_capacity"))
     net_liq = safe_float(account_context.get("net_liquidation"))
+    max_trade_capacity_pct = safe_float(policy.get("max_trade_capacity_pct"), DEFAULT_MAX_TRADE_CAPACITY_PCT) or DEFAULT_MAX_TRADE_CAPACITY_PCT
+    max_concentration_pct = safe_float(policy.get("max_underlying_concentration_pct"), DEFAULT_MAX_UNDERLYING_CONCENTRATION_PCT) or DEFAULT_MAX_UNDERLYING_CONCENTRATION_PCT
+    warn_concentration_pct = safe_float(policy.get("warn_underlying_concentration_pct"), DEFAULT_WARN_UNDERLYING_CONCENTRATION_PCT) or DEFAULT_WARN_UNDERLYING_CONCENTRATION_PCT
+    max_short_puts_per_ticker = safe_float(policy.get("max_short_puts_per_ticker"), DEFAULT_MAX_SHORT_PUTS_PER_TICKER)
 
     if not positions:
         warnings.append("BROKER_POSITIONS_MISSING")
@@ -251,17 +324,41 @@ def build_broker_check(
             warnings.append("BROKER_PUT_CAPACITY_UNKNOWN")
         elif not capacity_ok:
             blockers.append("BROKER_PUT_CAPACITY_INSUFFICIENT")
+        else:
+            trade_capacity_pct = round((estimated_cash_secured_requirement / capacity) * 100.0, 2) if capacity > 0 else None
+            checks.append({
+                "name": "TRADE_CAPACITY_PCT",
+                "status": "PASS" if trade_capacity_pct is not None and trade_capacity_pct <= max_trade_capacity_pct else "BLOCKED",
+                "value": trade_capacity_pct,
+                "limit": max_trade_capacity_pct,
+                "note": "Estimated cash-secured requirement as a percentage of available capacity.",
+            })
+            if trade_capacity_pct is not None and trade_capacity_pct > max_trade_capacity_pct:
+                blockers.append("BROKER_TRADE_SIZE_TOO_LARGE")
+        if max_short_puts_per_ticker is not None:
+            checks.append({
+                "name": "OPEN_SHORT_PUTS_PER_TICKER",
+                "status": "PASS" if pos.get("short_put_count", 0) < max_short_puts_per_ticker else "BLOCKED",
+                "value": pos.get("short_put_count", 0),
+                "limit": max_short_puts_per_ticker,
+                "note": "Avoid stacking additional naked puts when short puts already exist for the ticker.",
+            })
+            if pos.get("short_put_count", 0) >= max_short_puts_per_ticker:
+                blockers.append("BROKER_EXISTING_SHORT_PUT_EXPOSURE")
 
     if net_liq is not None and pos.get("underlying_market_value") is not None and net_liq > 0:
         concentration_pct = round((pos["underlying_market_value"] / net_liq) * 100.0, 2)
         checks.append({
             "name": "UNDERLYING_CONCENTRATION",
-            "status": "WARNING" if concentration_pct > 35 else "PASS",
+            "status": "BLOCKED" if concentration_pct > max_concentration_pct else ("WARNING" if concentration_pct > warn_concentration_pct else "PASS"),
             "value": concentration_pct,
-            "limit": 35,
-            "note": "Concentration is informational unless risk profile separately blocks it.",
+            "warning_limit": warn_concentration_pct,
+            "block_limit": max_concentration_pct,
+            "note": "Underlying concentration based on current detected stock market value vs net liquidation.",
         })
-        if concentration_pct > 35:
+        if concentration_pct > max_concentration_pct:
+            blockers.append("BROKER_UNDERLYING_CONCENTRATION_TOO_HIGH")
+        elif concentration_pct > warn_concentration_pct:
             warnings.append("BROKER_UNDERLYING_CONCENTRATION_HIGH")
 
     status = "BLOCKED" if blockers else ("WARNING" if warnings else "OK")
@@ -275,6 +372,12 @@ def build_broker_check(
         "blockers": blockers,
         "warnings": warnings,
         "checks": checks,
+        "policy": {
+            "max_trade_capacity_pct": max_trade_capacity_pct,
+            "warn_underlying_concentration_pct": warn_concentration_pct,
+            "max_underlying_concentration_pct": max_concentration_pct,
+            "max_short_puts_per_ticker": max_short_puts_per_ticker,
+        },
         "position": pos,
         "account_context": {
             "net_liquidation_present": account_context.get("net_liquidation") is not None,
@@ -296,6 +399,7 @@ def build_broker_checks(snapshot: dict[str, Any], rows: list[dict[str, Any]] | N
         rows = []
     positions = extract_positions(snapshot)
     account_context = extract_account_context(snapshot)
+    policy = snapshot.get("broker_check_policy") if isinstance(snapshot.get("broker_check_policy"), dict) else {}
     generated_at = now_iso()
     checks: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -310,7 +414,7 @@ def build_broker_checks(snapshot: dict[str, Any], rows: list[dict[str, Any]] | N
         if key in seen:
             continue
         seen.add(key)
-        checks.append(build_broker_check(row, positions=positions, account_context=account_context, generated_at=generated_at))
+        checks.append(build_broker_check(row, positions=positions, account_context=account_context, generated_at=generated_at, policy=policy))
     return checks
 
 
