@@ -49,6 +49,8 @@ python3 scripts/stock_ultimus_operational_100_check.py --real-outcomes-after-clo
 
 That explicit flag runs the real outcome-evaluation write while preserving
 `execution_authorized=false` and `not_order_instruction=true`.
+It also refuses the real write if GPT Action health, the cloud operational
+audit, or the outcome dry-run fails first.
 
 Preferred one-command operating-day cycle:
 

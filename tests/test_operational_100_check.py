@@ -111,6 +111,31 @@ class Operational100CheckTests(unittest.TestCase):
         failed = {gate["name"] for gate in result["gates"] if not gate["ok"]}
         self.assertIn("gpt_action_backend_health", failed)
 
+    def test_real_outcome_write_is_blocked_when_preconditions_fail(self):
+        calls = []
+
+        def failed_audit_step(name, command, timeout, env):
+            calls.append(name)
+            if name == "cloud_operational_audit":
+                return {
+                    "name": name,
+                    "ok": False,
+                    "exit_code": 1,
+                    "command": command,
+                    "stdout_tail": json.dumps({"status": "FAIL"}),
+                    "stderr_tail": "",
+                }
+            return fake_step(name, command, timeout, env)
+
+        with patch.object(operational_100, "run_command", side_effect=failed_audit_step):
+            result = operational_100.run(args(real_outcomes_after_close=True))
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertNotIn("outcome_learning_real_write", calls)
+        real_gate = [gate for gate in result["gates"] if gate["name"] == "real_outcome_write_after_close"][-1]
+        self.assertFalse(real_gate["ok"])
+        self.assertIn("preconditions failed", real_gate["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

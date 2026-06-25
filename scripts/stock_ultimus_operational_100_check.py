@@ -113,6 +113,14 @@ def summarize_gate(name: str, ok: bool, detail: str, *, severity: str = "FAIL") 
     }
 
 
+def failing_gate_names(gates: list[dict[str, Any]], names: set[str]) -> list[str]:
+    return [
+        str(gate.get("name"))
+        for gate in gates
+        if gate.get("name") in names and gate.get("ok") is not True and gate.get("severity") == "FAIL"
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Stock Ultimus operational-100 preflight.")
     parser.add_argument("--base-url", default=os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL))
@@ -211,32 +219,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     real_outcome_step: dict[str, Any] | None = None
     if args.real_outcomes_after_close:
-        real_outcome_step = run_command(
-            "outcome_learning_real_write",
-            [
-                sys.executable,
-                "scripts/run_daily_outcome_evaluation.py",
-                "--base-url",
-                base,
-                "--timeout",
-                str(timeout),
-                "--limit",
-                str(limit),
-            ],
-            timeout=max(120, timeout * 8),
-            env=env,
+        blockers = failing_gate_names(
+            gates,
+            {"gpt_action_backend_health", "cloud_operational_audit", "outcome_learning_dry_run"},
         )
-        steps.append(real_outcome_step)
-        real_payload = command_json(real_outcome_step)
-        gates.append(summarize_gate(
-            "real_outcome_write_after_close",
-            real_outcome_step.get("ok")
-            and real_payload.get("not_order_instruction") is True
-            and real_payload.get("execution_authorized") is False,
-            "real outcome write completed under explicit post-close confirmation"
-            if real_outcome_step.get("ok")
-            else "real outcome write failed",
-        ))
+        if blockers:
+            gates.append(summarize_gate(
+                "real_outcome_write_after_close",
+                False,
+                "blocked because required preconditions failed: " + ", ".join(blockers),
+            ))
+        else:
+            real_outcome_step = run_command(
+                "outcome_learning_real_write",
+                [
+                    sys.executable,
+                    "scripts/run_daily_outcome_evaluation.py",
+                    "--base-url",
+                    base,
+                    "--timeout",
+                    str(timeout),
+                    "--limit",
+                    str(limit),
+                ],
+                timeout=max(120, timeout * 8),
+                env=env,
+            )
+            steps.append(real_outcome_step)
+            real_payload = command_json(real_outcome_step)
+            gates.append(summarize_gate(
+                "real_outcome_write_after_close",
+                real_outcome_step.get("ok")
+                and real_payload.get("not_order_instruction") is True
+                and real_payload.get("execution_authorized") is False,
+                "real outcome write completed under explicit post-close confirmation"
+                if real_outcome_step.get("ok")
+                else "real outcome write failed",
+            ))
     else:
         gates.append(summarize_gate(
             "real_outcome_write_after_close",
