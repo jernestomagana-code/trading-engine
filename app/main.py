@@ -20350,6 +20350,17 @@ def _v31_broker_check_for_decision(decision):
     )
 
 
+def _v31_broker_check_max_age_minutes():
+    return _v31_env_int("V31_BROKER_CHECK_MAX_AGE_MINUTES", shared_broker_check.DEFAULT_BROKER_CHECK_MAX_AGE_MINUTES)
+
+
+def _v31_broker_check_freshness(broker):
+    return shared_broker_check.broker_check_freshness(
+        broker if isinstance(broker, dict) else {},
+        max_age_minutes=_v31_broker_check_max_age_minutes(),
+    )
+
+
 def _v31_apply_broker_check_gate(decision):
     broker = _v31_broker_check_for_decision(decision)
     if isinstance(broker, dict):
@@ -20370,10 +20381,18 @@ def _v31_apply_broker_check_gate(decision):
         return decision
 
     status = _v29_safe_upper(broker.get("status"), "UNKNOWN")
-    if decision.get("final_state") == "ENTRY_READY" and status == "BLOCKED":
+    freshness = _v31_broker_check_freshness(broker)
+    decision["broker_check"]["freshness"] = freshness
+    broker_blocked = status == "BLOCKED"
+    broker_stale = freshness.get("ok") is not True
+    if decision.get("final_state") == "ENTRY_READY" and (broker_blocked or broker_stale):
         blockers = list(decision.get("blockers") or [])
-        blockers.append("BROKER_CHECK_BLOCKED")
-        blockers.extend(broker.get("blockers") or [])
+        if broker_blocked:
+            blockers.append("BROKER_CHECK_BLOCKED")
+            blockers.extend(broker.get("blockers") or [])
+        if broker_stale:
+            blockers.append("BROKER_CHECK_STALE")
+            blockers.extend(freshness.get("blockers") or freshness.get("warnings") or [])
         deduped = []
         for blocker in blockers:
             if blocker and blocker not in deduped:
@@ -20383,11 +20402,11 @@ def _v31_apply_broker_check_gate(decision):
         decision["main_blocker"] = "RISK_BLOCKED"
         decision["blockers"] = deduped
         decision["risk_status"] = "RISK_BLOCKED"
-        decision["risk_blocker"] = "BROKER_CHECK_BLOCKED"
+        decision["risk_blocker"] = "BROKER_CHECK_BLOCKED" if broker_blocked else "BROKER_CHECK_STALE"
         decision["manual_review_ready"] = False
         decision["explanation"] = (
             f"{decision.get('ticker')}: RISK_BLOCKED por broker_check. "
-            "El contexto IBKR disponible no soporta este setup para revision manual."
+            "El contexto IBKR disponible no soporta este setup para revision manual o no esta fresco."
         )
     return decision
 
@@ -20591,6 +20610,7 @@ def _v31_manual_review_decision_summary(decision):
     decision = decision if isinstance(decision, dict) else {}
     contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
     broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
+    broker_freshness = broker.get("freshness") if isinstance(broker.get("freshness"), dict) else _v31_broker_check_freshness(broker)
     return {
         "ticker": decision.get("ticker"),
         "strategy": decision.get("strategy"),
@@ -20607,6 +20627,7 @@ def _v31_manual_review_decision_summary(decision):
             "ok_for_manual_review": broker.get("ok_for_manual_review"),
             "blockers": broker.get("blockers") or [],
             "warnings": broker.get("warnings") or [],
+            "freshness": broker_freshness,
             "manual_broker_ticket_still_required": True,
             "execution_authorized": False,
             "not_order_instruction": True,
@@ -20627,6 +20648,39 @@ def _v31_manual_review_decision_summary(decision):
     }
 
 
+def _v31_approval_contract_missing_fields(decision_summary):
+    contract = decision_summary.get("selected_contract") if isinstance(decision_summary.get("selected_contract"), dict) else {}
+    required = ["strike", "expiration", "dte", "bid", "ask", "mid", "spread", "spread_pct", "delta"]
+    return [field for field in required if contract.get(field) in [None, "", "None"]]
+
+
+def _v31_validate_manual_approval(decision_summary, reason):
+    if (
+        decision_summary.get("final_state") != "ENTRY_READY"
+        or decision_summary.get("manual_review_ready") is not True
+    ):
+        raise ValueError("APPROVAL_REQUIRES_ENTRY_READY")
+    broker_summary = decision_summary.get("broker_check") if isinstance(decision_summary.get("broker_check"), dict) else {}
+    broker_status = _v29_safe_upper(broker_summary.get("status"), "UNKNOWN")
+    if broker_status == "BLOCKED":
+        raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_NOT_BLOCKED")
+    if broker_status == "UNKNOWN":
+        raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_AVAILABLE")
+    freshness = broker_summary.get("freshness") if isinstance(broker_summary.get("freshness"), dict) else _v31_broker_check_freshness(broker_summary)
+    if freshness.get("ok") is not True:
+        raise ValueError("APPROVAL_REQUIRES_FRESH_BROKER_CHECK")
+    if _v29_safe_upper(decision_summary.get("technical_status"), "UNKNOWN") != "CONFIRMED":
+        raise ValueError("APPROVAL_REQUIRES_CONFIRMED_TECHNICAL")
+    if _v29_safe_upper(decision_summary.get("risk_status"), "UNKNOWN") != "PASS":
+        raise ValueError("APPROVAL_REQUIRES_RISK_PASS")
+    missing_contract = _v31_approval_contract_missing_fields(decision_summary)
+    if missing_contract:
+        raise ValueError("APPROVAL_REQUIRES_COMPLETE_CONTRACT")
+    if not str(reason or "").strip():
+        raise ValueError("APPROVAL_REQUIRES_REVIEW_REASON")
+    return True
+
+
 def _v31_manual_review_payload(payload):
     payload = payload if isinstance(payload, dict) else {}
     status = _v31_manual_review_status(payload.get("status") or "RECEIVED")
@@ -20639,22 +20693,15 @@ def _v31_manual_review_payload(payload):
     if not ticker:
         raise ValueError("MANUAL_REVIEW_TICKER_REQUIRED")
 
-    decision_summary = _v31_manual_review_decision_summary(decision)
-    if status == "APPROVED_FOR_MANUAL_TRADE" and (
-        decision_summary.get("final_state") != "ENTRY_READY"
-        or decision_summary.get("manual_review_ready") is not True
-    ):
-        raise ValueError("APPROVAL_REQUIRES_ENTRY_READY")
-    broker_summary = decision_summary.get("broker_check") if isinstance(decision_summary.get("broker_check"), dict) else {}
-    if status == "APPROVED_FOR_MANUAL_TRADE" and _v29_safe_upper(broker_summary.get("status"), "UNKNOWN") == "BLOCKED":
-        raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_NOT_BLOCKED")
-
     now = _v29_now()
     signal_id = payload.get("signal_id") or _v31_manual_review_signal_id(decision, ticker)
     review_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     review_id = payload.get("review_id") or f"MR-{signal_id}-{review_stamp}"
     actor = str(payload.get("actor") or "user")[:80]
     reason = str(payload.get("reason") or "")[:2000]
+    decision_summary = _v31_manual_review_decision_summary(decision)
+    if status == "APPROVED_FOR_MANUAL_TRADE":
+        _v31_validate_manual_approval(decision_summary, reason)
     return {
         "id": review_id,
         "review_id": review_id,

@@ -103,6 +103,36 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn('"execution_authorized": False', source)
         self.assertIn('"not_order_instruction": True', source)
 
+    def test_bridge_positions_feed_broker_snapshot_context(self):
+        source = BRIDGE.read_text()
+        tree = ast.parse(source, filename=str(BRIDGE))
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        send_positions_source = ast.get_source_segment(source, functions["send_positions"]) or ""
+        broker_context_source = ast.get_source_segment(source, functions["_bridge_cycle_position_rows"]) or ""
+
+        self.assertIn("v17_store_row(payload)", send_positions_source)
+        self.assertIn("IBKR_PORTFOLIO_COMMANDER", broker_context_source)
+        self.assertIn("position_size", broker_context_source)
+
+    def test_legacy_bridge_outputs_never_advertise_can_operate_true(self):
+        source = BRIDGE.read_text()
+        self.assertNotIn("can_operate:{nba.get('can_operate')}", source)
+        self.assertIn("manual_review_ready:{nba.get('manual_review_ready')}", source)
+        self.assertIn('"can_operate_count": 0', source)
+        self.assertIn("def v18_can_operate", source)
+        self.assertIn("return False", ast.get_source_segment(
+            source,
+            {
+                node.name: node
+                for node in ast.parse(source, filename=str(BRIDGE)).body
+                if isinstance(node, ast.FunctionDef)
+            }["v18_can_operate"],
+        ) or "")
+
 
 class SnapshotIngestAuthTests(unittest.TestCase):
     def test_v31_ingest_uses_constant_time_token_verification(self):

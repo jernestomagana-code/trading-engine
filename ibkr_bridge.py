@@ -159,8 +159,9 @@ def _v283_extract_options_rows(data):
                     None
                 )
                 r["data_quality"] = quality or "UNKNOWN"
-                if "can_operate" not in r:
-                    r["can_operate"] = r["decision"] in ["ENTRY", "ENTRY_READY", "OPERAR"]
+                r["manual_review_ready"] = bool(r.get("manual_review_ready")) or r["decision"] in ["ENTRY", "ENTRY_READY", "OPERAR"]
+                r["can_operate"] = False
+                r["not_order_instruction"] = True
                 rows.append(r)
 
             for key in [
@@ -208,8 +209,9 @@ def _v283_extract_options_rows(data):
         r["data_quality"] = r.get("data_quality") or r.get("quality") or "UNKNOWN"
         r["expiration"] = r.get("expiration") or r.get("expiry") or r.get("exp")
 
-        if "can_operate" not in r:
-            r["can_operate"] = decision in ["ENTRY", "ENTRY_READY", "OPERAR"]
+        r["manual_review_ready"] = bool(r.get("manual_review_ready")) or decision in ["ENTRY", "ENTRY_READY", "OPERAR"]
+        r["can_operate"] = False
+        r["not_order_instruction"] = True
 
         key = (ticker, strategy, decision)
 
@@ -1828,6 +1830,8 @@ def send_positions():
             **tv_context
         }
 
+        v17_store_row(payload)
+
         status = post(payload)
 
         print(
@@ -2990,7 +2994,7 @@ def v18_missing_confirmations(row):
 
     return final
 
-def v18_can_operate(row):
+def v18_manual_review_ready(row):
     decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
     missing = v18_missing_confirmations(row)
     score = v18_safe_float(row.get("score"), 0)
@@ -3006,13 +3010,16 @@ def v18_can_operate(row):
 
     return True
 
+def v18_can_operate(row):
+    return False
+
 def v18_recommendation(row):
     decision = v18_normalize_decision(row.get("decision") or row.get("final_decision") or row.get("cap"))
     missing = v18_missing_confirmations(row)
-    can_operate = v18_can_operate(row)
+    manual_review_ready = v18_manual_review_ready(row)
 
-    if can_operate:
-        return "Listo para revision manual. Validar tamano, riesgo y confirmacion final antes de cualquier decision."
+    if manual_review_ready:
+        return "Listo para revision manual. Validar tamano, riesgo y confirmacion final en TWS. No es orden ni autorizacion de ejecucion."
 
     if decision == "MANAGE_POSITION":
         return "Prioridad de gestión. Revisar posición abierta antes de abrir nuevas operaciones."
@@ -3069,6 +3076,8 @@ def v18_compact_row(row):
         "price": row.get("price") or row.get("mid") or row.get("last"),
         "data_quality": row.get("data_quality") or row.get("quality") or "UNKNOWN",
         "can_operate": False,
+        "manual_review_ready": False,
+        "not_order_instruction": True,
         "missing_confirmations": [],
         "recommendation": "",
         "reason": "",
@@ -3102,7 +3111,9 @@ def v18_compact_row(row):
             compact[field] = row.get(field)
 
     compact["missing_confirmations"] = v18_missing_confirmations(compact | row)
-    compact["can_operate"] = v18_can_operate(compact | row)
+    compact["manual_review_ready"] = v18_manual_review_ready(compact | row)
+    compact["can_operate"] = False
+    compact["not_order_instruction"] = True
     compact["recommendation"] = v18_recommendation(compact | row)
     compact["reason"] = v18_reason(compact | row)
 
@@ -3227,8 +3238,11 @@ def v18_build_decision_payload(rows=None):
             "health": {
                 "snapshot_available": True,
                 "rows_captured": len(clean_rows),
-                "can_operate_count": sum(1 for r in clean_rows if r.get("can_operate")),
+                "manual_review_ready_count": sum(1 for r in clean_rows if r.get("manual_review_ready")),
+                "can_operate_count": 0,
             },
+            "not_order_instruction": True,
+            "execution_authorized": False,
         }
 
         return payload
@@ -3785,7 +3799,12 @@ def run_bridge_cycle():
                 if nba:
                     print("")
                     print("V18 DECISION API SNAPSHOT UPDATED")
-                    print(f"NEXT: {nba.get('ticker')} | {nba.get('strategy')} | {nba.get('decision')} | can_operate:{nba.get('can_operate')}")
+                    print(
+                        "NEXT: "
+                        f"{nba.get('ticker')} | {nba.get('strategy')} | {nba.get('decision')} "
+                        f"| manual_review_ready:{nba.get('manual_review_ready')} "
+                        "| can_operate:False | not_order_instruction:True"
+                    )
                 else:
                     print("")
                     print("V18 DECISION API SNAPSHOT UPDATED | No next_best_action")
