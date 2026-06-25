@@ -746,6 +746,11 @@ def _env_csv_list(name, default):
     return values or list(default)
 
 
+IB_CONNECT_TIMEOUT_SECONDS = _env_float("IBKR_CONNECT_TIMEOUT_SECONDS", "20")
+IB_CONNECT_RETRIES = _env_int("IBKR_CONNECT_RETRIES", "3")
+IB_CONNECT_RETRY_SLEEP_SECONDS = _env_float("IBKR_CONNECT_RETRY_SLEEP_SECONDS", "3")
+
+
 DAILY_RADAR_FAST = _env_bool("DAILY_RADAR_FAST", False)
 
 DEFAULT_WATCHLIST = [
@@ -876,6 +881,90 @@ if not SHOW_IBKR_CONTRACT_ERRORS:
     logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
 
 ib = IB()
+
+
+def _bridge_health_path():
+    return _v283_Path("runtime") / "ibkr_bridge_health_latest.json"
+
+
+def _write_bridge_health(status, *, detail="", error="", attempt=None, connected=False):
+    payload = {
+        "engine": "IBKR_BRIDGE_HEALTH",
+        "health_version": "ibkr_bridge_health_v1",
+        "generated_at": now_iso(),
+        "status": status,
+        "connected": bool(connected),
+        "host": IB_HOST,
+        "port": IB_PORT,
+        "client_id": CLIENT_ID,
+        "attempt": attempt,
+        "max_attempts": max(1, IB_CONNECT_RETRIES),
+        "detail": str(detail or "")[:500],
+        "error": str(error or "")[:500],
+        "next_required_action": (
+            "Abrir/desbloquear TWS o IB Gateway, confirmar API activa y reintentar el bridge."
+            if status == "CONNECTION_FAILED" else
+            "Continuar ciclo normal del bridge."
+        ),
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+        "secrets_printed": False,
+    }
+    try:
+        path = _bridge_health_path()
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(_v283_json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    except Exception:
+        pass
+    return payload
+
+
+def connect_ibkr_with_retries():
+    attempts = max(1, IB_CONNECT_RETRIES)
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            print(
+                "Conectando a IBKR..."
+                f" intento {attempt}/{attempts}"
+                f" host:{IB_HOST} port:{IB_PORT} clientId:{CLIENT_ID}"
+            )
+            ib.connect(
+                IB_HOST,
+                IB_PORT,
+                clientId=CLIENT_ID,
+                timeout=IB_CONNECT_TIMEOUT_SECONDS,
+                readonly=True,
+            )
+            _write_bridge_health(
+                "CONNECTED",
+                detail="IBKR conectado correctamente en modo readonly.",
+                attempt=attempt,
+                connected=True,
+            )
+            print("IBKR conectado correctamente")
+            return True
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            _write_bridge_health(
+                "CONNECTION_RETRYING" if attempt < attempts else "CONNECTION_FAILED",
+                detail="No se pudo conectar a IBKR/TWS en modo readonly.",
+                error=last_error,
+                attempt=attempt,
+                connected=False,
+            )
+            print(f"ERROR conectando IBKR intento {attempt}/{attempts}: {last_error}")
+            if ib.isConnected():
+                try:
+                    ib.disconnect()
+                except Exception:
+                    pass
+            if attempt < attempts:
+                time.sleep(max(0.5, IB_CONNECT_RETRY_SLEEP_SECONDS))
+    print("IBKR bridge detenido: TWS/IB Gateway no respondio a la API.")
+    print(f"Diagnostico local: {_bridge_health_path()}")
+    return False
 
 
 # ============================================================
@@ -2700,23 +2789,8 @@ def send_options_intelligence():
 
 
 
-print("Conectando a IBKR...")
-
-try:
-    ib.connect(
-        IB_HOST,
-        IB_PORT,
-        clientId=CLIENT_ID,
-        timeout=20,
-        readonly=True
-    )
-
-    print("IBKR conectado correctamente")
-
-except Exception as e:
-    print("ERROR conectando IBKR:")
-    print(e)
-    raise SystemExit
+if not connect_ibkr_with_retries():
+    raise SystemExit(30)
 
 
 set_market_data_type()
