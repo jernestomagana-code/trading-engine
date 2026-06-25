@@ -3,7 +3,7 @@ import importlib.util
 import asyncio
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
@@ -1052,6 +1052,48 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(decision["manual_review_ready"])
         self.assertFalse(decision["can_operate"])
 
+    def test_v31_stale_broker_check_blocks_entry_ready(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 300,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        old = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+        master["data"]["broker_checks"] = [
+            {
+                "broker_check_version": "broker_check_v1",
+                "generated_at": old,
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "status": "OK",
+                "ok_for_manual_review": True,
+                "blockers": [],
+                "warnings": [],
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
+        ]
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertEqual(decision["risk_blocker"], "BROKER_CHECK_STALE")
+        self.assertIn("BROKER_CHECK_STALE", decision["blockers"])
+        self.assertEqual(decision["broker_check"]["freshness"]["status"], "STALE")
+        self.assertFalse(decision["manual_review_ready"])
+
     def test_v31_manual_approval_rejects_blocked_broker_check(self):
         decision = {
             "ticker": "TSLA",
@@ -1083,6 +1125,99 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "ticker": "TSLA",
                 "status": "APPROVED_FOR_MANUAL_TRADE",
                 "decision": decision,
+            })
+
+    def test_v31_manual_approval_requires_strict_fresh_complete_checks(self):
+        fresh = datetime.now(timezone.utc).isoformat()
+        decision = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "technical_status": "CONFIRMED",
+            "risk_status": "PASS",
+            "manual_review_ready": True,
+            "broker_check": {
+                "generated_at": fresh,
+                "status": "OK",
+                "blockers": [],
+                "warnings": [],
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            },
+            "selected_contract": {
+                "strike": 300,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 1.20,
+                "ask": 1.35,
+                "mid": 1.275,
+                "spread": 0.15,
+                "spread_pct": 11.76,
+                "delta": -0.20,
+            },
+        }
+
+        approved = main._v31_manual_review_payload({
+            "ticker": "QQQ",
+            "status": "APPROVED_FOR_MANUAL_TRADE",
+            "reason": "Validé contrato, liquidez, riesgo y ticket manual en TWS.",
+            "decision": decision,
+        })
+
+        self.assertEqual(approved["status"], "APPROVED_FOR_MANUAL_TRADE")
+        self.assertFalse(approved["execution_authorized"])
+        self.assertTrue(approved["not_order_instruction"])
+
+        with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRES_REVIEW_REASON"):
+            main._v31_manual_review_payload({
+                "ticker": "QQQ",
+                "status": "APPROVED_FOR_MANUAL_TRADE",
+                "reason": "",
+                "decision": decision,
+            })
+
+    def test_v31_manual_approval_rejects_unknown_or_stale_broker_check(self):
+        base = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "technical_status": "CONFIRMED",
+            "risk_status": "PASS",
+            "manual_review_ready": True,
+            "selected_contract": {
+                "strike": 300,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 1.20,
+                "ask": 1.35,
+                "mid": 1.275,
+                "spread": 0.15,
+                "spread_pct": 11.76,
+                "delta": -0.20,
+            },
+        }
+        unknown = {**base, "broker_check": {"status": "UNKNOWN"}}
+        stale = {
+            **base,
+            "broker_check": {
+                "status": "OK",
+                "generated_at": (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat(),
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRES_BROKER_CHECK_AVAILABLE"):
+            main._v31_manual_review_payload({
+                "ticker": "QQQ",
+                "status": "APPROVED_FOR_MANUAL_TRADE",
+                "reason": "Validado",
+                "decision": unknown,
+            })
+        with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRES_FRESH_BROKER_CHECK"):
+            main._v31_manual_review_payload({
+                "ticker": "QQQ",
+                "status": "APPROVED_FOR_MANUAL_TRADE",
+                "reason": "Validado",
+                "decision": stale,
             })
 
     def test_v31_entry_ready_signal_tracking_creates_pending_paper_outcome(self):
