@@ -20957,6 +20957,44 @@ def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console
     return "".join(forms)
 
 
+def _v31_contract_alternatives_html(decision):
+    alternatives = decision.get("contract_alternatives") if isinstance(decision.get("contract_alternatives"), list) else []
+    if not alternatives:
+        return ""
+    rows = []
+    for alt in alternatives[:3]:
+        if not isinstance(alt, dict):
+            continue
+        rows.append("""
+          <tr>
+            <td>{strike}</td><td>{expiration}</td><td>{dte}</td>
+            <td>{bid}/{ask}</td><td>{spread}</td><td>{spread_pct}</td><td>{delta}</td><td>{quality}</td>
+          </tr>
+        """.format(
+            strike=_v29_html_escape(alt.get("strike")),
+            expiration=_v29_html_escape(alt.get("expiration")),
+            dte=_v29_html_escape(alt.get("dte")),
+            bid=_v29_html_escape(alt.get("bid")),
+            ask=_v29_html_escape(alt.get("ask")),
+            spread=_v29_html_escape(alt.get("spread")),
+            spread_pct=_v29_html_escape(alt.get("spread_pct")),
+            delta=_v29_html_escape(alt.get("delta")),
+            quality=_v29_html_escape(alt.get("quality")),
+        ))
+    if not rows:
+        return ""
+    return """
+      <details class="alternatives">
+        <summary>Alternativas de contrato para inspección</summary>
+        <table>
+          <thead><tr><th>Strike</th><th>Exp</th><th>DTE</th><th>Bid/Ask</th><th>Spread</th><th>Spread %</th><th>Delta</th><th>Quality</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table>
+        <p>No cambian el estado ni autorizan operar; solo ayudan a revisar si conviene refrescar datos o inspeccionar otro contrato.</p>
+      </details>
+    """.format(rows="".join(rows))
+
+
 def _v31_manual_review_inbox_cards(show_all=False):
     decisions, _ = _v31_manual_review_console_decisions()
     if not show_all:
@@ -21011,6 +21049,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
           </dl>
           <p class="why">{why}</p>
           <p class="broker-note">{broker_note}</p>
+          {alternatives_html}
           <div class="button-row">{forms}</div>
         </article>
         """.format(
@@ -21030,6 +21069,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             delta=_v29_html_escape(contract.get("delta")),
             why=_v29_html_escape(decision.get("explanation")),
             broker_note=_v29_html_escape(broker_note),
+            alternatives_html=_v31_contract_alternatives_html(decision),
             forms=_v31_manual_review_action_forms(
                 decision,
                 action="/v31_manual_review_inbox/record",
@@ -21090,6 +21130,11 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         dd {{ margin:3px 0 0; font-size:15px; font-weight:900; overflow-wrap:anywhere; }}
         .why {{ color:#475569; font-size:13px; line-height:1.42; min-height:36px; }}
         .broker-note {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:9px; color:#334155; font-size:12px; line-height:1.35; font-weight:700; }}
+        details.alternatives {{ border:1px solid #dbeafe; background:#eff6ff; border-radius:8px; padding:9px; margin-top:10px; }}
+        details.alternatives summary {{ cursor:pointer; color:#1d4ed8; font-weight:900; font-size:12px; }}
+        details.alternatives table {{ width:100%; border-collapse:collapse; margin-top:8px; font-size:11px; }}
+        details.alternatives th, details.alternatives td {{ text-align:left; border-bottom:1px solid #bfdbfe; padding:5px; }}
+        details.alternatives p {{ margin:8px 0 0; color:#334155; font-size:11px; line-height:1.35; }}
         .button-row {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }}
         .action-form.large {{ margin:0; }}
         .action-form.large button {{ width:100%; min-height:46px; }}
@@ -21117,7 +21162,7 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         </section>
         <div class="next-step">
           Después de marcar la revisión, valida outcomes con <code>python3 scripts/run_daily_outcome_evaluation.py --dry-run</code>.
-          También puedes revisar <a href="/v31_manual_review_learning">learning</a> y <a href="/v32_strategy_performance_dashboard">performance</a>.
+          También puedes revisar <a href="/v31_manual_reviews_dashboard">historial</a>, <a href="/v31_manual_review_learning_dashboard">learning</a> y <a href="/v32_strategy_performance_dashboard">performance</a>.
         </div>
         <div class="toolbar">
           <strong>{count} setups en esta vista</strong>
@@ -21446,6 +21491,165 @@ def _v31_manual_review_learning_payload(limit=500):
         "not_order_instruction": True,
         "execution_authorized": False,
     }
+
+
+def _v31_manual_reviews_dashboard_html(limit=250):
+    payload = _v31_manual_reviews_payload(limit=limit)
+    reviews = list(reversed(payload.get("recent_reviews") or []))
+    rows = []
+    for review in reviews:
+        decision = review.get("decision") if isinstance(review.get("decision"), dict) else {}
+        contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+        evaluation = review.get("latest_manual_review_evaluation") if isinstance(review.get("latest_manual_review_evaluation"), dict) else {}
+        rows.append("""
+          <tr>
+            <td>{time}</td><td>{ticker}</td><td>{strategy}</td><td>{status}</td>
+            <td>{strike}</td><td>{expiration}</td><td>{bid}/{ask}</td><td>{spread_pct}</td><td>{delta}</td>
+            <td>{checkpoint}</td><td>{pnl}</td><td>{label}</td><td>{reason}</td>
+          </tr>
+        """.format(
+            time=_v29_html_escape(review.get("reviewed_at")),
+            ticker=_v29_html_escape(review.get("ticker")),
+            strategy=_v29_html_escape(review.get("strategy")),
+            status=_v31_manual_review_status_badge(review.get("status")),
+            strike=_v29_html_escape(contract.get("strike")),
+            expiration=_v29_html_escape(contract.get("expiration")),
+            bid=_v29_html_escape(contract.get("bid")),
+            ask=_v29_html_escape(contract.get("ask")),
+            spread_pct=_v29_html_escape(contract.get("spread_pct")),
+            delta=_v29_html_escape(contract.get("delta")),
+            checkpoint=_v29_html_escape(evaluation.get("checkpoint")),
+            pnl=_v29_html_escape(review.get("current_paper_pnl_r")),
+            label=_v29_html_escape(review.get("manual_review_learning_label")),
+            reason=_v29_html_escape(review.get("reason")),
+        ))
+    status_cards = "".join(
+        '<div class="metric"><span>{}</span><strong>{}</strong></div>'.format(
+            _v29_html_escape(key),
+            _v29_html_escape(value),
+        )
+        for key, value in (payload.get("by_status") or {}).items()
+    )
+    return """
+    <!doctype html>
+    <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Manual Review History</title>
+    <style>
+      body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#0f172a; }}
+      .hero {{ background:#111827; color:white; padding:24px 30px; }}
+      .hero a {{ color:#bfdbfe; font-weight:800; }}
+      .wrap {{ padding:22px 30px 44px; }}
+      .metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:0 0 18px; }}
+      .metric {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:12px; }}
+      .metric span {{ color:#64748b; font-size:11px; font-weight:900; text-transform:uppercase; }}
+      .metric strong {{ display:block; font-size:24px; margin-top:4px; }}
+      .card {{ background:white; border:1px solid #e5e7eb; border-radius:8px; overflow:auto; }}
+      table {{ width:100%; min-width:1180px; border-collapse:collapse; }}
+      th,td {{ padding:10px; border-bottom:1px solid #e5e7eb; text-align:left; vertical-align:top; font-size:13px; }}
+      th {{ background:#f1f5f9; color:#64748b; text-transform:uppercase; font-size:11px; }}
+      .badge {{ display:inline-block; color:white; padding:5px 8px; border-radius:999px; font-size:11px; font-weight:900; }}
+      .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:12px; border-radius:8px; margin-bottom:16px; }}
+      a {{ color:#2563eb; font-weight:800; }}
+    </style></head>
+    <body>
+      <div class="hero"><h1>Manual Review History</h1><div><a href="/v31_manual_review_inbox">Inbox</a> · <a href="/v31_manual_review_learning_dashboard">Learning</a> · <a href="/v32_strategy_performance_dashboard">Performance</a></div></div>
+      <main class="wrap">
+        <div class="guardrail">Historial de revisión humana. No coloca órdenes ni autoriza ejecución automática.</div>
+        <section class="metrics"><div class="metric"><span>Total</span><strong>{total}</strong></div>{status_cards}</section>
+        <div class="card"><table>
+          <thead><tr><th>Hora</th><th>Ticker</th><th>Strategy</th><th>Status</th><th>Strike</th><th>Exp</th><th>Bid/Ask</th><th>Spread %</th><th>Delta</th><th>Checkpoint</th><th>Paper PnL R</th><th>Learning</th><th>Razón</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table></div>
+      </main>
+    </body></html>
+    """.format(
+        total=_v29_html_escape(payload.get("review_count")),
+        status_cards=status_cards,
+        rows="".join(rows) or '<tr><td colspan="13">Sin revisiones registradas.</td></tr>',
+    )
+
+
+def _v31_manual_review_learning_dashboard_html(limit=500):
+    payload = _v31_manual_review_learning_payload(limit=limit)
+    def summary_rows(name):
+        rows = []
+        for item in payload.get(name) or []:
+            rows.append("""
+              <tr><td>{group}</td><td>{reviews}</td><td>{evaluated}</td><td>{fav}</td><td>{adv}</td><td>{avg}</td><td>{mfe}</td><td>{mae}</td></tr>
+            """.format(
+                group=_v29_html_escape(item.get("group")),
+                reviews=_v29_html_escape(item.get("review_count")),
+                evaluated=_v29_html_escape(item.get("evaluated_count")),
+                fav=_v29_html_escape(item.get("favorable_count")),
+                adv=_v29_html_escape(item.get("adverse_count")),
+                avg=_v29_html_escape(item.get("avg_paper_pnl_r")),
+                mfe=_v29_html_escape(item.get("avg_mfe_r")),
+                mae=_v29_html_escape(item.get("avg_mae_r")),
+            ))
+        return "".join(rows) or '<tr><td colspan="8">Sin datos evaluados.</td></tr>'
+    def review_rows(items):
+        rows = []
+        for item in items or []:
+            rows.append("""
+              <tr><td>{ticker}</td><td>{strategy}</td><td>{status}</td><td>{label}</td><td>{pnl}</td><td>{mfe}</td><td>{mae}</td><td>{checkpoint}</td></tr>
+            """.format(
+                ticker=_v29_html_escape(item.get("ticker")),
+                strategy=_v29_html_escape(item.get("strategy")),
+                status=_v29_html_escape(item.get("manual_status")),
+                label=_v29_html_escape(item.get("learning_label")),
+                pnl=_v29_html_escape(item.get("current_paper_pnl_r")),
+                mfe=_v29_html_escape(item.get("mfe_r")),
+                mae=_v29_html_escape(item.get("mae_r")),
+                checkpoint=_v29_html_escape(item.get("checkpoint")),
+            ))
+        return "".join(rows) or '<tr><td colspan="8">Sin datos.</td></tr>'
+    return """
+    <!doctype html>
+    <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Manual Review Learning</title>
+    <style>
+      body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#0f172a; }}
+      .hero {{ background:#111827; color:white; padding:24px 30px; }}
+      .hero a {{ color:#bfdbfe; font-weight:800; }}
+      .wrap {{ padding:22px 30px 44px; }}
+      .metrics {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:18px; }}
+      .metric,.card {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:14px; margin-bottom:16px; overflow:auto; }}
+      .metric span {{ color:#64748b; font-size:11px; font-weight:900; text-transform:uppercase; }}
+      .metric strong {{ display:block; font-size:24px; margin-top:4px; }}
+      table {{ width:100%; border-collapse:collapse; min-width:820px; }}
+      th,td {{ padding:9px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:13px; }}
+      th {{ background:#f1f5f9; color:#64748b; text-transform:uppercase; font-size:11px; }}
+      .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:12px; border-radius:8px; margin-bottom:16px; }}
+      a {{ color:#2563eb; font-weight:800; }}
+    </style></head>
+    <body>
+      <div class="hero"><h1>Manual Review Learning</h1><div><a href="/v31_manual_review_inbox">Inbox</a> · <a href="/v31_manual_reviews_dashboard">Historial</a> · <a href="/v32_strategy_performance_dashboard">Performance</a></div></div>
+      <main class="wrap">
+        <div class="guardrail">Learning basado en outcomes paper/post-revisión. No es autorización de órdenes.</div>
+        <section class="metrics">
+          <div class="metric"><span>Revisiones</span><strong>{reviews}</strong></div>
+          <div class="metric"><span>Evaluadas</span><strong>{evaluated}</strong></div>
+          <div class="metric"><span>Pendientes</span><strong>{unevaluated}</strong></div>
+          <div class="metric"><span>Avg PnL R</span><strong>{avg}</strong></div>
+          <div class="metric"><span>Needs More Data</span><strong>{needs}</strong></div>
+        </section>
+        <h2>Por estrategia</h2><div class="card"><table><thead><tr><th>Grupo</th><th>Reviews</th><th>Evaluadas</th><th>Fav</th><th>Adv</th><th>Avg R</th><th>MFE</th><th>MAE</th></tr></thead><tbody>{strategy_rows}</tbody></table></div>
+        <h2>Por ticker</h2><div class="card"><table><thead><tr><th>Grupo</th><th>Reviews</th><th>Evaluadas</th><th>Fav</th><th>Adv</th><th>Avg R</th><th>MFE</th><th>MAE</th></tr></thead><tbody>{ticker_rows}</tbody></table></div>
+        <h2>Mejores revisiones</h2><div class="card"><table><thead><tr><th>Ticker</th><th>Strategy</th><th>Status</th><th>Learning</th><th>PnL R</th><th>MFE</th><th>MAE</th><th>Checkpoint</th></tr></thead><tbody>{best_rows}</tbody></table></div>
+        <h2>Peores revisiones</h2><div class="card"><table><thead><tr><th>Ticker</th><th>Strategy</th><th>Status</th><th>Learning</th><th>PnL R</th><th>MFE</th><th>MAE</th><th>Checkpoint</th></tr></thead><tbody>{worst_rows}</tbody></table></div>
+      </main>
+    </body></html>
+    """.format(
+        reviews=_v29_html_escape(payload.get("review_count")),
+        evaluated=_v29_html_escape(payload.get("evaluated_count")),
+        unevaluated=_v29_html_escape(payload.get("unevaluated_count")),
+        avg=_v29_html_escape(payload.get("avg_paper_pnl_r")),
+        needs=_v29_html_escape(payload.get("needs_more_data")),
+        strategy_rows=summary_rows("strategy_summary"),
+        ticker_rows=summary_rows("ticker_summary"),
+        best_rows=review_rows(payload.get("best_reviews")),
+        worst_rows=review_rows(payload.get("worst_reviews")),
+    )
 
 
 def _v31_learning_notify_state_file():
@@ -24513,6 +24717,11 @@ async def v31_manual_reviews(limit: int = 100):
     return _v31_manual_reviews_payload(limit=limit)
 
 
+@app.get("/v31_manual_reviews_dashboard", response_class=_V29HTMLResponse)
+async def v31_manual_reviews_dashboard(limit: int = 250):
+    return _V29HTMLResponse(_v31_manual_reviews_dashboard_html(limit=limit))
+
+
 @app.get("/v31_manual_review_console", response_class=_V29HTMLResponse)
 async def v31_manual_review_console(message: str = "", error: str = ""):
     return _V29HTMLResponse(_v31_manual_review_console_html(message=message, error=error))
@@ -24570,6 +24779,11 @@ async def v31_manual_review_inbox_record(request: Request):
 @app.get("/v31_manual_review_learning")
 async def v31_manual_review_learning(limit: int = 500):
     return _v31_manual_review_learning_payload(limit=limit)
+
+
+@app.get("/v31_manual_review_learning_dashboard", response_class=_V29HTMLResponse)
+async def v31_manual_review_learning_dashboard(limit: int = 500):
+    return _V29HTMLResponse(_v31_manual_review_learning_dashboard_html(limit=limit))
 
 
 @app.get("/v31_manual_review_learning_notify/preview")

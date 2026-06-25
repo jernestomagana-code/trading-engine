@@ -311,6 +311,8 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("scripts/run_daily_outcome_evaluation.py", source)
         self.assertIn("scripts/monitor_gpt_action_health.py", source)
         self.assertIn("/v31_manual_review_inbox", source)
+        self.assertIn("/v31_manual_reviews_dashboard", source)
+        self.assertIn("/v31_manual_review_learning_dashboard", source)
         self.assertIn("/v31_outcome_tracking_status", source)
         self.assertIn("uses_ingest_token", source)
         self.assertIn("touches_ibkr", source)

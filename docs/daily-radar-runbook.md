@@ -177,6 +177,10 @@ After market close, or the next morning after a fresh snapshot exists, run:
 python3 scripts/run_daily_outcome_evaluation.py
 ```
 
+Use the real write mode only after the review window is complete and a fresh
+post-review/post-close snapshot exists. This persists paper outcome evaluations
+for learning and performance tracking; it still never places orders.
+
 Preview without writing evaluations:
 
 ```bash
@@ -199,6 +203,13 @@ The executive performance dashboard is:
 
 ```text
 /v32_strategy_performance_dashboard
+```
+
+Manual review history and learning dashboards:
+
+```text
+/v31_manual_reviews_dashboard
+/v31_manual_review_learning_dashboard
 ```
 
 ## Launchd Template

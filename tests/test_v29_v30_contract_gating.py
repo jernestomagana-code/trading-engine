@@ -742,12 +742,95 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertIn("Daily Review Inbox", html)
         self.assertIn("QQQ", html)
-        self.assertIn("Approve", html)
+        self.assertIn("Approve manual", html)
         self.assertIn("/v31_manual_review_inbox/record", html)
         self.assertIn("no autoriza ejecución automática", html)
         self.assertIn("Pendientes", html)
         self.assertIn("scripts/run_daily_outcome_evaluation.py --dry-run", html)
         self.assertIn("/v32_strategy_performance_dashboard", html)
+        self.assertIn("/v31_manual_reviews_dashboard", html)
+        self.assertIn("/v31_manual_review_learning_dashboard", html)
+
+    def test_wait_options_inbox_renders_contract_alternatives(self):
+        decision = {
+            "ticker": "TSLA",
+            "strategy": "NAKED_PUT",
+            "final_state": "WAIT_OPTIONS_DATA",
+            "manual_review_ready": False,
+            "technical_status": "CONFIRMED",
+            "risk_status": "BLOCKED",
+            "explanation": "TSLA espera datos de opciones.",
+            "selected_contract": {
+                "strike": 335,
+                "expiration": "20260807",
+                "dte": 43,
+                "bid": 6.45,
+                "ask": 9.4,
+                "spread_pct": 37.22,
+                "delta": -0.2158,
+            },
+            "contract_alternatives": [
+                {
+                    "strike": 330,
+                    "expiration": "20260807",
+                    "dte": 43,
+                    "bid": 5.8,
+                    "ask": 6.05,
+                    "spread": 0.25,
+                    "spread_pct": 4.22,
+                    "delta": -0.19,
+                    "quality": "EXECUTABLE",
+                }
+            ],
+        }
+
+        with patch.object(main, "_v31_manual_review_console_decisions", return_value=([decision], {"recent_reviews": []})):
+            html = main._v31_manual_review_inbox_html(show_all=True)
+
+        self.assertIn("Alternativas de contrato", html)
+        self.assertIn("330", html)
+        self.assertIn("No cambian el estado ni autorizan operar", html)
+
+    def test_manual_review_dashboards_render_learning_and_history(self):
+        with patch.object(main, "_v31_manual_reviews_payload", return_value={
+            "review_count": 1,
+            "by_status": {"APPROVED_FOR_MANUAL_TRADE": 1},
+            "recent_reviews": [
+                {
+                    "ticker": "QQQ",
+                    "strategy": "NAKED_PUT",
+                    "status": "APPROVED_FOR_MANUAL_TRADE",
+                    "reviewed_at": "2026-06-25T16:00:00+00:00",
+                    "reason": "Validado manualmente.",
+                    "decision": {"selected_contract": {"strike": 300, "expiration": "20260717", "bid": 1.2, "ask": 1.35, "spread_pct": 11.76, "delta": -0.2}},
+                    "latest_manual_review_evaluation": {"checkpoint": "EOD"},
+                    "current_paper_pnl_r": 0.1,
+                    "manual_review_learning_label": "APPROVED_WORKED",
+                }
+            ],
+        }):
+            history_html = main._v31_manual_reviews_dashboard_html(limit=10)
+
+        self.assertIn("Manual Review History", history_html)
+        self.assertIn("APPROVED_FOR_MANUAL_TRADE", history_html)
+        self.assertIn("QQQ", history_html)
+
+        with patch.object(main, "_v31_manual_review_learning_payload", return_value={
+            "review_count": 1,
+            "evaluated_count": 1,
+            "unevaluated_count": 0,
+            "avg_paper_pnl_r": 0.1,
+            "needs_more_data": True,
+            "strategy_summary": [{"group": "NAKED_PUT", "review_count": 1, "evaluated_count": 1, "favorable_count": 1, "adverse_count": 0, "avg_paper_pnl_r": 0.1, "avg_mfe_r": 0.2, "avg_mae_r": -0.1}],
+            "ticker_summary": [{"group": "QQQ", "review_count": 1, "evaluated_count": 1, "favorable_count": 1, "adverse_count": 0, "avg_paper_pnl_r": 0.1, "avg_mfe_r": 0.2, "avg_mae_r": -0.1}],
+            "best_reviews": [{"ticker": "QQQ", "strategy": "NAKED_PUT", "manual_status": "APPROVED_FOR_MANUAL_TRADE", "learning_label": "APPROVED_WORKED", "current_paper_pnl_r": 0.1, "mfe_r": 0.2, "mae_r": -0.1, "checkpoint": "EOD"}],
+            "worst_reviews": [],
+        }):
+            learning_html = main._v31_manual_review_learning_dashboard_html(limit=10)
+
+        self.assertIn("Manual Review Learning", learning_html)
+        self.assertIn("NAKED_PUT", learning_html)
+        self.assertIn("APPROVED_WORKED", learning_html)
 
     def test_v32_strategy_performance_dashboard_is_manual_review_only(self):
         with patch.object(main, "_v32_strategy_performance_payload", return_value={
