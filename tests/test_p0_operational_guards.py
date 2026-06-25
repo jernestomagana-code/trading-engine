@@ -14,6 +14,7 @@ WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-le
 DAILY_OPERATIONAL_AUDIT_WORKFLOW = ROOT / ".github" / "workflows" / "v31-daily-operational-audit.yml"
 DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
+OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -319,6 +320,32 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("secrets_printed", source)
         self.assertIn('"execution_authorized": False', source)
         self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("send_resend_email", source)
+
+    def test_operational_100_preflight_closes_five_gates_safely(self):
+        source = OPERATIONAL_100_CHECK.read_text()
+
+        self.assertIn("STOCK_ULTIMUS_OPERATIONAL_100_PREFLIGHT", source)
+        self.assertIn("scripts/monitor_gpt_action_health.py", source)
+        self.assertIn("tools/v31_daily_operational_audit.py", source)
+        self.assertIn("scripts/run_daily_outcome_evaluation.py", source)
+        self.assertIn("--dry-run", source)
+        self.assertIn("--no-write", source)
+        self.assertIn("--real-outcomes-after-close", source)
+        self.assertIn("/v31_manual_review_inbox", source)
+        self.assertIn("/v31_manual_reviews_dashboard", source)
+        self.assertIn("/v31_manual_review_learning_dashboard", source)
+        self.assertIn("/v32_strategy_performance_dashboard", source)
+        self.assertIn("manual_review_required", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertIn('"uses_ingest_token": False', source)
+        self.assertIn('"touches_ibkr": False', source)
+        self.assertIn('"sends_email": False', source)
+        self.assertIn('"secrets_printed": False', source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("ibkr_bridge.py", source)
         self.assertNotIn("send_resend_email", source)
 
 

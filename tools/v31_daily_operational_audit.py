@@ -23,7 +23,7 @@ from urllib import error, parse, request
 
 
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
-DEFAULT_READ_TOKEN_SERVICE = "stock-ultimus-read-access"
+DEFAULT_READ_TOKEN_SERVICE = "stock-ultimus-read-access-token"
 
 
 @dataclass

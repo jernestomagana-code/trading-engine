@@ -26,6 +26,30 @@ before asking for the daily radar.
 
 ## Manual Run
 
+Operational-100 preflight:
+
+```bash
+python3 scripts/stock_ultimus_operational_100_check.py
+```
+
+This is the fastest way to verify the five operating-model gates in one pass:
+
+- GPT Action/backend read health.
+- Manual review inbox/history/learning dashboard links.
+- Outcome and learning dry-run.
+- Cloud operational audit.
+- Post-close real outcome write readiness.
+
+By default it does not persist outcome evaluations. After market close, and
+only with a fresh post-review/post-close snapshot, run:
+
+```bash
+python3 scripts/stock_ultimus_operational_100_check.py --real-outcomes-after-close
+```
+
+That explicit flag runs the real outcome-evaluation write while preserving
+`execution_authorized=false` and `not_order_instruction=true`.
+
 Preferred one-command operating-day cycle:
 
 ```bash
@@ -257,6 +281,7 @@ times.
 Before relying on automation, run:
 
 ```bash
+python3 scripts/stock_ultimus_operational_100_check.py
 python3 scripts/check_daily_radar_contract.py
 python3 scripts/verify_production_read_auth.py
 python3 scripts/monitor_gpt_action_health.py --no-write
