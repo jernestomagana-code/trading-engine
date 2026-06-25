@@ -1739,6 +1739,8 @@ def send_positions():
             **tv_context
         }
 
+        v17_store_row(payload)
+
         status = post(payload)
 
         print(
