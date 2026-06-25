@@ -1212,6 +1212,17 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "reason": "Validado",
                 "decision": unknown,
             })
+        approved_unknown_with_manual_override = main._v31_manual_review_payload({
+            "ticker": "QQQ",
+            "status": "APPROVED_FOR_MANUAL_TRADE",
+            "reason": "Validé manualmente contrato, liquidez, spread, eventos, riesgo de cuenta y ticket en TWS.",
+            "decision": unknown,
+            "manual_broker_validation_override": True,
+        })
+        self.assertEqual(approved_unknown_with_manual_override["status"], "APPROVED_FOR_MANUAL_TRADE")
+        self.assertTrue(approved_unknown_with_manual_override["manual_broker_validation_override"])
+        self.assertFalse(approved_unknown_with_manual_override["execution_authorized"])
+        self.assertTrue(approved_unknown_with_manual_override["not_order_instruction"])
         with self.assertRaisesRegex(ValueError, "APPROVAL_REQUIRES_FRESH_BROKER_CHECK"):
             main._v31_manual_review_payload({
                 "ticker": "QQQ",

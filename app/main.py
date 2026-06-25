@@ -20711,7 +20711,7 @@ def _v31_approval_contract_missing_fields(decision_summary):
     return [field for field in required if contract.get(field) in [None, "", "None"]]
 
 
-def _v31_validate_manual_approval(decision_summary, reason):
+def _v31_validate_manual_approval(decision_summary, reason, manual_broker_validation_override=False):
     if (
         decision_summary.get("final_state") != "ENTRY_READY"
         or decision_summary.get("manual_review_ready") is not True
@@ -20721,11 +20721,12 @@ def _v31_validate_manual_approval(decision_summary, reason):
     broker_status = _v29_safe_upper(broker_summary.get("status"), "UNKNOWN")
     if broker_status == "BLOCKED":
         raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_NOT_BLOCKED")
-    if broker_status == "UNKNOWN":
+    if broker_status == "UNKNOWN" and not manual_broker_validation_override:
         raise ValueError("APPROVAL_REQUIRES_BROKER_CHECK_AVAILABLE")
-    freshness = broker_summary.get("freshness") if isinstance(broker_summary.get("freshness"), dict) else _v31_broker_check_freshness(broker_summary)
-    if freshness.get("ok") is not True:
-        raise ValueError("APPROVAL_REQUIRES_FRESH_BROKER_CHECK")
+    if broker_status != "UNKNOWN":
+        freshness = broker_summary.get("freshness") if isinstance(broker_summary.get("freshness"), dict) else _v31_broker_check_freshness(broker_summary)
+        if freshness.get("ok") is not True:
+            raise ValueError("APPROVAL_REQUIRES_FRESH_BROKER_CHECK")
     if _v29_safe_upper(decision_summary.get("technical_status"), "UNKNOWN") != "CONFIRMED":
         raise ValueError("APPROVAL_REQUIRES_CONFIRMED_TECHNICAL")
     if _v29_safe_upper(decision_summary.get("risk_status"), "UNKNOWN") != "PASS":
@@ -20756,9 +20757,14 @@ def _v31_manual_review_payload(payload):
     review_id = payload.get("review_id") or f"MR-{signal_id}-{review_stamp}"
     actor = str(payload.get("actor") or "user")[:80]
     reason = str(payload.get("reason") or "")[:2000]
+    manual_broker_validation_override = bool(payload.get("manual_broker_validation_override"))
     decision_summary = _v31_manual_review_decision_summary(decision)
     if status == "APPROVED_FOR_MANUAL_TRADE":
-        _v31_validate_manual_approval(decision_summary, reason)
+        _v31_validate_manual_approval(
+            decision_summary,
+            reason,
+            manual_broker_validation_override=manual_broker_validation_override,
+        )
     return {
         "id": review_id,
         "review_id": review_id,
@@ -20779,6 +20785,7 @@ def _v31_manual_review_payload(payload):
         "allowed_statuses": list(_V31_MANUAL_REVIEW_STATUSES),
         "paper_outcome": True,
         "manual_trade_review_only": True,
+        "manual_broker_validation_override": manual_broker_validation_override,
         "can_operate": False,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -20915,7 +20922,7 @@ def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console
         "EXPIRED": "Expired",
     }
     reasons = {
-        "APPROVED_FOR_MANUAL_TRADE": "Validé manualmente contrato, liquidez, spread, riesgo y ticket en broker. Ejecución será manual en TWS.",
+        "APPROVED_FOR_MANUAL_TRADE": "Validé manualmente contrato, liquidez, spread, eventos, riesgo de cuenta y ticket en broker/TWS. Ejecución será manual.",
         "REVIEWING": "Iniciando revisión manual; validando chart, liquidez, riesgo y broker ticket.",
         "WATCHLIST": "Mantener en watchlist; falta mejor precio, confirmación o timing.",
         "REJECTED": "Descartada tras revisión manual.",
@@ -20924,11 +20931,17 @@ def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console
     forms = []
     for status in allowed:
         css = "approve" if status == "APPROVED_FOR_MANUAL_TRADE" else status.lower()
+        manual_broker_override = (
+            '<input type="hidden" name="manual_broker_validation_override" value="true">'
+            if status == "APPROVED_FOR_MANUAL_TRADE"
+            else ""
+        )
         forms.append("""
           <form method="post" action="{action}" class="action-form {button_style}">
             <input type="hidden" name="ticker" value="{ticker}">
             <input type="hidden" name="status" value="{status}">
             <input type="hidden" name="reason" value="{reason}">
+            {manual_broker_override}
             <button class="{css}" type="submit">{label}</button>
           </form>
         """.format(
@@ -20937,6 +20950,7 @@ def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console
             ticker=_v29_html_escape(ticker),
             status=_v29_html_escape(status),
             reason=_v29_html_escape(reasons.get(status, "")),
+            manual_broker_override=manual_broker_override,
             css=_v29_html_escape(css),
             label=_v29_html_escape(labels.get(status, status)),
         ))
@@ -21258,10 +21272,15 @@ def _v31_manual_review_console_record_from_form(form):
     ticker = (form.get("ticker") or [""])[0]
     status = (form.get("status") or ["REVIEWING"])[0]
     reason = (form.get("reason") or [""])[0]
+    manual_broker_validation_override = (
+        _v29_safe_upper((form.get("manual_broker_validation_override") or [""])[0], "")
+        in {"1", "TRUE", "YES", "ON"}
+    )
     return _v31_record_manual_review({
         "ticker": ticker,
         "status": status,
         "reason": reason,
+        "manual_broker_validation_override": manual_broker_validation_override,
         "actor": "manual_review_console",
         "source": "v31_manual_review_console",
         "manual_trade_review_only": True,
