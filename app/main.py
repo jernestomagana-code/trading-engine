@@ -20915,7 +20915,7 @@ def _v31_manual_review_action_forms(decision, action="/v31_manual_review_console
     if state == "ENTRY_READY" and decision.get("manual_review_ready") is True:
         allowed.insert(1, "APPROVED_FOR_MANUAL_TRADE")
     labels = {
-        "APPROVED_FOR_MANUAL_TRADE": "Approve",
+        "APPROVED_FOR_MANUAL_TRADE": "Approve manual",
         "REVIEWING": "Reviewing",
         "WATCHLIST": "Watchlist",
         "REJECTED": "Reject",
@@ -20972,6 +20972,18 @@ def _v31_manual_review_inbox_cards(show_all=False):
         broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
         latest = decision.get("latest_manual_review") or {}
         latest_status = latest.get("status") or "UNREVIEWED"
+        broker_status = _v29_safe_upper(broker.get("status"), "UNKNOWN")
+        broker_note = ""
+        if decision.get("final_state") == "ENTRY_READY" and decision.get("manual_review_ready") is True:
+            if broker_status == "UNKNOWN":
+                broker_note = (
+                    "Broker UNKNOWN: Approve manual registra que validaste en TWS "
+                    "contrato, liquidez, spread, eventos, riesgo de cuenta y ticket manual."
+                )
+            elif broker_status == "BLOCKED":
+                broker_note = "Broker BLOCKED: no aprobar; revisa blockers antes de cualquier decisión."
+            else:
+                broker_note = "Approve manual registra revisión humana; no coloca ni autoriza órdenes."
         if _v29_safe_upper(latest_status, "UNREVIEWED") in reviewed_statuses:
             reviewed_count += 1
         cards.append("""
@@ -20998,6 +21010,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             <div><dt>Delta</dt><dd>{delta}</dd></div>
           </dl>
           <p class="why">{why}</p>
+          <p class="broker-note">{broker_note}</p>
           <div class="button-row">{forms}</div>
         </article>
         """.format(
@@ -21007,7 +21020,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             state=_v29_html_escape(decision.get("final_state")),
             technical=_v29_html_escape(decision.get("technical_status")),
             risk=_v29_html_escape(decision.get("risk_status")),
-            broker_status=_v29_html_escape("Broker " + _v29_safe_upper(broker.get("status"), "UNKNOWN")),
+            broker_status=_v29_html_escape("Broker " + broker_status),
             strike=_v29_html_escape(contract.get("strike")),
             expiration=_v29_html_escape(contract.get("expiration")),
             dte=_v29_html_escape(contract.get("dte")),
@@ -21016,6 +21029,7 @@ def _v31_manual_review_inbox_cards(show_all=False):
             spread_pct=_v29_html_escape(contract.get("spread_pct")),
             delta=_v29_html_escape(contract.get("delta")),
             why=_v29_html_escape(decision.get("explanation")),
+            broker_note=_v29_html_escape(broker_note),
             forms=_v31_manual_review_action_forms(
                 decision,
                 action="/v31_manual_review_inbox/record",
@@ -21075,6 +21089,7 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         dt {{ color:#64748b; font-size:11px; font-weight:800; text-transform:uppercase; }}
         dd {{ margin:3px 0 0; font-size:15px; font-weight:900; overflow-wrap:anywhere; }}
         .why {{ color:#475569; font-size:13px; line-height:1.42; min-height:36px; }}
+        .broker-note {{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:9px; color:#334155; font-size:12px; line-height:1.35; font-weight:700; }}
         .button-row {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }}
         .action-form.large {{ margin:0; }}
         .action-form.large button {{ width:100%; min-height:46px; }}
@@ -21094,7 +21109,7 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
       </div>
       <main class="wrap">
         {message_html}{error_html}
-        <div class="guardrail">Marca tu revisión humana. Esta pantalla no coloca órdenes, no autoriza ejecución automática y no reemplaza validar manualmente el ticket en TWS.</div>
+        <div class="guardrail">Marca tu revisión humana. Esta pantalla no coloca órdenes, no autoriza ejecución automática y no reemplaza validar manualmente el ticket en TWS. Approve manual solo registra que tú validaste contrato, liquidez, spread, eventos, riesgo de cuenta y ticket manual.</div>
         <section class="progress">
           <div><span>Total</span><strong>{total}</strong></div>
           <div><span>Revisados</span><strong>{reviewed}</strong></div>
