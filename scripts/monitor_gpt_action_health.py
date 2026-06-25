@@ -77,6 +77,8 @@ def compact_health(
     payload: dict[str, Any],
     answer_status: int,
     answer_payload: dict[str, Any],
+    daily_now_status: int,
+    daily_now_payload: dict[str, Any],
 ) -> dict[str, Any]:
     readiness = payload.get("data_readiness") if isinstance(payload.get("data_readiness"), dict) else {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -86,8 +88,10 @@ def compact_health(
         "unauthorized_request_rejected": unauthorized_status in {401, 503},
         "authorized_request_ok": authorized_status == 200,
         "daily_answer_ok": answer_status == 200 and bool(answer_payload.get("answer_text")),
+        "daily_now_ok": daily_now_status == 200 and bool(daily_now_payload.get("answer_to_user")),
         "has_no_order_guardrail": payload.get("execution_authorized") is False and payload.get("not_order_instruction") is True,
         "daily_answer_no_order_guardrail": answer_payload.get("execution_authorized") is False and answer_payload.get("not_order_instruction") is True,
+        "daily_now_no_order_guardrail": daily_now_payload.get("execution_authorized") is False and daily_now_payload.get("not_order_instruction") is True,
         "has_data_readiness": bool(readiness.get("status")),
         "has_manual_review_bucket": isinstance(top, list),
         "has_blocked_or_waiting_bucket": isinstance(blocked, list),
@@ -103,10 +107,14 @@ def compact_health(
             "unauthorized_daily_rankings": unauthorized_status,
             "authorized_daily_rankings": authorized_status,
             "authorized_daily_answer": answer_status,
+            "authorized_daily_now": daily_now_status,
         },
         "engine": payload.get("engine"),
         "daily_answer_engine": answer_payload.get("engine"),
         "daily_answer_version": answer_payload.get("answer_version"),
+        "daily_now_response_mode": daily_now_payload.get("response_mode"),
+        "daily_now_status": daily_now_payload.get("status"),
+        "daily_now_operational_readiness": daily_now_payload.get("operational_readiness"),
         "generated_at": payload.get("generated_at"),
         "summary": summary,
         "data_readiness": {
@@ -134,10 +142,21 @@ def main() -> int:
     base = args.base_url.rstrip("/")
     url = f"{base}/gpt_v31_daily_rankings"
     answer_url = f"{base}/gpt_v31_daily_answer?limit=3"
+    daily_now_url = f"{base}/gpt_v31_daily_now?limit=3"
     unauthorized_status, _ = request_json(url, None, args.timeout)
     authorized_status, payload = request_json(url, token, args.timeout)
     answer_status, answer_payload = request_json(answer_url, token, args.timeout)
-    health = compact_health(base, unauthorized_status, authorized_status, payload, answer_status, answer_payload)
+    daily_now_status, daily_now_payload = request_json(daily_now_url, token, args.timeout)
+    health = compact_health(
+        base,
+        unauthorized_status,
+        authorized_status,
+        payload,
+        answer_status,
+        answer_payload,
+        daily_now_status,
+        daily_now_payload,
+    )
 
     if not args.no_write:
         out_path = Path(args.health_out)

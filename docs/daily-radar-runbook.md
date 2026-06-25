@@ -3,7 +3,52 @@
 This runbook keeps the Super Engine Bolsa daily question tied to the real
 Stock Ultimus decision engine.
 
+## Official GPT
+
+Use `SUPER ENGINE BOLSA` as the official ChatGPT interface.
+
+- Official GPT ID: `g-6a3c670ccb248191ac792583b2ca38bf`
+- Retired legacy GPT ID: `g-69e832e2ddfc8191a74d5a8ba38af5a2`
+- Legacy display name: `SUPER ENGINE BOLSA LEGACY - NO USAR`
+
+Avoid continuing old chats tied to the retired legacy GPT. Start daily radar
+questions from the official GPT so the `getDailyNow` Action is available.
+
+The official GPT Action must use:
+
+- Recommended model: `GPT-5.3 Instant`
+- Authentication: API Key / Custom
+- Header: `X-Stock-Ultimus-Read-Token`
+- Primary operation for opportunity questions: `getDailyNow`
+
+If ChatGPT shows a prompt to switch to the creator's recommended model, switch
+before asking for the daily radar.
+
 ## Manual Run
+
+Preferred one-command operating-day cycle:
+
+```bash
+python3 scripts/run_operating_day.py --allow-partial
+```
+
+This runs the read-only IBKR refresh, reads the daily radar, evaluates pending
+paper outcomes/manual reviews, checks GPT Action health, and writes a redacted
+report to:
+
+```bash
+runtime/operating_day_latest.json
+```
+
+If IBKR/TWS is not responding, inspect:
+
+```bash
+runtime/ibkr_bridge_health_latest.json
+```
+
+The most common fix is to open or unlock TWS/IB Gateway, confirm API access is
+enabled, and rerun the operating-day cycle. A failed bridge must not be treated
+as permission to operate; it means broker checks can be stale or unavailable.
 
 Run the full refresh and read cycle:
 
@@ -50,17 +95,19 @@ python3 scripts/monitor_gpt_action_health.py
 This checks that `/gpt_v31_daily_rankings` rejects unauthenticated requests,
 accepts the current read token, returns data-readiness diagnostics, exposes
 `top_recommendations` and `blocked_or_waiting`, verifies
-`/gpt_v31_daily_answer`, and preserves no-order guardrails. It writes a redacted
-latest health record to:
+`/gpt_v31_daily_answer`, verifies the GPT's primary `/gpt_v31_daily_now`
+surface, and preserves no-order guardrails. It writes a redacted latest health
+record to:
 
 ```bash
 runtime/gpt_action_health_latest.json
 ```
 
 If the authenticated request returns 401, the backend token and the hidden API
-key inside the Super Engine Bolsa GPT Action are out of sync. Re-copy the
-Keychain value into the GPT Action authentication field without pasting it into
-prompts, docs, screenshots, or logs.
+key inside the official GPT Action are out of sync. Re-copy the Keychain value
+into the GPT Action authentication field without pasting it into prompts, docs,
+screenshots, or logs. After saving the Action, use its built-in `Test` button on
+`getDailyNow`, then ask the published GPT `que oportunidades tengo hoy?`.
 
 ## Suggested Windows
 

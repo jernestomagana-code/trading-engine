@@ -13,6 +13,7 @@ MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-r
 WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-learning-email.yml"
 DAILY_OPERATIONAL_AUDIT_WORKFLOW = ROOT / ".github" / "workflows" / "v31-daily-operational-audit.yml"
 DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
+OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -90,6 +91,17 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertNotIn("account_id", function_source)
         self.assertNotIn("acctCode", function_source)
         self.assertNotIn("accountNumber", function_source)
+
+    def test_bridge_connection_retries_write_local_health_without_orders(self):
+        source = BRIDGE.read_text()
+
+        self.assertIn("def connect_ibkr_with_retries", source)
+        self.assertIn("IB_CONNECT_RETRIES", source)
+        self.assertIn("ibkr_bridge_health_latest.json", source)
+        self.assertIn('"CONNECTION_FAILED"', source)
+        self.assertIn("readonly=True", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
 
 
 class SnapshotIngestAuthTests(unittest.TestCase):
@@ -255,8 +267,27 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         source = (ROOT / "scripts" / "monitor_gpt_action_health.py").read_text()
 
         self.assertIn("/gpt_v31_daily_answer", source)
+        self.assertIn("/gpt_v31_daily_now", source)
         self.assertIn("daily_answer_ok", source)
+        self.assertIn("daily_now_ok", source)
         self.assertIn("daily_answer_no_order_guardrail", source)
+        self.assertIn("daily_now_no_order_guardrail", source)
+
+    def test_operating_day_runner_orchestrates_bridge_outcomes_and_health_safely(self):
+        source = OPERATING_DAY_RUNNER.read_text()
+
+        self.assertIn("STOCK_ULTIMUS_OPERATING_DAY_RUNNER", source)
+        self.assertIn("scripts/run_daily_radar.py", source)
+        self.assertIn("scripts/run_daily_outcome_evaluation.py", source)
+        self.assertIn("scripts/monitor_gpt_action_health.py", source)
+        self.assertIn("/v31_manual_review_inbox", source)
+        self.assertIn("/v31_outcome_tracking_status", source)
+        self.assertIn("uses_ingest_token", source)
+        self.assertIn("touches_ibkr", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("send_resend_email", source)
 
 
 if __name__ == "__main__":
