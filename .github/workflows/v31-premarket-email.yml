@@ -1,0 +1,90 @@
+name: V31 Pre-market Email
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview without sending email"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      mode:
+        description: "Pre-market context mode"
+        required: true
+        default: "base"
+  schedule:
+    # Weekday pre-market reminder before the US cash session.
+    - cron: "45 12 * * 1-5"
+
+jobs:
+  premarket-email:
+    name: Send V31 pre-market email
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select send mode
+        id: selected
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "mode=base" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send or preview pre-market email
+        env:
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+          DRY_RUN: ${{ steps.selected.outputs.dry_run }}
+          MODE: ${{ steps.selected.outputs.mode }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import error, parse, request
+
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          dry_run = os.environ.get("DRY_RUN", "false").strip().lower()
+          mode = os.environ.get("MODE", "base").strip() or "base"
+          path = "/intraday_futures/premarket/email/preview" if dry_run == "true" else "/intraday_futures/premarket/email"
+          query = parse.urlencode({"mode": mode})
+          req = request.Request(
+              base + path + "?" + query,
+              data=None if dry_run == "true" else b"",
+              method="GET" if dry_run == "true" else "POST",
+          )
+          try:
+              with request.urlopen(req, timeout=45) as resp:
+                  payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                  status_code = resp.status
+          except error.HTTPError as exc:
+              body = exc.read().decode("utf-8", errors="replace")
+              print(body)
+              sys.exit(1)
+
+          email_config = payload.get("email_config") or {}
+          summary = {
+              "status_code": status_code,
+              "status": payload.get("status"),
+              "engine": payload.get("engine"),
+              "email_sent": payload.get("email_sent"),
+              "resend_api_key_present": email_config.get("resend_api_key_present"),
+              "to_present": email_config.get("to_present"),
+              "subject": payload.get("subject"),
+              "not_order_instruction": payload.get("not_order_instruction"),
+          }
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          if status_code != 200:
+              sys.exit(1)
+          if payload.get("not_order_instruction") is not True:
+              print("No-order guardrail missing.")
+              sys.exit(1)
+          if dry_run != "true" and payload.get("email_sent") is not True:
+              print("Pre-market email was not sent.")
+              sys.exit(1)
+          PY
