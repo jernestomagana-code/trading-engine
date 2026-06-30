@@ -291,6 +291,16 @@ python3 scripts/run_daily_outcome_evaluation.py --dry-run --no-write
 python3 scripts/run_daily_radar.py --skip-bridge --preview 3
 ```
 
+To review alert coverage, missed opportunities, source attribution, and whether
+there is enough outcome sample before changing thresholds, run:
+
+```bash
+python3 scripts/run_alert_opportunity_audit.py --preview 10
+```
+
+This writes a JSON and CSV under `runtime/` for manual review. It is evidence
+for strategy improvement only; it does not authorize orders.
+
 Then ask Super Engine Bolsa:
 
 ```text
