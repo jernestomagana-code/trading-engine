@@ -5296,9 +5296,40 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     )
     payload_json = json.dumps(payload, indent=2, ensure_ascii=True)
     current_context = (current or {}).get("context") or {}
+    current_found = bool((current or {}).get("found"))
+    active_mode = template.get("mode") or "base"
+    session = payload.get("session_date") or ""
+    current_status = "Cargado" if current_found else "Pendiente"
+    current_status_class = "ok" if current_found else "warn"
+    max_state = current_context.get("decision_max_state") or payload.get("decision_max_state") or "MANUAL_REVIEW"
+    mode_notes = {
+        "base": "Contexto base defensivo para iniciar la revision pre-market.",
+        "clear": "Limpia sesgos previos y deja el motor esperando validacion manual.",
+        "macro_lockout": "Bloquea accionabilidad si hay riesgo macro/evento que requiere espera.",
+        "manual_review": "Mantiene todo en revision humana antes de cualquier decision.",
+        "risk_blocked": "Fuerza bloqueo de riesgo cuando no conviene avanzar.",
+        "volatility_extreme": "Modo defensivo para volatilidad fuera de rango normal.",
+    }
+    context_rows = [
+        ("Market", current_context.get("market_context_status")),
+        ("Macro", current_context.get("macro_status")),
+        ("Volatilidad", current_context.get("volatility_status")),
+        ("Referencia", current_context.get("reference_alignment")),
+        ("Opening Range", current_context.get("opening_range_status")),
+        ("Riesgo diario", current_context.get("risk_daily_status")),
+        ("Portfolio", current_context.get("portfolio_status")),
+        ("Max State", current_context.get("decision_max_state")),
+    ]
+    context_table_rows = "\n".join(
+        '<tr><td>{label}</td><td><span class="pill neutral">{value}</span></td></tr>'.format(
+            label=html.escape(label),
+            value=html.escape(str(value or "NEEDS_REVIEW")),
+        )
+        for label, value in context_rows
+    )
     saved_html = ""
     if saved_result:
-        saved_html = '<section class="notice"><b>Contexto cargado.</b> Supabase saved: {saved}</section>'.format(
+        saved_html = '<section class="notice success"><b>Contexto cargado.</b> Supabase saved: {saved}</section>'.format(
             saved=html.escape(str(((saved_result.get("supabase") or {}).get("saved"))))
         )
 
@@ -5313,63 +5344,105 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
             body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; color:#111827; background:#f5f7fb; }}
             header {{ background:#111827; color:white; padding:22px 28px; }}
             h1 {{ margin:0 0 6px 0; font-size:24px; letter-spacing:0; }}
-            main {{ padding:22px 28px 36px; max-width:1180px; }}
-            .grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:16px; align-items:start; }}
-            .card, .notice {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; }}
-            .notice {{ border-left:5px solid #047857; margin-bottom:16px; }}
-            .label {{ color:#6b7280; font-size:12px; text-transform:uppercase; margin-bottom:8px; }}
-            .modes {{ display:flex; flex-wrap:wrap; gap:8px; margin:14px 0; }}
-            .mode, button {{ border:1px solid #d1d5db; background:white; border-radius:8px; padding:9px 11px; text-decoration:none; color:#111827; font-weight:700; font-size:13px; }}
+            header .sub {{ color:#cbd5e1; font-size:14px; }}
+            main {{ padding:22px 28px 36px; max-width:1220px; }}
+            .statusbar {{ display:grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap:12px; margin-bottom:16px; }}
+            .metric, .card, .notice {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; }}
+            .metric .value {{ font-size:20px; font-weight:800; margin-top:4px; }}
+            .metric .hint {{ color:#6b7280; font-size:12px; margin-top:6px; }}
+            .notice {{ border-left:5px solid #0f766e; margin-bottom:16px; }}
+            .success {{ border-left-color:#047857; }}
+            .label {{ color:#6b7280; font-size:12px; text-transform:uppercase; font-weight:800; margin-bottom:8px; }}
+            .layout {{ display:grid; grid-template-columns:minmax(0, 1.3fr) minmax(320px, .7fr); gap:16px; align-items:start; }}
+            .modes {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 14px; }}
+            .mode, button, .linkbtn {{ border:1px solid #d1d5db; background:white; border-radius:8px; padding:9px 11px; text-decoration:none; color:#111827; font-weight:700; font-size:13px; display:inline-flex; align-items:center; justify-content:center; min-height:20px; }}
             .mode.active {{ background:#111827; color:white; border-color:#111827; }}
             button {{ background:#047857; color:white; border-color:#047857; cursor:pointer; }}
+            .linkbtn.primary {{ background:#1d4ed8; color:white; border-color:#1d4ed8; }}
+            .actions {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }}
             pre {{ background:#0f172a; color:#e5e7eb; border-radius:8px; padding:14px; overflow:auto; font-size:12px; line-height:1.45; }}
             table {{ width:100%; border-collapse:collapse; }}
             td {{ padding:8px 6px; border-bottom:1px solid #eef2f7; font-size:13px; vertical-align:top; }}
             td:first-child {{ color:#6b7280; width:42%; }}
-            .warn {{ color:#92400e; }}
-            .small {{ color:#6b7280; font-size:13px; margin-top:10px; }}
-            @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} main {{ padding:16px; }} }}
+            details {{ margin-top:16px; }}
+            summary {{ cursor:pointer; font-weight:800; color:#334155; }}
+            .small {{ color:#6b7280; font-size:13px; margin-top:10px; line-height:1.45; }}
+            .pill {{ display:inline-flex; border-radius:999px; padding:4px 8px; font-size:12px; font-weight:800; }}
+            .pill.ok {{ background:#dcfce7; color:#166534; }}
+            .pill.warn {{ background:#fef3c7; color:#92400e; }}
+            .pill.neutral {{ background:#eef2ff; color:#3730a3; }}
+            .callout {{ background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:14px; margin-top:14px; }}
+            .callout strong {{ color:#1e3a8a; }}
+            @media (max-width: 900px) {{
+                .statusbar, .layout {{ grid-template-columns:1fr; }}
+                main {{ padding:16px; }}
+            }}
         </style>
     </head>
     <body>
         <header>
             <h1>Stock Ultimus | Pre-market Intraday Futures</h1>
-            <div>Sesion {html.escape(payload.get("session_date") or "")} | Modo {html.escape(template.get("mode") or "")}</div>
+            <div class="sub">Sesion {html.escape(session)} | Modo {html.escape(active_mode)}</div>
         </header>
         <main>
             {saved_html}
-            <section class="card">
-                <div class="label">Seleccionar modo</div>
-                <div class="modes">{mode_buttons}</div>
-                <form method="get" action="/intraday_futures/premarket/load">
-                    <input type="hidden" name="mode" value="{html.escape(template.get("mode") or "base")}">
-                    <input type="hidden" name="session_date" value="{html.escape(payload.get("session_date") or "")}">
-                    <input type="hidden" name="updated_by" value="{html.escape(payload.get("updated_by") or "manual")}">
-                    <button type="submit">Cargar contexto seleccionado</button>
-                </form>
-                <p class="small warn">Carga contexto para decision support. No coloca ordenes y no autoriza ejecucion automatica.</p>
+            <section class="statusbar">
+                <div class="metric">
+                    <div class="label">Estado</div>
+                    <div class="value"><span class="pill {current_status_class}">{html.escape(current_status)}</span></div>
+                    <div class="hint">{'Contexto listo para esta sesion.' if current_found else 'Aun no hay contexto guardado para esta sesion.'}</div>
+                </div>
+                <div class="metric">
+                    <div class="label">Modo activo</div>
+                    <div class="value">{html.escape(active_mode.replace("_", " ").title())}</div>
+                    <div class="hint">{html.escape(mode_notes.get(active_mode, "Modo operativo seleccionado."))}</div>
+                </div>
+                <div class="metric">
+                    <div class="label">Max State</div>
+                    <div class="value">{html.escape(str(max_state))}</div>
+                    <div class="hint">Limite defensivo del contexto pre-market.</div>
+                </div>
+                <div class="metric">
+                    <div class="label">Ordenes</div>
+                    <div class="value"><span class="pill warn">No autorizadas</span></div>
+                    <div class="hint">Solo soporte de decision y revision humana.</div>
+                </div>
             </section>
-            <section class="grid" style="margin-top:16px;">
+
+            <section class="layout">
                 <div class="card">
-                    <div class="label">Payload a cargar</div>
-                    <pre>{html.escape(payload_json)}</pre>
+                    <div class="label">Preparar contexto</div>
+                    <p class="small">Selecciona un modo y cargalo para que el motor tenga el marco pre-market de la sesion. Si no estas seguro, usa <b>Base</b>.</p>
+                    <div class="modes">{mode_buttons}</div>
+                    <form method="get" action="/intraday_futures/premarket/load">
+                        <input type="hidden" name="mode" value="{html.escape(active_mode)}">
+                        <input type="hidden" name="session_date" value="{html.escape(session)}">
+                        <input type="hidden" name="updated_by" value="{html.escape(payload.get("updated_by") or "manual")}">
+                        <button type="submit">Cargar contexto seleccionado</button>
+                    </form>
+                    <div class="actions">
+                        <a class="linkbtn primary" href="/v31_manual_review_inbox">Inbox revision manual</a>
+                        <a class="linkbtn" href="/gpt_v31_daily_now">Radar GPT JSON</a>
+                        <a class="linkbtn" href="/v31_command_center">Command Center</a>
+                    </div>
+                    <div class="callout">
+                        <strong>Lectura rapida:</strong>
+                        {'el contexto ya esta guardado. Ahora puedes revisar radar e inbox.' if current_found else 'esta sesion todavia no tiene contexto pre-market guardado. Cargar Base deja el sistema en modo defensivo de revision manual.'}
+                    </div>
                 </div>
                 <div class="card">
                     <div class="label">Contexto actualmente guardado</div>
                     <table>
-                        <tr><td>Encontrado</td><td>{html.escape(str(current.get("found")))}</td></tr>
-                        <tr><td>Market</td><td>{html.escape(str(current_context.get("market_context_status") or ""))}</td></tr>
-                        <tr><td>Macro</td><td>{html.escape(str(current_context.get("macro_status") or ""))}</td></tr>
-                        <tr><td>Volatilidad</td><td>{html.escape(str(current_context.get("volatility_status") or ""))}</td></tr>
-                        <tr><td>Referencia</td><td>{html.escape(str(current_context.get("reference_alignment") or ""))}</td></tr>
-                        <tr><td>OR</td><td>{html.escape(str(current_context.get("opening_range_status") or ""))}</td></tr>
-                        <tr><td>Riesgo</td><td>{html.escape(str(current_context.get("risk_daily_status") or ""))}</td></tr>
-                        <tr><td>Portfolio</td><td>{html.escape(str(current_context.get("portfolio_status") or ""))}</td></tr>
-                        <tr><td>Max State</td><td>{html.escape(str(current_context.get("decision_max_state") or ""))}</td></tr>
+                        <tr><td>Encontrado</td><td><span class="pill {current_status_class}">{html.escape(str(current_found))}</span></td></tr>
+                        {context_table_rows}
                         <tr><td>Notas</td><td>{html.escape(str(current_context.get("notes") or ""))}</td></tr>
                     </table>
                 </div>
             </section>
+            <details>
+                <summary>Ver payload tecnico que se cargara</summary>
+                <pre>{html.escape(payload_json)}</pre>
+            </details>
         </main>
     </body>
     </html>

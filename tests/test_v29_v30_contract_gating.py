@@ -874,6 +874,22 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("CASH_SECURED_PUT", html)
         self.assertIn("No autoriza", html)
 
+    def test_premarket_page_renders_operator_friendly_state_before_json(self):
+        with patch.object(main, "get_intraday_futures_premarket_context", return_value={
+            "found": False,
+            "context": {},
+        }):
+            html = main.intraday_futures_premarket_page_html(mode="base", session_date="2026-06-30")
+
+        self.assertIn("Estado", html)
+        self.assertIn("Pendiente", html)
+        self.assertIn("Preparar contexto", html)
+        self.assertIn("Inbox revision manual", html)
+        self.assertIn("Command Center", html)
+        self.assertIn("Ver payload tecnico", html)
+        self.assertIn("No autorizadas", html)
+        self.assertIn("Aun no hay contexto guardado", html)
+
     def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):
         with patch.object(main, "_v29_discover_master_snapshot", return_value={
             "path": None,
