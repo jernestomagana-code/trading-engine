@@ -2058,6 +2058,68 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         send_email.assert_called_once()
 
+    def test_v31_monitor_notify_sends_warning_blocker_summary(self):
+        monitor = {
+            "engine": "V31_PIPELINE_MONITOR",
+            "generated_at": "2026-06-12T00:00:00+00:00",
+            "alert_level": "WARNING",
+            "pipeline_status": "OK",
+            "market_context": "REGULAR_MARKET_HOURS",
+            "master_snapshot_available": True,
+            "master_source": "runtime/v28_master_snapshot.json",
+            "rows_found": 1,
+            "technical_count": 1,
+            "manual_review_ready_count": 0,
+            "entry_ready_tickers": [],
+            "entry_ready_decisions": [],
+            "risk_blocked_tickers": ["MSFT"],
+            "risk_blocked_decisions": [
+                {
+                    "ticker": "MSFT",
+                    "strategy": "NAKED_PUT",
+                    "final_state": "RISK_BLOCKED",
+                    "main_blocker": "RISK_BLOCKED",
+                    "primary_block_reason": "RISK_PROFILE_SPREAD_TOO_WIDE: spread actual=0.4 requiere <= 0.35",
+                    "manual_review_ready": False,
+                    "can_operate": False,
+                    "technical_status": "CONFIRMED",
+                    "risk_status": "RISK_BLOCKED",
+                    "construction_status": "CONTRACT_SELECTED",
+                    "contract": {
+                        "strike": 415,
+                        "expiration": "20260717",
+                        "dte": 35,
+                        "bid": 1.45,
+                        "ask": 1.62,
+                        "mid": 1.535,
+                        "spread": 0.17,
+                        "spread_pct": 11.07,
+                        "delta": -0.24,
+                    },
+                    "not_order_instruction": True,
+                }
+            ],
+            "wait_options_tickers": [],
+            "wait_options_decisions": [],
+            "message": "Hay setups bloqueados por riesgo.",
+            "next_required_action": "Validar blockers.",
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):
+            with patch.object(main, "_v31_load_monitor_notify_state", return_value={}):
+                with patch.object(main, "_v31_save_monitor_notify_state", return_value=True):
+                    with patch.object(main, "send_resend_email", return_value={"email_sent": True}) as send_email:
+                        result = main._v31_monitor_notify_payload()
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["notify_reason"], "BLOCKED_OR_WAITING_SUMMARY")
+        sent_args = send_email.call_args.args
+        self.assertIn("razon=RISK_PROFILE_SPREAD_TOO_WIDE", sent_args[2])
+        self.assertIn("Razon principal", sent_args[3])
+        self.assertIn("execution_authorized=false", sent_args[2])
+        self.assertTrue(result["not_order_instruction"])
+
     def test_v31_monitor_notify_dedupes_recent_actionable_alert(self):
         monitor = {
             "engine": "V31_PIPELINE_MONITOR",
@@ -2074,7 +2136,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "next_required_action": "Abrir dashboard.",
             "not_order_instruction": True,
         }
-        alert_key = "ACTION_REQUIRED|OK|SPY||"
+        alert_key = "ACTION_REQUIRED|OK|SPY|||"
         state = {
             alert_key: {
                 "sent_at": main._v29_now(),
@@ -2110,7 +2172,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "next_required_action": "Abrir dashboard.",
             "not_order_instruction": True,
         }
-        alert_key = "ACTION_REQUIRED|OK|SPY||"
+        alert_key = "ACTION_REQUIRED|OK|SPY|||"
         state = {alert_key: {"sent_at": main._v29_now()}}
 
         with patch.object(main, "_v31_monitor_status_payload", return_value=monitor):

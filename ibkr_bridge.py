@@ -713,7 +713,7 @@ nest_asyncio.apply()
 
 IB_HOST = _v283_os.environ.get("IBKR_HOST", "127.0.0.1")
 IB_PORT = int(_v283_os.environ.get("IBKR_PORT", "7496"))
-CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "10"))
+CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "42"))
 
 ENGINE_URL = "https://trading-engine-p097.onrender.com/webhook/ibkr"
 

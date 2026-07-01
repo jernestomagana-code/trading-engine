@@ -22762,6 +22762,61 @@ def _v31_format_gpt_contract(contract):
     return ", ".join(str(item) for item in fields if "None" not in str(item))
 
 
+def _v31_first_blocked_check_detail(checks):
+    checks = checks if isinstance(checks, list) else []
+    first = checks[0] if checks and isinstance(checks[0], dict) else {}
+    if not first:
+        return ""
+    detail_parts = []
+    if first.get("field") is not None:
+        detail_parts.append(str(first.get("field")))
+    if first.get("value") is not None:
+        detail_parts.append("actual={value}".format(value=first.get("value")))
+    if first.get("comparator") is not None or first.get("limit") is not None:
+        detail_parts.append("requiere {comparator} {limit}".format(
+            comparator=first.get("comparator") or "",
+            limit=first.get("limit"),
+        ).strip())
+    return " ".join(part for part in detail_parts if part)
+
+
+def _v31_primary_block_reason(item):
+    item = item if isinstance(item, dict) else {}
+    risk_checks = item.get("risk_profile_blocked_checks") if isinstance(item.get("risk_profile_blocked_checks"), list) else []
+    if risk_checks and isinstance(risk_checks[0], dict):
+        name = risk_checks[0].get("name") or item.get("risk_blocker") or item.get("main_blocker")
+        detail = _v31_first_blocked_check_detail(risk_checks)
+        return "{name}: {detail}".format(name=name, detail=detail).strip(": ")
+
+    option_diag = item.get("option_data_diagnostic") if isinstance(item.get("option_data_diagnostic"), dict) else {}
+    if item.get("final_state") == "WAIT_OPTIONS_DATA" and option_diag:
+        cause = option_diag.get("primary_cause") or item.get("main_blocker")
+        action = option_diag.get("suggested_action")
+        return "{cause}: {action}".format(cause=cause, action=action).strip(": ")
+
+    missing = item.get("required_missing_fields") or []
+    if missing:
+        return "Faltan campos requeridos: {fields}".format(fields=", ".join(str(field) for field in missing))
+
+    broker_blockers = item.get("broker_check_blockers") or []
+    if broker_blockers:
+        return "Broker check: {blockers}".format(blockers=", ".join(str(blocker) for blocker in broker_blockers))
+
+    risk_blockers = item.get("risk_profile_blockers") or []
+    if risk_blockers:
+        return "Perfil de riesgo: {blockers}".format(blockers=", ".join(str(blocker) for blocker in risk_blockers))
+
+    blockers = item.get("blockers") or []
+    if blockers:
+        return "Bloqueadores: {blockers}".format(blockers=", ".join(str(blocker) for blocker in blockers))
+
+    if item.get("risk_blocker"):
+        return str(item.get("risk_blocker"))
+    if item.get("main_blocker"):
+        return str(item.get("main_blocker"))
+    return "Sin razon primaria disponible; revisar decision completa por ticker."
+
+
 def _v31_gpt_institutional_answer_payload(limit=5):
     try:
         limit = max(1, min(int(limit or 5), 10))
@@ -22823,10 +22878,11 @@ def _v31_gpt_institutional_answer_payload(limit=5):
                     action=option_diag.get("suggested_action"),
                 )
             missing = item.get("required_missing_fields") or []
-            lines.append("- {ticker} | {state} | blocker={blocker} | faltante={missing}{risk_detail}{option_detail}".format(
+            lines.append("- {ticker} | {state} | blocker={blocker} | razon={reason} | faltante={missing}{risk_detail}{option_detail}".format(
                 ticker=item.get("ticker"),
                 state=item.get("final_state"),
                 blocker=item.get("main_blocker"),
+                reason=_v31_primary_block_reason(item),
                 missing=missing,
                 risk_detail=risk_detail,
                 option_detail=option_detail,
@@ -23719,6 +23775,7 @@ def _v31_monitor_status_payload():
     manual_ready = [d for d in decisions if d.get("manual_review_ready") is True]
     risk_blocked = [d for d in decisions if d.get("final_state") == "RISK_BLOCKED"]
     wait_options = [d for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"]
+    wait_technical = [d for d in decisions if d.get("final_state") == "WAIT_TECHNICAL"]
 
     market_context = "REGULAR_MARKET_HOURS" if market.get("is_regular_market_open") else "OUTSIDE_MARKET_HOURS_OR_UNKNOWN"
     pipeline_status = pipeline.get("status")
@@ -23738,6 +23795,9 @@ def _v31_monitor_status_payload():
     elif wait_options:
         alert_level = "WARNING"
         message = "Pipeline V31 activo, pero faltan datos ejecutables de opciones en uno o mas tickers."
+    elif wait_technical:
+        alert_level = "WARNING"
+        message = "Pipeline V31 activo, pero faltan confirmaciones tecnicas en uno o mas tickers."
     else:
         alert_level = "OK"
         message = "Pipeline V31 activo sin setups listos para revision manual."
@@ -23757,9 +23817,11 @@ def _v31_monitor_status_payload():
         "manual_review_ready_tickers": [d.get("ticker") for d in manual_ready],
         "risk_blocked_tickers": [d.get("ticker") for d in risk_blocked],
         "wait_options_tickers": [d.get("ticker") for d in wait_options],
+        "wait_technical_tickers": [d.get("ticker") for d in wait_technical],
         "entry_ready_decisions": [_v31_monitor_decision_summary(d) for d in entry_ready],
         "risk_blocked_decisions": [_v31_monitor_decision_summary(d) for d in risk_blocked],
         "wait_options_decisions": [_v31_monitor_decision_summary(d) for d in wait_options],
+        "wait_technical_decisions": [_v31_monitor_decision_summary(d) for d in wait_technical],
         "summary": summary,
         "message": message,
         "next_required_action": pipeline.get("next_required_action"),
@@ -23772,11 +23834,16 @@ def _v31_monitor_status_payload():
 def _v31_monitor_decision_summary(decision):
     contract = decision.get("selected_contract") or {}
     risk_profile = decision.get("risk_profile") or {}
-    return {
+    broker = decision.get("broker_check") or {}
+    option_diag = decision.get("option_data_diagnostic") if isinstance(decision.get("option_data_diagnostic"), dict) else {}
+    risk_checks = risk_profile.get("blocked_checks") or decision.get("risk_blocked_details") or []
+    summary = {
         "ticker": decision.get("ticker"),
         "final_state": decision.get("final_state"),
         "strategy": decision.get("strategy"),
         "main_blocker": decision.get("main_blocker"),
+        "blockers": decision.get("blockers") or [],
+        "risk_blocker": decision.get("risk_blocker") or risk_profile.get("primary_blocker"),
         "manual_review_ready": decision.get("manual_review_ready"),
         "can_operate": False,
         "technical_status": decision.get("technical_status"),
@@ -23785,6 +23852,10 @@ def _v31_monitor_decision_summary(decision):
         "required_missing_fields": decision.get("required_missing_fields") or [],
         "risk_profile_status": risk_profile.get("status"),
         "risk_profile_blockers": risk_profile.get("blockers") or [],
+        "risk_profile_blocked_checks": risk_checks,
+        "broker_check_status": broker.get("status"),
+        "broker_check_blockers": broker.get("blockers") or [],
+        "option_data_diagnostic": option_diag,
         "contract": {
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
@@ -23798,6 +23869,12 @@ def _v31_monitor_decision_summary(decision):
         },
         "not_order_instruction": True,
     }
+    summary["primary_block_reason"] = _v31_primary_block_reason(summary)
+    return {
+        key: value
+        for key, value in summary.items()
+        if value not in [None, [], {}]
+    }
 
 
 def _v31_monitor_should_notify(monitor, force=False):
@@ -23807,6 +23884,8 @@ def _v31_monitor_should_notify(monitor, force=False):
         return True, "ACTION_REQUIRED"
     if int(monitor.get("manual_review_ready_count") or 0) > 0:
         return True, "MANUAL_REVIEW_READY"
+    if monitor.get("alert_level") == "WARNING":
+        return True, "BLOCKED_OR_WAITING_SUMMARY"
     return False, "NO_ACTIONABLE_ALERT"
 
 
@@ -23825,12 +23904,14 @@ def _v31_monitor_alert_key(monitor):
     tickers = sorted(str(ticker).upper() for ticker in (monitor.get("entry_ready_tickers") or []) if ticker)
     risk_blocked = sorted(str(ticker).upper() for ticker in (monitor.get("risk_blocked_tickers") or []) if ticker)
     wait_options = sorted(str(ticker).upper() for ticker in (monitor.get("wait_options_tickers") or []) if ticker)
+    wait_technical = sorted(str(ticker).upper() for ticker in (monitor.get("wait_technical_tickers") or []) if ticker)
     return "|".join([
         str(monitor.get("alert_level") or "UNKNOWN"),
         str(monitor.get("pipeline_status") or "UNKNOWN"),
         ",".join(tickers),
         ",".join(risk_blocked),
         ",".join(wait_options),
+        ",".join(wait_technical),
     ])
 
 
@@ -23896,6 +23977,7 @@ def _v31_monitor_email_content(monitor):
     entry_ready_decisions = monitor.get("entry_ready_decisions") or []
     risk_blocked_decisions = monitor.get("risk_blocked_decisions") or []
     wait_options_decisions = monitor.get("wait_options_decisions") or []
+    wait_technical_decisions = monitor.get("wait_technical_decisions") or []
     manual_review_endpoint = "{base}/v31_manual_review".format(base=base_url)
     manual_reviews_url = "{base}/v31_manual_reviews".format(base=base_url)
     manual_review_console_url = "{base}/v31_manual_review_console".format(base=base_url)
@@ -23928,6 +24010,7 @@ def _v31_monitor_email_content(monitor):
             "technical={technical}".format(technical=item.get("technical_status")),
             "risk={risk}".format(risk=item.get("risk_status")),
             "blocker={blocker}".format(blocker=item.get("main_blocker")),
+            "razon={reason}".format(reason=item.get("primary_block_reason")),
             "can_operate=false",
         ]
         return " | ".join(str(field) for field in fields)
@@ -23935,9 +24018,11 @@ def _v31_monitor_email_content(monitor):
     actionable_lines = [decision_line(item) for item in entry_ready_decisions]
     risk_lines = [decision_line(item) for item in risk_blocked_decisions]
     wait_options_lines = [decision_line(item) for item in wait_options_decisions]
+    wait_technical_lines = [decision_line(item) for item in wait_technical_decisions]
     actionable_text = "\n".join("- " + line for line in actionable_lines) or "- None"
     risk_text = "\n".join("- " + line for line in risk_lines) or "- None"
     wait_options_text = "\n".join("- " + line for line in wait_options_lines) or "- None"
+    wait_technical_text = "\n".join("- " + line for line in wait_technical_lines) or "- None"
 
     def html_decision_rows(items):
         rows = []
@@ -23960,6 +24045,7 @@ def _v31_monitor_email_content(monitor):
               <td>{technical}</td>
               <td>{risk}</td>
               <td>{blocker}</td>
+              <td>{reason}</td>
             </tr>
             """.format(
                 base=_v29_html_escape(base_url),
@@ -23977,12 +24063,14 @@ def _v31_monitor_email_content(monitor):
                 technical=_v29_html_escape(item.get("technical_status")),
                 risk=_v29_html_escape(item.get("risk_status")),
                 blocker=_v29_html_escape(item.get("main_blocker")),
+                reason=_v29_html_escape(item.get("primary_block_reason")),
             ))
-        return "\n".join(rows) or "<tr><td colspan=\"14\">None</td></tr>"
+        return "\n".join(rows) or "<tr><td colspan=\"15\">None</td></tr>"
 
     entry_ready_rows = html_decision_rows(entry_ready_decisions)
     risk_blocked_rows = html_decision_rows(risk_blocked_decisions)
     wait_options_rows = html_decision_rows(wait_options_decisions)
+    wait_technical_rows = html_decision_rows(wait_technical_decisions)
 
     subject = "Stock Ultimus V31 Monitor: {level}".format(
         level=monitor.get("alert_level")
@@ -24004,6 +24092,7 @@ def _v31_monitor_email_content(monitor):
         "ENTRY_READY: {tickers}".format(tickers=monitor.get("entry_ready_tickers")),
         "RISK_BLOCKED: {tickers}".format(tickers=monitor.get("risk_blocked_tickers")),
         "WAIT_OPTIONS_DATA: {tickers}".format(tickers=monitor.get("wait_options_tickers")),
+        "WAIT_TECHNICAL: {tickers}".format(tickers=monitor.get("wait_technical_tickers")),
         "",
         "ENTRY_READY detail:",
         actionable_text,
@@ -24013,6 +24102,9 @@ def _v31_monitor_email_content(monitor):
         "",
         "WAIT_OPTIONS_DATA detail:",
         wait_options_text,
+        "",
+        "WAIT_TECHNICAL detail:",
+        wait_technical_text,
         "",
         "Manual review journal:",
         "Consola: {url}".format(url=manual_review_console_url),
@@ -24042,6 +24134,7 @@ def _v31_monitor_email_content(monitor):
       <li>ENTRY_READY: {entry_ready}</li>
       <li>RISK_BLOCKED: {risk_blocked}</li>
       <li>WAIT_OPTIONS_DATA: {wait_options}</li>
+      <li>WAIT_TECHNICAL: {wait_technical}</li>
     </ul>
     <h3>ENTRY_READY detail</h3>
     <table border="1" cellpadding="6" cellspacing="0">
@@ -24049,7 +24142,7 @@ def _v31_monitor_email_content(monitor):
         <tr>
           <th>Ticker</th><th>Strategy</th><th>State</th><th>Strike</th><th>Exp</th><th>DTE</th>
           <th>Bid</th><th>Ask</th><th>Mid</th><th>Spread %</th><th>Delta</th>
-          <th>Technical</th><th>Risk</th><th>Blocker</th>
+          <th>Technical</th><th>Risk</th><th>Blocker</th><th>Razon principal</th>
         </tr>
       </thead>
       <tbody>{entry_ready_rows}</tbody>
@@ -24058,6 +24151,8 @@ def _v31_monitor_email_content(monitor):
     <table border="1" cellpadding="6" cellspacing="0"><tbody>{risk_blocked_rows}</tbody></table>
     <h3>WAIT_OPTIONS_DATA detail</h3>
     <table border="1" cellpadding="6" cellspacing="0"><tbody>{wait_options_rows}</tbody></table>
+    <h3>WAIT_TECHNICAL detail</h3>
+    <table border="1" cellpadding="6" cellspacing="0"><tbody>{wait_technical_rows}</tbody></table>
     <h3>Manual review journal</h3>
     <p><a href="{manual_review_console_url}"><strong>Abrir consola de revisión manual</strong></a></p>
     <p>Registra la decision humana con botones en la consola o con un POST protegido a <code>{manual_review_endpoint}</code>.</p>
@@ -24081,9 +24176,11 @@ def _v31_monitor_email_content(monitor):
         entry_ready=_v29_html_escape(monitor.get("entry_ready_tickers")),
         risk_blocked=_v29_html_escape(monitor.get("risk_blocked_tickers")),
         wait_options=_v29_html_escape(monitor.get("wait_options_tickers")),
+        wait_technical=_v29_html_escape(monitor.get("wait_technical_tickers")),
         entry_ready_rows=entry_ready_rows,
         risk_blocked_rows=risk_blocked_rows,
         wait_options_rows=wait_options_rows,
+        wait_technical_rows=wait_technical_rows,
         manual_review_console_url=_v29_html_escape(manual_review_console_url),
         manual_review_endpoint=_v29_html_escape(manual_review_endpoint),
         manual_reviews_url=_v29_html_escape(manual_reviews_url),
