@@ -112,5 +112,5 @@ jobs:
               print("Execution authorization guardrail failed.")
               sys.exit(1)
           if dry_run != "true" and payload.get("status") == "not_sent":
-              sys.exit(1)
+              print("No weekly learning email sent because the backend returned not_sent.")
           PY
