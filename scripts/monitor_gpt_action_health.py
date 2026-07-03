@@ -17,7 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
-READ_KEYCHAIN_SERVICE = "stock-ultimus-read-access-token"
+READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 DEFAULT_HEALTH_OUT = ROOT / "runtime" / "gpt_action_health_latest.json"
 
 
@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
 
 def keychain_password(service: str) -> str | None:
     user = os.getenv("USER") or ""
+    if not user:
+        try:
+            user = subprocess.check_output(["id", "-un"], text=True).strip()
+        except Exception:
+            user = ""
     if not user:
         return None
     try:
@@ -134,9 +139,18 @@ def compact_health(
 
 def main() -> int:
     args = parse_args()
-    token = args.token or keychain_password(READ_KEYCHAIN_SERVICE)
+    token = args.token
     if not token:
-        print("Falta READ_ACCESS_TOKEN o token Keychain de lectura.", file=sys.stderr)
+        for service in READ_KEYCHAIN_SERVICES:
+            token = keychain_password(service)
+            if token:
+                break
+    if not token:
+        print(
+            "Falta READ_ACCESS_TOKEN o token Keychain de lectura. "
+            f"Servicios probados: {', '.join(READ_KEYCHAIN_SERVICES)}.",
+            file=sys.stderr,
+        )
         return 2
 
     base = args.base_url.rstrip("/")

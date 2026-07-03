@@ -36,6 +36,14 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertEqual(strategy["id"], "CASH_SECURED_PUT")
         self.assertEqual(strategy["status"], "ACTIVE_MANUAL_REVIEW")
 
+    def test_option_income_strategies_expose_assignment_and_dividend_blockers(self):
+        put_strategy = strategy_registry.get_strategy(self.registry, "CASH_SECURED_PUT")
+        covered_call = strategy_registry.get_strategy(self.registry, "COVERED_CALL")
+
+        self.assertIn("ASSIGNMENT_UNACCEPTABLE", put_strategy["primary_blockers"])
+        self.assertIn("ASSIGNMENT_UNACCEPTABLE", covered_call["primary_blockers"])
+        self.assertIn("EX_DIVIDEND_WITHIN_WINDOW", covered_call["primary_blockers"])
+
     def test_research_only_strategy_adds_blocker_and_never_authorizes_execution(self):
         overlay = strategy_registry.recommendation_overlay(
             {

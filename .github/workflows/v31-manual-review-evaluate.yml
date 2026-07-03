@@ -24,10 +24,13 @@ on:
         description: "Maximum manual reviews to evaluate"
         required: true
         default: "100"
-  schedule:
-    # After regular US market close. The job records multiple learning
-    # checkpoints so reviews keep accumulating paper evidence over time.
-    - cron: "20 21 * * 1-5"
+  # Temporarily disabled to stop recurring failure notifications.
+  # Re-enable only after the read token / endpoint issue is fixed.
+  #
+  # schedule:
+  #   # After regular US market close. The job records multiple learning
+  #   # checkpoints so reviews keep accumulating paper evidence over time.
+  #   - cron: "20 21 * * 1-5"
 
 jobs:
   evaluate:

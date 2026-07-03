@@ -266,6 +266,7 @@ def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[s
     technical = evidence.get("technical") if isinstance(evidence.get("technical"), dict) else {}
     fundamental = evidence.get("fundamental") if isinstance(evidence.get("fundamental"), dict) else {}
     canslim = fundamental.get("canslim") if isinstance(fundamental.get("canslim"), dict) else {}
+    market = evidence.get("market") if isinstance(evidence.get("market"), dict) else {}
 
     blockers: list[str] = []
     warnings: list[str] = []
@@ -317,6 +318,31 @@ def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[s
     )
 
     avoid_if = parameters.get("avoid_if") or []
+    triggered_avoid_if: list[str] = []
+    active_blockers = {normalize(value) for value in recommendation.get("blockers") or []}
+    avoid_condition_checks = {
+        "EARNINGS_SOON": bool(market.get("earnings_soon")),
+        "EARNINGS_WITHIN_7_CALENDAR_DAYS": bool(market.get("earnings_soon")),
+        "BINARY_EVENT_WITHIN_WINDOW": bool(market.get("earnings_soon")) or bool(market.get("event_risk")),
+        "EVENT_RISK_ACTIVE": bool(market.get("event_risk")) or "EVENT_RISK_ACTIVE" in active_blockers,
+        "GAP_RISK_ELEVATED": bool(market.get("event_risk")),
+        "SPREADS_WIDE": "SPREAD_PCT_OUT_OF_REGIME_RANGE" in blockers or "RISK_PROFILE_SPREAD_PCT_TOO_WIDE" in active_blockers,
+        "NO_LONG_POSITION": "NO_LONG_POSITION" in active_blockers,
+        "ASSIGNMENT_UNACCEPTABLE": "ASSIGNMENT_UNACCEPTABLE" in active_blockers or market.get("assignment_acceptable") is False,
+        "EX_DIVIDEND_WITHIN_WINDOW": "EX_DIVIDEND_WITHIN_WINDOW" in active_blockers or bool(market.get("ex_dividend_soon")),
+    }
+    for condition in avoid_if:
+        normalized = normalize(condition)
+        if avoid_condition_checks.get(normalized):
+            triggered_avoid_if.append(normalized)
+            blockers.append(f"AVOID_IF_{normalized}")
+            checks.append({
+                "name": f"avoid_if_{normalized.lower()}",
+                "status": "BLOCKED",
+                "value": True,
+                "min": None,
+                "max": None,
+            })
     if avoid_if:
         warnings.append("REVIEW_AVOID_IF_CONDITIONS")
 
@@ -333,6 +359,7 @@ def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[s
         "missing_fields": missing_fields,
         "checks": checks,
         "avoid_if": avoid_if,
+        "triggered_avoid_if": triggered_avoid_if,
         "manual_review_required": True,
         "not_order_instruction": True,
         "execution_authorized": False,
