@@ -47,6 +47,34 @@ GPT instructions or user-visible text.
 
 ## Primary User Flow
 
+For guided daily operation, when the user asks:
+
+```text
+Que hago ahora?
+Como opero el sistema hoy?
+Que alertas tengo pendientes?
+```
+
+Super Engine Bolsa should call:
+
+```text
+GET /gpt_v32_operator_today
+```
+
+Use `answer_to_user` as the base response. It includes active alerts, next
+actions, manual-review status, outcome tracking, and learning context.
+
+When the user explicitly asks to record a decision or note, call:
+
+```text
+POST /gpt_v32_operator_event
+```
+
+Allowed actions are `ACK_ALERT`, `MARK_REVIEWING`, `MARK_WATCHLIST`,
+`REJECT_SETUP`, `APPROVE_MANUAL_REVIEW`, `MARK_EXPIRED`, `CLOSE_ALERT`, and
+`JOURNAL_NOTE`. These actions only record workflow/journal state for tracking
+and backtesting. They never place orders and never authorize execution.
+
 When the user asks:
 
 ```text
@@ -99,6 +127,11 @@ Use /gpt_v31_daily_answer first for opportunity discovery questions. Use
 /gpt_v31_trade_decision/{ticker} for ticker-level detail.
 Use /v31_command_center.json only for an executive status summary; do not treat
 it as a separate decision engine.
+Use /gpt_v32_operator_today first for workflow questions like "what should I do
+now?", daily checklist, active alerts, pending reviews, notification-style
+triage, or post-close follow-up.
+Use /gpt_v32_operator_event only when the user explicitly asks to record a
+workflow action, review decision, alert acknowledgement, or journal note.
 
 Never invent opportunities, prices, option contracts, readiness states,
 blockers, or missing fields. If the backend has no data or stale data, say that
@@ -138,6 +171,11 @@ snapshot, account/risk context, market window, or runtime freshness.
 
 Always remind the user to manually validate sizing, liquidity, spread, event
 risk, account risk, and broker data before acting.
+
+When recording V32 operator events, summarize what was recorded and why. Never
+say an order was placed, approved for execution, or automatically executed. If
+the user asks to approve a setup, phrase it as "registrado para revision manual"
+and keep the no-order boundary explicit.
 ```
 
 ## Local Daily Radar Command
@@ -165,6 +203,9 @@ python3 scripts/monitor_gpt_action_health.py
 Operational review surfaces:
 
 ```text
+/v32_operator_dashboard
+/gpt_v32_operator_today
+/gpt_v32_operator_event
 /v31_operating_suite
 /v31_manual_review_console
 /v31_manual_reviews

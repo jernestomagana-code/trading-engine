@@ -135,6 +135,12 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v31_system_status",
     "/v31_trading_day_readiness",
     "/v31_trade_decision/",
+    "/v32_operator_today",
+    "/v32_operator_next_actions",
+    "/v32_operator_events",
+    "/v32_operator_event",
+    "/gpt_v32_operator_today",
+    "/gpt_v32_operator_event",
     "/gpt_v31_trade_decision/",
 )
 READ_AUTH_BROWSER_LOGIN_PREFIXES = (
@@ -486,6 +492,8 @@ class TradingSignal(BaseModel):
     resistance_near: Optional[bool] = Field(default=None)
     earnings_soon: Optional[bool] = Field(default=None)
     event_risk: Optional[bool] = Field(default=None)
+    ex_dividend_soon: Optional[bool] = Field(default=None)
+    assignment_acceptable: Optional[bool] = Field(default=None)
     has_position: Optional[bool] = Field(default=None)
     position_delta: Optional[float] = Field(default=None)
     exposure_usd: Optional[float] = Field(default=None)
@@ -527,6 +535,8 @@ class OptionEvalRequest(BaseModel):
     support_near: Optional[bool] = None
     resistance_near: Optional[bool] = None
     earnings_soon: Optional[bool] = None
+    ex_dividend_soon: Optional[bool] = None
+    assignment_acceptable: Optional[bool] = None
 
 
 class PortfolioInput(BaseModel):
@@ -3310,6 +3320,8 @@ def technical_core(timeframes):
         "resistance_near": get_latest_field(active, "resistance_near"),
         "earnings_soon": get_latest_field(active, "earnings_soon"),
         "event_risk": get_latest_field(active, "event_risk"),
+        "ex_dividend_soon": get_latest_field(active, "ex_dividend_soon"),
+        "assignment_acceptable": get_latest_field(active, "assignment_acceptable"),
         "has_position": get_latest_field(active, "has_position"),
         "position_delta": get_latest_field(active, "position_delta"),
         "exposure_usd": get_latest_field(active, "exposure_usd"),
@@ -5153,6 +5165,10 @@ def evaluate_option(req: OptionEvalRequest):
 
     if req.earnings_soon is not None and technical.get("available"):
         technical["classification"]["latest_data"]["earnings_soon"] = req.earnings_soon
+    if req.ex_dividend_soon is not None and technical.get("available"):
+        technical["classification"]["latest_data"]["ex_dividend_soon"] = req.ex_dividend_soon
+    if req.assignment_acceptable is not None and technical.get("available"):
+        technical["classification"]["latest_data"]["assignment_acceptable"] = req.assignment_acceptable
 
     commander = strategy_commander(ticker, technical, ibkr, market)
 
@@ -7549,6 +7565,8 @@ def merge_manual_overrides_into_classification(ticker, classification):
         "iv_percentile",
         "earnings_soon",
         "event_risk",
+        "ex_dividend_soon",
+        "assignment_acceptable",
         "support_near",
         "resistance_near",
         "rsi",
@@ -7638,6 +7656,8 @@ async def manual_market_context(request: Request):
             "iv_percentile",
             "earnings_soon",
             "event_risk",
+            "ex_dividend_soon",
+            "assignment_acceptable",
             "support_near",
             "resistance_near",
             "rsi",
@@ -7705,7 +7725,9 @@ def gpt_missing_data():
                     "range_20d": True,
                     "range_breakout": False,
                     "earnings_soon": False,
-                    "event_risk": False
+                    "event_risk": False,
+                    "ex_dividend_soon": False,
+                    "assignment_acceptable": True
                 }
             }
         ],
@@ -7749,6 +7771,8 @@ def ticker_has_manual_override(ticker):
         "iv_percentile",
         "earnings_soon",
         "event_risk",
+        "ex_dividend_soon",
+        "assignment_acceptable",
         "support_near",
         "resistance_near",
         "rsi",
@@ -7896,6 +7920,8 @@ TECHNICAL_SNAPSHOT_FIELDS = [
     "iv_percentile",
     "earnings_soon",
     "event_risk",
+    "ex_dividend_soon",
+    "assignment_acceptable",
     "institutional_flow_bias",
     "options_flow_bias",
 ]
@@ -8688,6 +8714,8 @@ BOOLEAN_NUMERIC_FIELDS_V15_1 = [
     "resistance_near",
     "earnings_soon",
     "event_risk",
+    "ex_dividend_soon",
+    "assignment_acceptable",
 ]
 
 NUMERIC_FIELDS_V15_1 = [
@@ -10038,7 +10066,7 @@ _STRATEGY_SIGNAL_SAFE_FIELDS = {
     "ticker", "chart_ticker", "timeframe", "strategy_context", "trend", "score",
     "rsi", "adx", "support_near", "resistance_near", "range_20d", "range_breakout",
     "vwap_position", "volume_relative", "iv_rank", "iv_percentile", "earnings_soon",
-    "event_risk", "market_regime", "vix", "atr_pct", "opening_range_high",
+    "event_risk", "ex_dividend_soon", "assignment_acceptable", "market_regime", "vix", "atr_pct", "opening_range_high",
     "opening_range_low", "vwap_distance_atr", "relative_strength_ratio",
     "market_direction_auto", "canslim", "canslim_score", "canslim_passes",
     "canslim_rating", "source", "original_source", "contract_version", "received_at",
@@ -12347,6 +12375,8 @@ def _v211_normalize_technical_payload(payload):
     range_breakout = payload.get("range_breakout") or payload.get("breakout")
     earnings_soon = payload.get("earnings_soon") or payload.get("earnings")
     event_risk = payload.get("event_risk")
+    ex_dividend_soon = payload.get("ex_dividend_soon") or payload.get("ex_dividend")
+    assignment_acceptable = payload.get("assignment_acceptable")
 
     normalized = {
         "ticker": ticker,
@@ -12365,6 +12395,8 @@ def _v211_normalize_technical_payload(payload):
         "range_breakout": _v211_safe_bool(range_breakout, False),
         "earnings_soon": _v211_safe_bool(earnings_soon, False),
         "event_risk": _v211_safe_bool(event_risk, False),
+        "ex_dividend_soon": _v211_safe_bool(ex_dividend_soon, False),
+        "assignment_acceptable": _v211_safe_bool(assignment_acceptable, None),
         "raw": payload,
     }
 
@@ -20022,10 +20054,10 @@ _V31_OUTCOME_EVALUATION_VERSION = "v31_pending_outcome_auto_eval_v1"
 _V31_RISK_PROFILE_PRESETS = {
     "conservative": {
         "profile_name": "conservative_manual_review",
-        "min_dte": 7,
+        "min_dte": 25,
         "max_dte": 60,
-        "min_abs_delta": 0.08,
-        "max_abs_delta": 0.30,
+        "min_abs_delta": 0.10,
+        "max_abs_delta": 0.25,
         "max_spread_pct": 12.0,
         "max_abs_spread": 0.25,
         "min_bid": 0.10,
@@ -20034,13 +20066,13 @@ _V31_RISK_PROFILE_PRESETS = {
     },
     "balanced": {
         "profile_name": "balanced_manual_review",
-        "min_dte": 1,
-        "max_dte": 75,
-        "min_abs_delta": 0.05,
-        "max_abs_delta": 0.40,
-        "max_spread_pct": _V29_MAX_SPREAD_PCT,
-        "max_abs_spread": _V29_MAX_ABS_SPREAD,
-        "min_bid": _V29_MIN_BID,
+        "min_dte": 25,
+        "max_dte": 60,
+        "min_abs_delta": 0.10,
+        "max_abs_delta": 0.30,
+        "max_spread_pct": 18.0,
+        "max_abs_spread": 0.35,
+        "min_bid": 0.05,
         "min_option_score": _V29_MIN_OPTION_SCORE,
         "min_technical_score": _V29_MIN_TECH_SCORE,
     },
@@ -20067,6 +20099,33 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_bid": 0.01,
         "min_option_score": 40,
         "min_technical_score": 40,
+    },
+}
+
+_V31_STRATEGY_RISK_GUARDS = {
+    "CASH_SECURED_PUT": {
+        "min_dte": 30,
+        "max_dte": 60,
+        "min_abs_delta": 0.14,
+        "max_abs_delta": 0.22,
+        "max_spread_pct": 18.0,
+        "min_bid": 0.05,
+    },
+    "NAKED_PUT": {
+        "min_dte": 30,
+        "max_dte": 60,
+        "min_abs_delta": 0.14,
+        "max_abs_delta": 0.22,
+        "max_spread_pct": 18.0,
+        "min_bid": 0.05,
+    },
+    "COVERED_CALL": {
+        "min_dte": 25,
+        "max_dte": 65,
+        "min_abs_delta": 0.15,
+        "max_abs_delta": 0.25,
+        "max_spread_pct": 18.0,
+        "min_bid": 0.05,
     },
 }
 
@@ -20184,6 +20243,23 @@ def _v31_strategy_version(d):
     if "INTRADAY" in strategy or "FUTURES" in strategy:
         return "intraday_index_futures_v31_manual_review"
     return "strategy_v31_manual_review"
+
+
+def _v31_ticker_risk_context(decision):
+    market = dict(decision.get("market") or {})
+    technical = decision.get("technical") if isinstance(decision.get("technical"), dict) else {}
+    raw = technical.get("raw") if isinstance(technical.get("raw"), dict) else {}
+
+    for key in [
+        "earnings_soon",
+        "event_risk",
+        "ex_dividend_soon",
+        "assignment_acceptable",
+    ]:
+        if raw.get(key) is not None:
+            market[key] = raw.get(key)
+
+    return market
 
 
 def _v31_env_float(name, default):
@@ -20418,6 +20494,78 @@ def _v31_evaluate_risk_profile(decision, profile=None):
             "Technical score is below the active profile minimum.",
         ))
 
+    strategy_guard = _V31_STRATEGY_RISK_GUARDS.get(strategy)
+    if strategy_guard:
+        if dte is not None:
+            if dte < strategy_guard["min_dte"] and "RISK_PROFILE_DTE_TOO_LOW" not in blockers:
+                blockers.append("RISK_PROFILE_DTE_TOO_LOW")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_DTE_TOO_LOW",
+                    "selected_contract.dte",
+                    dte,
+                    ">=",
+                    strategy_guard["min_dte"],
+                    True,
+                    "Contract DTE is below the strategy-specific manual-review minimum.",
+                ))
+            if dte > strategy_guard["max_dte"] and "RISK_PROFILE_DTE_TOO_HIGH" not in blockers:
+                blockers.append("RISK_PROFILE_DTE_TOO_HIGH")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_DTE_TOO_HIGH",
+                    "selected_contract.dte",
+                    dte,
+                    "<=",
+                    strategy_guard["max_dte"],
+                    True,
+                    "Contract DTE is above the strategy-specific manual-review maximum.",
+                ))
+        if delta is not None:
+            abs_delta = abs(delta)
+            if abs_delta < strategy_guard["min_abs_delta"] and "RISK_PROFILE_DELTA_TOO_LOW" not in blockers:
+                blockers.append("RISK_PROFILE_DELTA_TOO_LOW")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_DELTA_TOO_LOW",
+                    "selected_contract.abs_delta",
+                    round(abs_delta, 6),
+                    ">=",
+                    strategy_guard["min_abs_delta"],
+                    True,
+                    "Absolute delta is below the strategy-specific manual-review range.",
+                ))
+            if abs_delta > strategy_guard["max_abs_delta"] and "RISK_PROFILE_DELTA_TOO_HIGH" not in blockers:
+                blockers.append("RISK_PROFILE_DELTA_TOO_HIGH")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_DELTA_TOO_HIGH",
+                    "selected_contract.abs_delta",
+                    round(abs_delta, 6),
+                    "<=",
+                    strategy_guard["max_abs_delta"],
+                    True,
+                    "Absolute delta is above the strategy-specific manual-review range.",
+                ))
+        if spread_pct is not None and spread_pct > strategy_guard["max_spread_pct"] and "RISK_PROFILE_SPREAD_PCT_TOO_WIDE" not in blockers:
+            blockers.append("RISK_PROFILE_SPREAD_PCT_TOO_WIDE")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_SPREAD_PCT_TOO_WIDE",
+                "selected_contract.spread_pct",
+                spread_pct,
+                "<=",
+                strategy_guard["max_spread_pct"],
+                True,
+                "Bid/ask spread percentage is wider than the strategy-specific manual-review maximum.",
+            ))
+        if bid is not None and bid < strategy_guard["min_bid"] and "RISK_PROFILE_BID_TOO_LOW" not in blockers:
+            blockers.append("RISK_PROFILE_BID_TOO_LOW")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_BID_TOO_LOW",
+                "selected_contract.bid",
+                bid,
+                ">=",
+                strategy_guard["min_bid"],
+                True,
+                "Bid is below the strategy-specific executable premium floor.",
+            ))
+
     if blockers:
         notes.append("Risk profile blocked manual-review readiness; no execution is authorized.")
     else:
@@ -20470,6 +20618,47 @@ def _v31_apply_risk_profile_gate(decision):
             "Revisar risk_profile.blockers antes de considerar revision manual."
             f"{detail_text}"
         )
+    return decision
+
+
+def _v31_apply_event_assignment_gate(decision):
+    if decision.get("final_state") != "ENTRY_READY":
+        return decision
+
+    market = _v31_ticker_risk_context(decision)
+    strategy = _v29_safe_upper(decision.get("strategy"), "UNKNOWN")
+    blockers = list(decision.get("blockers") or [])
+    triggered = []
+
+    if bool(market.get("earnings_soon")) and "EARNINGS_SOON" not in blockers:
+        blockers.append("EARNINGS_SOON")
+        triggered.append("EARNINGS_SOON")
+    if bool(market.get("event_risk")) and "EVENT_RISK_ACTIVE" not in blockers:
+        blockers.append("EVENT_RISK_ACTIVE")
+        triggered.append("EVENT_RISK_ACTIVE")
+    if strategy == "COVERED_CALL" and bool(market.get("ex_dividend_soon")) and "EX_DIVIDEND_WITHIN_WINDOW" not in blockers:
+        blockers.append("EX_DIVIDEND_WITHIN_WINDOW")
+        triggered.append("EX_DIVIDEND_WITHIN_WINDOW")
+    if strategy in {"COVERED_CALL", "NAKED_PUT", "CASH_SECURED_PUT"} and market.get("assignment_acceptable") is False and "ASSIGNMENT_UNACCEPTABLE" not in blockers:
+        blockers.append("ASSIGNMENT_UNACCEPTABLE")
+        triggered.append("ASSIGNMENT_UNACCEPTABLE")
+
+    if not triggered:
+        decision["market"] = market
+        return decision
+
+    decision["market"] = market
+    decision["final_state"] = "RISK_BLOCKED"
+    decision["decision"] = "RISK_BLOCKED"
+    decision["main_blocker"] = "RISK_BLOCKED"
+    decision["risk_blocker"] = triggered[0]
+    decision["blockers"] = blockers
+    decision["manual_review_ready"] = False
+    decision["risk_status"] = "RISK_BLOCKED"
+    decision["explanation"] = (
+        f"{decision.get('ticker')}: RISK_BLOCKED por riesgo de evento/assignment "
+        f"({', '.join(triggered)})."
+    )
     return decision
 
 
@@ -21969,6 +22158,492 @@ def _v31_operating_suite_payload():
     }
 
 
+_V32_OPERATOR_EVENT_VERSION = "v32_operator_event_v1"
+_V32_OPERATOR_ACTIONS = (
+    "ACK_ALERT",
+    "MARK_REVIEWING",
+    "MARK_WATCHLIST",
+    "REJECT_SETUP",
+    "APPROVE_MANUAL_REVIEW",
+    "MARK_EXPIRED",
+    "CLOSE_ALERT",
+    "JOURNAL_NOTE",
+)
+_V32_OPERATOR_ACTION_TO_MANUAL_STATUS = {
+    "MARK_REVIEWING": "REVIEWING",
+    "MARK_WATCHLIST": "WATCHLIST",
+    "REJECT_SETUP": "REJECTED",
+    "APPROVE_MANUAL_REVIEW": "APPROVED_FOR_MANUAL_TRADE",
+    "MARK_EXPIRED": "EXPIRED",
+}
+
+
+def _v32_operator_events_file():
+    return _V29_RUNTIME_DIR / "v32_operator_events.json"
+
+
+def _v32_load_operator_events():
+    data = _v29_load_json_file(_v32_operator_events_file())
+    return data if isinstance(data, list) else []
+
+
+def _v32_save_operator_events(items):
+    path = _v32_operator_events_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump((items or [])[-10000:], f, indent=2)
+    return True
+
+
+def _v32_operator_alert_id(item):
+    item = item if isinstance(item, dict) else {}
+    if item.get("alert_id"):
+        return str(item.get("alert_id"))
+    signal = item.get("signal_id") or item.get("manual_review_signal_id")
+    if signal:
+        return str(signal)
+    ticker = _v29_safe_upper(item.get("ticker"), "UNKNOWN")
+    strategy = _v29_safe_upper(item.get("strategy"), "UNKNOWN")
+    state = _v29_safe_upper(item.get("final_state") or item.get("state"), "UNKNOWN")
+    day = _v29_now()[:10]
+    return f"ALERT-{day}-{ticker}-{strategy}-{state}"
+
+
+def _v32_operator_alert_from_decision(item):
+    item = item if isinstance(item, dict) else {}
+    contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+    state = _v29_safe_upper(item.get("final_state"), "UNKNOWN")
+    severity = "INFO"
+    if state == "ENTRY_READY" or item.get("manual_review_ready") is True:
+        severity = "ACTION"
+    elif state in {"RISK_BLOCKED"}:
+        severity = "RISK"
+    elif state.startswith("WAIT_"):
+        severity = "WATCH"
+    return {
+        "alert_id": _v32_operator_alert_id(item),
+        "ticker": item.get("ticker"),
+        "strategy": item.get("strategy"),
+        "severity": severity,
+        "state": state,
+        "main_blocker": item.get("main_blocker"),
+        "manual_review_ready": item.get("manual_review_ready") is True,
+        "selected_contract": {
+            "strike": contract.get("strike"),
+            "expiration": contract.get("expiration"),
+            "dte": contract.get("dte"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid": contract.get("mid"),
+            "spread_pct": contract.get("spread_pct"),
+            "delta": contract.get("delta"),
+        },
+        "next_required_action": item.get("next_required_action") or item.get("explanation") or item.get("main_blocker"),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_latest_operator_event_by_alert(events):
+    latest = {}
+    for event in events or []:
+        alert_id = event.get("alert_id")
+        if alert_id:
+            latest[alert_id] = event
+    return latest
+
+
+def _v32_operator_active_alerts(command, events=None, limit=12):
+    events = events or []
+    source_items = []
+    for key in ("top_recommendations", "top_manual_review", "blocked_or_waiting", "watchlist"):
+        value = command.get(key) if isinstance(command, dict) else []
+        if isinstance(value, list):
+            source_items.extend([item for item in value if isinstance(item, dict)])
+    seen = set()
+    latest = _v32_latest_operator_event_by_alert(events)
+    alerts = []
+    for item in source_items:
+        alert = _v32_operator_alert_from_decision(item)
+        alert_id = alert.get("alert_id")
+        if alert_id in seen:
+            continue
+        seen.add(alert_id)
+        last_event = latest.get(alert_id)
+        alert["operator_status"] = (last_event or {}).get("operator_status") or "NEW"
+        alert["last_operator_action"] = (last_event or {}).get("action")
+        alert["last_operator_reason"] = (last_event or {}).get("reason")
+        alerts.append(alert)
+    severity_rank = {"ACTION": 0, "RISK": 1, "WATCH": 2, "INFO": 3}
+    return sorted(alerts, key=lambda item: severity_rank.get(item.get("severity"), 9))[:limit]
+
+
+def _v32_operator_next_actions_from_context(command, readiness, active_alerts, manual_reviews, learning):
+    summary = command.get("summary") if isinstance(command.get("summary"), dict) else {}
+    readiness_status = str((readiness or {}).get("status") or command.get("operational_readiness") or command.get("status") or "UNKNOWN")
+    actions = []
+    action_alerts = [item for item in active_alerts if item.get("severity") == "ACTION"]
+    risk_alerts = [item for item in active_alerts if item.get("severity") == "RISK"]
+    watch_alerts = [item for item in active_alerts if item.get("severity") == "WATCH"]
+
+    if action_alerts:
+        tickers = ", ".join([str(item.get("ticker")) for item in action_alerts[:5] if item.get("ticker")])
+        actions.append({
+            "priority": 1,
+            "kind": "MANUAL_REVIEW",
+            "label": "Revisar setups ENTRY_READY",
+            "detail": f"Hay {len(action_alerts)} setup(s) para revision manual: {tickers}. Valida liquidez, spread, evento, riesgo y ticket broker antes de decidir.",
+            "suggested_gpt_actions": ["MARK_REVIEWING", "MARK_WATCHLIST", "REJECT_SETUP", "APPROVE_MANUAL_REVIEW"],
+            "endpoint": "POST /gpt_v32_operator_event",
+        })
+    elif readiness_status in {"NO_DATA", "BLOCKED", "STALE_DATA"} or str(command.get("status") or "").upper() == "NO_DATA":
+        actions.append({
+            "priority": 1,
+            "kind": "DATA_REFRESH",
+            "label": "Refrescar datos del motor",
+            "detail": "No hay datos suficientes o el snapshot esta incompleto. Abre/valida TWS-IBKR, refresca snapshots y vuelve a consultar el radar.",
+            "suggested_gpt_actions": ["JOURNAL_NOTE"],
+            "endpoint": "GET /gpt_v32_operator_today",
+        })
+    elif watch_alerts:
+        tickers = ", ".join([str(item.get("ticker")) for item in watch_alerts[:5] if item.get("ticker")])
+        actions.append({
+            "priority": 2,
+            "kind": "WATCHLIST",
+            "label": "Monitorear setups en espera",
+            "detail": f"Hay {len(watch_alerts)} setup(s) en espera: {tickers}. No convertir WAIT_* en entrada; espera datos/ventana/confirmacion.",
+            "suggested_gpt_actions": ["MARK_WATCHLIST", "JOURNAL_NOTE"],
+            "endpoint": "POST /gpt_v32_operator_event",
+        })
+    else:
+        actions.append({
+            "priority": 3,
+            "kind": "STANDBY",
+            "label": "Sin accion inmediata",
+            "detail": "No hay ENTRY_READY activo. Mantener monitoreo y revisar de nuevo durante una ventana valida.",
+            "suggested_gpt_actions": ["JOURNAL_NOTE"],
+            "endpoint": "GET /gpt_v32_operator_today",
+        })
+
+    if risk_alerts:
+        actions.append({
+            "priority": 1,
+            "kind": "RISK_REVIEW",
+            "label": "Revisar bloqueos de riesgo",
+            "detail": f"Hay {len(risk_alerts)} alerta(s) de riesgo. No aprobar; documenta blocker o descarta el setup.",
+            "suggested_gpt_actions": ["REJECT_SETUP", "JOURNAL_NOTE"],
+            "endpoint": "POST /gpt_v32_operator_event",
+        })
+
+    pending_reviews = int((manual_reviews.get("by_status") or {}).get("REVIEWING") or 0)
+    if pending_reviews:
+        actions.append({
+            "priority": 2,
+            "kind": "FOLLOW_UP_REVIEWS",
+            "label": "Cerrar revisiones abiertas",
+            "detail": f"Hay {pending_reviews} revision(es) marcadas como REVIEWING. Cierra como WATCHLIST, REJECTED, EXPIRED o APPROVED_FOR_MANUAL_TRADE.",
+            "suggested_gpt_actions": ["MARK_WATCHLIST", "REJECT_SETUP", "MARK_EXPIRED", "APPROVE_MANUAL_REVIEW"],
+            "endpoint": "POST /gpt_v32_operator_event",
+        })
+
+    if int(learning.get("unevaluated_count") or 0) > 0:
+        actions.append({
+            "priority": 4,
+            "kind": "POST_CLOSE_LEARNING",
+            "label": "Evaluar outcomes post-cierre",
+            "detail": "Hay revisiones sin evaluar. Despues del cierre corre evaluacion dry-run y luego write solo con snapshot fresco.",
+            "suggested_gpt_actions": ["JOURNAL_NOTE"],
+            "endpoint": "POST /v31_evaluate_manual_reviews",
+        })
+
+    return sorted(actions, key=lambda item: item.get("priority", 99))
+
+
+def _v32_operator_answer_text(payload):
+    status = payload.get("status") or "UNKNOWN"
+    active = payload.get("active_alerts") or []
+    actions = payload.get("next_actions") or []
+    action_count = len([item for item in active if item.get("severity") == "ACTION"])
+    risk_count = len([item for item in active if item.get("severity") == "RISK"])
+    watch_count = len([item for item in active if item.get("severity") == "WATCH"])
+    first = actions[0] if actions else {}
+    lines = [
+        f"Modo operador: {status}. Alertas: {action_count} action, {risk_count} risk, {watch_count} watch.",
+        f"Siguiente paso: {first.get('label') or 'Sin accion inmediata'}. {first.get('detail') or ''}",
+    ]
+    if active:
+        lines.append("")
+        lines.append("Alertas activas:")
+        for alert in active[:5]:
+            lines.append(
+                "- {ticker} | {severity} | {state} | blocker {blocker} | status {operator_status}".format(
+                    ticker=alert.get("ticker"),
+                    severity=alert.get("severity"),
+                    state=alert.get("state"),
+                    blocker=alert.get("main_blocker") or "NONE",
+                    operator_status=alert.get("operator_status"),
+                )
+            )
+    lines.extend([
+        "",
+        "Puedes pedirme: revisar, watchlist, rechazar, expirar, aprobar para revision manual, cerrar alerta o registrar nota.",
+        "Decision support solamente. Esto no autoriza ordenes ni ejecucion automatica.",
+    ])
+    return "\n".join(lines)
+
+
+def _v32_operator_today_payload(limit=12):
+    try:
+        limit = max(1, min(int(limit or 12), 25))
+    except Exception:
+        limit = 12
+    command = _v31_command_center_payload()
+    readiness = _v31_trading_day_readiness_payload()
+    manual_reviews = _v31_manual_reviews_payload(limit=100)
+    learning = _v31_manual_review_learning_payload(limit=500)
+    outcome_status = {
+        "tracked_entry_ready_signals": 0,
+        "pending_entry_ready_signals": 0,
+    }
+    outcome_data = _durable_supabase_fetch("outcome", limit=500)
+    if outcome_data is None:
+        outcome_data = load_outcomes_from_file()
+    tracked = [
+        item for item in outcome_data or []
+        if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
+    ]
+    outcome_status["tracked_entry_ready_signals"] = len(tracked)
+    outcome_status["pending_entry_ready_signals"] = len([
+        item for item in tracked if str(item.get("outcome") or "").upper() == "PENDING"
+    ])
+    events = _v32_load_operator_events()
+    active_alerts = _v32_operator_active_alerts(command, events=events, limit=limit)
+    next_actions = _v32_operator_next_actions_from_context(
+        command,
+        readiness,
+        active_alerts,
+        manual_reviews,
+        learning,
+    )
+    payload = {
+        "engine": "V32_OPERATOR_ASSISTANT",
+        "operator_version": "v32_operator_assistant_v1",
+        "generated_at": _v29_now(),
+        "status": readiness.get("status") or command.get("operational_readiness") or command.get("status"),
+        "command_center": {
+            "status": command.get("status"),
+            "operational_readiness": command.get("operational_readiness"),
+            "summary": command.get("summary") or {},
+            "data_readiness": command.get("data_readiness") or {},
+        },
+        "active_alerts": active_alerts,
+        "next_actions": next_actions,
+        "manual_review": {
+            "review_count": manual_reviews.get("review_count"),
+            "by_status": manual_reviews.get("by_status") or {},
+            "allowed_statuses": manual_reviews.get("allowed_statuses") or list(_V31_MANUAL_REVIEW_STATUSES),
+            "record_endpoint": "POST /gpt_v32_operator_event",
+        },
+        "outcome_tracking": outcome_status,
+        "learning": {
+            "evaluated_count": learning.get("evaluated_count"),
+            "unevaluated_count": learning.get("unevaluated_count"),
+            "needs_more_data": learning.get("needs_more_data"),
+            "avg_paper_pnl_r": learning.get("avg_paper_pnl_r"),
+        },
+        "operator_event_count": len(events),
+        "recent_operator_events": events[-20:],
+        "allowed_operator_actions": list(_V32_OPERATOR_ACTIONS),
+        "gpt_usage": {
+            "read_today": "GET /gpt_v32_operator_today",
+            "record_action": "POST /gpt_v32_operator_event",
+            "instruction": "Primero lee operator_today. Para registrar una decision, usa operator_event con action, ticker/alert_id y reason.",
+        },
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    payload["answer_to_user"] = _v32_operator_answer_text(payload)
+    payload["response_mode"] = "operator_guided_answer"
+    return payload
+
+
+def _v32_operator_event_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    action = _v29_safe_upper(payload.get("action"), "")
+    if action not in _V32_OPERATOR_ACTIONS:
+        raise ValueError("INVALID_OPERATOR_ACTION")
+    ticker = _v29_safe_upper(payload.get("ticker"), "")
+    reason = str(payload.get("reason") or payload.get("note") or "")[:2000]
+    if action not in {"ACK_ALERT", "CLOSE_ALERT", "JOURNAL_NOTE"} and not ticker:
+        raise ValueError("OPERATOR_EVENT_TICKER_REQUIRED")
+    if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"} and not reason:
+        raise ValueError("OPERATOR_EVENT_REASON_REQUIRED")
+    now = _v29_now()
+    raw_alert = {
+        "alert_id": payload.get("alert_id"),
+        "ticker": ticker or payload.get("ticker"),
+        "strategy": payload.get("strategy"),
+        "final_state": payload.get("state") or payload.get("final_state"),
+    }
+    alert_id = _v32_operator_alert_id(raw_alert)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    event = {
+        "id": payload.get("event_id") or f"OE-{stamp}",
+        "event_id": payload.get("event_id") or f"OE-{stamp}",
+        "operator_event_version": _V32_OPERATOR_EVENT_VERSION,
+        "recorded_at": now,
+        "action": action,
+        "operator_status": {
+            "ACK_ALERT": "ACKNOWLEDGED",
+            "MARK_REVIEWING": "REVIEWING",
+            "MARK_WATCHLIST": "WATCHLIST",
+            "REJECT_SETUP": "REJECTED",
+            "APPROVE_MANUAL_REVIEW": "APPROVED_FOR_MANUAL_REVIEW",
+            "MARK_EXPIRED": "EXPIRED",
+            "CLOSE_ALERT": "CLOSED",
+            "JOURNAL_NOTE": "NOTE_RECORDED",
+        }.get(action, action),
+        "alert_id": alert_id,
+        "ticker": ticker or None,
+        "strategy": payload.get("strategy"),
+        "reason": reason,
+        "actor": str(payload.get("actor") or "gpt_operator")[:80],
+        "source": str(payload.get("source") or "gpt_v32_operator_event")[:120],
+        "manual_review_recorded": False,
+        "manual_review_result": None,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    manual_status = _V32_OPERATOR_ACTION_TO_MANUAL_STATUS.get(action)
+    if manual_status:
+        review_payload = {
+            "ticker": ticker,
+            "status": manual_status,
+            "reason": reason or f"Operador marco {action}.",
+            "actor": event["actor"],
+            "source": event["source"],
+            "manual_broker_validation_override": bool(payload.get("manual_broker_validation_override")),
+            "manual_trade_review_only": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        manual_result = _v31_record_manual_review(review_payload)
+        event["manual_review_recorded"] = True
+        event["manual_review_id"] = (manual_result.get("review") or {}).get("review_id")
+        event["manual_review_status"] = manual_status
+        event["manual_review_result"] = {
+            "status": manual_result.get("status"),
+            "review_id": event.get("manual_review_id"),
+            "ticker": ticker,
+            "manual_status": manual_status,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    return event
+
+
+def _v32_record_operator_event(payload):
+    event = _v32_operator_event_payload(payload)
+    events = _v32_load_operator_events()
+    events.append(event)
+    _v32_save_operator_events(events)
+    audit_event = _record_audit_event(
+        "V32_OPERATOR_EVENT_RECORDED",
+        {
+            "event_id": event.get("event_id"),
+            "alert_id": event.get("alert_id"),
+            "action": event.get("action"),
+            "ticker": event.get("ticker"),
+            "manual_review_recorded": event.get("manual_review_recorded"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
+        actor=event.get("actor") or "gpt_operator",
+        source=event.get("source") or "gpt_v32_operator_event",
+    )
+    return {
+        "engine": "V32_OPERATOR_ASSISTANT",
+        "status": "RECORDED",
+        "event": event,
+        "audit_event": audit_event,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_operator_dashboard_html():
+    payload = _v32_operator_today_payload(limit=12)
+    actions = "".join(
+        "<li><strong>{label}</strong><br>{detail}</li>".format(
+            label=_v29_html_escape(item.get("label")),
+            detail=_v29_html_escape(item.get("detail")),
+        )
+        for item in payload.get("next_actions") or []
+    )
+    alerts = []
+    for alert in payload.get("active_alerts") or []:
+        contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+        alerts.append("""
+        <article class="alert {severity}">
+          <header><strong>{ticker}</strong><span>{severity}</span></header>
+          <div class="state">{state} · {strategy}</div>
+          <dl>
+            <div><dt>Strike</dt><dd>{strike}</dd></div>
+            <div><dt>Exp</dt><dd>{expiration}</dd></div>
+            <div><dt>Bid/Ask</dt><dd>{bid}/{ask}</dd></div>
+            <div><dt>Spread</dt><dd>{spread_pct}</dd></div>
+          </dl>
+          <p>{next_action}</p>
+          <small>Status operador: {operator_status}</small>
+        </article>
+        """.format(
+            severity=_v29_html_escape(str(alert.get("severity") or "INFO").lower()),
+            ticker=_v29_html_escape(alert.get("ticker")),
+            state=_v29_html_escape(alert.get("state")),
+            strategy=_v29_html_escape(alert.get("strategy")),
+            strike=_v29_html_escape(contract.get("strike")),
+            expiration=_v29_html_escape(contract.get("expiration")),
+            bid=_v29_html_escape(contract.get("bid")),
+            ask=_v29_html_escape(contract.get("ask")),
+            spread_pct=_v29_html_escape(contract.get("spread_pct")),
+            next_action=_v29_html_escape(alert.get("next_required_action")),
+            operator_status=_v29_html_escape(alert.get("operator_status")),
+        ))
+    return """
+    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>V32 Operator</title>
+    <style>
+      body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#111827; }}
+      .hero {{ background:#111827; color:white; padding:24px 30px; }}
+      .hero a {{ color:#bfdbfe; font-weight:800; }}
+      .wrap {{ max-width:1180px; margin:0 auto; padding:22px 18px 44px; }}
+      .summary {{ background:#eef2ff; border:1px solid #c7d2fe; border-radius:8px; padding:14px; white-space:pre-wrap; line-height:1.42; }}
+      .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin-top:16px; }}
+      .alert {{ background:white; border:1px solid #e5e7eb; border-left:6px solid #64748b; border-radius:8px; padding:14px; }}
+      .alert.action {{ border-left-color:#16a34a; }} .alert.risk {{ border-left-color:#dc2626; }} .alert.watch {{ border-left-color:#2563eb; }}
+      .alert header {{ display:flex; justify-content:space-between; gap:10px; font-size:22px; }}
+      .alert header span {{ font-size:12px; font-weight:900; color:#64748b; }}
+      .state {{ color:#475569; font-weight:800; margin:4px 0 10px; }}
+      dl {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:0; }}
+      dl div {{ border:1px solid #e5e7eb; border-radius:8px; padding:8px; }}
+      dt {{ color:#64748b; font-size:11px; font-weight:900; }} dd {{ margin:2px 0 0; font-weight:900; overflow-wrap:anywhere; }}
+      .card {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:14px; margin-top:16px; }}
+      li {{ margin-bottom:10px; }}
+    </style></head><body>
+      <div class="hero"><h1>V32 Operator</h1><div><a href="/gpt_v32_operator_today">GPT JSON</a> · <a href="/v31_manual_review_inbox">Manual Inbox</a> · <a href="/v31_manual_review_learning_dashboard">Learning</a></div></div>
+      <main class="wrap">
+        <div class="summary">{answer}</div>
+        <section class="card"><h2>Siguientes acciones</h2><ul>{actions}</ul></section>
+        <section class="grid">{alerts}</section>
+      </main>
+    </body></html>
+    """.format(
+        answer=_v29_html_escape(payload.get("answer_to_user")),
+        actions=actions or "<li>Sin acciones pendientes.</li>",
+        alerts="".join(alerts) or '<div class="card">Sin alertas activas.</div>',
+    )
+
+
 def _v31_learning_notify_payload(force=False, to_email=None, dry_run=False, limit=500):
     learning = _v31_manual_review_learning_payload(limit=limit)
     content = _v31_learning_email_content(learning)
@@ -22487,11 +23162,15 @@ def _v31_canonical_decision(ticker):
             "can_operate": False,
         },
         "technical": d.get("technical"),
-        "market": d.get("market"),
+        "market": _v31_ticker_risk_context({
+            "market": d.get("market"),
+            "technical": d.get("technical"),
+        }),
         "explanation": d.get("executive_summary") or d.get("action"),
         "risk_note": "Decision support solamente. No es orden ni autorizacion de ejecucion.",
         "master_source": d.get("master_source"),
     }
+    decision = _v31_apply_event_assignment_gate(decision)
     decision = _v31_apply_risk_profile_gate(decision)
     decision = _v31_apply_broker_check_gate(decision)
     return _v31_finalize_decision_support_contract(decision)
@@ -24774,6 +25453,107 @@ async def v31_risk_profile(profile: str = ""):
 @app.get("/v31_operating_suite")
 async def v31_operating_suite():
     return _v31_operating_suite_payload()
+
+
+@app.get("/v32_operator_today")
+async def v32_operator_today(limit: int = 12):
+    return _v32_operator_today_payload(limit=limit)
+
+
+@app.get("/gpt_v32_operator_today")
+async def gpt_v32_operator_today(limit: int = 12):
+    payload = _v32_operator_today_payload(limit=limit)
+    _record_audit_event(
+        "GPT_V32_OPERATOR_TODAY_SERVED",
+        {
+            "status": payload.get("status"),
+            "active_alert_count": len(payload.get("active_alerts") or []),
+            "next_action_count": len(payload.get("next_actions") or []),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v32_operator_today",
+    )
+    return payload
+
+
+@app.get("/v32_operator_next_actions")
+async def v32_operator_next_actions(limit: int = 12):
+    payload = _v32_operator_today_payload(limit=limit)
+    return {
+        "engine": "V32_OPERATOR_ASSISTANT",
+        "generated_at": payload.get("generated_at"),
+        "status": payload.get("status"),
+        "next_actions": payload.get("next_actions") or [],
+        "active_alerts": payload.get("active_alerts") or [],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v32_operator_events")
+async def v32_operator_events(limit: int = 100):
+    try:
+        limit = max(1, min(int(limit or 100), 1000))
+    except Exception:
+        limit = 100
+    events = _v32_load_operator_events()
+    return {
+        "engine": "V32_OPERATOR_ASSISTANT",
+        "operator_event_version": _V32_OPERATOR_EVENT_VERSION,
+        "generated_at": _v29_now(),
+        "event_count": len(events),
+        "recent_events": events[-limit:],
+        "allowed_operator_actions": list(_V32_OPERATOR_ACTIONS),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.post("/v32_operator_event")
+async def v32_operator_event(payload: dict):
+    try:
+        return _v32_record_operator_event(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "allowed_operator_actions": list(_V32_OPERATOR_ACTIONS),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            },
+        )
+
+
+@app.post("/gpt_v32_operator_event")
+async def gpt_v32_operator_event(payload: dict):
+    try:
+        result = _v32_record_operator_event({
+            **(payload or {}),
+            "source": "gpt_v32_operator_event",
+            "actor": (payload or {}).get("actor") or "super_engine_bolsa_gpt",
+        })
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "allowed_operator_actions": list(_V32_OPERATOR_ACTIONS),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            },
+        )
+    result["instruction_to_gpt"] = (
+        "Confirma al usuario que la accion quedo registrada para seguimiento/backtesting. "
+        "No digas que una orden fue autorizada o ejecutada."
+    )
+    return result
+
+
+@app.get("/v32_operator_dashboard", response_class=_V29HTMLResponse)
+async def v32_operator_dashboard():
+    return _V29HTMLResponse(_v32_operator_dashboard_html())
 
 
 @app.get("/v31_outcome_tracking_status")

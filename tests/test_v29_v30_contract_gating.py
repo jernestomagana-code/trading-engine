@@ -717,6 +717,78 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("third_party_installation", suite)
         self.assertFalse(suite["execution_authorized"])
 
+    def test_v32_operator_today_guides_manual_review_without_execution(self):
+        with patch.object(main, "_v31_command_center_payload", return_value={
+            "status": "READY_FOR_DECISION_REVIEW",
+            "operational_readiness": "READY_FOR_MANUAL_REVIEW",
+            "summary": {"entry_ready": 1, "manual_review_ready": 1},
+            "top_recommendations": [{
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "manual_review_ready": True,
+                "selected_contract": {"strike": 645, "expiration": "20260731", "bid": 6.1, "ask": 6.2},
+                "next_required_action": "Validar spread, liquidez y ticket broker.",
+            }],
+            "blocked_or_waiting": [],
+        }), patch.object(main, "_v31_trading_day_readiness_payload", return_value={
+            "status": "READY_FOR_MANUAL_REVIEW",
+        }), patch.object(main, "_v31_manual_reviews_payload", return_value={
+            "review_count": 0,
+            "by_status": {},
+            "allowed_statuses": ["REVIEWING", "WATCHLIST"],
+        }), patch.object(main, "_v31_manual_review_learning_payload", return_value={
+            "evaluated_count": 0,
+            "unevaluated_count": 0,
+            "needs_more_data": True,
+            "avg_paper_pnl_r": None,
+        }), patch.object(main, "_durable_supabase_fetch", return_value=[]), patch.object(
+            main,
+            "_v32_load_operator_events",
+            return_value=[],
+        ):
+            payload = main._v32_operator_today_payload()
+
+        self.assertEqual(payload["engine"], "V32_OPERATOR_ASSISTANT")
+        self.assertEqual(payload["active_alerts"][0]["severity"], "ACTION")
+        self.assertEqual(payload["next_actions"][0]["kind"], "MANUAL_REVIEW")
+        self.assertIn("revisar", payload["answer_to_user"].lower())
+        self.assertIn("MARK_WATCHLIST", payload["allowed_operator_actions"])
+        self.assertFalse(payload["execution_authorized"])
+        self.assertTrue(payload["not_order_instruction"])
+
+    def test_v32_operator_event_maps_to_manual_review_journal(self):
+        with patch.object(main, "_v31_record_manual_review", return_value={
+            "status": "RECORDED",
+            "review": {"review_id": "MR-1"},
+        }) as record:
+            event = main._v32_operator_event_payload({
+                "action": "MARK_WATCHLIST",
+                "ticker": "qqq",
+                "reason": "Esperando mejor spread.",
+                "actor": "unit_test",
+            })
+
+        self.assertEqual(event["action"], "MARK_WATCHLIST")
+        self.assertEqual(event["ticker"], "QQQ")
+        self.assertTrue(event["manual_review_recorded"])
+        self.assertEqual(event["manual_review_status"], "WATCHLIST")
+        self.assertEqual(event["manual_review_id"], "MR-1")
+        self.assertFalse(event["execution_authorized"])
+        self.assertTrue(event["not_order_instruction"])
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[0]["status"], "WATCHLIST")
+        self.assertFalse(record.call_args.args[0]["execution_authorized"])
+
+    def test_v32_operator_event_reject_requires_reason(self):
+        with self.assertRaises(ValueError) as ctx:
+            main._v32_operator_event_payload({
+                "action": "REJECT_SETUP",
+                "ticker": "QQQ",
+            })
+
+        self.assertIn("REASON_REQUIRED", str(ctx.exception))
+
     def test_manual_review_inbox_renders_entry_ready_cards(self):
         decision = {
             "ticker": "QQQ",
@@ -1101,6 +1173,35 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(wait_options["manual_review_ready"])
         self.assertFalse(wait_options["can_operate"])
 
+    def test_v31_balanced_profile_is_not_looser_than_strategy_specific_put_guard(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 26,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+
+        with patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([complete_row]),
+        ):
+            blocked = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(blocked["final_state"], "RISK_BLOCKED")
+        self.assertEqual(blocked["risk_blocker"], "RISK_PROFILE_DTE_TOO_LOW")
+        self.assertEqual(blocked["risk_profile"]["primary_blocker"], "RISK_PROFILE_DTE_TOO_LOW")
+        self.assertFalse(blocked["manual_review_ready"])
+
     def test_v31_broker_check_blocks_entry_ready_when_account_context_conflicts(self):
         complete_row = {
             "ticker": "TSLA",
@@ -1115,7 +1216,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "mid": 13.275,
             "spread": 0.15,
             "spread_pct": 1.13,
-            "delta": 0.34,
+            "delta": 0.20,
         }
         master = _master_snapshot([complete_row])
         master["technical"] = {
@@ -1150,6 +1251,86 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(decision["broker_check"]["status"], "BLOCKED")
         self.assertFalse(decision["manual_review_ready"])
         self.assertFalse(decision["can_operate"])
+
+    def test_v31_event_assignment_gate_blocks_covered_call_ex_dividend(self):
+        complete_row = {
+            "ticker": "TSLA",
+            "strategy": "COVERED_CALL",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 440,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 13.20,
+            "ask": 13.35,
+            "mid": 13.275,
+            "spread": 0.15,
+            "spread_pct": 1.13,
+            "delta": 0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"] = {
+            "TSLA": {
+                "ticker": "TSLA",
+                "trend": "BULLISH",
+                "score": 80,
+                "by_strategy_context": {
+                    "COVERED_CALL": {
+                        "trend": "BULLISH",
+                        "score": 80,
+                        "ex_dividend_soon": True,
+                        "assignment_acceptable": True,
+                    }
+                },
+            }
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v31_canonical_decision("TSLA")
+            payload = main._v31_daily_recommendations_payload(["TSLA"])
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertEqual(decision["risk_blocker"], "EX_DIVIDEND_WITHIN_WINDOW")
+        self.assertIn("EX_DIVIDEND_WITHIN_WINDOW", decision["blockers"])
+        self.assertTrue(decision["market"]["ex_dividend_soon"])
+        self.assertEqual(payload["items"][0]["parameter_review"]["status"], "REVIEW_REQUIRED")
+        self.assertIn("AVOID_IF_EX_DIVIDEND_WITHIN_WINDOW", payload["items"][0]["parameter_review"]["blockers"])
+
+    def test_v31_event_assignment_gate_blocks_put_when_assignment_unacceptable(self):
+        complete_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"]["QQQ"]["by_strategy_context"] = {
+            "NAKED_PUT": {
+                "trend": "BULLISH",
+                "score": 80,
+                "assignment_acceptable": False,
+            }
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v31_canonical_decision("QQQ")
+            payload = main._v31_daily_recommendations_payload(["QQQ"])
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertEqual(decision["risk_blocker"], "ASSIGNMENT_UNACCEPTABLE")
+        self.assertIn("ASSIGNMENT_UNACCEPTABLE", decision["blockers"])
+        self.assertEqual(decision["market"]["assignment_acceptable"], False)
+        self.assertEqual(payload["items"][0]["parameter_review"]["status"], "REVIEW_REQUIRED")
+        self.assertIn("AVOID_IF_ASSIGNMENT_UNACCEPTABLE", payload["items"][0]["parameter_review"]["blockers"])
 
     def test_v31_stale_broker_check_blocks_entry_ready(self):
         complete_row = {
