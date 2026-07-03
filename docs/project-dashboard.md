@@ -57,8 +57,12 @@ Resumen:
   `POST /v32_operator_pushover_notify` envia push protegido por read-auth.
 - GitHub Actions agrega scheduler cloud `.github/workflows/v32-cloud-pushover.yml`;
   el backend deduplica alertas `ACTION`/`RISK` para no repetir pushes.
+- GitHub Actions agrega nudges proactivos `.github/workflows/v32-operator-nudges.yml`;
+  llama `POST /v32_operator_nudge` durante el dia y el backend decide por
+  horario NY (`premarket`, `open_check`, `midday`, `power_hour`, `post_close`),
+  dedupe y read-auth. Los nudges preguntan al operador que revisar, no ejecutan.
 - El GPT puede usar `/gpt_v32_operator_daily_cycle` como flujo unico: estado,
-  Pushover, tracking y backtesting/post-cierre.
+  Pushover, nudges, tracking y backtesting/post-cierre.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
@@ -192,11 +196,16 @@ Resultado:
    `python3 scripts/install_v32_pushover_launchd.py --status`.
 5. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
    para avisos accionables sin ruido cuando solo haya `WAIT_MARKET`.
-6. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
-7. Reconsultar el radar y verificar que salga de `NO_DATA`.
-8. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
+6. En ChatGPT Scheduled, crear recordatorios conversacionales con estos prompts:
+   `que hago hoy?`, `que hago ahora?`,
+   `revisa mi watchlist y dime que requiere decision`,
+   `haz revision de cierre intradia`, y
+   `haz cierre operativo y backtesting pendiente`.
+7. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
+8. Reconsultar el radar y verificar que salga de `NO_DATA`.
+9. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
    `/v31_manual_review_inbox` y registrar decision humana.
-9. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
+10. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
 
 ## Proximas Acciones Para Terceros
 

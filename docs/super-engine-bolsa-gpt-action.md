@@ -79,6 +79,20 @@ The preview never sends. The POST only sends on action/risk alerts unless the
 user explicitly requests `force=true`. Pushover is an attention channel only; it
 does not approve trades or authorize execution.
 
+When the user asks about proactive prompts, daily push questions, or making the
+model nudge the operator during the day, use:
+
+```text
+GET /v32_operator_nudge/preview
+POST /v32_operator_nudge
+```
+
+Slots are `auto`, `premarket`, `open_check`, `midday`, `power_hour`, and
+`post_close`. The preview never sends. The POST sends a Pushover question such
+as "que hago ahora?" or "haz cierre operativo y backtesting pendiente" and is
+deduplicated by session date and slot. It only asks for human review; it never
+authorizes orders.
+
 When the user explicitly asks to record a decision or note, call:
 
 ```text

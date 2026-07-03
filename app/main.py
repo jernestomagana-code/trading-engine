@@ -141,6 +141,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_event",
     "/v32_operator_daily_cycle",
     "/v32_operator_pushover_notify",
+    "/v32_operator_nudge",
     "/gpt_v32_operator_daily_cycle",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
@@ -22191,6 +22192,10 @@ def _v32_pushover_state_file():
     return _V29_RUNTIME_DIR / "v32_pushover_notify_state.json"
 
 
+def _v32_nudge_state_file():
+    return _V29_RUNTIME_DIR / "v32_operator_nudge_state.json"
+
+
 def _v32_load_operator_events():
     data = _v29_load_json_file(_v32_operator_events_file())
     return data if isinstance(data, list) else []
@@ -22857,11 +22862,241 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     }
 
 
+_V32_OPERATOR_NUDGE_SLOTS = (
+    {
+        "slot": "premarket",
+        "label": "Pre-market check",
+        "start_minute": 7 * 60 + 55,
+        "end_minute": 8 * 60 + 20,
+        "question": "Quieres revisar el plan del dia antes de que abra el mercado?",
+        "gpt_prompt": "que hago hoy?",
+    },
+    {
+        "slot": "open_check",
+        "label": "Open check",
+        "start_minute": 9 * 60 + 30,
+        "end_minute": 9 * 60 + 55,
+        "question": "Quieres revisar si algun setup cambio despues de la apertura?",
+        "gpt_prompt": "que hago ahora?",
+    },
+    {
+        "slot": "midday",
+        "label": "Midday review",
+        "start_minute": 12 * 60 + 20,
+        "end_minute": 12 * 60 + 45,
+        "question": "Quieres mantener, rechazar o anotar algo de la watchlist?",
+        "gpt_prompt": "revisa mi watchlist y dime que requiere decision",
+    },
+    {
+        "slot": "power_hour",
+        "label": "Power-hour check",
+        "start_minute": 15 * 60 + 15,
+        "end_minute": 15 * 60 + 45,
+        "question": "Quieres revisar si hay algo que cerrar o dejar documentado antes del cierre?",
+        "gpt_prompt": "haz revision de cierre intradia",
+    },
+    {
+        "slot": "post_close",
+        "label": "Post-close tracking",
+        "start_minute": 16 * 60 + 5,
+        "end_minute": 16 * 60 + 35,
+        "question": "Quieres cerrar journal, outcome o backtesting pendiente?",
+        "gpt_prompt": "haz cierre operativo y backtesting pendiente",
+    },
+)
+
+
+def _v32_operator_nudge_slot_config(slot):
+    wanted = str(slot or "auto").strip().lower()
+    for item in _V32_OPERATOR_NUDGE_SLOTS:
+        if item["slot"] == wanted:
+            return item
+    return None
+
+
+def _v32_operator_current_nudge_slot(now=None):
+    now = now or datetime.now(MARKET_TZ)
+    minute = now.hour * 60 + now.minute
+    for item in _V32_OPERATOR_NUDGE_SLOTS:
+        if item["start_minute"] <= minute <= item["end_minute"]:
+            return item
+    return None
+
+
+def _v32_operator_nudge_signature(slot, summary, tracking):
+    summary = summary if isinstance(summary, dict) else {}
+    tracking = tracking if isinstance(tracking, dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    outcome = tracking.get("outcome_tracking") if isinstance(tracking.get("outcome_tracking"), dict) else {}
+    alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    compact_alerts = []
+    for alert in alerts[:8]:
+        compact_alerts.append({
+            "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
+            "ticker": _v29_safe_upper(alert.get("ticker"), "UNKNOWN"),
+            "severity": _v29_safe_upper(alert.get("severity"), "UNKNOWN"),
+            "state": _v29_safe_upper(alert.get("state"), "UNKNOWN"),
+            "status": _v29_safe_upper(alert.get("operator_status"), "UNKNOWN"),
+        })
+    return {
+        "version": "v32_operator_nudge_v1",
+        "slot": slot,
+        "status": summary.get("status") or "UNKNOWN",
+        "counts": {
+            "action": counts.get("action", 0),
+            "risk": counts.get("risk", 0),
+            "watch": counts.get("watch", 0),
+        },
+        "open_alert_count": tracking.get("open_alert_count"),
+        "pending_entry_ready_signals": outcome.get("pending_entry_ready_signals"),
+        "alerts": compact_alerts,
+    }
+
+
+def _v32_operator_nudge_dedupe_decision(slot, session_date, signature, force=False):
+    state = _v29_load_json_file(_v32_nudge_state_file())
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    key = "{}:{}".format(session_date, slot)
+    last = sent.get(key) if isinstance(sent.get(key), dict) else {}
+    deduped = bool(not force and last.get("signature") == signature)
+    return {
+        "dedupe_version": "v32_operator_nudge_v1",
+        "deduped": deduped,
+        "force": bool(force),
+        "key": key,
+        "signature": signature,
+        "last_sent_at": last.get("sent_at"),
+        "last_status": last.get("status"),
+        "state_file": str(_v32_nudge_state_file()),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_save_operator_nudge_state(slot, session_date, signature, status):
+    path = _v32_nudge_state_file()
+    state = _v29_load_json_file(path)
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    sent["{}:{}".format(session_date, slot)] = {
+        "sent_at": _v29_now(),
+        "status": status,
+        "signature": signature,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump({
+            "state_version": "v32_operator_nudge_v1",
+            "updated_at": _v29_now(),
+            "sent": sent,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }, f, indent=2)
+    return True
+
+
+def _v32_operator_nudge_message(slot_config, summary, tracking):
+    summary = summary if isinstance(summary, dict) else {}
+    tracking = tracking if isinstance(tracking, dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    outcome = tracking.get("outcome_tracking") if isinstance(tracking.get("outcome_tracking"), dict) else {}
+    lines = [
+        "Stock Ultimus V32 nudge",
+        "Momento: {}".format(slot_config.get("label") or slot_config.get("slot")),
+        "Modo: {}".format(summary.get("status") or "UNKNOWN"),
+        "Alertas: {action} action, {risk} risk, {watch} watch.".format(
+            action=counts.get("action", 0),
+            risk=counts.get("risk", 0),
+            watch=counts.get("watch", 0),
+        ),
+        "Pregunta: {}".format(slot_config.get("question")),
+    ]
+    pending = outcome.get("pending_entry_ready_signals")
+    if pending:
+        lines.append("Backtesting pendiente: {} outcome(s).".format(pending))
+    top_alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    if top_alerts:
+        lines.append("Top: " + ", ".join(
+            "{} {}".format(alert.get("ticker") or "?", alert.get("severity") or "?")
+            for alert in top_alerts[:4]
+        ))
+    lines.append('Abre el GPT y di: "{}"'.format(slot_config.get("gpt_prompt")))
+    lines.append("Decision support solamente. No autoriza ordenes.")
+    return "\n".join(lines)
+
+
+def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False):
+    now_market = datetime.now(MARKET_TZ)
+    session_date = now_market.date().isoformat()
+    explicit_slot = str(slot or "auto").strip().lower() != "auto"
+    slot_config = _v32_operator_nudge_slot_config(slot) if explicit_slot else _v32_operator_current_nudge_slot(now_market)
+    valid_slots = [item["slot"] for item in _V32_OPERATOR_NUDGE_SLOTS]
+    if slot_config is None:
+        return {
+            "engine": "V32_OPERATOR_NUDGE",
+            "generated_at": _v29_now(),
+            "market_time": now_market.isoformat(),
+            "session_date": session_date,
+            "slot": str(slot or "auto").strip().lower(),
+            "valid_slots": valid_slots,
+            "would_notify": False,
+            "status": "skipped",
+            "pushover_sent": False,
+            "reason": "OUTSIDE_NUDGE_WINDOW" if not explicit_slot else "UNKNOWN_NUDGE_SLOT",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    tracking = _v32_operator_tracking_payload(limit=500)
+    signature = _v32_operator_nudge_signature(slot_config["slot"], summary, tracking)
+    dedupe = _v32_operator_nudge_dedupe_decision(slot_config["slot"], session_date, signature, force=force)
+    message = _v32_operator_nudge_message(slot_config, summary, tracking)
+    title = "Stock Ultimus: {}".format(slot_config.get("label") or slot_config["slot"])
+    base_payload = {
+        "engine": "V32_OPERATOR_NUDGE",
+        "generated_at": _v29_now(),
+        "market_time": now_market.isoformat(),
+        "session_date": session_date,
+        "slot": slot_config["slot"],
+        "slot_label": slot_config.get("label"),
+        "question": slot_config.get("question"),
+        "gpt_prompt": slot_config.get("gpt_prompt"),
+        "valid_slots": valid_slots,
+        "would_notify": True,
+        "title": title,
+        "message": message,
+        "summary": summary,
+        "tracking": tracking,
+        "dedupe": dedupe,
+        "notification_channel": "pushover",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if dry_run:
+        return {**base_payload, "status": "preview", "pushover_sent": False}
+    if dedupe.get("deduped"):
+        return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_V32_OPERATOR_NUDGE"}
+    result = send_pushover_message(title, message)
+    if result.get("pushover_sent"):
+        _v32_save_operator_nudge_state(slot_config["slot"], session_date, signature, "sent")
+    return {
+        **base_payload,
+        "status": "sent" if result.get("pushover_sent") else "not_sent",
+        "pushover_sent": bool(result.get("pushover_sent")),
+        "pushover_result": result,
+    }
+
+
 def _v32_operator_daily_cycle_payload(force_preview=False):
     today = _v32_operator_today_payload(limit=12)
     summary = _v32_operator_daily_summary_payload(limit=12)
     tracking = _v32_operator_tracking_payload(limit=500)
     pushover_preview = _v32_operator_pushover_notify_payload(force=force_preview, dry_run=True)
+    nudge_preview = _v32_operator_nudge_payload(dry_run=True)
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
     pending_outcomes = (tracking.get("outcome_tracking") or {}).get("pending_entry_ready_signals")
     routine = [
@@ -22888,13 +23123,22 @@ def _v32_operator_daily_cycle_payload(force_preview=False):
         },
         {
             "step": 4,
+            "label": "Responder nudges proactivos",
+            "nudge_preview": "/v32_operator_nudge/preview",
+            "nudge_send": "POST /v32_operator_nudge",
+            "active_slot": nudge_preview.get("slot"),
+            "would_notify": nudge_preview.get("would_notify"),
+            "question": nudge_preview.get("question"),
+        },
+        {
+            "step": 5,
             "label": "Actualizar tracking/backtesting",
             "tracking_endpoint": "GET /v32_operator_tracking_status",
             "pending_outcomes": pending_outcomes,
             "post_close_endpoint": "POST /v31_evaluate_manual_reviews?dry_run=true",
         },
         {
-            "step": 5,
+            "step": 6,
             "label": "Cerrar el dia",
             "detail": "Post-cierre: evaluar outcomes dry-run; write real solo con snapshot fresco y confirmacion explicita.",
             "not_order_instruction": True,
@@ -22909,6 +23153,7 @@ def _v32_operator_daily_cycle_payload(force_preview=False):
         "summary": summary,
         "tracking": tracking,
         "pushover_preview": pushover_preview,
+        "nudge_preview": nudge_preview,
         "backtesting_follow_up": {
             "pending_entry_ready_signals": pending_outcomes,
             "operator_event_count": tracking.get("operator_event_count"),
@@ -26200,6 +26445,21 @@ async def v32_operator_pushover_notify_preview(force: bool = False):
 async def v32_operator_pushover_notify(payload: dict | None = None, force: bool = False):
     payload = payload if isinstance(payload, dict) else {}
     return _v32_operator_pushover_notify_payload(
+        force=bool(force or payload.get("force")),
+        dry_run=False,
+    )
+
+
+@app.get("/v32_operator_nudge/preview")
+async def v32_operator_nudge_preview(slot: str = "auto", force: bool = False):
+    return _v32_operator_nudge_payload(slot=slot, force=force, dry_run=True)
+
+
+@app.post("/v32_operator_nudge")
+async def v32_operator_nudge(payload: dict | None = None, slot: str = "auto", force: bool = False):
+    payload = payload if isinstance(payload, dict) else {}
+    return _v32_operator_nudge_payload(
+        slot=str(payload.get("slot") or slot or "auto"),
         force=bool(force or payload.get("force")),
         dry_run=False,
     )

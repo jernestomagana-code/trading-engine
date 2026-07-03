@@ -1,0 +1,91 @@
+name: V32 Operator Nudges
+
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Nudge slot: auto, premarket, open_check, midday, power_hour, post_close"
+        required: false
+        default: "auto"
+      force:
+        description: "Force a nudge push for smoke testing"
+        required: false
+        default: "false"
+  schedule:
+    # Runs broadly around US trading hours. The backend gates by New York time,
+    # slot, and dedupe state so DST and repeated cron ticks stay harmless.
+    - cron: "*/10 11-22 * * 1-5"
+
+jobs:
+  nudge:
+    name: Call V32 operator nudge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send scheduled operator nudge when due
+        env:
+          READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+          NUDGE_SLOT: ${{ github.event.inputs.slot || 'auto' }}
+          FORCE_NUDGE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import request, error
+
+          token = os.environ.get("READ_ACCESS_TOKEN", "").strip()
+          if not token:
+              print("Missing STOCK_ULTIMUS_READ_ACCESS_TOKEN secret.")
+              sys.exit(1)
+
+          force = os.environ.get("FORCE_NUDGE", "false").lower() == "true"
+          slot = os.environ.get("NUDGE_SLOT", "auto").strip() or "auto"
+          body = json.dumps({"slot": slot, "force": force}).encode("utf-8")
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          url = base + "/v32_operator_nudge"
+          req = request.Request(
+              url,
+              data=body,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Stock-Ultimus-Read-Token": token,
+              },
+          )
+          try:
+              with request.urlopen(req, timeout=30) as resp:
+                  payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                  status_code = resp.status
+          except error.HTTPError as exc:
+              body_text = exc.read().decode("utf-8", errors="replace")
+              print(body_text[:1200])
+              sys.exit(1)
+
+          result = payload.get("pushover_result") or {}
+          summary = payload.get("summary") or {}
+          counts = summary.get("counts") or {}
+          dedupe = payload.get("dedupe") or {}
+          print(json.dumps({
+              "status_code": status_code,
+              "status": payload.get("status"),
+              "slot": payload.get("slot"),
+              "would_notify": payload.get("would_notify"),
+              "pushover_sent": payload.get("pushover_sent"),
+              "provider": result.get("provider"),
+              "provider_status_code": result.get("status_code"),
+              "deduped": dedupe.get("deduped"),
+              "force": dedupe.get("force"),
+              "reason": payload.get("reason"),
+              "counts": {
+                  "action": counts.get("action"),
+                  "risk": counts.get("risk"),
+                  "watch": counts.get("watch"),
+              },
+              "not_order_instruction": payload.get("not_order_instruction"),
+              "execution_authorized": payload.get("execution_authorized"),
+          }, indent=2))
+
+          if payload.get("status") == "not_sent":
+              sys.exit(1)
+          PY
