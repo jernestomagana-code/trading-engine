@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
 DEFAULT_OUT = ROOT / "runtime" / "v32_operator_notify_latest.json"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
+PUSHOVER_USER_KEYCHAIN_SERVICES = ("stock-ultimus-pushover-user-key",)
+PUSHOVER_API_TOKEN_KEYCHAIN_SERVICES = ("stock-ultimus-pushover-api-token",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,6 +86,22 @@ def read_token(args: argparse.Namespace) -> str | None:
         if token:
             return token
     return None
+
+
+def first_keychain_password(services: tuple[str, ...]) -> str:
+    for service in services:
+        value = keychain_password(service)
+        if value:
+            return value
+    return ""
+
+
+def pushover_user_key(args: argparse.Namespace) -> str:
+    return args.pushover_user_key or first_keychain_password(PUSHOVER_USER_KEYCHAIN_SERVICES)
+
+
+def pushover_api_token(args: argparse.Namespace) -> str:
+    return args.pushover_api_token or first_keychain_password(PUSHOVER_API_TOKEN_KEYCHAIN_SERVICES)
 
 
 def request_operator(base_url: str, token: str, timeout: int, limit: int) -> tuple[int, dict[str, Any]]:
@@ -193,9 +211,12 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
 def notification_text(report: dict[str, Any]) -> tuple[str, str]:
     status = report.get("operator_status") or "UNKNOWN"
     classification = report.get("classification") or {}
+    custom_message = str(report.get("custom_message") or "").strip()
     actionable = classification.get("actionable_alerts") or []
     title = "Stock Ultimus V32"
-    if actionable:
+    if custom_message:
+        body = custom_message
+    elif actionable:
         tickers = ", ".join(str(item.get("ticker")) for item in actionable[:5] if item.get("ticker"))
         body = f"{classification.get('actionable_count')} alerta(s) accionables: {tickers}. Estado {status}."
     else:
@@ -342,7 +363,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         report["notification_results"].append(result)
         report["notification_sent"] = bool(report["notification_sent"] or result.get("sent"))
     if args.pushover and report["should_notify"]:
-        result = send_pushover_notification(report, args.pushover_user_key, args.pushover_api_token, args.timeout)
+        result = send_pushover_notification(report, pushover_user_key(args), pushover_api_token(args), args.timeout)
         report["notification_results"].append(result)
         report["notification_sent"] = bool(report["notification_sent"] or result.get("sent"))
     if args.email_summary and report["should_notify"]:

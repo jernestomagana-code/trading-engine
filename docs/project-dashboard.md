@@ -175,13 +175,15 @@ Resultado:
 1. En la proxima ventana util, abrir TWS/IBKR y correr el ciclo diario para
    publicar snapshot maestro fresco.
 2. Correr `python3 scripts/daily_open_checklist.py --refresh --publish`.
-3. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
+3. Configurar Pushover por env o Keychain y validar con
+   `python3 scripts/setup_pushover_channel.py --send-test`.
+4. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
    para avisos accionables sin ruido cuando solo haya `WAIT_MARKET`.
-4. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
-5. Reconsultar el radar y verificar que salga de `NO_DATA`.
-6. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
+5. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
+6. Reconsultar el radar y verificar que salga de `NO_DATA`.
+7. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
    `/v31_manual_review_inbox` y registrar decision humana.
-7. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
+8. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
 
 ## Proximas Acciones Para Terceros
 
