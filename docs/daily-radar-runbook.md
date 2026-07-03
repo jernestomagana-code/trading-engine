@@ -279,6 +279,7 @@ security add-generic-password -U -a "$USER" -s stock-ultimus-pushover-api-token 
 Validate the channel before relying on mobile push:
 
 ```bash
+python3 scripts/setup_pushover_channel.py --configure
 python3 scripts/setup_pushover_channel.py
 python3 scripts/setup_pushover_channel.py --send-test
 ```
