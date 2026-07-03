@@ -169,9 +169,24 @@ The same-source executive view is available after deploy at:
 
 - JSON: `/v31_command_center.json`
 - HTML: `/v31_command_center`
+- Guided operator: `/v32_operator_dashboard`
+- GPT operator Action: `/gpt_v32_operator_today`
 
 It is derived from the same recommendation payload used by
 `/gpt_v31_daily_rankings`, so it should agree with Super Engine Bolsa.
+
+For the friendlier daily workflow, ask the official GPT:
+
+```text
+Que hago ahora?
+```
+
+The GPT should call `getOperatorToday` and guide the next step: refresh data,
+review ENTRY_READY setups, watch waiting alerts, document blockers, or run
+post-close learning. When you tell the GPT "pon QQQ en watchlist", "rechaza
+TSLA por spread alto", or "registra esta nota", it should call
+`recordOperatorEvent`. Those records are workflow/journal events for tracking
+and backtesting only; they do not place orders.
 
 ## Daily Outcome Evaluation
 
