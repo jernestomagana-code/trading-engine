@@ -789,6 +789,74 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertIn("REASON_REQUIRED", str(ctx.exception))
 
+    def test_v32_operator_daily_summary_and_tracking_are_read_only(self):
+        with patch.object(main, "_v31_command_center_payload", return_value={
+            "status": "READY_FOR_DECISION_REVIEW",
+            "operational_readiness": "READY_FOR_MANUAL_REVIEW",
+            "summary": {"entry_ready": 1, "manual_review_ready": 1},
+            "top_recommendations": [{
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "manual_review_ready": True,
+                "selected_contract": {"strike": 645, "expiration": "20260731", "bid": 6.1, "ask": 6.2},
+                "next_required_action": "Validar spread, liquidez y ticket broker.",
+            }],
+            "blocked_or_waiting": [],
+        }), patch.object(main, "_v31_trading_day_readiness_payload", return_value={
+            "status": "READY_FOR_MANUAL_REVIEW",
+        }), patch.object(main, "_v31_manual_reviews_payload", return_value={
+            "review_count": 0,
+            "by_status": {},
+            "allowed_statuses": ["REVIEWING", "WATCHLIST"],
+        }), patch.object(main, "_v31_manual_review_learning_payload", return_value={
+            "evaluated_count": 0,
+            "unevaluated_count": 0,
+            "needs_more_data": True,
+            "avg_paper_pnl_r": None,
+        }), patch.object(main, "_durable_supabase_fetch", return_value=[]), patch.object(
+            main,
+            "_v32_load_operator_events",
+            return_value=[{
+                "event_id": "OE-1",
+                "alert_id": "ALERT-1",
+                "action": "MARK_WATCHLIST",
+                "operator_status": "WATCHLIST",
+                "ticker": "QQQ",
+            }],
+        ):
+            summary = main._v32_operator_daily_summary_payload()
+            tracking = main._v32_operator_tracking_payload()
+
+        self.assertEqual(summary["engine"], "V32_OPERATOR_DAILY_SUMMARY")
+        self.assertEqual(summary["counts"]["action"], 1)
+        self.assertIn("/v32_operator_tracking_status", summary["links"]["tracking"])
+        self.assertFalse(summary["execution_authorized"])
+        self.assertTrue(summary["not_order_instruction"])
+        self.assertEqual(tracking["engine"], "V32_OPERATOR_TRACKING_STATUS")
+        self.assertEqual(tracking["by_action"]["MARK_WATCHLIST"], 1)
+        self.assertEqual(tracking["open_alert_count"], 1)
+        self.assertFalse(tracking["execution_authorized"])
+        self.assertTrue(tracking["not_order_instruction"])
+
+    def test_v32_operator_daily_summary_email_preview_never_sends(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_resend_email") as send_email:
+            preview = main._v32_operator_daily_summary_email_payload(dry_run=True)
+
+        self.assertEqual(preview["status"], "preview")
+        self.assertFalse(preview["email_sent"])
+        self.assertFalse(preview["execution_authorized"])
+        self.assertTrue(preview["not_order_instruction"])
+        send_email.assert_not_called()
+
     def test_manual_review_inbox_renders_entry_ready_cards(self):
         decision = {
             "ticker": "QQQ",

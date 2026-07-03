@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "12")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_V32_NOTIFY_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--macos-notify", action="store_true", help="Show a local macOS notification when actionable.")
+    parser.add_argument("--webhook-url", default=os.getenv("STOCK_ULTIMUS_NOTIFY_WEBHOOK_URL", ""), help="Optional generic webhook URL for actionable notifications.")
+    parser.add_argument("--email-summary", action="store_true", help="Ask the protected backend to send the V32 daily summary email when actionable.")
+    parser.add_argument("--to-email", default=os.getenv("STOCK_ULTIMUS_NOTIFY_TO_EMAIL", ""), help="Optional email recipient override for --email-summary.")
     parser.add_argument("--force", action="store_true", help="Notify even when there are no actionable alerts.")
     parser.add_argument("--no-write", action="store_true", help="Do not write the latest JSON report.")
     return parser.parse_args()
@@ -98,6 +101,33 @@ def request_operator(base_url: str, token: str, timeout: int, limit: int) -> tup
             payload = json.loads(body)
         except Exception:
             payload = {"raw": body[:500]}
+        return exc.code, payload
+    except urllib.error.URLError as exc:
+        return 0, {"detail": str(exc)}
+
+
+def post_json(base_url: str, path: str, token: str, payload: dict[str, Any], timeout: int) -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Stock-Ultimus-Read-Token": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            return response.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"raw": raw[:500]}
         return exc.code, payload
     except urllib.error.URLError as exc:
         return 0, {"detail": str(exc)}
@@ -190,6 +220,34 @@ def send_macos_notification(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def send_webhook_notification(report: dict[str, Any], webhook_url: str, timeout: int) -> dict[str, Any]:
+    title, body = notification_text(report)
+    payload = {
+        "source": "stock_ultimus_v32_operator_notify",
+        "title": title,
+        "body": body,
+        "operator_status": report.get("operator_status"),
+        "operator_readiness": report.get("operator_readiness"),
+        "classification": report.get("classification") or {},
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    request = urllib.request.Request(
+        webhook_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
+            return {"sent": 200 <= response.status < 300, "provider": "webhook", "status_code": response.status}
+    except urllib.error.HTTPError as exc:
+        return {"sent": False, "provider": "webhook", "status_code": exc.code, "error": exc.read().decode("utf-8", errors="replace")[:500]}
+    except urllib.error.URLError as exc:
+        return {"sent": False, "provider": "webhook", "error": str(exc)}
+
+
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     token = read_token(args)
     if not token:
@@ -221,7 +279,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "should_notify": bool(classification.get("should_notify")),
         "notification_requested": bool(args.macos_notify),
         "notification_sent": False,
-        "notification_channel": "macos" if args.macos_notify else "json_only",
+        "notification_channel": "multi" if (args.macos_notify or args.webhook_url or args.email_summary) else "json_only",
+        "notification_results": [],
         "secrets_printed": False,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -229,7 +288,22 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     if args.macos_notify and report["should_notify"]:
         result = send_macos_notification(report)
         report["notification_sent"] = bool(result.get("sent"))
-        report["notification_result"] = result
+        report["notification_results"].append(result)
+    if args.webhook_url and report["should_notify"]:
+        result = send_webhook_notification(report, args.webhook_url, args.timeout)
+        report["notification_results"].append(result)
+        report["notification_sent"] = bool(report["notification_sent"] or result.get("sent"))
+    if args.email_summary and report["should_notify"]:
+        status, result = post_json(
+            args.base_url,
+            "/v32_operator_daily_summary_email",
+            token,
+            {"to_email": args.to_email, "force": args.force, "source": "v32_operator_notify"},
+            args.timeout,
+        )
+        email_result = {"sent": bool(result.get("email_sent")), "provider": "resend_backend", "status_code": status, "result": result}
+        report["notification_results"].append(email_result)
+        report["notification_sent"] = bool(report["notification_sent"] or email_result.get("sent"))
     return report
 
 

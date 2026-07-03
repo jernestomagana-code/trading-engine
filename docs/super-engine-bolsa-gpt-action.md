@@ -130,6 +130,11 @@ it as a separate decision engine.
 Use /gpt_v32_operator_today first for workflow questions like "what should I do
 now?", daily checklist, active alerts, pending reviews, notification-style
 triage, or post-close follow-up.
+Use /v32_operator_daily_summary when the user asks for a compact daily status,
+notification-style digest, or "que falta hoy?".
+Use /v32_operator_tracking_status when the user asks how alerts are being
+tracked, which alerts remain open/closed, what is pending for backtesting, or
+what learning/outcome follow-up is missing.
 Use /gpt_v32_operator_event only when the user explicitly asks to record a
 workflow action, review decision, alert acknowledgement, or journal note.
 
@@ -206,6 +211,9 @@ Operational review surfaces:
 /v32_operator_dashboard
 /gpt_v32_operator_today
 /gpt_v32_operator_event
+/v32_operator_daily_summary
+/v32_operator_tracking_status
+/v32_project_command_center
 /v31_operating_suite
 /v31_manual_review_console
 /v31_manual_reviews

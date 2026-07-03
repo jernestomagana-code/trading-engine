@@ -22467,6 +22467,214 @@ def _v32_operator_today_payload(limit=12):
     return payload
 
 
+def _v32_operator_tracking_payload(limit=500):
+    try:
+        limit = max(1, min(int(limit or 500), 2000))
+    except Exception:
+        limit = 500
+    events = _v32_load_operator_events()
+    recent_events = events[-limit:]
+    by_action = {}
+    by_status = {}
+    by_ticker = {}
+    open_statuses = {"NEW", "ACKNOWLEDGED", "REVIEWING", "WATCHLIST", "NOTE_RECORDED"}
+    closed_statuses = {"REJECTED", "APPROVED_FOR_MANUAL_REVIEW", "EXPIRED", "CLOSED"}
+    latest_by_alert = _v32_latest_operator_event_by_alert(recent_events)
+    for event in recent_events:
+        action = str(event.get("action") or "UNKNOWN").upper()
+        status = str(event.get("operator_status") or "UNKNOWN").upper()
+        ticker = str(event.get("ticker") or "UNKNOWN").upper()
+        by_action[action] = by_action.get(action, 0) + 1
+        by_status[status] = by_status.get(status, 0) + 1
+        by_ticker[ticker] = by_ticker.get(ticker, 0) + 1
+
+    latest_items = list(latest_by_alert.values())
+    open_alerts = [
+        item for item in latest_items
+        if str(item.get("operator_status") or "").upper() in open_statuses
+    ]
+    closed_alerts = [
+        item for item in latest_items
+        if str(item.get("operator_status") or "").upper() in closed_statuses
+    ]
+    outcomes_data = _durable_supabase_fetch("outcome", limit=limit)
+    if outcomes_data is None:
+        outcomes_data = load_outcomes_from_file()
+    tracked_outcomes = [
+        item for item in outcomes_data or []
+        if str(item.get("outcome_tracking_version") or "") == "v31_entry_ready_signal_outcome_v1"
+    ]
+    pending_outcomes = [
+        item for item in tracked_outcomes
+        if str(item.get("outcome") or "").upper() == "PENDING"
+    ]
+    return {
+        "engine": "V32_OPERATOR_TRACKING_STATUS",
+        "generated_at": _v29_now(),
+        "operator_event_version": _V32_OPERATOR_EVENT_VERSION,
+        "operator_event_count": len(events),
+        "recent_event_count": len(recent_events),
+        "unique_alert_count": len(latest_by_alert),
+        "open_alert_count": len(open_alerts),
+        "closed_alert_count": len(closed_alerts),
+        "by_action": dict(sorted(by_action.items())),
+        "by_status": dict(sorted(by_status.items())),
+        "by_ticker": dict(sorted(by_ticker.items())),
+        "open_alerts": open_alerts[-50:],
+        "recent_events": recent_events[-50:],
+        "outcome_tracking": {
+            "tracking_version": "v31_entry_ready_signal_outcome_v1",
+            "tracked_entry_ready_signals": len(tracked_outcomes),
+            "pending_entry_ready_signals": len(pending_outcomes),
+            "evaluation_endpoint": "POST /v31_evaluate_pending_outcomes",
+            "manual_review_evaluation_endpoint": "POST /v31_evaluate_manual_reviews",
+        },
+        "backtesting_note": "Eventos V32 documentan decisiones del operador; outcomes V31 miden resultado paper/manual para aprendizaje. No autorizan ejecucion.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_operator_daily_summary_payload(limit=12):
+    today = _v32_operator_today_payload(limit=limit)
+    tracking = _v32_operator_tracking_payload(limit=500)
+    alerts = today.get("active_alerts") or []
+    action_alerts = [item for item in alerts if item.get("severity") == "ACTION"]
+    risk_alerts = [item for item in alerts if item.get("severity") == "RISK"]
+    watch_alerts = [item for item in alerts if item.get("severity") == "WATCH"]
+    next_action = (today.get("next_actions") or [{}])[0]
+    summary_lines = [
+        "Stock Ultimus V32 daily summary",
+        f"Estado: {today.get('status') or 'UNKNOWN'}",
+        f"Alertas: {len(action_alerts)} action, {len(risk_alerts)} risk, {len(watch_alerts)} watch.",
+        f"Siguiente paso: {next_action.get('label') or 'Sin accion inmediata'}.",
+    ]
+    if action_alerts or risk_alerts:
+        summary_lines.append("Requiere atencion humana antes de cualquier decision.")
+    elif watch_alerts:
+        summary_lines.append("Monitoreo solamente; no convertir WAIT_* en entrada.")
+    else:
+        summary_lines.append("Sin accion operativa inmediata.")
+    return {
+        "engine": "V32_OPERATOR_DAILY_SUMMARY",
+        "generated_at": _v29_now(),
+        "status": today.get("status"),
+        "headline": summary_lines[0],
+        "summary_text": "\n".join(summary_lines),
+        "counts": {
+            "action": len(action_alerts),
+            "risk": len(risk_alerts),
+            "watch": len(watch_alerts),
+            "active": len(alerts),
+            "operator_events": tracking.get("operator_event_count"),
+            "open_tracked_alerts": tracking.get("open_alert_count"),
+            "pending_outcomes": (tracking.get("outcome_tracking") or {}).get("pending_entry_ready_signals"),
+        },
+        "next_actions": today.get("next_actions") or [],
+        "active_alerts": alerts,
+        "tracking": {
+            "operator_event_count": tracking.get("operator_event_count"),
+            "open_alert_count": tracking.get("open_alert_count"),
+            "closed_alert_count": tracking.get("closed_alert_count"),
+            "outcome_tracking": tracking.get("outcome_tracking"),
+        },
+        "links": {
+            "operator_json": "/gpt_v32_operator_today",
+            "operator_dashboard": "/v32_operator_dashboard",
+            "command_center": "/v32_project_command_center",
+            "tracking": "/v32_operator_tracking_status",
+            "events": "/v32_operator_events",
+        },
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_operator_daily_summary_email_content(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    subject = "Stock Ultimus V32: {status} | {action} action / {risk} risk / {watch} watch".format(
+        status=summary.get("status") or "UNKNOWN",
+        action=counts.get("action", 0),
+        risk=counts.get("risk", 0),
+        watch=counts.get("watch", 0),
+    )
+    alert_lines = []
+    for alert in (summary.get("active_alerts") or [])[:10]:
+        alert_lines.append(
+            "- {ticker} | {severity} | {state} | blocker {blocker} | status {status}".format(
+                ticker=alert.get("ticker"),
+                severity=alert.get("severity"),
+                state=alert.get("state"),
+                blocker=alert.get("main_blocker") or "NONE",
+                status=alert.get("operator_status"),
+            )
+        )
+    text = "\n\n".join([
+        summary.get("summary_text") or "",
+        "Alertas activas:\n" + ("\n".join(alert_lines) if alert_lines else "Sin alertas activas."),
+        "Links: /v32_project_command_center | /v32_operator_tracking_status | /gpt_v32_operator_today",
+        "Decision support solamente. No coloca ordenes ni autoriza ejecucion automatica.",
+    ])
+    alert_html = "".join(
+        "<li><strong>{ticker}</strong> | {severity} | {state} | blocker {blocker} | status {status}</li>".format(
+            ticker=html.escape(str(alert.get("ticker") or "")),
+            severity=html.escape(str(alert.get("severity") or "")),
+            state=html.escape(str(alert.get("state") or "")),
+            blocker=html.escape(str(alert.get("main_blocker") or "NONE")),
+            status=html.escape(str(alert.get("operator_status") or "")),
+        )
+        for alert in (summary.get("active_alerts") or [])[:10]
+    )
+    html_body = """
+    <div style="font-family:Arial,sans-serif;color:#111827;line-height:1.45">
+      <h2>Stock Ultimus V32</h2>
+      <pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:12px">{summary}</pre>
+      <h3>Alertas activas</h3>
+      <ul>{alerts}</ul>
+      <p><a href="/v32_project_command_center">Command Center</a> | <a href="/v32_operator_tracking_status">Tracking</a> | <a href="/gpt_v32_operator_today">GPT JSON</a></p>
+      <p style="color:#92400e"><b>Decision support solamente.</b> No coloca ordenes ni autoriza ejecucion automatica.</p>
+    </div>
+    """.format(
+        summary=html.escape(summary.get("summary_text") or ""),
+        alerts=alert_html or "<li>Sin alertas activas.</li>",
+    )
+    return {"subject": subject, "text": text, "html": html_body}
+
+
+def _v32_operator_daily_summary_email_payload(force=False, to_email=None, dry_run=False):
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    counts = summary.get("counts") or {}
+    should_notify = bool(force or counts.get("action") or counts.get("risk"))
+    content = _v32_operator_daily_summary_email_content(summary)
+    base_payload = {
+        "engine": "V32_OPERATOR_DAILY_SUMMARY_EMAIL",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "subject": content.get("subject"),
+        "summary": summary,
+        "notification_channel": "email",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if dry_run:
+        return {**base_payload, "status": "preview", "email_sent": False, "text": content.get("text"), "html": content.get("html")}
+    if not should_notify:
+        return {**base_payload, "status": "skipped", "email_sent": False, "reason": "NO_ACTIONABLE_V32_ALERTS"}
+    result = send_resend_email(
+        to_email or PREMARKET_EMAIL_TO,
+        content.get("subject"),
+        content.get("text"),
+        content.get("html"),
+    )
+    return {
+        **base_payload,
+        "status": "sent" if result.get("email_sent") else "not_sent",
+        "email_sent": bool(result.get("email_sent")),
+        "email_result": result,
+    }
+
+
 def _v32_operator_event_payload(payload):
     payload = payload if isinstance(payload, dict) else {}
     action = _v29_safe_upper(payload.get("action"), "")
@@ -25508,6 +25716,31 @@ async def v32_operator_events(limit: int = 100):
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+@app.get("/v32_operator_tracking_status")
+async def v32_operator_tracking_status(limit: int = 500):
+    return _v32_operator_tracking_payload(limit=limit)
+
+
+@app.get("/v32_operator_daily_summary")
+async def v32_operator_daily_summary(limit: int = 12):
+    return _v32_operator_daily_summary_payload(limit=limit)
+
+
+@app.get("/v32_operator_daily_summary_email/preview")
+async def v32_operator_daily_summary_email_preview(force: bool = False):
+    return _v32_operator_daily_summary_email_payload(force=force, dry_run=True)
+
+
+@app.post("/v32_operator_daily_summary_email")
+async def v32_operator_daily_summary_email(payload: dict | None = None, force: bool = False, to_email: Optional[str] = None):
+    payload = payload if isinstance(payload, dict) else {}
+    return _v32_operator_daily_summary_email_payload(
+        force=bool(force or payload.get("force")),
+        to_email=to_email or payload.get("to_email"),
+        dry_run=False,
+    )
 
 
 @app.post("/v32_operator_event")

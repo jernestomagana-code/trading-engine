@@ -227,6 +227,9 @@ The same-source executive view is available after deploy at:
 - HTML: `/v31_command_center`
 - Guided operator: `/v32_operator_dashboard`
 - GPT operator Action: `/gpt_v32_operator_today`
+- Friendly daily summary: `/v32_operator_daily_summary`
+- Tracking/backtesting status: `/v32_operator_tracking_status`
+- Email summary preview: `/v32_operator_daily_summary_email/preview`
 
 It is derived from the same recommendation payload used by
 `/gpt_v31_daily_rankings`, so it should agree with Super Engine Bolsa.
@@ -243,6 +246,22 @@ post-close learning. When you tell the GPT "pon QQQ en watchlist", "rechaza
 TSLA por spread alto", or "registra esta nota", it should call
 `recordOperatorEvent`. Those records are workflow/journal events for tracking
 and backtesting only; they do not place orders.
+
+For local notifications, use:
+
+```bash
+python3 scripts/v32_operator_notify.py --macos-notify
+```
+
+Optional channels:
+
+```bash
+python3 scripts/v32_operator_notify.py --webhook-url "$STOCK_ULTIMUS_NOTIFY_WEBHOOK_URL"
+python3 scripts/v32_operator_notify.py --email-summary
+```
+
+The normal notifier suppresses `WAIT_MARKET` noise. Use `--force` only for a
+manual smoke test or for a deliberate daily "sin accion" digest.
 
 ## Daily Outcome Evaluation
 
