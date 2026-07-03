@@ -398,6 +398,9 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("manual_review_ready", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
         self.assertIn("macos_notification_center", source)
+        self.assertIn("STOCK_ULTIMUS_NOTIFY_WEBHOOK_URL", source)
+        self.assertIn("--email-summary", source)
+        self.assertIn("/v32_operator_daily_summary_email", source)
         self.assertIn("secrets_printed", source)
         self.assertIn('"execution_authorized": False', source)
         self.assertIn('"not_order_instruction": True', source)
@@ -413,9 +416,14 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
 
         self.assertIn("/v32_project_dashboard", source)
         self.assertIn("/v32_project_command_center", source)
+        self.assertIn("/v32_operator_daily_summary", source)
+        self.assertIn("/v32_operator_tracking_status", source)
+        self.assertIn("/v32_operator_daily_summary_email", source)
         self.assertIn("project-dashboard.html", source)
         self.assertIn("project-command-center.html", source)
         self.assertIn("def _v32_project_dashboard_doc_html", source)
+        self.assertIn("def _v32_operator_daily_summary_payload", source)
+        self.assertIn("def _v32_operator_tracking_payload", source)
         self.assertIn('"/v32"', source)
 
 
