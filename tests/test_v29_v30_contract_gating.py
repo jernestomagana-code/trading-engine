@@ -915,6 +915,110 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_called_once()
 
+    def test_v32_operator_pushover_dedupes_repeated_action_alert(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "READY_FOR_MANUAL_REVIEW",
+            "summary_text": "Requiere atencion humana.",
+            "counts": {"action": 1, "risk": 0, "watch": 0},
+            "active_alerts": [{
+                "alert_id": "ALERT-1",
+                "ticker": "QQQ",
+                "severity": "ACTION",
+                "state": "ENTRY_READY",
+                "operator_status": "NEW",
+            }],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        signature = main._v32_operator_pushover_signature(summary)
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main,
+            "_v29_load_json_file",
+            return_value={"last_signature": signature, "last_sent_at": "2026-07-03T20:00:00+00:00", "last_status": "sent"},
+        ), patch.object(main, "send_pushover_message") as send_push:
+            result = main._v32_operator_pushover_notify_payload(dry_run=False)
+
+        self.assertEqual(result["status"], "deduped")
+        self.assertFalse(result["pushover_sent"])
+        self.assertTrue(result["dedupe"]["deduped"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_not_called()
+
+    def test_v32_operator_pushover_records_dedupe_state_after_send(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "READY_FOR_MANUAL_REVIEW",
+            "summary_text": "Requiere atencion humana.",
+            "counts": {"action": 1, "risk": 0, "watch": 0},
+            "active_alerts": [{
+                "alert_id": "ALERT-2",
+                "ticker": "SPY",
+                "severity": "ACTION",
+                "state": "ENTRY_READY",
+                "operator_status": "NEW",
+            }],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main,
+            "_v29_load_json_file",
+            return_value={},
+        ), patch.object(main, "send_pushover_message", return_value={
+            "pushover_sent": True,
+            "provider": "pushover",
+            "status_code": 200,
+        }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True) as save_state:
+            result = main._v32_operator_pushover_notify_payload(dry_run=False)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["pushover_sent"])
+        self.assertFalse(result["dedupe"]["deduped"])
+        send_push.assert_called_once()
+        save_state.assert_called_once()
+
+    def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
+        with patch.object(main, "_v32_operator_today_payload", return_value={
+            "engine": "V32_OPERATOR_ASSISTANT",
+            "status": "WAIT_MARKET",
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 2,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 1},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_pushover_notify_payload", return_value={
+            "engine": "V32_OPERATOR_PUSHOVER_NOTIFY",
+            "would_notify": False,
+            "status": "preview",
+            "dedupe": {"deduped": False},
+            "pushover_sent": False,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }):
+            result = main._v32_operator_daily_cycle_payload()
+
+        self.assertEqual(result["engine"], "V32_OPERATOR_DAILY_CYCLE")
+        self.assertIn("/v32_operator_pushover_notify/preview", result["routine"][2]["cloud_push_preview"])
+        self.assertEqual(result["backtesting_follow_up"]["pending_entry_ready_signals"], 1)
+        self.assertIn("/v31_evaluate_manual_reviews", result["routine"][3]["post_close_endpoint"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+
     def test_v32_live_command_center_renders_summary_and_tracking(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
             "engine": "V32_OPERATOR_DAILY_SUMMARY",

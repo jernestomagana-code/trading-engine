@@ -250,6 +250,35 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v32_operator_daily_cycle:
+    get:
+      operationId: getOperatorDailyCycle
+      summary: Get the full friendly daily operating loop
+      description: >
+        Returns the complete operator routine for "what should I do today":
+        current V32 operator state, daily summary, Pushover cloud preview and
+        dedupe state, alert triage, tracking, and post-close/backtesting
+        follow-up. This endpoint is read-only and never authorizes execution.
+      parameters:
+        - name: force_preview
+          in: query
+          required: false
+          description: Preview what a forced Pushover smoke test would decide without sending.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: V32 daily operating cycle
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_daily_summary:
     get:
       operationId: getOperatorDailySummary

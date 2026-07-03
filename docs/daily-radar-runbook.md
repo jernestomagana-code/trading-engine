@@ -226,6 +226,7 @@ The same-source executive view is available after deploy at:
 - JSON: `/v31_command_center.json`
 - HTML: `/v31_command_center`
 - Guided operator: `/v32_operator_dashboard`
+- Full GPT daily cycle: `/gpt_v32_operator_daily_cycle`
 - GPT operator Action: `/gpt_v32_operator_today`
 - Friendly daily summary: `/v32_operator_daily_summary`
 - Tracking/backtesting status: `/v32_operator_tracking_status`
@@ -240,12 +241,13 @@ For the friendlier daily workflow, ask the official GPT:
 Que hago ahora?
 ```
 
-The GPT should call `getOperatorToday` and guide the next step: refresh data,
-review ENTRY_READY setups, watch waiting alerts, document blockers, or run
-post-close learning. When you tell the GPT "pon QQQ en watchlist", "rechaza
-TSLA por spread alto", or "registra esta nota", it should call
-`recordOperatorEvent`. Those records are workflow/journal events for tracking
-and backtesting only; they do not place orders.
+The GPT should call `getOperatorDailyCycle` first. That gives the friendly
+loop: current state, alert triage, Pushover cloud preview/dedupe, tracking, and
+post-close/backtesting follow-up. If you only need current alerts, it can call
+`getOperatorToday`. When you tell the GPT "pon QQQ en watchlist", "rechaza TSLA
+por spread alto", or "registra esta nota", it should call `recordOperatorEvent`.
+Those records are workflow/journal events for tracking and backtesting only;
+they do not place orders.
 
 For local notifications, use:
 
@@ -350,6 +352,18 @@ POST /v32_operator_pushover_notify {"force": true}
 
 `force=true` is for an explicit smoke test. The endpoint is protected by read
 auth, keeps `execution_authorized=false`, and never places orders.
+
+GitHub Actions cloud scheduler:
+
+```text
+.github/workflows/v32-cloud-pushover.yml
+```
+
+It runs every 5 minutes during a broad US market-hours window and calls
+`POST /v32_operator_pushover_notify`. The backend sends only when there are
+`ACTION`/`RISK` alerts and records a dedupe signature so the same actionable
+alert does not repeat on every schedule tick. Manual `workflow_dispatch` with
+`force=true` is only for a deliberate smoke test.
 
 ## Daily Outcome Evaluation
 

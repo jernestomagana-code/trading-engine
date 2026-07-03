@@ -139,7 +139,9 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_next_actions",
     "/v32_operator_events",
     "/v32_operator_event",
+    "/v32_operator_daily_cycle",
     "/v32_operator_pushover_notify",
+    "/gpt_v32_operator_daily_cycle",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
     "/gpt_v31_trade_decision/",
@@ -22185,6 +22187,10 @@ def _v32_operator_events_file():
     return _V29_RUNTIME_DIR / "v32_operator_events.json"
 
 
+def _v32_pushover_state_file():
+    return _V29_RUNTIME_DIR / "v32_pushover_notify_state.json"
+
+
 def _v32_load_operator_events():
     data = _v29_load_json_file(_v32_operator_events_file())
     return data if isinstance(data, list) else []
@@ -22706,6 +22712,67 @@ def _v32_operator_pushover_message(summary):
     return "\n".join(lines)
 
 
+def _v32_operator_pushover_signature(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    actionable = [
+        {
+            "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
+            "ticker": _v29_safe_upper(alert.get("ticker"), "UNKNOWN"),
+            "severity": _v29_safe_upper(alert.get("severity"), "UNKNOWN"),
+            "state": _v29_safe_upper(alert.get("state"), "UNKNOWN"),
+            "status": _v29_safe_upper(alert.get("operator_status"), "UNKNOWN"),
+        }
+        for alert in alerts
+        if _v29_safe_upper(alert.get("severity"), "") in {"ACTION", "RISK"}
+    ]
+    actionable.sort(key=lambda item: (item.get("alert_id"), item.get("ticker"), item.get("severity")))
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    return {
+        "version": "v32_pushover_dedupe_v1",
+        "status": summary.get("status") or "UNKNOWN",
+        "counts": {
+            "action": counts.get("action", 0),
+            "risk": counts.get("risk", 0),
+        },
+        "alerts": actionable,
+    }
+
+
+def _v32_operator_pushover_dedupe_decision(summary, force=False):
+    signature = _v32_operator_pushover_signature(summary)
+    state = _v29_load_json_file(_v32_pushover_state_file())
+    state = state if isinstance(state, dict) else {}
+    last_signature = state.get("last_signature") if isinstance(state.get("last_signature"), dict) else {}
+    deduped = bool(not force and signature == last_signature)
+    return {
+        "dedupe_version": "v32_pushover_dedupe_v1",
+        "deduped": deduped,
+        "force": bool(force),
+        "signature": signature,
+        "last_sent_at": state.get("last_sent_at"),
+        "last_status": state.get("last_status"),
+        "state_file": str(_v32_pushover_state_file()),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_save_pushover_dedupe_state(signature, status):
+    path = _v32_pushover_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump({
+            "state_version": "v32_pushover_dedupe_v1",
+            "last_sent_at": _v29_now(),
+            "last_status": status,
+            "last_signature": signature,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }, f, indent=2)
+    return True
+
+
 def send_pushover_message(title, message):
     missing = []
     if not PUSHOVER_USER_KEY:
@@ -22761,12 +22828,14 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     should_notify = bool(force or counts.get("action") or counts.get("risk"))
     message = _v32_operator_pushover_message(summary)
     title = "Stock Ultimus V32: {}".format(summary.get("status") or "UNKNOWN")
+    dedupe = _v32_operator_pushover_dedupe_decision(summary, force=force)
     base_payload = {
         "engine": "V32_OPERATOR_PUSHOVER_NOTIFY",
         "generated_at": _v29_now(),
         "would_notify": should_notify,
         "title": title,
         "summary": summary,
+        "dedupe": dedupe,
         "notification_channel": "pushover",
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -22775,12 +22844,94 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
         return {**base_payload, "status": "preview", "pushover_sent": False, "message": message}
     if not should_notify:
         return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": "NO_ACTIONABLE_V32_ALERTS"}
+    if dedupe.get("deduped"):
+        return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_V32_PUSHOVER_ALERT"}
     result = send_pushover_message(title, message)
+    if result.get("pushover_sent"):
+        _v32_save_pushover_dedupe_state(dedupe.get("signature"), "sent")
     return {
         **base_payload,
         "status": "sent" if result.get("pushover_sent") else "not_sent",
         "pushover_sent": bool(result.get("pushover_sent")),
         "pushover_result": result,
+    }
+
+
+def _v32_operator_daily_cycle_payload(force_preview=False):
+    today = _v32_operator_today_payload(limit=12)
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    tracking = _v32_operator_tracking_payload(limit=500)
+    pushover_preview = _v32_operator_pushover_notify_payload(force=force_preview, dry_run=True)
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    pending_outcomes = (tracking.get("outcome_tracking") or {}).get("pending_entry_ready_signals")
+    routine = [
+        {
+            "step": 1,
+            "label": "Leer estado operativo",
+            "endpoint": "GET /gpt_v32_operator_today",
+            "status": today.get("status"),
+        },
+        {
+            "step": 2,
+            "label": "Atender alertas ACTION/RISK",
+            "required": bool(counts.get("action") or counts.get("risk")),
+            "allowed_actions": ["MARK_REVIEWING", "MARK_WATCHLIST", "REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "MARK_EXPIRED", "JOURNAL_NOTE"],
+            "record_endpoint": "POST /gpt_v32_operator_event",
+        },
+        {
+            "step": 3,
+            "label": "Verificar notificaciones",
+            "cloud_push_preview": "/v32_operator_pushover_notify/preview",
+            "cloud_push_send": "POST /v32_operator_pushover_notify",
+            "would_notify": pushover_preview.get("would_notify"),
+            "deduped": (pushover_preview.get("dedupe") or {}).get("deduped"),
+        },
+        {
+            "step": 4,
+            "label": "Actualizar tracking/backtesting",
+            "tracking_endpoint": "GET /v32_operator_tracking_status",
+            "pending_outcomes": pending_outcomes,
+            "post_close_endpoint": "POST /v31_evaluate_manual_reviews?dry_run=true",
+        },
+        {
+            "step": 5,
+            "label": "Cerrar el dia",
+            "detail": "Post-cierre: evaluar outcomes dry-run; write real solo con snapshot fresco y confirmacion explicita.",
+            "not_order_instruction": True,
+        },
+    ]
+    return {
+        "engine": "V32_OPERATOR_DAILY_CYCLE",
+        "generated_at": _v29_now(),
+        "status": today.get("status"),
+        "routine": routine,
+        "today": today,
+        "summary": summary,
+        "tracking": tracking,
+        "pushover_preview": pushover_preview,
+        "backtesting_follow_up": {
+            "pending_entry_ready_signals": pending_outcomes,
+            "operator_event_count": tracking.get("operator_event_count"),
+            "open_alert_count": tracking.get("open_alert_count"),
+            "evaluation_endpoints": {
+                "pending_outcomes": "POST /v31_evaluate_pending_outcomes?dry_run=true",
+                "manual_reviews": "POST /v31_evaluate_manual_reviews?dry_run=true",
+                "learning": "GET /v31_manual_review_learning",
+            },
+        },
+        "answer_to_user": "\n".join([
+            "Modo operador: {}.".format(today.get("status") or "UNKNOWN"),
+            "Alertas: {action} action, {risk} risk, {watch} watch.".format(
+                action=counts.get("action", 0),
+                risk=counts.get("risk", 0),
+                watch=counts.get("watch", 0),
+            ),
+            "Pushover cloud: {}.".format("avisaria" if pushover_preview.get("would_notify") else "sin envio automatico"),
+            "Backtesting pendiente: {} outcome(s).".format(pending_outcomes or 0),
+            "Decision support solamente; no coloca ordenes.",
+        ]),
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -22932,9 +23083,11 @@ def _v32_project_command_center_live_html():
             <tbody>{event_rows}</tbody>
           </table>
           <div class="links">
+            <a href="/gpt_v32_operator_daily_cycle">Daily Cycle</a>
             <a href="/gpt_v32_operator_today">GPT JSON</a>
             <a href="/v32_operator_daily_summary">Daily Summary</a>
             <a href="/v32_operator_tracking_status">Tracking JSON</a>
+            <a href="/v32_operator_pushover_notify/preview">Pushover Preview</a>
             <a href="/v32_operator_daily_summary_email/preview">Email Preview</a>
             <a href="/v32_project_dashboard">Project Dashboard</a>
             <a href="/v32_project_command_center_static">Vista estatica</a>
@@ -26011,6 +26164,16 @@ async def v32_operator_tracking_status(limit: int = 500):
 @app.get("/v32_operator_daily_summary")
 async def v32_operator_daily_summary(limit: int = 12):
     return _v32_operator_daily_summary_payload(limit=limit)
+
+
+@app.get("/v32_operator_daily_cycle")
+async def v32_operator_daily_cycle(force_preview: bool = False):
+    return _v32_operator_daily_cycle_payload(force_preview=force_preview)
+
+
+@app.get("/gpt_v32_operator_daily_cycle")
+async def gpt_v32_operator_daily_cycle(force_preview: bool = False):
+    return _v32_operator_daily_cycle_payload(force_preview=force_preview)
 
 
 @app.get("/v32_operator_daily_summary_email/preview")

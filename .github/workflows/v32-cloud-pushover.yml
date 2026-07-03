@@ -1,0 +1,83 @@
+name: V32 Cloud Pushover
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force a smoke-test push"
+        required: false
+        default: "false"
+  schedule:
+    # Broad US market-hours window in UTC. The backend decides whether to send
+    # and dedupes repeated ACTION/RISK alerts.
+    - cron: "*/5 13-21 * * 1-5"
+
+jobs:
+  pushover:
+    name: Call V32 cloud Pushover
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send only actionable V32 operator push
+        env:
+          READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+          FORCE_PUSH: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import request, error
+
+          token = os.environ.get("READ_ACCESS_TOKEN", "").strip()
+          if not token:
+              print("Missing STOCK_ULTIMUS_READ_ACCESS_TOKEN secret.")
+              sys.exit(1)
+
+          force = os.environ.get("FORCE_PUSH", "false").lower() == "true"
+          body = json.dumps({"force": force}).encode("utf-8")
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          url = base + "/v32_operator_pushover_notify"
+          req = request.Request(
+              url,
+              data=body,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Stock-Ultimus-Read-Token": token,
+              },
+          )
+          try:
+              with request.urlopen(req, timeout=30) as resp:
+                  payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                  status_code = resp.status
+          except error.HTTPError as exc:
+              body_text = exc.read().decode("utf-8", errors="replace")
+              print(body_text[:1200])
+              sys.exit(1)
+
+          result = payload.get("pushover_result") or {}
+          summary = payload.get("summary") or {}
+          counts = summary.get("counts") or {}
+          dedupe = payload.get("dedupe") or {}
+          print(json.dumps({
+              "status_code": status_code,
+              "status": payload.get("status"),
+              "would_notify": payload.get("would_notify"),
+              "pushover_sent": payload.get("pushover_sent"),
+              "provider": result.get("provider"),
+              "provider_status_code": result.get("status_code"),
+              "deduped": dedupe.get("deduped"),
+              "force": dedupe.get("force"),
+              "counts": {
+                  "action": counts.get("action"),
+                  "risk": counts.get("risk"),
+                  "watch": counts.get("watch"),
+              },
+              "not_order_instruction": payload.get("not_order_instruction"),
+              "execution_authorized": payload.get("execution_authorized"),
+          }, indent=2))
+
+          if payload.get("status") in {"not_sent"}:
+              sys.exit(1)
+          PY
