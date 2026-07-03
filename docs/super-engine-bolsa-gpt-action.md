@@ -58,11 +58,15 @@ Que alertas tengo pendientes?
 Super Engine Bolsa should call:
 
 ```text
+GET /gpt_v32_operator_daily_cycle
 GET /gpt_v32_operator_today
 ```
 
-Use `answer_to_user` as the base response. It includes active alerts, next
-actions, manual-review status, outcome tracking, and learning context.
+Use `gpt_v32_operator_daily_cycle.answer_to_user` as the simplest daily answer.
+It includes the operating routine, active alerts, Pushover preview/dedupe,
+manual-review status, outcome tracking, and post-close/backtesting follow-up.
+Use `gpt_v32_operator_today.answer_to_user` when the user only asks for the
+current alert state.
 
 When the user explicitly asks to test or send the mobile push summary, use:
 
@@ -141,6 +145,9 @@ it as a separate decision engine.
 Use /gpt_v32_operator_today first for workflow questions like "what should I do
 now?", daily checklist, active alerts, pending reviews, notification-style
 triage, or post-close follow-up.
+Use /gpt_v32_operator_daily_cycle for the full friendly operating loop:
+morning status, alert triage, Pushover status, tracking/backtesting and
+post-close follow-up in one response.
 Use /v32_operator_daily_summary when the user asks for a compact daily status,
 notification-style digest, or "que falta hoy?".
 Use /v32_operator_pushover_notify/preview when the user asks whether a mobile
@@ -154,12 +161,11 @@ Use /gpt_v32_operator_event only when the user explicitly asks to record a
 workflow action, review decision, alert acknowledgement, or journal note.
 
 If the user asks "que hago hoy?", answer as an operating checklist:
-1. summarize /gpt_v32_operator_today and /v32_operator_daily_summary,
+1. summarize /gpt_v32_operator_daily_cycle,
 2. say whether data refresh/TWS/IBKR is required,
-3. say whether Pushover/local alerts are configured or need preflight,
+3. say whether Pushover cloud would notify or is deduped,
 4. list actionable alerts or explicitly say there are none,
-5. list manual-review and post-close/backtesting follow-up from
-   /v32_operator_tracking_status.
+5. list manual-review and post-close/backtesting follow-up.
 Do not recommend manual trade entry from notifications. Pushover, email, and
 macOS notifications are attention channels only.
 
@@ -234,6 +240,8 @@ Operational review surfaces:
 
 ```text
 /v32_operator_dashboard
+/gpt_v32_operator_daily_cycle
+/v32_operator_daily_cycle
 /gpt_v32_operator_today
 /gpt_v32_operator_event
 /v32_operator_daily_summary
