@@ -857,6 +857,42 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(preview["not_order_instruction"])
         send_email.assert_not_called()
 
+    def test_v32_live_command_center_renders_summary_and_tracking(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "generated_at": "2026-07-03T18:54:11+00:00",
+            "status": "WAIT_MARKET",
+            "summary_text": "Stock Ultimus V32 daily summary\nSin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "next_actions": [{"priority": 1, "label": "Monitorear", "detail": "Esperar mercado abierto."}],
+            "active_alerts": [{
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "severity": "WATCH",
+                "state": "WAIT_MARKET",
+                "main_blocker": "MARKET_CLOSED",
+                "operator_status": "NEW",
+            }],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 1,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 0},
+            "recent_events": [{"recorded_at": "2026-07-03T18:00:00+00:00", "ticker": "QQQ", "action": "MARK_WATCHLIST", "operator_status": "WATCHLIST"}],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }):
+            html = main._v32_project_command_center_live_html()
+
+        self.assertIn("Stock Ultimus Live Command Center", html)
+        self.assertIn("WAIT_MARKET", html)
+        self.assertIn("QQQ", html)
+        self.assertIn("Daily Summary", html)
+        self.assertIn("Tracking JSON", html)
+        self.assertIn("/v32_project_command_center_static", html)
+
     def test_manual_review_inbox_renders_entry_ready_cards(self):
         decision = {
             "ticker": "QQQ",

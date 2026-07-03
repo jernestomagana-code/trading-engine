@@ -22675,6 +22675,182 @@ def _v32_operator_daily_summary_email_payload(force=False, to_email=None, dry_ru
     }
 
 
+def _v32_project_command_center_live_html():
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    tracking = _v32_operator_tracking_payload(limit=500)
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    status = summary.get("status") or "UNKNOWN"
+    tone = "ready"
+    if counts.get("action") or counts.get("risk"):
+        tone = "action"
+    elif status in {"WAIT_MARKET", "WAIT_MARKET_WINDOW"}:
+        tone = "wait"
+    elif status in {"NO_DATA", "ACTION_REQUIRED", "BLOCKED", "STALE_DATA"}:
+        tone = "blocked"
+    next_actions = "".join(
+        """
+        <li>
+          <span class="priority">{priority}</span>
+          <div><strong>{label}</strong><p>{detail}</p></div>
+        </li>
+        """.format(
+            priority=_v29_html_escape(item.get("priority")),
+            label=_v29_html_escape(item.get("label")),
+            detail=_v29_html_escape(item.get("detail")),
+        )
+        for item in (summary.get("next_actions") or [])[:6]
+    )
+    alert_rows = "".join(
+        """
+        <tr>
+          <td><strong>{ticker}</strong><br><span>{strategy}</span></td>
+          <td><span class="pill {severity_class}">{severity}</span></td>
+          <td>{state}</td>
+          <td>{blocker}</td>
+          <td>{operator_status}</td>
+        </tr>
+        """.format(
+            ticker=_v29_html_escape(alert.get("ticker")),
+            strategy=_v29_html_escape(alert.get("strategy")),
+            severity_class=_v29_html_escape(str(alert.get("severity") or "").lower()),
+            severity=_v29_html_escape(alert.get("severity")),
+            state=_v29_html_escape(alert.get("state")),
+            blocker=_v29_html_escape(alert.get("main_blocker") or "NONE"),
+            operator_status=_v29_html_escape(alert.get("operator_status")),
+        )
+        for alert in (summary.get("active_alerts") or [])[:12]
+    )
+    event_rows = "".join(
+        """
+        <tr>
+          <td>{recorded_at}</td>
+          <td><strong>{ticker}</strong></td>
+          <td>{action}</td>
+          <td>{status}</td>
+        </tr>
+        """.format(
+            recorded_at=_v29_html_escape(str(event.get("recorded_at") or "")[:19]),
+            ticker=_v29_html_escape(event.get("ticker") or "SYSTEM"),
+            action=_v29_html_escape(event.get("action")),
+            status=_v29_html_escape(event.get("operator_status")),
+        )
+        for event in (tracking.get("recent_events") or [])[-10:][::-1]
+    )
+    return """
+    <!doctype html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta http-equiv="refresh" content="60">
+      <title>Stock Ultimus | Live Command Center</title>
+      <style>
+        :root {{
+          --bg:#f5f7fa; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d9e0ea;
+          --green:#0f7a4f; --green-bg:#e8f6ef; --amber:#996100; --amber-bg:#fff3d6;
+          --blue:#225ea8; --blue-bg:#e8f1ff; --red:#a92b38; --red-bg:#fdebed; --dark:#1d2735;
+          font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        }}
+        * {{ box-sizing:border-box; }}
+        body {{ margin:0; background:var(--bg); color:var(--ink); }}
+        header {{ display:flex; justify-content:space-between; gap:18px; align-items:center; padding:18px 28px; background:var(--dark); color:white; }}
+        h1 {{ margin:0; font-size:23px; letter-spacing:0; }}
+        header p {{ margin:5px 0 0; color:#cbd5e1; font-size:13px; }}
+        main {{ width:min(1380px,100%); margin:0 auto; padding:22px 24px 42px; }}
+        .hero {{ display:grid; grid-template-columns:minmax(300px,1.2fr) repeat(4,minmax(130px,.55fr)); gap:12px; margin-bottom:16px; }}
+        .card,.metric,.section {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 22px rgba(24,34,48,.06); }}
+        .card {{ padding:18px; border-left:6px solid var(--blue); }}
+        .card.action {{ border-left-color:var(--red); }} .card.wait {{ border-left-color:var(--amber); }} .card.ready {{ border-left-color:var(--green); }}
+        .eyebrow {{ color:var(--muted); font-size:12px; font-weight:850; text-transform:uppercase; }}
+        .card strong {{ display:block; margin-top:6px; font-size:21px; }}
+        .card pre {{ margin:10px 0 0; white-space:pre-wrap; font:inherit; color:var(--muted); line-height:1.42; }}
+        .metric {{ padding:15px; min-height:115px; }}
+        .metric .value {{ margin-top:9px; font-size:30px; font-weight:900; }}
+        .metric p {{ margin:8px 0 0; color:var(--muted); font-size:12px; line-height:1.35; }}
+        .grid {{ display:grid; grid-template-columns:minmax(0,1.2fr) minmax(340px,.8fr); gap:14px; }}
+        .section {{ padding:17px; margin-top:14px; }}
+        .section h2 {{ margin:0 0 12px; font-size:18px; }}
+        table {{ width:100%; border-collapse:collapse; table-layout:fixed; }}
+        th,td {{ padding:10px; border-top:1px solid var(--line); text-align:left; vertical-align:top; font-size:12px; overflow-wrap:anywhere; }}
+        th {{ border-top:0; color:var(--muted); text-transform:uppercase; font-size:11px; }}
+        td span {{ color:var(--muted); }}
+        .pill {{ display:inline-flex; min-height:24px; align-items:center; padding:4px 8px; border-radius:999px; font-weight:850; font-size:10px; }}
+        .pill.action {{ background:var(--green-bg); color:var(--green); }} .pill.risk {{ background:var(--red-bg); color:var(--red); }}
+        .pill.watch {{ background:var(--blue-bg); color:var(--blue); }} .pill.info {{ background:#edf1f5; color:#475467; }}
+        .actions {{ list-style:none; margin:0; padding:0; display:grid; gap:12px; }}
+        .actions li {{ display:grid; grid-template-columns:32px minmax(0,1fr); gap:10px; }}
+        .priority {{ width:32px; height:32px; border-radius:50%; display:inline-flex; justify-content:center; align-items:center; background:var(--blue-bg); color:var(--blue); font-weight:900; }}
+        .actions strong {{ font-size:13px; }} .actions p {{ margin:4px 0 0; color:var(--muted); font-size:12px; line-height:1.4; }}
+        .links {{ display:flex; flex-wrap:wrap; gap:12px; padding-top:16px; }}
+        a {{ color:var(--blue); font-weight:800; text-decoration:none; }} a:hover {{ text-decoration:underline; }}
+        @media (max-width:1050px) {{ .hero,.grid {{ grid-template-columns:1fr; }} header {{ align-items:flex-start; flex-direction:column; }} }}
+      </style>
+    </head>
+    <body>
+      <header>
+        <div><h1>Stock Ultimus Live Command Center</h1><p>Resumen vivo V32, alertas, tracking y notificaciones. Se refresca cada 60 segundos.</p></div>
+        <div>{generated_at}</div>
+      </header>
+      <main>
+        <section class="hero">
+          <article class="card {tone}">
+            <div class="eyebrow">Estado operativo</div>
+            <strong>{status}</strong>
+            <pre>{summary_text}</pre>
+          </article>
+          <article class="metric"><div class="eyebrow">Action</div><div class="value">{action}</div><p>Requieren atencion humana.</p></article>
+          <article class="metric"><div class="eyebrow">Risk</div><div class="value">{risk}</div><p>No aprobar; documentar blocker.</p></article>
+          <article class="metric"><div class="eyebrow">Watch</div><div class="value">{watch}</div><p>Monitoreo sin entrada.</p></article>
+          <article class="metric"><div class="eyebrow">Eventos</div><div class="value">{events}</div><p>{open_alerts} abiertos · {pending_outcomes} outcomes pendientes.</p></article>
+        </section>
+        <section class="grid">
+          <div class="section">
+            <h2>Alertas activas</h2>
+            <table>
+              <thead><tr><th>Ticker</th><th>Severidad</th><th>Estado</th><th>Blocker</th><th>Status operador</th></tr></thead>
+              <tbody>{alert_rows}</tbody>
+            </table>
+          </div>
+          <aside class="section">
+            <h2>Siguiente</h2>
+            <ol class="actions">{next_actions}</ol>
+          </aside>
+        </section>
+        <section class="section">
+          <h2>Tracking reciente</h2>
+          <table>
+            <thead><tr><th>Hora</th><th>Ticker</th><th>Accion</th><th>Status</th></tr></thead>
+            <tbody>{event_rows}</tbody>
+          </table>
+          <div class="links">
+            <a href="/gpt_v32_operator_today">GPT JSON</a>
+            <a href="/v32_operator_daily_summary">Daily Summary</a>
+            <a href="/v32_operator_tracking_status">Tracking JSON</a>
+            <a href="/v32_operator_daily_summary_email/preview">Email Preview</a>
+            <a href="/v32_project_dashboard">Project Dashboard</a>
+            <a href="/v32_project_command_center_static">Vista estatica</a>
+          </div>
+        </section>
+      </main>
+    </body>
+    </html>
+    """.format(
+        generated_at=_v29_html_escape(summary.get("generated_at")),
+        tone=_v29_html_escape(tone),
+        status=_v29_html_escape(status),
+        summary_text=_v29_html_escape(summary.get("summary_text")),
+        action=_v29_html_escape(counts.get("action", 0)),
+        risk=_v29_html_escape(counts.get("risk", 0)),
+        watch=_v29_html_escape(counts.get("watch", 0)),
+        events=_v29_html_escape(tracking.get("operator_event_count", 0)),
+        open_alerts=_v29_html_escape(tracking.get("open_alert_count", 0)),
+        pending_outcomes=_v29_html_escape((tracking.get("outcome_tracking") or {}).get("pending_entry_ready_signals", 0)),
+        alert_rows=alert_rows or '<tr><td colspan="5">Sin alertas activas.</td></tr>',
+        next_actions=next_actions or '<li><span class="priority">1</span><div><strong>Sin accion inmediata</strong><p>Mantener monitoreo.</p></div></li>',
+        event_rows=event_rows or '<tr><td colspan="4">Sin eventos recientes.</td></tr>',
+    )
+
+
 def _v32_operator_event_payload(payload):
     payload = payload if isinstance(payload, dict) else {}
     action = _v29_safe_upper(payload.get("action"), "")
@@ -25809,6 +25985,11 @@ async def v32_project_dashboard():
 
 @app.get("/v32_project_command_center", response_class=_V29HTMLResponse)
 async def v32_project_command_center():
+    return _V29HTMLResponse(_v32_project_command_center_live_html())
+
+
+@app.get("/v32_project_command_center_static", response_class=_V29HTMLResponse)
+async def v32_project_command_center_static():
     return _V29HTMLResponse(_v32_project_dashboard_doc_html("project-command-center.html"))
 
 
