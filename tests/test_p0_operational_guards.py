@@ -8,6 +8,7 @@ BRIDGE = ROOT / "ibkr_bridge.py"
 APP = ROOT / "app" / "main.py"
 GITIGNORE = ROOT / ".gitignore"
 ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
+ROTATE_READ_TOKEN_TOOL = ROOT / "tools" / "rotate_read_access_token.py"
 MONITOR_NOTIFY_WORKFLOW = ROOT / ".github" / "workflows" / "v31-monitor-notify.yml"
 MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-review-evaluate.yml"
 WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-learning-email.yml"
@@ -183,6 +184,22 @@ class TokenRotationToolTests(unittest.TestCase):
         self.assertIn("add-generic-password", source)
         self.assertIn("pbcopy", source)
         self.assertIn("token_printed=false", source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
+                printed = ast.get_source_segment(source, node) or ""
+                self.assertNotIn("token)", printed)
+                self.assertNotIn("{token", printed)
+
+    def test_read_token_rotation_tool_never_prints_secret_value(self):
+        source = ROTATE_READ_TOKEN_TOOL.read_text()
+        tree = ast.parse(source, filename=str(ROTATE_READ_TOKEN_TOOL))
+
+        self.assertIn("secrets.token_hex(32)", source)
+        self.assertIn("add-generic-password", source)
+        self.assertIn("pbcopy", source)
+        self.assertIn("token_printed=false", source)
+        self.assertIn("stock-ultimus-read-access-token", source)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print":
