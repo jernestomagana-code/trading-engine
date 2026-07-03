@@ -64,6 +64,17 @@ GET /gpt_v32_operator_today
 Use `answer_to_user` as the base response. It includes active alerts, next
 actions, manual-review status, outcome tracking, and learning context.
 
+When the user explicitly asks to test or send the mobile push summary, use:
+
+```text
+GET /v32_operator_pushover_notify/preview
+POST /v32_operator_pushover_notify
+```
+
+The preview never sends. The POST only sends on action/risk alerts unless the
+user explicitly requests `force=true`. Pushover is an attention channel only; it
+does not approve trades or authorize execution.
+
 When the user explicitly asks to record a decision or note, call:
 
 ```text
@@ -132,6 +143,10 @@ now?", daily checklist, active alerts, pending reviews, notification-style
 triage, or post-close follow-up.
 Use /v32_operator_daily_summary when the user asks for a compact daily status,
 notification-style digest, or "que falta hoy?".
+Use /v32_operator_pushover_notify/preview when the user asks whether a mobile
+push would be sent. Use POST /v32_operator_pushover_notify only when the user
+explicitly asks to send/test Pushover, and pass force=true only if the user
+explicitly requests a forced test.
 Use /v32_operator_tracking_status when the user asks how alerts are being
 tracked, which alerts remain open/closed, what is pending for backtesting, or
 what learning/outcome follow-up is missing.
@@ -222,6 +237,8 @@ Operational review surfaces:
 /gpt_v32_operator_today
 /gpt_v32_operator_event
 /v32_operator_daily_summary
+/v32_operator_pushover_notify/preview
+/v32_operator_pushover_notify
 /v32_operator_tracking_status
 /v32_project_command_center
 /v31_operating_suite

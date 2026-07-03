@@ -139,6 +139,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_next_actions",
     "/v32_operator_events",
     "/v32_operator_event",
+    "/v32_operator_pushover_notify",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
     "/gpt_v31_trade_decision/",
@@ -234,6 +235,8 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 PREMARKET_EMAIL_TO = os.getenv("PREMARKET_EMAIL_TO", "")
 PREMARKET_EMAIL_FROM = os.getenv("PREMARKET_EMAIL_FROM", "Stock Ultimus <onboarding@resend.dev>")
 PREMARKET_EMAIL_REPLY_TO = os.getenv("PREMARKET_EMAIL_REPLY_TO", "")
+PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY", "")
+PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
 if PUBLIC_BASE_URL.startswith("ttps://"):
     PUBLIC_BASE_URL = "h" + PUBLIC_BASE_URL
@@ -22675,6 +22678,112 @@ def _v32_operator_daily_summary_email_payload(force=False, to_email=None, dry_ru
     }
 
 
+def _v32_operator_pushover_message(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    lines = [
+        "Stock Ultimus V32",
+        "Estado: {}".format(summary.get("status") or "UNKNOWN"),
+        "Alertas: {action} action, {risk} risk, {watch} watch.".format(
+            action=counts.get("action", 0),
+            risk=counts.get("risk", 0),
+            watch=counts.get("watch", 0),
+        ),
+    ]
+    next_actions = summary.get("next_actions") if isinstance(summary.get("next_actions"), list) else []
+    if next_actions:
+        lines.append("Siguiente: {}".format(next_actions[0].get("label") or "Revisar dashboard"))
+    for alert in (summary.get("active_alerts") or [])[:5]:
+        lines.append(
+            "- {ticker} | {severity} | {state} | {status}".format(
+                ticker=alert.get("ticker") or "?",
+                severity=alert.get("severity") or "?",
+                state=alert.get("state") or "?",
+                status=alert.get("operator_status") or "NEW",
+            )
+        )
+    lines.append("Decision support solamente. No autoriza ordenes.")
+    return "\n".join(lines)
+
+
+def send_pushover_message(title, message):
+    missing = []
+    if not PUSHOVER_USER_KEY:
+        missing.append("PUSHOVER_USER_KEY")
+    if not PUSHOVER_API_TOKEN:
+        missing.append("PUSHOVER_API_TOKEN")
+    if missing:
+        return {
+            "pushover_sent": False,
+            "reason": "PUSHOVER_CONFIG_MISSING",
+            "missing": missing,
+            "provider": "pushover",
+        }
+
+    try:
+        response = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": PUSHOVER_API_TOKEN,
+                "user": PUSHOVER_USER_KEY,
+                "title": title,
+                "message": message,
+                "url": PUBLIC_BASE_URL + "/v32_project_command_center",
+                "url_title": "Stock Ultimus Command Center",
+            },
+            timeout=10,
+        )
+        result = response.json() if response.text else {}
+        if response.status_code == 200:
+            return {
+                "pushover_sent": True,
+                "status_code": response.status_code,
+                "provider": "pushover",
+                "response": result,
+            }
+        return {
+            "pushover_sent": False,
+            "status_code": response.status_code,
+            "provider": "pushover",
+            "response": result,
+        }
+    except Exception as e:
+        return {
+            "pushover_sent": False,
+            "provider": "pushover",
+            "error": str(e),
+        }
+
+
+def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    counts = summary.get("counts") or {}
+    should_notify = bool(force or counts.get("action") or counts.get("risk"))
+    message = _v32_operator_pushover_message(summary)
+    title = "Stock Ultimus V32: {}".format(summary.get("status") or "UNKNOWN")
+    base_payload = {
+        "engine": "V32_OPERATOR_PUSHOVER_NOTIFY",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "title": title,
+        "summary": summary,
+        "notification_channel": "pushover",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if dry_run:
+        return {**base_payload, "status": "preview", "pushover_sent": False, "message": message}
+    if not should_notify:
+        return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": "NO_ACTIONABLE_V32_ALERTS"}
+    result = send_pushover_message(title, message)
+    return {
+        **base_payload,
+        "status": "sent" if result.get("pushover_sent") else "not_sent",
+        "pushover_sent": bool(result.get("pushover_sent")),
+        "pushover_result": result,
+    }
+
+
 def _v32_project_command_center_live_html():
     summary = _v32_operator_daily_summary_payload(limit=12)
     tracking = _v32_operator_tracking_payload(limit=500)
@@ -25915,6 +26024,20 @@ async def v32_operator_daily_summary_email(payload: dict | None = None, force: b
     return _v32_operator_daily_summary_email_payload(
         force=bool(force or payload.get("force")),
         to_email=to_email or payload.get("to_email"),
+        dry_run=False,
+    )
+
+
+@app.get("/v32_operator_pushover_notify/preview")
+async def v32_operator_pushover_notify_preview(force: bool = False):
+    return _v32_operator_pushover_notify_payload(force=force, dry_run=True)
+
+
+@app.post("/v32_operator_pushover_notify")
+async def v32_operator_pushover_notify(payload: dict | None = None, force: bool = False):
+    payload = payload if isinstance(payload, dict) else {}
+    return _v32_operator_pushover_notify_payload(
+        force=bool(force or payload.get("force")),
         dry_run=False,
     )
 

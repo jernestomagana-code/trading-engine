@@ -280,6 +280,66 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operator_pushover_notify/preview:
+    get:
+      operationId: previewOperatorPushoverNotify
+      summary: Preview the V32 mobile push summary without sending
+      description: >
+        Returns the exact Pushover-style operator summary and whether it would
+        notify. This preview never sends a push notification and never
+        authorizes execution.
+      parameters:
+        - name: force
+          in: query
+          required: false
+          description: Preview a forced test notification decision.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: V32 Pushover preview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operator_pushover_notify:
+    post:
+      operationId: sendOperatorPushoverNotify
+      summary: Send a V32 operator mobile push summary
+      description: >
+        Sends a Pushover notification only for action/risk alerts unless the
+        user explicitly requests force=true. This endpoint is an attention
+        channel only; it never places orders and never authorizes execution.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: Send a forced test notification when explicitly requested by the user.
+              additionalProperties: false
+      responses:
+        "200":
+          description: V32 Pushover notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_tracking_status:
     get:
       operationId: getOperatorTrackingStatus
