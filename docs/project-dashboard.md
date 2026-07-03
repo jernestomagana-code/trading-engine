@@ -52,6 +52,9 @@ Resumen:
 - Pushover ya tiene automatizacion local via launchd:
   `scripts/install_v32_pushover_launchd.py --install`; monitor cada 5 minutos,
   post-cierre deduplicado y preflight diario, todo sin secretos en plist.
+- Render declara `PUSHOVER_USER_KEY` y `PUSHOVER_API_TOKEN`; con esos secretos
+  cargados, `/v32_operator_pushover_notify/preview` previsualiza y
+  `POST /v32_operator_pushover_notify` envia push protegido por read-auth.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera

@@ -334,6 +334,23 @@ PUSHOVER_API_TOKEN
 Keep the existing `READ_ACCESS_TOKEN` in Render. Do not put Pushover credentials
 in code, docs, GitHub Actions logs, or GPT instructions.
 
+After deployment, verify the cloud route without sending:
+
+```text
+GET /v32_operator_pushover_notify/preview
+```
+
+Send only when the user explicitly asks for a push test, or when there are
+action/risk alerts:
+
+```text
+POST /v32_operator_pushover_notify
+POST /v32_operator_pushover_notify {"force": true}
+```
+
+`force=true` is for an explicit smoke test. The endpoint is protected by read
+auth, keeps `execution_authorized=false`, and never places orders.
+
 ## Daily Outcome Evaluation
 
 ## Daily Manual Review

@@ -18,6 +18,10 @@ services:
         sync: false
       - key: READ_ACCESS_TOKEN
         sync: false
+      - key: PUSHOVER_USER_KEY
+        sync: false
+      - key: PUSHOVER_API_TOKEN
+        sync: false
       - key: REQUIRE_READ_AUTH
         value: "true"
       - key: RUNTIME_STORAGE_MODE

@@ -857,6 +857,64 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(preview["not_order_instruction"])
         send_email.assert_not_called()
 
+    def test_v32_operator_pushover_preview_never_sends(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_pushover_message") as send_push:
+            preview = main._v32_operator_pushover_notify_payload(dry_run=True)
+
+        self.assertEqual(preview["status"], "preview")
+        self.assertFalse(preview["pushover_sent"])
+        self.assertFalse(preview["execution_authorized"])
+        self.assertTrue(preview["not_order_instruction"])
+        send_push.assert_not_called()
+
+    def test_v32_operator_pushover_skips_non_actionable_without_force(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_pushover_message") as send_push:
+            result = main._v32_operator_pushover_notify_payload(dry_run=False)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(result["pushover_sent"])
+        self.assertEqual(result["reason"], "NO_ACTIONABLE_V32_ALERTS")
+        send_push.assert_not_called()
+
+    def test_v32_operator_pushover_force_sends_decision_support_only(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [{"ticker": "QQQ", "severity": "WATCH", "state": "WAIT_MARKET", "operator_status": "NEW"}],
+            "next_actions": [{"label": "Esperar mercado abierto"}],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_pushover_message", return_value={
+            "pushover_sent": True,
+            "provider": "pushover",
+            "status_code": 200,
+        }) as send_push:
+            result = main._v32_operator_pushover_notify_payload(force=True, dry_run=False)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["pushover_sent"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
+
     def test_v32_live_command_center_renders_summary_and_tracking(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
