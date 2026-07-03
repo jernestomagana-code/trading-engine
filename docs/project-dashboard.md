@@ -49,6 +49,9 @@ Resumen:
   `/v32_project_command_center_static`.
 - El notificador tambien soporta `--pushover`, `--webhook-url` y
   `--email-summary` para celular, integraciones externas y correo.
+- Pushover ya tiene automatizacion local via launchd:
+  `scripts/install_v32_pushover_launchd.py --install`; monitor cada 5 minutos,
+  post-cierre deduplicado y preflight diario, todo sin secretos en plist.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
@@ -177,13 +180,16 @@ Resultado:
 2. Correr `python3 scripts/daily_open_checklist.py --refresh --publish`.
 3. Configurar Pushover por env o Keychain y validar con
    `python3 scripts/setup_pushover_channel.py --send-test`.
-4. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
+4. Instalar/validar launchd local con
+   `python3 scripts/install_v32_pushover_launchd.py --install` y
+   `python3 scripts/install_v32_pushover_launchd.py --status`.
+5. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
    para avisos accionables sin ruido cuando solo haya `WAIT_MARKET`.
-5. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
-6. Reconsultar el radar y verificar que salga de `NO_DATA`.
-7. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
+6. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
+7. Reconsultar el radar y verificar que salga de `NO_DATA`.
+8. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
    `/v31_manual_review_inbox` y registrar decision humana.
-8. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
+9. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
 
 ## Proximas Acciones Para Terceros
 

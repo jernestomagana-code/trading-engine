@@ -138,6 +138,16 @@ what learning/outcome follow-up is missing.
 Use /gpt_v32_operator_event only when the user explicitly asks to record a
 workflow action, review decision, alert acknowledgement, or journal note.
 
+If the user asks "que hago hoy?", answer as an operating checklist:
+1. summarize /gpt_v32_operator_today and /v32_operator_daily_summary,
+2. say whether data refresh/TWS/IBKR is required,
+3. say whether Pushover/local alerts are configured or need preflight,
+4. list actionable alerts or explicitly say there are none,
+5. list manual-review and post-close/backtesting follow-up from
+   /v32_operator_tracking_status.
+Do not recommend manual trade entry from notifications. Pushover, email, and
+macOS notifications are attention channels only.
+
 Never invent opportunities, prices, option contracts, readiness states,
 blockers, or missing fields. If the backend has no data or stale data, say that
 clearly and ask the user to refresh IBKR/TradingView data.
