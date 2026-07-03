@@ -273,8 +273,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/OperatorDailyCycle"
         "401":
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
@@ -331,8 +330,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/OperatorPushoverNotify"
         "401":
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
@@ -363,8 +361,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/OperatorPushoverNotify"
         "401":
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
@@ -1048,6 +1045,135 @@ components:
           type: object
           additionalProperties:
             type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
+    OperatorDailyCycle:
+      type: object
+      additionalProperties: true
+      required:
+        - engine
+        - routine
+        - today
+        - summary
+        - tracking
+        - pushover_preview
+        - answer_to_user
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+          enum: [V32_OPERATOR_DAILY_CYCLE]
+        generated_at:
+          type: string
+        status:
+          type:
+            - string
+            - "null"
+        routine:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              step:
+                type: integer
+              label:
+                type: string
+              endpoint:
+                type: string
+              required:
+                type: boolean
+              not_order_instruction:
+                type: boolean
+        today:
+          $ref: "#/components/schemas/OperatorToday"
+        summary:
+          $ref: "#/components/schemas/OperatorDailySummary"
+        tracking:
+          $ref: "#/components/schemas/OperatorTrackingStatus"
+        pushover_preview:
+          $ref: "#/components/schemas/OperatorPushoverNotify"
+        backtesting_follow_up:
+          type: object
+          additionalProperties: true
+          properties:
+            pending_entry_ready_signals:
+              type:
+                - integer
+                - "null"
+            operator_event_count:
+              type:
+                - integer
+                - "null"
+            open_alert_count:
+              type:
+                - integer
+                - "null"
+            evaluation_endpoints:
+              type: object
+              additionalProperties:
+                type: string
+        answer_to_user:
+          type: string
+          description: Friendly Spanish answer the GPT should use as its daily operating response.
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
+    OperatorPushoverNotify:
+      type: object
+      additionalProperties: true
+      required:
+        - engine
+        - would_notify
+        - status
+        - pushover_sent
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+          enum: [V32_OPERATOR_PUSHOVER_NOTIFY]
+        generated_at:
+          type: string
+        would_notify:
+          type: boolean
+        status:
+          type: string
+          enum: [preview, skipped, deduped, sent, not_sent]
+        title:
+          type: string
+        summary:
+          $ref: "#/components/schemas/OperatorDailySummary"
+        message:
+          type: string
+        dedupe:
+          type: object
+          additionalProperties: true
+          properties:
+            signature:
+              type:
+                - string
+                - "null"
+            deduped:
+              type: boolean
+        notification_channel:
+          type: string
+          enum: [pushover]
+        pushover_sent:
+          type: boolean
+        reason:
+          type: string
+        pushover_result:
+          type: object
+          additionalProperties: true
         execution_authorized:
           type: boolean
           const: false
