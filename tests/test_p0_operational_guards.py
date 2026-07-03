@@ -19,6 +19,8 @@ OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.
 DAILY_OPEN_CHECKLIST = ROOT / "scripts" / "daily_open_checklist.py"
 V32_OPERATOR_NOTIFY = ROOT / "scripts" / "v32_operator_notify.py"
 PUSHOVER_CHANNEL_SETUP = ROOT / "scripts" / "setup_pushover_channel.py"
+PUSHOVER_AUTOMATION = ROOT / "scripts" / "v32_pushover_automation.py"
+PUSHOVER_LAUNCHD_INSTALLER = ROOT / "scripts" / "install_v32_pushover_launchd.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -433,6 +435,47 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("secrets_printed", source)
         self.assertIn('"execution_authorized": False', source)
         self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_v32_pushover_automation_is_local_read_only_and_time_gated(self):
+        source = PUSHOVER_AUTOMATION.read_text()
+
+        self.assertIn("V32_PUSHOVER_AUTOMATION", source)
+        self.assertIn("market_monitor_window", source)
+        self.assertIn("post_close_window", source)
+        self.assertIn("scripts/v32_operator_notify.py", source)
+        self.assertIn("scripts/run_daily_outcome_evaluation.py", source)
+        self.assertIn("setup_pushover_channel.py", source)
+        self.assertIn("POST_CLOSE_ALREADY_RAN_FOR_MARKET_DATE", source)
+        self.assertIn("send_pushover_summary", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("ibkr_bridge.py", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_v32_pushover_launchd_installer_keeps_secrets_out_of_plists(self):
+        source = PUSHOVER_LAUNCHD_INSTALLER.read_text()
+
+        self.assertIn("V32_PUSHOVER_LAUNCHD_INSTALLER", source)
+        self.assertIn("com.stockultimus.v32-pushover-monitor", source)
+        self.assertIn("com.stockultimus.v32-pushover-postclose", source)
+        self.assertIn("com.stockultimus.v32-pushover-preflight", source)
+        self.assertIn("StartInterval", source)
+        self.assertIn("StartCalendarInterval", source)
+        self.assertIn("LaunchAgents", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("PUSHOVER_USER_KEY", source)
+        self.assertNotIn("PUSHOVER_API_TOKEN", source)
+        self.assertNotIn("READ_ACCESS_TOKEN", source)
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
         self.assertNotIn("placeOrder", source)

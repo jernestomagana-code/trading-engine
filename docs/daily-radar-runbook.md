@@ -287,6 +287,53 @@ python3 scripts/setup_pushover_channel.py --send-test
 The normal notifier suppresses `WAIT_MARKET` noise. Use `--force` only for a
 manual smoke test or for a deliberate daily "sin accion" digest.
 
+### Local Pushover Automation
+
+Install the local macOS jobs after Pushover preflight passes:
+
+```bash
+python3 scripts/setup_pushover_channel.py --send-test
+python3 scripts/install_v32_pushover_launchd.py --install
+python3 scripts/install_v32_pushover_launchd.py --status
+```
+
+Installed jobs:
+
+- `com.stockultimus.v32-pushover-monitor`: runs every 5 minutes; the wrapper
+  only calls `v32_operator_notify.py --pushover` inside the US market window and
+  the notifier still suppresses `WAIT_MARKET`.
+- `com.stockultimus.v32-pushover-postclose`: runs every 15 minutes; the wrapper
+  only evaluates outcomes once in the post-close window and sends a Pushover
+  summary only if there is something to review.
+- `com.stockultimus.v32-pushover-preflight`: daily local channel check.
+
+Manual smoke tests:
+
+```bash
+python3 scripts/v32_pushover_automation.py --mode preflight --no-write
+python3 scripts/v32_pushover_automation.py --mode monitor --force --no-write
+python3 scripts/v32_pushover_automation.py --mode post-close --force --no-write
+```
+
+Uninstall:
+
+```bash
+python3 scripts/install_v32_pushover_launchd.py --uninstall
+```
+
+### Cloud Pushover Option
+
+Local launchd works only while the Mac can run the jobs. To send push from
+Render even when the laptop is off, add these Render environment variables:
+
+```text
+PUSHOVER_USER_KEY
+PUSHOVER_API_TOKEN
+```
+
+Keep the existing `READ_ACCESS_TOKEN` in Render. Do not put Pushover credentials
+in code, docs, GitHub Actions logs, or GPT instructions.
+
 ## Daily Outcome Evaluation
 
 ## Daily Manual Review
