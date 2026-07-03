@@ -391,6 +391,16 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertNotIn("placeOrder", source)
         self.assertNotIn(".place_order", source)
 
+    def test_project_dashboard_is_served_under_v32_read_auth_prefix(self):
+        source = APP.read_text()
+
+        self.assertIn("/v32_project_dashboard", source)
+        self.assertIn("/v32_project_command_center", source)
+        self.assertIn("project-dashboard.html", source)
+        self.assertIn("project-command-center.html", source)
+        self.assertIn("def _v32_project_dashboard_doc_html", source)
+        self.assertIn('"/v32"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

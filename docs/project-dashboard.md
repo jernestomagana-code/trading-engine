@@ -10,6 +10,11 @@ Vista visual amigable: `docs/project-dashboard.html`.
 
 Vista ejecutiva tipo Kanban: `docs/project-command-center.html`.
 
+Rutas protegidas en produccion:
+
+- `/v32_project_dashboard`
+- `/v32_project_command_center`
+
 ## Estado Ejecutivo
 
 Estado actual separado por frente:

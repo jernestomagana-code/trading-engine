@@ -25556,6 +25556,29 @@ async def v32_operator_dashboard():
     return _V29HTMLResponse(_v32_operator_dashboard_html())
 
 
+def _v32_project_dashboard_doc_html(filename):
+    allowed = {
+        "project-dashboard.html",
+        "project-command-center.html",
+    }
+    if filename not in allowed:
+        raise HTTPException(status_code=404, detail="Project dashboard not found")
+    path = Path(__file__).resolve().parents[1] / "docs" / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Project dashboard not found")
+    return path.read_text(encoding="utf-8")
+
+
+@app.get("/v32_project_dashboard", response_class=_V29HTMLResponse)
+async def v32_project_dashboard():
+    return _V29HTMLResponse(_v32_project_dashboard_doc_html("project-dashboard.html"))
+
+
+@app.get("/v32_project_command_center", response_class=_V29HTMLResponse)
+async def v32_project_command_center():
+    return _V29HTMLResponse(_v32_project_dashboard_doc_html("project-command-center.html"))
+
+
 @app.get("/v31_outcome_tracking_status")
 async def v31_outcome_tracking_status():
     outcomes_data = _durable_supabase_fetch("outcome", limit=500)
