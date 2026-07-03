@@ -15,6 +15,8 @@ DAILY_OPERATIONAL_AUDIT_WORKFLOW = ROOT / ".github" / "workflows" / "v31-daily-o
 DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
 OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
+DAILY_OPEN_CHECKLIST = ROOT / "scripts" / "daily_open_checklist.py"
+V32_OPERATOR_NOTIFY = ROOT / "scripts" / "v32_operator_notify.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -347,6 +349,47 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("ibkr_bridge.py", source)
         self.assertNotIn("send_resend_email", source)
+
+    def test_daily_open_checklist_is_safe_operator_automation(self):
+        source = DAILY_OPEN_CHECKLIST.read_text()
+
+        self.assertIn("STOCK_ULTIMUS_DAILY_OPEN_CHECKLIST", source)
+        self.assertIn("/gpt_v32_operator_today", source)
+        self.assertIn("/v32_operator_dashboard", source)
+        self.assertIn("/v32_operator_events", source)
+        self.assertIn("scripts/daily_open_checklist.py", str(DAILY_OPEN_CHECKLIST))
+        self.assertIn("ibkr_bridge.py", source)
+        self.assertIn("tools/publish_v31_snapshot_from_runtime.py", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertIn("Decision support", source)
+        self.assertNotIn("send_resend_email", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_v32_operator_notify_suppresses_wait_market_noise(self):
+        source = V32_OPERATOR_NOTIFY.read_text()
+
+        self.assertIn("V32_OPERATOR_NOTIFY", source)
+        self.assertIn("/gpt_v32_operator_today", source)
+        self.assertIn("WAIT_MARKET_SUPPRESSED", source)
+        self.assertIn("ACTIONABLE_OPERATOR_ALERT", source)
+        self.assertIn("manual_review_ready", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("macos_notification_center", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("send_resend_email", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("ibkr_bridge.py", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
 
 
 if __name__ == "__main__":

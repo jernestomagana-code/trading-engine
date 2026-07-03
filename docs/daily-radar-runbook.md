@@ -26,6 +26,62 @@ before asking for the daily radar.
 
 ## Manual Run
 
+Daily open checklist:
+
+```bash
+python3 scripts/daily_open_checklist.py
+```
+
+This is the friendly first check for the daily GPT workflow. It verifies:
+
+- TWS/IB Gateway API port reachability.
+- READ and ingest token availability without printing secrets.
+- Runtime freshness.
+- Production read-auth.
+- V32 operator status, active alerts, and next required action.
+
+It writes the latest redacted checklist to:
+
+```bash
+runtime/daily_open_checklist_latest.json
+```
+
+When you want the checklist to refresh and publish before reading the GPT
+operator state, use explicit flags:
+
+```bash
+python3 scripts/daily_open_checklist.py --refresh --publish
+```
+
+On a market holiday or when intentionally validating with older runtime files,
+use:
+
+```bash
+python3 scripts/daily_open_checklist.py --publish --allow-stale-publish
+```
+
+The checklist never places orders. A `WAIT_MARKET` result is healthy on closed
+market days and must not be treated as permission to operate.
+
+Actionable V32 notifications:
+
+```bash
+python3 scripts/v32_operator_notify.py
+```
+
+This reads `/gpt_v32_operator_today` and writes:
+
+```bash
+runtime/v32_operator_notify_latest.json
+```
+
+It suppresses `WAIT_MARKET`-only noise. To show a local laptop notification
+only when there is an `ACTION`, `RISK`, or manual-review-ready alert:
+
+```bash
+python3 scripts/v32_operator_notify.py --macos-notify
+```
+
 Operational-100 preflight:
 
 ```bash

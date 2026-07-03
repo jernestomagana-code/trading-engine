@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Ultimus | Command Center</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #17202f;
+      --muted: #657084;
+      --line: #dfe4eb;
+      --green: #12724d;
+      --green-bg: #e8f5ef;
+      --amber: #9b5c05;
+      --amber-bg: #fff2d8;
+      --blue: #225ea8;
+      --blue-bg: #e8f1ff;
+      --red: #a92b38;
+      --red-bg: #fdebed;
+      --dark: #202938;
+      --shadow: 0 8px 24px rgba(23, 32, 47, 0.07);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    .shell { width: min(1440px, 100%); margin: 0 auto; min-height: 100vh; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 28px; background: var(--dark); color: white; border-bottom: 4px solid #30a46c; }
+    .brand h1 { margin: 0; font-size: 22px; line-height: 1.2; letter-spacing: 0; }
+    .brand p { margin: 5px 0 0; color: #c8d1df; font-size: 13px; }
+    .updated { flex: 0 0 auto; color: #d9e2ee; font-size: 13px; text-align: right; }
+    main { padding: 22px 28px 40px; }
+    .status-band { display: grid; grid-template-columns: minmax(280px, 1.25fr) repeat(4, minmax(130px, 0.55fr)); gap: 12px; margin-bottom: 18px; }
+    .status-summary, .metric, .section, .work-item { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+    .status-summary { padding: 18px 20px; border-left: 6px solid var(--amber); }
+    .overline { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0; }
+    .status-summary strong { display: block; margin-top: 7px; font-size: 20px; line-height: 1.25; }
+    .status-summary p { margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
+    .metric { padding: 16px; min-height: 118px; }
+    .metric-value { margin-top: 10px; font-size: 29px; font-weight: 850; line-height: 1; }
+    .metric-note { margin-top: 9px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0 12px; }
+    .toolbar h2, .section h2 { margin: 0; font-size: 18px; letter-spacing: 0; }
+    .filters { display: inline-flex; padding: 3px; background: #e7ebf0; border-radius: 8px; }
+    .filters button { border: 0; border-radius: 6px; padding: 7px 11px; background: transparent; color: #4c586b; font: inherit; font-size: 12px; font-weight: 750; cursor: pointer; }
+    .filters button[aria-pressed="true"] { background: white; color: var(--ink); box-shadow: 0 2px 8px rgba(23, 32, 47, 0.10); }
+    .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+    .lane { min-width: 0; padding: 14px; border: 1px solid var(--line); border-top-width: 5px; border-radius: 8px; background: #eef1f4; }
+    .lane.done { border-top-color: var(--green); }
+    .lane.active { border-top-color: var(--amber); }
+    .lane.next { border-top-color: var(--blue); }
+    .lane-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .lane-header h3 { margin: 0; font-size: 15px; letter-spacing: 0; }
+    .count { min-width: 27px; height: 27px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: white; border: 1px solid var(--line); font-size: 12px; font-weight: 850; }
+    .lane-items { display: grid; gap: 10px; }
+    .work-item { padding: 14px; box-shadow: 0 4px 14px rgba(23, 32, 47, 0.05); }
+    .work-item[hidden] { display: none; }
+    .item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .work-item h4 { margin: 0; font-size: 14px; line-height: 1.35; letter-spacing: 0; }
+    .work-item p { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .tag, .state { display: inline-flex; align-items: center; min-height: 24px; padding: 4px 7px; border-radius: 999px; font-size: 10px; font-weight: 850; white-space: nowrap; }
+    .tag { color: #4c586b; background: #edf0f4; }
+    .state.good { color: var(--green); background: var(--green-bg); }
+    .state.work { color: var(--amber); background: var(--amber-bg); }
+    .state.wait { color: var(--blue); background: var(--blue-bg); }
+    .state.risk { color: var(--red); background: var(--red-bg); }
+    .evidence { display: flex; align-items: center; gap: 7px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: #4f5b6d; font-size: 11px; font-weight: 700; }
+    .dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--green); }
+    .lower-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr); gap: 14px; margin-top: 18px; }
+    .section { padding: 18px; }
+    .section-title { display: flex; justify-content: space-between; gap: 14px; align-items: center; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: 11px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+    th { border-top: 0; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .needs-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+    .needs-list li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: start; }
+    .priority { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--blue-bg); color: var(--blue); font-size: 12px; font-weight: 850; }
+    .needs-list strong { display: block; font-size: 13px; line-height: 1.35; }
+    .needs-list p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .footer-links { display: flex; justify-content: center; gap: 18px; padding-top: 20px; color: var(--muted); font-size: 12px; }
+    a { color: var(--blue); font-weight: 750; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    @media (max-width: 1050px) { .status-band { grid-template-columns: repeat(2, minmax(0, 1fr)); } .status-summary { grid-column: 1 / -1; } .board { grid-template-columns: 1fr; } .lower-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { header { align-items: flex-start; padding: 16px; } main { padding: 16px; } .updated { display: none; } .status-band { grid-template-columns: 1fr; } .toolbar { align-items: flex-start; flex-direction: column; } .filters { width: 100%; overflow-x: auto; } .filters button { flex: 1 0 auto; } table { table-layout: auto; } th:nth-child(3), td:nth-child(3) { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <h1>Stock Ultimus Command Center</h1>
+        <p>V31 operational suite, radar diario, manual review y learning.</p>
+      </div>
+      <div class="updated">Actualizado<br><strong>3 julio 2026</strong></div>
+    </header>
+
+    <main>
+      <section class="status-band" aria-label="Estado ejecutivo">
+        <article class="status-summary">
+          <div class="overline">Donde estamos</div>
+          <strong>Operativo sano; pipeline sin snapshot</strong>
+          <p>Produccion, read-auth, GPT Action y manual review siguen OK. Hoy el radar esta NO_DATA por MASTER_SNAPSHOT_MISSING. Terceros/comercial sigue bloqueado por aislamiento, compliance y audit durable.</p>
+        </article>
+        <article class="metric">
+          <div class="overline">Prioridad</div>
+          <div class="metric-value">Refresh</div>
+          <div class="metric-note">Snapshot IBKR/TWS.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Preflight real</div>
+          <div class="metric-value">OK</div>
+          <div class="metric-note">5 gates; 0 fallas.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Operating day</div>
+          <div class="metric-value">NO_DATA</div>
+          <div class="metric-note">MASTER_SNAPSHOT_MISSING.</div>
+        </article>
+        <article class="metric">
+          <div class="overline">Terceros</div>
+          <div class="metric-value">Block</div>
+          <div class="metric-note">Compliance + aislamiento.</div>
+        </article>
+      </section>
+
+      <div class="toolbar">
+        <h2>Mapa De Trabajo</h2>
+        <div class="filters" role="group" aria-label="Filtrar por area">
+          <button type="button" data-filter="all" aria-pressed="true">Todo</button>
+          <button type="button" data-filter="ops" aria-pressed="false">Ops</button>
+          <button type="button" data-filter="data" aria-pressed="false">Datos</button>
+          <button type="button" data-filter="signals" aria-pressed="false">Senales</button>
+          <button type="button" data-filter="third" aria-pressed="false">Terceros</button>
+          <button type="button" data-filter="platform" aria-pressed="false">Plataforma</button>
+        </div>
+      </div>
+
+      <section class="board" aria-label="Tablero de avance">
+        <div class="lane done">
+          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">7</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Operational-100 Preflight</h4><span class="tag">Ops</span></div>
+              <p>Existe preflight para GPT/backend, manual review, outcomes dry-run y auditoria cloud.</p>
+              <div class="evidence"><span class="dot"></span>PASS_WITH_WARNINGS local</div>
+            </article>
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Manual Review Suite</h4><span class="tag">Ops</span></div>
+              <p>Inbox, historial, learning y performance dashboards estan conectados como superficies humanas.</p>
+              <div class="evidence"><span class="dot"></span>Guard local OK</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>No Auto-Order</h4><span class="tag">Seguridad</span></div>
+              <p>El flujo conserva execution_authorized=false y not_order_instruction=true.</p>
+              <div class="evidence"><span class="dot"></span>Preflight y tests OK</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>Daily Radar Runbook</h4><span class="tag">Docs</span></div>
+              <p>El GPT oficial, getDailyNow, read token y ciclo operativo diario estan documentados.</p>
+              <div class="evidence"><span class="dot"></span>docs/daily-radar-runbook.md</div>
+            </article>
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Market Open Runner</h4><span class="tag">Ops</span></div>
+              <p>El runner prepara validacion IBKR y check operacional V31 sin autorizar operaciones.</p>
+              <div class="evidence"><span class="dot"></span>6 tests OK</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>GPT Builder Updated</h4><span class="tag">GPT</span></div>
+              <p>Se actualizo el secreto del Action y la UI confirmo GPT Updated.</p>
+              <div class="evidence"><span class="dot"></span>Jun 26</div>
+            </article>
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Audit Cloud</h4><span class="tag">Prod</span></div>
+              <p>Preflight completo pasa con warnings esperados; 5 gates, 0 fallas.</p>
+              <div class="evidence"><span class="dot"></span>PASS_WITH_WARNINGS</div>
+            </article>
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Outcome Dry-Run</h4><span class="tag">Learning</span></div>
+              <p>Endpoints de outcomes/manual reviews responden 200 sin guardar cambios; decision_count sube a 48.</p>
+              <div class="evidence"><span class="dot"></span>no-write OK</div>
+            </article>
+          </div>
+        </div>
+
+        <div class="lane active">
+          <div class="lane-header"><h3>En Curso</h3><span class="count">3</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Refrescar Pipeline</h4><span class="state work">Actual</span></div>
+              <p>El motor esta NO_DATA porque no hay snapshot maestro activo. Publicar snapshot con TWS/IBKR en ventana util.</p>
+              <div class="evidence"><span class="dot"></span>WAIT_PIPELINE</div>
+            </article>
+            <article class="work-item" data-area="signals">
+              <div class="item-top"><h4>Reconfirmar TradingView</h4><span class="state work">Datos</span></div>
+              <p>El contrato tecnico existe; hoy technical_count=0 por falta de snapshot maestro.</p>
+              <div class="evidence"><span class="dot"></span>technical_count=0</div>
+            </article>
+            <article class="work-item" data-area="third">
+              <div class="item-top"><h4>Preparacion Terceros</h4><span class="state risk">Bloqueado</span></div>
+              <p>No vender ni operar para terceros hasta cerrar compliance, aislamiento y audit durable.</p>
+              <div class="evidence"><span class="dot" style="background:var(--red)"></span>Commercial gates</div>
+            </article>
+          </div>
+        </div>
+
+        <div class="lane next">
+          <div class="lane-header"><h3>Siguiente</h3><span class="count">5</span></div>
+          <div class="lane-items">
+            <article class="work-item" data-area="ops">
+              <div class="item-top"><h4>Correr Operating Day</h4><span class="state wait">Proximo</span></div>
+              <p>Con TWS/IBKR abierto y datos de mercado disponibles.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>publicar snapshot</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Manual Review</h4><span class="state wait">Condicional</span></div>
+              <p>Usar inbox solo si aparece ENTRY_READY o manual_review_ready mayor a cero.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>0 ahora</div>
+            </article>
+            <article class="work-item" data-area="third">
+              <div class="item-top"><h4>Legal / Compliance</h4><span class="state risk">Terceros</span></div>
+              <p>Revision formal, disclosures escritos y posicionamiento como decision support.</p>
+              <div class="evidence"><span class="dot" style="background:var(--red)"></span>bloqueante</div>
+            </article>
+            <article class="work-item" data-area="third">
+              <div class="item-top"><h4>Aislamiento Cliente</h4><span class="state risk">Terceros</span></div>
+              <p>Tenants, cuentas, snapshots, tokens, runtime y logs separados por cliente.</p>
+              <div class="evidence"><span class="dot" style="background:var(--red)"></span>bloqueante</div>
+            </article>
+            <article class="work-item" data-area="third">
+              <div class="item-top"><h4>Audit Durable</h4><span class="state wait">Terceros</span></div>
+              <p>Auditoria persistente, onboarding paper/sim y soporte de incidentes.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>pendiente</div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <div class="section">
+          <div class="section-title"><h2>Puertas Operativas</h2><span class="state work">2 warnings</span></div>
+          <table>
+            <thead><tr><th>Gate</th><th>Para considerarlo listo</th><th>Evidencia requerida</th><th>Estado</th></tr></thead>
+            <tbody>
+              <tr><td>Produccion</td><td>Preflight completo sin skip-cloud.</td><td>PASS_WITH_WARNINGS; auth protegido OK.</td><td><span class="state good">OK</span></td></tr>
+              <tr><td>GPT Action</td><td>getDailyNow funciona desde el GPT oficial.</td><td>Health 200/401 OK.</td><td><span class="state good">OK</span></td></tr>
+              <tr><td>IBKR/radar</td><td>Broker fresh en ciclo diario.</td><td>Hoy NO_MASTER_SNAPSHOT; rows_found=0.</td><td><span class="state work">Refresh</span></td></tr>
+              <tr><td>TradingView</td><td>Contexto tecnico real.</td><td>Hoy technical_count=0 por snapshot faltante.</td><td><span class="state work">Refresh</span></td></tr>
+              <tr><td>Manual review</td><td>Humano clasifica setups.</td><td>Consola/rutas/auth OK; ahora no hay setups.</td><td><span class="state good">OK</span></td></tr>
+              <tr><td>Outcomes</td><td>Learning real post-cierre.</td><td>Dry-run OK; no-write.</td><td><span class="state good">OK</span></td></tr>
+            </tbody>
+          </table>
+          <p style="margin:0;color:var(--muted);font-size:12px;line-height:1.4;">Operativo personal esta sano; los warnings actuales son por falta de snapshot fresco, no por auth ni seguridad.</p>
+          <div class="section-title" style="margin-top:18px;"><h2>Puertas Terceros</h2><span class="state risk">Bloqueado</span></div>
+          <table>
+            <thead><tr><th>Gate</th><th>Necesario</th><th>Estado</th><th>Semaforo</th></tr></thead>
+            <tbody>
+              <tr><td>Legal/compliance</td><td>Revision formal y disclosures.</td><td>No cerrado.</td><td><span class="state risk">Bloqueado</span></td></tr>
+              <tr><td>Aislamiento</td><td>Tenant/cuenta/tokens/snapshots por cliente.</td><td>No liberado.</td><td><span class="state risk">Bloqueado</span></td></tr>
+              <tr><td>Audit durable</td><td>Logs persistentes y exportables por cliente.</td><td>Parcial/documentado.</td><td><span class="state work">Pendiente</span></td></tr>
+              <tr><td>Onboarding</td><td>Paper/simulation y soporte de incidentes.</td><td>No empaquetado.</td><td><span class="state work">Pendiente</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="section">
+          <div class="section-title"><h2>Orden Recomendado</h2></div>
+          <ol class="needs-list">
+            <li><span class="priority">1</span><div><strong>Operativo</strong><p>Refrescar snapshot con TWS/IBKR en ventana util.</p></div></li>
+            <li><span class="priority">2</span><div><strong>Senales</strong><p>Confirmar TradingView hacia technical_snapshot.</p></div></li>
+            <li><span class="priority">3</span><div><strong>Terceros</strong><p>Cerrar compliance, aislamiento y audit antes de vender.</p></div></li>
+          </ol>
+        </aside>
+      </section>
+
+      <div class="footer-links">
+        <a href="./project-dashboard.html">Dashboard detallado</a>
+        <a href="./project-dashboard.md">Bitacora</a>
+        <a href="./daily-radar-runbook.md">Runbook diario</a>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const buttons = Array.from(document.querySelectorAll("[data-filter]"));
+    const items = Array.from(document.querySelectorAll("[data-area]"));
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const selected = button.dataset.filter;
+        buttons.forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
+        items.forEach((item) => {
+          item.hidden = selected !== "all" && item.dataset.area !== selected;
+        });
+      });
+    });
+  </script>
+</body>
+</html>
