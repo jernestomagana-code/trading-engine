@@ -366,6 +366,77 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operator_nudge/preview:
+    get:
+      operationId: previewOperatorNudge
+      summary: Preview the proactive V32 operator nudge without sending
+      description: >
+        Returns the currently due proactive nudge, or an explicit slot nudge,
+        without sending Pushover. Use this when the user asks what automatic
+        prompts or push questions are active during the day.
+      parameters:
+        - name: slot
+          in: query
+          required: false
+          description: Nudge slot to preview. Use auto for the current New York time window.
+          schema:
+            type: string
+            enum: [auto, premarket, open_check, midday, power_hour, post_close]
+            default: auto
+        - name: force
+          in: query
+          required: false
+          description: Preview a forced nudge decision.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: V32 proactive nudge preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperatorNudge"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operator_nudge:
+    post:
+      operationId: sendOperatorNudge
+      summary: Send a proactive V32 operator nudge
+      description: >
+        Sends a Pushover question for the current or requested operator slot:
+        pre-market, open check, midday, power hour, or post-close. The nudge
+        asks the user to review the GPT/operator flow; it never places orders
+        and never authorizes execution.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slot:
+                  type: string
+                  enum: [auto, premarket, open_check, midday, power_hour, post_close]
+                  default: auto
+                force:
+                  type: boolean
+                  default: false
+                  description: Send a forced test nudge when explicitly requested by the user.
+              additionalProperties: false
+      responses:
+        "200":
+          description: V32 proactive nudge notification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperatorNudge"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_tracking_status:
     get:
       operationId: getOperatorTrackingStatus
@@ -1098,6 +1169,8 @@ components:
           $ref: "#/components/schemas/OperatorTrackingStatus"
         pushover_preview:
           $ref: "#/components/schemas/OperatorPushoverNotify"
+        nudge_preview:
+          $ref: "#/components/schemas/OperatorNudge"
         backtesting_follow_up:
           type: object
           additionalProperties: true
@@ -1121,6 +1194,82 @@ components:
         answer_to_user:
           type: string
           description: Friendly Spanish answer the GPT should use as its daily operating response.
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
+    OperatorNudge:
+      type: object
+      additionalProperties: true
+      required:
+        - engine
+        - slot
+        - would_notify
+        - status
+        - pushover_sent
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+          enum: [V32_OPERATOR_NUDGE]
+        generated_at:
+          type: string
+        market_time:
+          type: string
+        session_date:
+          type: string
+        slot:
+          type: string
+        slot_label:
+          type: string
+        question:
+          type: string
+        gpt_prompt:
+          type: string
+        valid_slots:
+          type: array
+          items:
+            type: string
+        would_notify:
+          type: boolean
+        status:
+          type: string
+          enum: [preview, skipped, deduped, sent, not_sent]
+        title:
+          type: string
+        message:
+          type: string
+        summary:
+          $ref: "#/components/schemas/OperatorDailySummary"
+        tracking:
+          $ref: "#/components/schemas/OperatorTrackingStatus"
+        dedupe:
+          type: object
+          additionalProperties: true
+          properties:
+            key:
+              type: string
+            deduped:
+              type: boolean
+            force:
+              type: boolean
+            last_sent_at:
+              type:
+                - string
+                - "null"
+        notification_channel:
+          type: string
+          enum: [pushover]
+        pushover_sent:
+          type: boolean
+        reason:
+          type: string
+        pushover_result:
+          type: object
+          additionalProperties: true
         execution_authorized:
           type: boolean
           const: false

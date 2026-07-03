@@ -979,6 +979,102 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         send_push.assert_called_once()
         save_state.assert_called_once()
 
+    def test_v32_operator_nudge_preview_never_sends(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 1,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 0},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_pushover_message") as send_push:
+            preview = main._v32_operator_nudge_payload(slot="midday", dry_run=True)
+
+        self.assertEqual(preview["engine"], "V32_OPERATOR_NUDGE")
+        self.assertEqual(preview["status"], "preview")
+        self.assertEqual(preview["slot"], "midday")
+        self.assertTrue(preview["would_notify"])
+        self.assertFalse(preview["pushover_sent"])
+        self.assertIn("Abre el GPT", preview["message"])
+        self.assertFalse(preview["execution_authorized"])
+        self.assertTrue(preview["not_order_instruction"])
+        send_push.assert_not_called()
+
+    def test_v32_operator_nudge_sends_decision_support_push(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [{"ticker": "QQQ", "severity": "WATCH", "state": "WAIT_MARKET", "operator_status": "NEW"}],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 1,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 1},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v29_load_json_file", return_value={}), patch.object(
+            main,
+            "send_pushover_message",
+            return_value={"pushover_sent": True, "provider": "pushover", "status_code": 200},
+        ) as send_push, patch.object(main, "_v32_save_operator_nudge_state", return_value=True) as save_state:
+            result = main._v32_operator_nudge_payload(slot="post_close", dry_run=False)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["slot"], "post_close")
+        self.assertTrue(result["pushover_sent"])
+        self.assertEqual(result["gpt_prompt"], "haz cierre operativo y backtesting pendiente")
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
+        save_state.assert_called_once()
+
+    def test_v32_operator_nudge_dedupes_repeated_slot(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        tracking = {
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 1,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 0},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        signature = main._v32_operator_nudge_signature("open_check", summary, tracking)
+        session_date = datetime.now(main.MARKET_TZ).date().isoformat()
+        state = {"sent": {"{}:open_check".format(session_date): {"signature": signature, "sent_at": "2026-07-03T13:31:00+00:00", "status": "sent"}}}
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main,
+            "_v32_operator_tracking_payload",
+            return_value=tracking,
+        ), patch.object(main, "_v29_load_json_file", return_value=state), patch.object(main, "send_pushover_message") as send_push:
+            result = main._v32_operator_nudge_payload(slot="open_check", dry_run=False)
+
+        self.assertEqual(result["status"], "deduped")
+        self.assertTrue(result["dedupe"]["deduped"])
+        self.assertFalse(result["pushover_sent"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_not_called()
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",
@@ -1009,13 +1105,23 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "pushover_sent": False,
             "execution_authorized": False,
             "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_nudge_payload", return_value={
+            "engine": "V32_OPERATOR_NUDGE",
+            "would_notify": True,
+            "status": "preview",
+            "slot": "midday",
+            "question": "Quieres mantener, rechazar o anotar algo de la watchlist?",
+            "pushover_sent": False,
+            "execution_authorized": False,
+            "not_order_instruction": True,
         }):
             result = main._v32_operator_daily_cycle_payload()
 
         self.assertEqual(result["engine"], "V32_OPERATOR_DAILY_CYCLE")
         self.assertIn("/v32_operator_pushover_notify/preview", result["routine"][2]["cloud_push_preview"])
+        self.assertIn("/v32_operator_nudge/preview", result["routine"][3]["nudge_preview"])
         self.assertEqual(result["backtesting_follow_up"]["pending_entry_ready_signals"], 1)
-        self.assertIn("/v31_evaluate_manual_reviews", result["routine"][3]["post_close_endpoint"])
+        self.assertIn("/v31_evaluate_manual_reviews", result["routine"][4]["post_close_endpoint"])
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
 

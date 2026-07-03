@@ -14,6 +14,7 @@ MANUAL_REVIEW_EVALUATE_WORKFLOW = ROOT / ".github" / "workflows" / "v31-manual-r
 WEEKLY_LEARNING_EMAIL_WORKFLOW = ROOT / ".github" / "workflows" / "v31-weekly-learning-email.yml"
 DAILY_OPERATIONAL_AUDIT_WORKFLOW = ROOT / ".github" / "workflows" / "v31-daily-operational-audit.yml"
 V32_CLOUD_PUSHOVER_WORKFLOW = ROOT / ".github" / "workflows" / "v32-cloud-pushover.yml"
+V32_OPERATOR_NUDGES_WORKFLOW = ROOT / ".github" / "workflows" / "v32-operator-nudges.yml"
 DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
 OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
@@ -232,6 +233,22 @@ class CloudPushoverWorkflowTests(unittest.TestCase):
         self.assertIn("/v32_operator_pushover_notify", source)
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("deduped", source)
+        self.assertIn("not_order_instruction", source)
+        self.assertIn("execution_authorized", source)
+        self.assertNotIn("PUSHOVER_USER_KEY", source)
+        self.assertNotIn("PUSHOVER_API_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+
+    def test_v32_operator_nudges_workflow_uses_protected_endpoint_without_push_secrets(self):
+        source = V32_OPERATOR_NUDGES_WORKFLOW.read_text()
+
+        self.assertIn("workflow_dispatch:", source)
+        self.assertIn("cron:", source)
+        self.assertIn("/v32_operator_nudge", source)
+        self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("NUDGE_SLOT", source)
         self.assertIn("deduped", source)
         self.assertIn("not_order_instruction", source)
         self.assertIn("execution_authorized", source)
