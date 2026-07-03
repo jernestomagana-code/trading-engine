@@ -14,6 +14,7 @@ Rutas protegidas en produccion:
 
 - `/v32_project_dashboard`
 - `/v32_project_command_center`
+- `/v32_project_command_center_static`
 
 ## Estado Ejecutivo
 
@@ -42,6 +43,12 @@ Resumen:
   tokens, runtime, produccion y V32 antes de preguntarle al GPT.
 - Hay notificador V32 `scripts/v32_operator_notify.py --macos-notify` que avisa
   solo cuando hay `ACTION`, `RISK` o manual review listo; suprime `WAIT_MARKET`.
+- El Command Center productivo `/v32_project_command_center` ahora es una vista
+  viva basada en `/v32_operator_daily_summary` y
+  `/v32_operator_tracking_status`; la version estatica queda en
+  `/v32_project_command_center_static`.
+- El notificador tambien soporta `--pushover`, `--webhook-url` y
+  `--email-summary` para celular, integraciones externas y correo.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
@@ -168,8 +175,8 @@ Resultado:
 1. En la proxima ventana util, abrir TWS/IBKR y correr el ciclo diario para
    publicar snapshot maestro fresco.
 2. Correr `python3 scripts/daily_open_checklist.py --refresh --publish`.
-3. Activar `python3 scripts/v32_operator_notify.py --macos-notify` para avisos
-   accionables sin ruido cuando solo haya `WAIT_MARKET`.
+3. Activar `python3 scripts/v32_operator_notify.py --macos-notify --pushover`
+   para avisos accionables sin ruido cuando solo haya `WAIT_MARKET`.
 4. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
 5. Reconsultar el radar y verificar que salga de `NO_DATA`.
 6. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir

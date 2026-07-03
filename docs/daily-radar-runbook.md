@@ -257,7 +257,16 @@ Optional channels:
 
 ```bash
 python3 scripts/v32_operator_notify.py --webhook-url "$STOCK_ULTIMUS_NOTIFY_WEBHOOK_URL"
+python3 scripts/v32_operator_notify.py --pushover
 python3 scripts/v32_operator_notify.py --email-summary
+```
+
+For mobile push with Pushover, configure these environment variables locally or
+in the automation runner:
+
+```bash
+PUSHOVER_USER_KEY=...
+PUSHOVER_API_TOKEN=...
 ```
 
 The normal notifier suppresses `WAIT_MARKET` noise. Use `--force` only for a

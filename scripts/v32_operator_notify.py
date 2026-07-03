@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_V32_NOTIFY_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--macos-notify", action="store_true", help="Show a local macOS notification when actionable.")
     parser.add_argument("--webhook-url", default=os.getenv("STOCK_ULTIMUS_NOTIFY_WEBHOOK_URL", ""), help="Optional generic webhook URL for actionable notifications.")
+    parser.add_argument("--pushover", action="store_true", help="Send a mobile push through Pushover when actionable.")
+    parser.add_argument("--pushover-user-key", default=os.getenv("PUSHOVER_USER_KEY", ""), help="Pushover user/group key.")
+    parser.add_argument("--pushover-api-token", default=os.getenv("PUSHOVER_API_TOKEN", ""), help="Pushover application API token.")
     parser.add_argument("--email-summary", action="store_true", help="Ask the protected backend to send the V32 daily summary email when actionable.")
     parser.add_argument("--to-email", default=os.getenv("STOCK_ULTIMUS_NOTIFY_TO_EMAIL", ""), help="Optional email recipient override for --email-summary.")
     parser.add_argument("--force", action="store_true", help="Notify even when there are no actionable alerts.")
@@ -248,6 +252,50 @@ def send_webhook_notification(report: dict[str, Any], webhook_url: str, timeout:
         return {"sent": False, "provider": "webhook", "error": str(exc)}
 
 
+def send_pushover_notification(report: dict[str, Any], user_key: str, api_token: str, timeout: int) -> dict[str, Any]:
+    if not user_key or not api_token:
+        missing = []
+        if not user_key:
+            missing.append("PUSHOVER_USER_KEY")
+        if not api_token:
+            missing.append("PUSHOVER_API_TOKEN")
+        return {"sent": False, "provider": "pushover", "reason": "PUSHOVER_CONFIG_MISSING", "missing": missing}
+
+    title, body = notification_text(report)
+    payload = urllib.parse.urlencode({
+        "token": api_token,
+        "user": user_key,
+        "title": title,
+        "message": body,
+        "priority": "1" if (report.get("classification") or {}).get("actionable_count") else "0",
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.pushover.net/1/messages.json",
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            result = json.loads(raw) if raw else {}
+            return {
+                "sent": 200 <= response.status < 300 and result.get("status") == 1,
+                "provider": "pushover",
+                "status_code": response.status,
+                "response": result,
+            }
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            result = json.loads(raw)
+        except Exception:
+            result = {"raw": raw[:500]}
+        return {"sent": False, "provider": "pushover", "status_code": exc.code, "response": result}
+    except urllib.error.URLError as exc:
+        return {"sent": False, "provider": "pushover", "error": str(exc)}
+
+
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     token = read_token(args)
     if not token:
@@ -277,9 +325,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "operator_readiness": (operator.get("command_center") or {}).get("operational_readiness") if status_code == 200 else None,
         "classification": classification,
         "should_notify": bool(classification.get("should_notify")),
-        "notification_requested": bool(args.macos_notify),
+        "notification_requested": bool(args.macos_notify or args.webhook_url or args.pushover or args.email_summary),
         "notification_sent": False,
-        "notification_channel": "multi" if (args.macos_notify or args.webhook_url or args.email_summary) else "json_only",
+        "notification_channel": "multi" if (args.macos_notify or args.webhook_url or args.pushover or args.email_summary) else "json_only",
         "notification_results": [],
         "secrets_printed": False,
         "execution_authorized": False,
@@ -291,6 +339,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         report["notification_results"].append(result)
     if args.webhook_url and report["should_notify"]:
         result = send_webhook_notification(report, args.webhook_url, args.timeout)
+        report["notification_results"].append(result)
+        report["notification_sent"] = bool(report["notification_sent"] or result.get("sent"))
+    if args.pushover and report["should_notify"]:
+        result = send_pushover_notification(report, args.pushover_user_key, args.pushover_api_token, args.timeout)
         report["notification_results"].append(result)
         report["notification_sent"] = bool(report["notification_sent"] or result.get("sent"))
     if args.email_summary and report["should_notify"]:
