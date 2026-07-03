@@ -11,6 +11,7 @@ variables first, then from macOS Keychain services used by the notifier:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import subprocess
@@ -34,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate the Stock Ultimus Pushover push channel.")
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_PUSHOVER_STATUS_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_PUSHOVER_TIMEOUT", "20")))
+    parser.add_argument("--configure", action="store_true", help="Prompt for Pushover secrets and store them in macOS Keychain.")
     parser.add_argument("--send-test", action="store_true", help="Send a safe test push if credentials are configured.")
     parser.add_argument("--message", default="Stock Ultimus Pushover channel test. No trading action authorized.")
     parser.add_argument("--no-write", action="store_true")
@@ -66,6 +68,46 @@ def keychain_has_value(service: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def save_keychain_secret(service: str, value: str) -> dict[str, Any]:
+    user = os.getenv("USER") or ""
+    if not user:
+        try:
+            user = subprocess.check_output(["id", "-un"], text=True).strip()
+        except Exception:
+            user = ""
+    if not user:
+        return {"service": service, "saved": False, "error": "NO_LOCAL_USER"}
+    if not value:
+        return {"service": service, "saved": False, "error": "EMPTY_SECRET"}
+    try:
+        result = subprocess.run(
+            ["security", "add-generic-password", "-U", "-a", user, "-s", service, "-w", value],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"service": service, "saved": False, "error": str(exc)}
+    return {
+        "service": service,
+        "saved": result.returncode == 0,
+        "returncode": result.returncode,
+        "stderr_tail": (result.stderr or "")[-200:],
+    }
+
+
+def configure_keychain() -> list[dict[str, Any]]:
+    print("Pushover user/group key:", file=sys.stderr)
+    user_key = getpass.getpass("")
+    print("Pushover application API token:", file=sys.stderr)
+    api_token = getpass.getpass("")
+    return [
+        save_keychain_secret(notify.PUSHOVER_USER_KEYCHAIN_SERVICES[0], user_key.strip()),
+        save_keychain_secret(notify.PUSHOVER_API_TOKEN_KEYCHAIN_SERVICES[0], api_token.strip()),
+    ]
+
+
 def source_status(env_name: str, services: tuple[str, ...]) -> dict[str, Any]:
     env_present = bool(os.getenv(env_name))
     service_presence = {service: keychain_has_value(service) for service in services}
@@ -95,6 +137,7 @@ def fake_report(message: str) -> dict[str, Any]:
 
 
 def build_status(args: argparse.Namespace) -> dict[str, Any]:
+    configure_results = configure_keychain() if args.configure else []
     user_key_status = source_status("PUSHOVER_USER_KEY", notify.PUSHOVER_USER_KEYCHAIN_SERVICES)
     api_token_status = source_status("PUSHOVER_API_TOKEN", notify.PUSHOVER_API_TOKEN_KEYCHAIN_SERVICES)
     ready = bool(user_key_status["configured"] and api_token_status["configured"])
@@ -103,6 +146,8 @@ def build_status(args: argparse.Namespace) -> dict[str, Any]:
         "checked_at": now_iso(),
         "status": "OK" if ready else "ACTION_REQUIRED",
         "ready": ready,
+        "configure_requested": bool(args.configure),
+        "configure_results": configure_results,
         "user_key": user_key_status,
         "api_token": api_token_status,
         "send_test_requested": bool(args.send_test),
