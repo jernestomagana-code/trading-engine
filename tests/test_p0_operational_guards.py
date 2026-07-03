@@ -18,6 +18,7 @@ OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
 OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
 DAILY_OPEN_CHECKLIST = ROOT / "scripts" / "daily_open_checklist.py"
 V32_OPERATOR_NOTIFY = ROOT / "scripts" / "v32_operator_notify.py"
+PUSHOVER_CHANNEL_SETUP = ROOT / "scripts" / "setup_pushover_channel.py"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -402,6 +403,8 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("--pushover", source)
         self.assertIn("PUSHOVER_USER_KEY", source)
         self.assertIn("PUSHOVER_API_TOKEN", source)
+        self.assertIn("stock-ultimus-pushover-user-key", source)
+        self.assertIn("stock-ultimus-pushover-api-token", source)
         self.assertIn("api.pushover.net", source)
         self.assertIn("--email-summary", source)
         self.assertIn("/v32_operator_daily_summary_email", source)
@@ -412,6 +415,23 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
         self.assertNotIn("ibkr_bridge.py", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_pushover_channel_setup_is_secret_safe(self):
+        source = PUSHOVER_CHANNEL_SETUP.read_text()
+
+        self.assertIn("PUSHOVER_CHANNEL_PREFLIGHT", source)
+        self.assertIn("PUSHOVER_USER_KEY", source)
+        self.assertIn("PUSHOVER_API_TOKEN", source)
+        self.assertIn("stock-ultimus-pushover-user-key", source)
+        self.assertIn("stock-ultimus-pushover-api-token", source)
+        self.assertIn("--send-test", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
         self.assertNotIn("placeOrder", source)
         self.assertNotIn(".place_order", source)
 

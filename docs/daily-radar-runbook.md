@@ -269,6 +269,20 @@ PUSHOVER_USER_KEY=...
 PUSHOVER_API_TOKEN=...
 ```
 
+Or store them in macOS Keychain without printing secrets:
+
+```bash
+security add-generic-password -U -a "$USER" -s stock-ultimus-pushover-user-key -w "..."
+security add-generic-password -U -a "$USER" -s stock-ultimus-pushover-api-token -w "..."
+```
+
+Validate the channel before relying on mobile push:
+
+```bash
+python3 scripts/setup_pushover_channel.py
+python3 scripts/setup_pushover_channel.py --send-test
+```
+
 The normal notifier suppresses `WAIT_MARKET` noise. Use `--force` only for a
 manual smoke test or for a deliberate daily "sin accion" digest.
 
