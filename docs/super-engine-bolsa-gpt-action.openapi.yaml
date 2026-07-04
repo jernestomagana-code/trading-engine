@@ -116,10 +116,8 @@ paths:
       operationId: getDailyPlain
       summary: Get ready-to-send plain-text daily answer
       description: >
-        Returns the exact Spanish text the Custom GPT should send to the user
-        for questions like "what opportunities do I have today?". Use this
-        before JSON endpoints when the user wants the daily radar or
-        opportunities. The returned text is decision support only and does not
+        Returns the exact Spanish text the Custom GPT should send for daily
+        radar or opportunity questions. Decision support only; does not
         authorize orders.
       parameters:
         - name: limit
@@ -442,11 +440,9 @@ paths:
       operationId: getOperatorNudgePreflight
       summary: Get V32 proactive nudge readiness and first-business-day checklist
       description: >
-        Returns a read-only readiness check for proactive nudges: configured
-        slots, Pushover/read-auth readiness, GPT Action endpoints, current auto
-        preview, first-business-day checklist, and response playbook. Use this
-        when the user asks what remains before the next market day or whether
-        proactive prompts are ready.
+        Read-only readiness for proactive nudges: slots, Pushover/read-auth,
+        GPT Action endpoints, auto preview, first-business-day checklist, and
+        response playbook. Use before the next market day.
       responses:
         "200":
           description: V32 proactive nudge readiness
@@ -554,11 +550,9 @@ paths:
       operationId: recordOperatorEvent
       summary: Record a safe operator event from the GPT conversation
       description: >
-        Records user intent such as acknowledge alert, mark reviewing, watchlist,
-        reject setup, approve for manual review, expire setup, close alert, or
-        journal note. Some actions also create a V31 manual-review record for
-        outcome tracking. This endpoint never places orders and never authorizes
-        execution.
+        Records operator intent such as reviewing, watchlist, reject, approve
+        for manual review, expire, close alert, or journal note. May create a
+        V31 manual-review record. Never places or authorizes orders.
       requestBody:
         required: true
         content:
