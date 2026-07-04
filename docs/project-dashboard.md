@@ -61,6 +61,9 @@ Resumen:
   llama `POST /v32_operator_nudge` durante el dia y el backend decide por
   horario NY (`premarket`, `open_check`, `midday`, `power_hour`, `post_close`),
   dedupe y read-auth. Los nudges preguntan al operador que revisar, no ejecutan.
+- Preflight de nudges: `GET /v32_operator_nudge_preflight`; valida Pushover,
+  read-auth, slots, prompts del GPT, checklist de primer dia habil y playbook
+  de respuestas (`MARK_WATCHLIST`, `REJECT_SETUP`, `CLOSE_ALERT`, etc.).
 - El GPT puede usar `/gpt_v32_operator_daily_cycle` como flujo unico: estado,
   Pushover, nudges, tracking y backtesting/post-cierre.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
@@ -201,11 +204,13 @@ Resultado:
    `revisa mi watchlist y dime que requiere decision`,
    `haz revision de cierre intradia`, y
    `haz cierre operativo y backtesting pendiente`.
-7. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
-8. Reconsultar el radar y verificar que salga de `NO_DATA`.
-9. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
+7. Antes del proximo dia habil, consultar `/v32_operator_nudge_preflight` o
+   pedir al GPT: `haz preflight de nudges y dame checklist del lunes`.
+8. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
+9. Reconsultar el radar y verificar que salga de `NO_DATA`.
+10. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
    `/v31_manual_review_inbox` y registrar decision humana.
-10. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
+11. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
 
 ## Proximas Acciones Para Terceros
 

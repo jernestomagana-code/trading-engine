@@ -142,6 +142,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_daily_cycle",
     "/v32_operator_pushover_notify",
     "/v32_operator_nudge",
+    "/v32_operator_nudge_preflight",
     "/gpt_v32_operator_daily_cycle",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
@@ -23091,6 +23092,113 @@ def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False):
     }
 
 
+def _v32_next_market_business_day(start=None):
+    current = start.date() if hasattr(start, "date") else start
+    if current is None:
+        current = datetime.now(MARKET_TZ).date()
+    current = current + timedelta(days=1)
+    for _ in range(14):
+        if current.weekday() < 5 and not is_us_market_holiday(datetime(current.year, current.month, current.day, tzinfo=MARKET_TZ)):
+            return current.isoformat()
+        current = current + timedelta(days=1)
+    return current.isoformat()
+
+
+def _v32_operator_nudge_preflight_payload():
+    now_market_dt = datetime.now(MARKET_TZ)
+    slot_previews = []
+    for slot in [item["slot"] for item in _V32_OPERATOR_NUDGE_SLOTS]:
+        preview = _v32_operator_nudge_payload(slot=slot, force=True, dry_run=True)
+        slot_previews.append({
+            "slot": slot,
+            "label": preview.get("slot_label"),
+            "question": preview.get("question"),
+            "gpt_prompt": preview.get("gpt_prompt"),
+            "would_notify": preview.get("would_notify"),
+            "status": preview.get("status"),
+            "pushover_sent": preview.get("pushover_sent"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        })
+    auto_preview = _v32_operator_nudge_payload(slot="auto", dry_run=True)
+    checks = {
+        "read_auth_required": REQUIRE_READ_AUTH,
+        "read_access_token_configured": bool(READ_ACCESS_TOKEN),
+        "pushover_user_key_configured": bool(PUSHOVER_USER_KEY),
+        "pushover_api_token_configured": bool(PUSHOVER_API_TOKEN),
+        "workflow_expected": ".github/workflows/v32-operator-nudges.yml",
+        "workflow_calls_endpoint": "POST /v32_operator_nudge",
+        "gpt_action_endpoints": [
+            "GET /v32_operator_nudge/preview",
+            "POST /v32_operator_nudge",
+            "GET /v32_operator_nudge_preflight",
+        ],
+        "valid_slots": [item["slot"] for item in _V32_OPERATOR_NUDGE_SLOTS],
+    }
+    ready = all([
+        checks["read_access_token_configured"] or not checks["read_auth_required"],
+        checks["pushover_user_key_configured"],
+        checks["pushover_api_token_configured"],
+        len(slot_previews) == len(_V32_OPERATOR_NUDGE_SLOTS),
+    ])
+    first_business_day_checklist = [
+        {
+            "step": 1,
+            "label": "Abrir y validar TWS/IBKR",
+            "detail": "Confirmar conexion local antes de refrescar snapshot.",
+        },
+        {
+            "step": 2,
+            "label": "Publicar snapshot fresco",
+            "detail": "Correr bridge/checklist y confirmar que el motor salga de NO_DATA/WAIT_PIPELINE.",
+        },
+        {
+            "step": 3,
+            "label": "Preguntar al GPT",
+            "detail": "Usar 'que hago hoy?' y tomar /gpt_v32_operator_daily_cycle como fuente de verdad.",
+        },
+        {
+            "step": 4,
+            "label": "Validar nudges",
+            "detail": "Preguntar 'que nudges tengo activos?' y revisar slots premarket/open_check/midday/power_hour/post_close.",
+        },
+        {
+            "step": 5,
+            "label": "Resolver pendientes",
+            "detail": "Cerrar revision abierta y evaluar el outcome pendiente en post-cierre/dry-run.",
+        },
+    ]
+    response_playbook = [
+        {"user_reply": "mantener watchlist", "operator_action": "MARK_WATCHLIST", "when_to_use": "Setup interesante, pero sin entrada lista."},
+        {"user_reply": "rechazar por liquidez", "operator_action": "REJECT_SETUP", "when_to_use": "Spread, volumen, prima o contrato no cumplen."},
+        {"user_reply": "cerrar alerta", "operator_action": "CLOSE_ALERT", "when_to_use": "Alerta ya no requiere seguimiento."},
+        {"user_reply": "registrar nota", "operator_action": "JOURNAL_NOTE", "when_to_use": "Quieres dejar contexto para tracking/backtesting."},
+        {"user_reply": "aprobar revision manual", "operator_action": "APPROVE_MANUAL_REVIEW", "when_to_use": "Solo para revision humana; no autoriza orden."},
+    ]
+    return {
+        "engine": "V32_OPERATOR_NUDGE_PREFLIGHT",
+        "generated_at": _v29_now(),
+        "market_time": now_market_dt.isoformat(),
+        "market_session_state": market_session_state(),
+        "next_market_business_day": _v32_next_market_business_day(now_market_dt),
+        "ready": bool(ready),
+        "checks": checks,
+        "auto_preview": auto_preview,
+        "slot_previews": slot_previews,
+        "first_business_day_checklist": first_business_day_checklist,
+        "response_playbook": response_playbook,
+        "answer_to_user": "\n".join([
+            "Preflight nudges: {}.".format("READY" if ready else "ACTION_REQUIRED"),
+            "Proximo dia habil estimado: {}.".format(_v32_next_market_business_day(now_market_dt)),
+            "Slots: {}.".format(", ".join(checks["valid_slots"])),
+            "Pushover: {}.".format("configurado" if checks["pushover_user_key_configured"] and checks["pushover_api_token_configured"] else "pendiente"),
+            "Decision support solamente; no autoriza ordenes.",
+        ]),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _v32_operator_daily_cycle_payload(force_preview=False):
     today = _v32_operator_today_payload(limit=12)
     summary = _v32_operator_daily_summary_payload(limit=12)
@@ -26463,6 +26571,11 @@ async def v32_operator_nudge(payload: dict | None = None, slot: str = "auto", fo
         force=bool(force or payload.get("force")),
         dry_run=False,
     )
+
+
+@app.get("/v32_operator_nudge_preflight")
+async def v32_operator_nudge_preflight():
+    return _v32_operator_nudge_preflight_payload()
 
 
 @app.post("/v32_operator_event")

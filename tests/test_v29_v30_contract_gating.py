@@ -1075,6 +1075,35 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_not_called()
 
+    def test_v32_operator_nudge_preflight_is_read_only_and_operational(self):
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Sin accion operativa inmediata.",
+            "counts": {"action": 0, "risk": 0, "watch": 5},
+            "active_alerts": [],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "engine": "V32_OPERATOR_TRACKING_STATUS",
+            "operator_event_count": 1,
+            "open_alert_count": 1,
+            "outcome_tracking": {"pending_entry_ready_signals": 1},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "send_pushover_message") as send_push:
+            result = main._v32_operator_nudge_preflight_payload()
+
+        self.assertEqual(result["engine"], "V32_OPERATOR_NUDGE_PREFLIGHT")
+        self.assertIn("GET /v32_operator_nudge_preflight", result["checks"]["gpt_action_endpoints"])
+        self.assertEqual([item["slot"] for item in result["slot_previews"]], ["premarket", "open_check", "midday", "power_hour", "post_close"])
+        self.assertGreaterEqual(len(result["first_business_day_checklist"]), 5)
+        self.assertIn("MARK_WATCHLIST", [item["operator_action"] for item in result["response_playbook"]])
+        self.assertFalse(result["auto_preview"]["pushover_sent"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_not_called()
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",

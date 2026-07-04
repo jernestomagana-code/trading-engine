@@ -83,9 +83,15 @@ When the user asks about proactive prompts, daily push questions, or making the
 model nudge the operator during the day, use:
 
 ```text
+GET /v32_operator_nudge_preflight
 GET /v32_operator_nudge/preview
 POST /v32_operator_nudge
 ```
+
+Use `/v32_operator_nudge_preflight` when the user asks whether nudges are ready
+for the next market day, what remains to configure, or what checklist to follow
+on the first business day. It includes Pushover/read-auth readiness, slot
+previews, first-business-day checklist, and a response playbook.
 
 Slots are `auto`, `premarket`, `open_check`, `midday`, `power_hour`, and
 `post_close`. The preview never sends. The POST sends a Pushover question such
