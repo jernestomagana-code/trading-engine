@@ -458,6 +458,67 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_actionable_signal_watch/preview:
+    get:
+      operationId: previewActionableSignalWatch
+      summary: Preview immediate actionable signal watch without sending push
+      description: >
+        Returns whether a new ACTION/ENTRY_READY/manual-review-ready signal would
+        trigger an immediate Pushover notification. This is read-only and never
+        authorizes execution.
+      parameters:
+        - in: query
+          name: include_risk
+          schema:
+            type: boolean
+            default: false
+          description: Also include RISK alerts in the watch preview.
+      responses:
+        "200":
+          description: V32 actionable signal watch preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionableSignalWatch"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_actionable_signal_watch:
+    post:
+      operationId: sendActionableSignalWatch
+      summary: Send immediate push for new actionable manual-review signals
+      description: >
+        Checks for new ACTION/ENTRY_READY/manual-review-ready alerts and sends a
+        deduplicated Pushover notification for manual review in IBKR. It never
+        places orders and never authorizes execution.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: Force a push for smoke testing when candidates exist.
+                include_risk:
+                  type: boolean
+                  default: false
+                  description: Also notify RISK alerts, not only ACTION/ENTRY_READY.
+      responses:
+        "200":
+          description: V32 actionable signal watch result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionableSignalWatch"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_tracking_status:
     get:
       operationId: getOperatorTrackingStatus
@@ -1395,6 +1456,81 @@ components:
                 type: string
         answer_to_user:
           type: string
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
+    ActionableSignalWatch:
+      type: object
+      additionalProperties: true
+      required:
+        - engine
+        - would_notify
+        - status
+        - candidate_count
+        - new_candidate_count
+        - pushover_sent
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+          enum: [V32_ACTIONABLE_SIGNAL_WATCH]
+        generated_at:
+          type: string
+        would_notify:
+          type: boolean
+        status:
+          type: string
+          enum: [preview, skipped, deduped, sent, not_sent]
+        candidate_count:
+          type: integer
+        new_candidate_count:
+          type: integer
+        deduped_candidate_count:
+          type: integer
+        include_risk:
+          type: boolean
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        new_candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        dedupe:
+          type: object
+          additionalProperties: true
+          properties:
+            new_count:
+              type: integer
+            deduped_count:
+              type: integer
+            force:
+              type: boolean
+            state_file:
+              type: string
+        summary:
+          $ref: "#/components/schemas/OperatorDailySummary"
+        title:
+          type: string
+        message:
+          type: string
+        notification_channel:
+          type: string
+          enum: [pushover]
+        pushover_sent:
+          type: boolean
+        reason:
+          type: string
+        pushover_result:
+          type: object
+          additionalProperties: true
         execution_authorized:
           type: boolean
           const: false

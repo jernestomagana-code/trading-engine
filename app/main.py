@@ -143,6 +143,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_pushover_notify",
     "/v32_operator_nudge",
     "/v32_operator_nudge_preflight",
+    "/v32_actionable_signal_watch",
     "/gpt_v32_operator_daily_cycle",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
@@ -22197,6 +22198,10 @@ def _v32_nudge_state_file():
     return _V29_RUNTIME_DIR / "v32_operator_nudge_state.json"
 
 
+def _v32_actionable_signal_watch_state_file():
+    return _V29_RUNTIME_DIR / "v32_actionable_signal_watch_state.json"
+
+
 def _v32_load_operator_events():
     data = _v29_load_json_file(_v32_operator_events_file())
     return data if isinstance(data, list) else []
@@ -22863,6 +22868,207 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     }
 
 
+def _v32_actionable_signal_candidates(summary, include_risk=False):
+    summary = summary if isinstance(summary, dict) else {}
+    alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    closed_statuses = {
+        "REJECTED",
+        "APPROVED_FOR_MANUAL_REVIEW",
+        "APPROVED_FOR_MANUAL_TRADE",
+        "EXPIRED",
+        "CLOSED",
+    }
+    candidates = []
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        severity = _v29_safe_upper(alert.get("severity"), "")
+        state = _v29_safe_upper(alert.get("state"), "")
+        operator_status = _v29_safe_upper(alert.get("operator_status"), "NEW")
+        is_actionable = (
+            severity == "ACTION"
+            or state == "ENTRY_READY"
+            or alert.get("manual_review_ready") is True
+        )
+        if include_risk and severity == "RISK":
+            is_actionable = True
+        if not is_actionable or operator_status in closed_statuses:
+            continue
+        candidates.append({
+            **alert,
+            "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
+            "severity": severity or alert.get("severity"),
+            "state": state or alert.get("state"),
+            "operator_status": operator_status,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        })
+    return candidates
+
+
+def _v32_actionable_signal_signature(alert):
+    alert = alert if isinstance(alert, dict) else {}
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    return {
+        "version": "v32_actionable_signal_watch_v1",
+        "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
+        "ticker": _v29_safe_upper(alert.get("ticker"), "UNKNOWN"),
+        "strategy": _v29_safe_upper(alert.get("strategy"), "UNKNOWN"),
+        "severity": _v29_safe_upper(alert.get("severity"), "UNKNOWN"),
+        "state": _v29_safe_upper(alert.get("state"), "UNKNOWN"),
+        "operator_status": _v29_safe_upper(alert.get("operator_status"), "UNKNOWN"),
+        "main_blocker": alert.get("main_blocker"),
+        "contract": {
+            "expiration": contract.get("expiration"),
+            "strike": contract.get("strike"),
+            "dte": contract.get("dte"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid": contract.get("mid"),
+            "spread_pct": contract.get("spread_pct"),
+            "delta": contract.get("delta"),
+        },
+    }
+
+
+def _v32_actionable_signal_watch_dedupe_decision(candidates, force=False):
+    state = _v29_load_json_file(_v32_actionable_signal_watch_state_file())
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    new_candidates = []
+    deduped_candidates = []
+    session_date = datetime.now(MARKET_TZ).date().isoformat()
+    for alert in candidates or []:
+        signature = _v32_actionable_signal_signature(alert)
+        key = "{}:{}".format(session_date, signature.get("alert_id"))
+        last = sent.get(key) if isinstance(sent.get(key), dict) else {}
+        decorated = {
+            **alert,
+            "watch_key": key,
+            "watch_signature": signature,
+            "last_sent_at": last.get("sent_at"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        if not force and last.get("signature") == signature:
+            deduped_candidates.append(decorated)
+        else:
+            new_candidates.append(decorated)
+    return {
+        "dedupe_version": "v32_actionable_signal_watch_v1",
+        "force": bool(force),
+        "new_count": len(new_candidates),
+        "deduped_count": len(deduped_candidates),
+        "new_candidates": new_candidates,
+        "deduped_candidates": deduped_candidates,
+        "state_file": str(_v32_actionable_signal_watch_state_file()),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_save_actionable_signal_watch_state(dedupe, status):
+    path = _v32_actionable_signal_watch_state_file()
+    state = _v29_load_json_file(path)
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    for alert in (dedupe or {}).get("new_candidates") or []:
+        key = alert.get("watch_key")
+        if not key:
+            continue
+        sent[key] = {
+            "sent_at": _v29_now(),
+            "status": status,
+            "signature": alert.get("watch_signature"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump({
+            "state_version": "v32_actionable_signal_watch_v1",
+            "updated_at": _v29_now(),
+            "sent": sent,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }, f, indent=2)
+    return True
+
+
+def _v32_actionable_signal_watch_message(candidates, summary):
+    candidates = candidates if isinstance(candidates, list) else []
+    summary = summary if isinstance(summary, dict) else {}
+    lines = [
+        "Stock Ultimus: señal para revision manual",
+        "Estado: {}".format(summary.get("status") or "UNKNOWN"),
+    ]
+    for alert in candidates[:5]:
+        contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+        contract_bits = []
+        if contract.get("expiration"):
+            contract_bits.append(str(contract.get("expiration")))
+        if contract.get("strike") is not None:
+            contract_bits.append("strike {}".format(contract.get("strike")))
+        if contract.get("mid") is not None:
+            contract_bits.append("mid {}".format(contract.get("mid")))
+        lines.append(
+            "- {ticker} | {severity} | {state} | {strategy} | {contract}".format(
+                ticker=alert.get("ticker") or "?",
+                severity=alert.get("severity") or "?",
+                state=alert.get("state") or "?",
+                strategy=alert.get("strategy") or "?",
+                contract=", ".join(contract_bits) if contract_bits else "sin contrato",
+            )
+        )
+    first_ticker = (candidates[0] or {}).get("ticker") if candidates else "la señal"
+    lines.append('Abre el GPT y di: "revisa {} y dime si amerita ejecucion manual en IBKR".'.format(first_ticker))
+    lines.append("Decision support solamente. No autoriza ordenes.")
+    return "\n".join(lines)
+
+
+def _v32_actionable_signal_watch_payload(force=False, dry_run=False, include_risk=False):
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    candidates = _v32_actionable_signal_candidates(summary, include_risk=include_risk)
+    dedupe = _v32_actionable_signal_watch_dedupe_decision(candidates, force=force)
+    new_candidates = dedupe.get("new_candidates") or []
+    should_notify = bool(new_candidates)
+    message = _v32_actionable_signal_watch_message(new_candidates or candidates, summary)
+    title = "Stock Ultimus: señal accionable" if new_candidates else "Stock Ultimus: sin señal nueva"
+    base_payload = {
+        "engine": "V32_ACTIONABLE_SIGNAL_WATCH",
+        "generated_at": _v29_now(),
+        "would_notify": should_notify,
+        "candidate_count": len(candidates),
+        "new_candidate_count": len(new_candidates),
+        "deduped_candidate_count": len(dedupe.get("deduped_candidates") or []),
+        "include_risk": bool(include_risk),
+        "candidates": candidates,
+        "new_candidates": new_candidates,
+        "dedupe": dedupe,
+        "summary": summary,
+        "title": title,
+        "message": message,
+        "notification_channel": "pushover",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if dry_run:
+        return {**base_payload, "status": "preview", "pushover_sent": False}
+    if not candidates:
+        return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": "NO_ACTIONABLE_SIGNAL"}
+    if not new_candidates:
+        return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_ACTIONABLE_SIGNAL"}
+    result = send_pushover_message(title, message)
+    if result.get("pushover_sent"):
+        _v32_save_actionable_signal_watch_state(dedupe, "sent")
+    return {
+        **base_payload,
+        "status": "sent" if result.get("pushover_sent") else "not_sent",
+        "pushover_sent": bool(result.get("pushover_sent")),
+        "pushover_result": result,
+    }
+
+
 _V32_OPERATOR_NUDGE_SLOTS = (
     {
         "slot": "premarket",
@@ -23128,7 +23334,11 @@ def _v32_operator_nudge_preflight_payload():
         "pushover_api_token_configured": bool(PUSHOVER_API_TOKEN),
         "workflow_expected": ".github/workflows/v32-operator-nudges.yml",
         "workflow_calls_endpoint": "POST /v32_operator_nudge",
+        "actionable_signal_watch_workflow_expected": ".github/workflows/v32-actionable-signal-watch.yml",
+        "actionable_signal_watch_endpoint": "POST /v32_actionable_signal_watch",
         "gpt_action_endpoints": [
+            "GET /v32_actionable_signal_watch/preview",
+            "POST /v32_actionable_signal_watch",
             "GET /v32_operator_nudge/preview",
             "POST /v32_operator_nudge",
             "GET /v32_operator_nudge_preflight",
@@ -26570,6 +26780,21 @@ async def v32_operator_nudge(payload: dict | None = None, slot: str = "auto", fo
         slot=str(payload.get("slot") or slot or "auto"),
         force=bool(force or payload.get("force")),
         dry_run=False,
+    )
+
+
+@app.get("/v32_actionable_signal_watch/preview")
+async def v32_actionable_signal_watch_preview(force: bool = False, include_risk: bool = False):
+    return _v32_actionable_signal_watch_payload(force=force, dry_run=True, include_risk=include_risk)
+
+
+@app.post("/v32_actionable_signal_watch")
+async def v32_actionable_signal_watch(payload: dict | None = None, force: bool = False, include_risk: bool = False):
+    payload = payload if isinstance(payload, dict) else {}
+    return _v32_actionable_signal_watch_payload(
+        force=bool(force or payload.get("force")),
+        dry_run=False,
+        include_risk=bool(include_risk or payload.get("include_risk")),
     )
 
 

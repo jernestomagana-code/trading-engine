@@ -1,0 +1,86 @@
+name: V32 Actionable Signal Watch
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force a push for smoke testing when actionable candidates exist"
+        required: false
+        default: "false"
+      include_risk:
+        description: "Also notify RISK alerts, not only ACTION/ENTRY_READY"
+        required: false
+        default: "false"
+  schedule:
+    # Polls around US market hours. The backend handles signal quality,
+    # dedupe, Pushover delivery, and no-order guardrails.
+    - cron: "*/5 13-21 * * 1-5"
+
+jobs:
+  watch:
+    name: Watch for new actionable manual-review signals
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify when a new actionable signal appears
+        env:
+          READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
+          STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
+          FORCE_WATCH: ${{ github.event.inputs.force || 'false' }}
+          INCLUDE_RISK: ${{ github.event.inputs.include_risk || 'false' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from urllib import request, error
+
+          token = os.environ.get("READ_ACCESS_TOKEN", "").strip()
+          if not token:
+              print("Missing STOCK_ULTIMUS_READ_ACCESS_TOKEN secret.")
+              sys.exit(1)
+
+          body = json.dumps({
+              "force": os.environ.get("FORCE_WATCH", "false").lower() == "true",
+              "include_risk": os.environ.get("INCLUDE_RISK", "false").lower() == "true",
+          }).encode("utf-8")
+          base = os.environ.get("STOCK_ULTIMUS_BASE_URL", "https://trading-engine-p097.onrender.com").rstrip("/")
+          req = request.Request(
+              base + "/v32_actionable_signal_watch",
+              data=body,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Stock-Ultimus-Read-Token": token,
+              },
+          )
+          try:
+              with request.urlopen(req, timeout=30) as resp:
+                  payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                  status_code = resp.status
+          except error.HTTPError as exc:
+              body_text = exc.read().decode("utf-8", errors="replace")
+              print(body_text[:1200])
+              sys.exit(1)
+
+          result = payload.get("pushover_result") or {}
+          dedupe = payload.get("dedupe") or {}
+          print(json.dumps({
+              "status_code": status_code,
+              "status": payload.get("status"),
+              "would_notify": payload.get("would_notify"),
+              "pushover_sent": payload.get("pushover_sent"),
+              "provider": result.get("provider"),
+              "provider_status_code": result.get("status_code"),
+              "candidate_count": payload.get("candidate_count"),
+              "new_candidate_count": payload.get("new_candidate_count"),
+              "deduped_candidate_count": payload.get("deduped_candidate_count"),
+              "dedupe_new_count": dedupe.get("new_count"),
+              "dedupe_deduped_count": dedupe.get("deduped_count"),
+              "reason": payload.get("reason"),
+              "not_order_instruction": payload.get("not_order_instruction"),
+              "execution_authorized": payload.get("execution_authorized"),
+          }, indent=2))
+
+          if payload.get("status") == "not_sent":
+              sys.exit(1)
+          PY

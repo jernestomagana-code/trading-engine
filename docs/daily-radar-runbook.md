@@ -86,6 +86,17 @@ haz preflight de nudges y dame checklist del lunes
 
 Actionable V32 notifications:
 
+Cloud immediate actionable-signal watch:
+
+```text
+.github/workflows/v32-actionable-signal-watch.yml -> POST /v32_actionable_signal_watch
+```
+
+This runs every 5 minutes during broad US market hours. It sends Pushover only
+when a new `ACTION`, `ENTRY_READY`, or `manual_review_ready=true` alert appears,
+deduped by alert id and signal signature. It prompts manual IBKR review through
+the GPT and never authorizes execution.
+
 ```bash
 python3 scripts/v32_operator_notify.py
 ```

@@ -61,6 +61,10 @@ Resumen:
   llama `POST /v32_operator_nudge` durante el dia y el backend decide por
   horario NY (`premarket`, `open_check`, `midday`, `power_hour`, `post_close`),
   dedupe y read-auth. Los nudges preguntan al operador que revisar, no ejecutan.
+- GitHub Actions agrega watch inmediato `.github/workflows/v32-actionable-signal-watch.yml`;
+  llama `POST /v32_actionable_signal_watch` cada 5 minutos durante mercado
+  amplio y avisa por Pushover solo si aparece una nueva senal `ACTION`,
+  `ENTRY_READY` o `manual_review_ready=true` para revision manual en IBKR.
 - Preflight de nudges: `GET /v32_operator_nudge_preflight`; valida Pushover,
   read-auth, slots, prompts del GPT, checklist de primer dia habil y playbook
   de respuestas (`MARK_WATCHLIST`, `REJECT_SETUP`, `CLOSE_ALERT`, etc.).
