@@ -20876,6 +20876,47 @@ def _v31_finalize_decision_support_contract(decision):
     return decision
 
 
+def _v31_apply_entry_evidence_gate(decision):
+    if decision.get("final_state") != "ENTRY_READY":
+        return decision
+
+    gaps = shared_source_attribution.entry_ready_evidence_gaps(decision)
+    decision["entry_evidence_gate"] = {
+        "status": "PASS" if not gaps else "BLOCKED",
+        "gaps": gaps,
+        "required_contract_fields": list(shared_source_attribution.ENTRY_READY_REQUIRED_CONTRACT_FIELDS),
+        "requires_candidate_source": True,
+        "requires_confirmation_source": True,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if not gaps:
+        return decision
+
+    wait_state = shared_source_attribution.entry_ready_evidence_wait_state(gaps)
+    blockers = [wait_state, "ENTRY_EVIDENCE_GATE_FAILED", *gaps]
+    deduped = []
+    for blocker in blockers:
+        if blocker and blocker not in deduped:
+            deduped.append(blocker)
+    decision["final_state"] = wait_state
+    decision["decision"] = wait_state
+    decision["main_blocker"] = wait_state
+    decision["blockers"] = deduped
+    decision["manual_review_ready"] = False
+    decision["can_operate"] = False
+    if wait_state == "WAIT_TECHNICAL":
+        decision["technical_status"] = "WAIT_TECHNICAL"
+    if wait_state == "WAIT_OPTIONS_DATA":
+        decision["construction_status"] = "WAIT_OPTIONS_DATA"
+    decision["explanation"] = (
+        f"{decision.get('ticker')}: {wait_state} por evidencia insuficiente para ENTRY_READY "
+        f"({', '.join(gaps)})."
+    )
+    return _v31_finalize_decision_support_contract(decision)
+
+
 def _v31_entry_ready_signal_seed(decision):
     contract = decision.get("selected_contract") or {}
     ticker = _v29_safe_upper(decision.get("ticker"), "UNKNOWN")
@@ -24529,7 +24570,8 @@ def _v31_canonical_decision(ticker):
     decision = _v31_apply_risk_profile_gate(decision)
     decision = _v31_apply_broker_check_gate(decision)
     decision = _v31_finalize_decision_support_contract(decision)
-    return shared_source_attribution.apply_source_attribution(decision, d)
+    decision = shared_source_attribution.apply_source_attribution(decision, d)
+    return _v31_apply_entry_evidence_gate(decision)
 
 
 def _v31_all_decisions(tickers=None):

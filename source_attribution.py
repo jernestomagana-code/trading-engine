@@ -17,6 +17,7 @@ from typing import Any
 ATTRIBUTION_VERSION = "source_attribution_v1"
 NO_CANDIDATE_SOURCE = "NO_CANDIDATE_SOURCE"
 NO_CONFIRMATION_SOURCE = "NO_CONFIRMATION_SOURCE"
+ENTRY_READY_REQUIRED_CONTRACT_FIELDS = ["strike", "expiration", "dte", "bid", "ask", "delta"]
 
 
 def now_iso() -> str:
@@ -179,3 +180,44 @@ def apply_source_attribution(decision: dict[str, Any], source_decision: dict[str
     enriched["execution_authorized"] = False
     enriched["not_order_instruction"] = True
     return enriched
+
+
+def entry_ready_evidence_gaps(decision: dict[str, Any]) -> list[str]:
+    """Return hard evidence gaps that must block ENTRY_READY.
+
+    This is a deterministic gate for the decision engine. It does not fetch new
+    data and it does not decide whether a setup is good; it only verifies that
+    an ENTRY_READY candidate is auditable.
+    """
+
+    decision = decision if isinstance(decision, dict) else {}
+    attribution = decision.get("source_attribution")
+    if not isinstance(attribution, dict):
+        attribution = build_source_attribution(decision, decision.get("source_decision"))
+
+    gaps: list[str] = []
+    candidate_source = safe_upper(attribution.get("candidate_source"))
+    confirmation_source = safe_upper(attribution.get("confirmation_source"))
+    if candidate_source in {"", "UNKNOWN", NO_CANDIDATE_SOURCE}:
+        gaps.append("MISSING_CANDIDATE_SOURCE")
+    if confirmation_source in {"", "UNKNOWN", NO_CONFIRMATION_SOURCE}:
+        gaps.append("MISSING_CONFIRMATION_SOURCE")
+
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    for field in ENTRY_READY_REQUIRED_CONTRACT_FIELDS:
+        if contract.get(field) in [None, "", "None"]:
+            gaps.append(f"MISSING_CONTRACT_{field.upper()}")
+
+    deduped = []
+    for gap in gaps:
+        if gap not in deduped:
+            deduped.append(gap)
+    return deduped
+
+
+def entry_ready_evidence_wait_state(gaps: list[str]) -> str:
+    option_gap = any(
+        gap == "MISSING_CANDIDATE_SOURCE" or gap.startswith("MISSING_CONTRACT_")
+        for gap in gaps or []
+    )
+    return "WAIT_OPTIONS_DATA" if option_gap else "WAIT_TECHNICAL"

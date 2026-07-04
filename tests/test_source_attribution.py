@@ -54,6 +54,26 @@ class SourceAttributionTests(unittest.TestCase):
         self.assertEqual(enriched["confirmation_source"], source_attribution.NO_CONFIRMATION_SOURCE)
         self.assertFalse(enriched["source_attribution"]["unknown_source"])
 
+    def test_entry_ready_evidence_gaps_require_confirmation_and_contract_fields(self):
+        enriched = source_attribution.apply_source_attribution({
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "selected_contract": {
+                "strike": 700,
+                "expiration": "20260821",
+                "dte": 48,
+                "bid": 1.2,
+                "ask": 1.35,
+            },
+        })
+
+        gaps = source_attribution.entry_ready_evidence_gaps(enriched)
+
+        self.assertIn("MISSING_CONFIRMATION_SOURCE", gaps)
+        self.assertIn("MISSING_CONTRACT_DELTA", gaps)
+        self.assertEqual(source_attribution.entry_ready_evidence_wait_state(gaps), "WAIT_OPTIONS_DATA")
+
 
 if __name__ == "__main__":
     unittest.main()

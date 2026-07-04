@@ -1591,6 +1591,34 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(finalized["source_decision"]["can_operate"])
         self.assertIn("NOT_AN_ORDER_INSTRUCTION", finalized["warnings"])
 
+    def test_v31_entry_ready_requires_auditable_source_evidence(self):
+        decision = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY",
+            "decision": "ENTRY_READY",
+            "manual_review_ready": True,
+            "selected_contract": {
+                "strike": 710,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 1.20,
+                "ask": 1.35,
+                "delta": -0.20,
+            },
+        }
+        decision = main.shared_source_attribution.apply_source_attribution(decision)
+
+        gated = main._v31_apply_entry_evidence_gate(decision)
+
+        self.assertEqual(gated["final_state"], "WAIT_TECHNICAL")
+        self.assertEqual(gated["main_blocker"], "WAIT_TECHNICAL")
+        self.assertIn("ENTRY_EVIDENCE_GATE_FAILED", gated["blockers"])
+        self.assertIn("MISSING_CONFIRMATION_SOURCE", gated["blockers"])
+        self.assertFalse(gated["manual_review_ready"])
+        self.assertFalse(gated["selected_contract"]["manual_review_ready"])
+        self.assertEqual(gated["entry_evidence_gate"]["status"], "BLOCKED")
+
     def test_v31_risk_profile_blocks_entry_ready_without_weakening_wait_options(self):
         complete_row = {
             "ticker": "QQQ",
