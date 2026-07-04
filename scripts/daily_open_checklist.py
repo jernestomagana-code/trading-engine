@@ -24,6 +24,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import foundation_health
+
 RUNTIME = ROOT / "runtime"
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
 DEFAULT_OUT = RUNTIME / "daily_open_checklist_latest.json"
@@ -102,6 +107,19 @@ def runtime_freshness() -> dict[str, Any]:
         "newest_file": str(newest.relative_to(ROOT)),
         "newest_mtime": newest_dt.isoformat(),
         "age_minutes": round(age_minutes, 2),
+    }
+
+
+def local_foundation_health() -> dict[str, Any]:
+    payload = foundation_health.build_foundation_health(RUNTIME)
+    return {
+        "ok": payload.get("status") in {"OK", "WAITING_FOR_DATA"},
+        "status": payload.get("status"),
+        "priorities": payload.get("priorities") or [],
+        "data_quality": payload.get("data_quality") or {},
+        "parameter_review_summary": payload.get("parameter_review_summary") or {},
+        "not_order_instruction": payload.get("not_order_instruction") is True,
+        "execution_authorized": payload.get("execution_authorized") is True,
     }
 
 
@@ -218,6 +236,11 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         return "ACTION_REQUIRED", "Abrir/desbloquear TWS-IBKR y reintentar refresh."
     if report.get("publish_step", {}).get("ok") is False:
         return "ACTION_REQUIRED", "Revisar publicador de snapshot antes de usar el GPT."
+    foundation = checks.get("foundation_health") or {}
+    if foundation.get("status") == "FAIL":
+        priorities = foundation.get("priorities") if isinstance(foundation.get("priorities"), list) else []
+        first_priority = priorities[0] if priorities else "Revisar runtime/foundation_health_latest.json."
+        return "ACTION_REQUIRED", "Resolver Foundation Health antes de depender del motor: " + first_priority
     status = str(operator.get("status") or "")
     if status in {"NO_DATA", "WAIT_PIPELINE"} or counts.get("no_data_alerts", 0) > 0:
         return "SNAPSHOT_REQUIRED", "Refrescar/publicar snapshot antes de revisar setups."
@@ -231,7 +254,7 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     base_url = args.base_url.rstrip("/")
     read_token = secret_from_env_or_keychain(
-        ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN"],
+        ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN", "STOCK_ULTIMUS_READ_ACCESS_TOKEN"],
         READ_KEYCHAIN_SERVICE,
         args.no_keychain,
     )
@@ -286,6 +309,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             report["publish_step"] = publish_runtime(args, ingest_token)
             checks["runtime_freshness_after_publish"] = runtime_freshness()
 
+    checks["foundation_health"] = local_foundation_health()
+
     if read_token:
         denied_status, _ = request_json(f"{base_url}/v31_system_status", timeout=args.read_timeout)
         allowed_status, allowed = request_json(f"{base_url}/v31_system_status", token=read_token, timeout=args.read_timeout)
@@ -326,10 +351,12 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"Siguiente accion: {report.get('next_required_action')}")
     checks = report.get("checks") or {}
     print("\nChecks:")
-    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "production_auth", "v32_operator_today"]:
+    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "foundation_health", "production_auth", "v32_operator_today"]:
         check = checks.get(name) or {}
         marker = "OK" if check.get("ok") else "FAIL"
         detail = check.get("detail") or check.get("error") or ""
+        if name == "foundation_health":
+            detail = "status=" + str(check.get("status"))
         print(f"- {name}: {marker} {detail}")
     runtime = checks.get("runtime_freshness_after_publish") or checks.get("runtime_freshness_after_refresh") or checks.get("runtime_freshness") or {}
     if runtime:

@@ -4,10 +4,11 @@
 This is the local "one command" wrapper for the human-in-the-loop workflow:
 
 1) refresh the read-only IBKR snapshot through the daily radar helper,
-2) read GPT-facing readiness/rankings,
-3) evaluate pending paper outcomes and manual reviews,
-4) check GPT Action health,
-5) write one redacted operational report.
+2) check local foundation health,
+3) read GPT-facing readiness/rankings,
+4) evaluate pending paper outcomes and manual reviews,
+5) check GPT Action health,
+6) write one redacted operational report.
 
 It never places orders, never authorizes execution, and never prints tokens.
 """
@@ -39,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_OPERATING_DAY_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--skip-bridge", action="store_true", help="Only read/evaluate cloud state; do not touch IBKR.")
     parser.add_argument("--allow-partial", action="store_true", help="Continue if bridge refresh fails.")
+    parser.add_argument("--skip-foundation-health", action="store_true", help="Skip the local foundation health gate.")
     parser.add_argument("--skip-outcomes", action="store_true", help="Skip outcome/manual-review evaluation.")
     parser.add_argument("--skip-gpt-health", action="store_true", help="Skip GPT Action health monitor.")
     parser.add_argument("--dry-run-outcomes", action="store_true", help="Preview outcome evaluation without persisting updates.")
@@ -134,6 +136,16 @@ def command_gpt_health(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def command_foundation_health() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_foundation_health_check.py",
+        "--json-only",
+        "--no-write",
+        "--strict",
+    ]
+
+
 def classify_next_action(steps: list[dict[str, Any]]) -> str:
     failed = [step for step in steps if not step.get("ok")]
     if not failed:
@@ -141,6 +153,8 @@ def classify_next_action(steps: list[dict[str, Any]]) -> str:
     first = failed[0]
     if first.get("name") == "daily_radar_refresh":
         return "Revisar TWS/IB Gateway/API y runtime/ibkr_bridge_health_latest.json; luego reintentar el ciclo."
+    if first.get("name") == "foundation_health":
+        return "Resolver Foundation Health antes de depender del motor; revisar runtime/foundation_health_latest.json."
     if first.get("name") == "outcome_evaluation":
         return "Revisar endpoint de outcomes y token READ_ACCESS_TOKEN; el snapshot puede seguir siendo util."
     if first.get("name") == "gpt_action_health":
@@ -162,6 +176,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     steps.append(daily)
 
     should_continue = daily["ok"] or args.allow_partial or args.skip_bridge
+    if should_continue and not args.skip_foundation_health:
+        foundation = run_step(
+            "foundation_health",
+            command_foundation_health(),
+            timeout=60,
+            env=env,
+        )
+        steps.append(foundation)
+        should_continue = foundation["ok"] or args.allow_partial
     if should_continue and not args.skip_outcomes:
         steps.append(
             run_step(

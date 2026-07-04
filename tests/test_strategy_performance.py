@@ -69,6 +69,17 @@ class StrategyPerformanceTests(unittest.TestCase):
         self.assertEqual(by_review["PASS"]["expectancy_r"], 0.6)
         self.assertTrue(cash_secured["not_order_instruction"])
 
+        review = strategy_performance.parameter_review_evidence_report(
+            report,
+            generated_at="2026-07-04T00:00:00+00:00",
+            minimum_closed_outcomes=2,
+        )
+        self.assertEqual(review["parameter_review_report_version"], "parameter_review_evidence_report_v1")
+        self.assertEqual(review["candidate_count"], 1)
+        self.assertEqual(review["candidates"][0]["strategy"], "CASH_SECURED_PUT")
+        self.assertEqual(review["blocked"][0]["recommended_action"], "ACCUMULATE_MORE_OUTCOMES")
+        self.assertFalse(review["execution_authorized"])
+
 
 if __name__ == "__main__":
     unittest.main()

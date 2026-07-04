@@ -142,6 +142,9 @@ def decision_key(item: dict[str, Any]) -> str:
 def normalize_decision(item: dict[str, Any], origin: str) -> dict[str, Any]:
     contract = selected_contract(item)
     blockers = flatten_blockers(item)
+    attribution = item.get("source_attribution") if isinstance(item.get("source_attribution"), dict) else {}
+    candidate_source = safe_upper(item.get("candidate_source") or attribution.get("candidate_source"), UNKNOWN)
+    confirmation_source = safe_upper(item.get("confirmation_source") or attribution.get("confirmation_source"), UNKNOWN)
     return {
         "id": decision_key(item),
         "origin": origin,
@@ -153,7 +156,12 @@ def normalize_decision(item: dict[str, Any], origin: str) -> dict[str, Any]:
         "final_state": safe_upper(item.get("final_state") or item.get("decision_state") or item.get("decision") or item.get("state")),
         "main_blocker": safe_upper(item.get("main_blocker") or (blockers[0] if blockers else "")),
         "blockers": blockers,
+        "candidate_source": candidate_source,
+        "confirmation_source": confirmation_source,
         "signal_source": infer_signal_source(item),
+        "source_confidence": item.get("source_confidence") or attribution.get("source_confidence"),
+        "signal_id": item.get("signal_id") or attribution.get("signal_id"),
+        "snapshot_id": item.get("snapshot_id") or attribution.get("snapshot_id"),
         "manual_review_ready": bool(item.get("manual_review_ready") or item.get("ready_for_manual_review")),
         "score": safe_float(item.get("conviction_score") or item.get("ranking_score") or item.get("score")),
         "required_missing_fields": list(item.get("required_missing_fields") or []),
@@ -273,6 +281,8 @@ def audit_question_for_state(state: str, blocker: str, blockers: list[str]) -> s
 
 def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]], source_files: dict[str, bool]) -> dict[str, Any]:
     unknown_source = sum(1 for item in decisions if item["signal_source"] == UNKNOWN)
+    missing_candidate_source = sum(1 for item in decisions if item.get("candidate_source") in [UNKNOWN, ""])
+    missing_confirmation_source = sum(1 for item in decisions if item.get("confirmation_source") in [UNKNOWN, ""])
     closed_outcomes = sum(1 for item in outcomes if item["outcome"] in {"WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"})
     return {
         "source_files_found": source_files,
@@ -281,6 +291,12 @@ def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str,
         "closed_outcome_count": closed_outcomes,
         "unknown_source_decisions": unknown_source,
         "unknown_source_pct": round((unknown_source / len(decisions)) * 100, 2) if decisions else 0.0,
+        "missing_candidate_source_decisions": missing_candidate_source,
+        "missing_confirmation_source_decisions": missing_confirmation_source,
+        "source_attribution_coverage_pct": round(
+            ((len(decisions) - max(missing_candidate_source, missing_confirmation_source)) / len(decisions)) * 100,
+            2,
+        ) if decisions else 0.0,
         "can_review_parameters": closed_outcomes >= 30,
         "primary_gap": primary_gap(decisions, outcomes),
     }
@@ -322,6 +338,8 @@ def load_runtime_inputs(runtime_dir: Path) -> tuple[list[dict[str, Any]], list[d
         "daily_radar_latest": (runtime_dir / "daily_radar_latest.json").exists(),
         "intraday_futures_alert_events": (runtime_dir / "intraday_futures_alert_events.json").exists(),
         "signals_history": (runtime_dir / "signals_history.json").exists(),
+        "tradingview_signal_ledger": (runtime_dir / "v32_signal_events.json").exists(),
+        "ibkr_chain_coverage": (runtime_dir / "v32_ibkr_chain_coverage.json").exists(),
     }
     return decisions, outcomes, source_files
 

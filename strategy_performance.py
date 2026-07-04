@@ -7,6 +7,7 @@ from typing import Any
 
 
 STRATEGY_PERFORMANCE_VERSION = "strategy_performance_v1"
+PARAMETER_REVIEW_REPORT_VERSION = "parameter_review_evidence_report_v1"
 CLOSED_OUTCOMES = {"WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"}
 
 
@@ -253,6 +254,81 @@ def strategy_performance_report(
             "minimum_closed_outcomes_for_parameter_review": 30,
             "purpose": "Evidence for strategy and parameter review only.",
             "production_change_requires_versioned_rule": True,
+        },
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def parameter_review_evidence_report(
+    performance_report: dict[str, Any],
+    *,
+    generated_at: str | None = None,
+    minimum_closed_outcomes: int = 30,
+) -> dict[str, Any]:
+    """Build a no-order weekly-style parameter review report.
+
+    The report recommends whether a strategy is ready for human parameter
+    review. It never mutates thresholds and never promotes a strategy.
+    """
+
+    try:
+        minimum_closed_outcomes = max(1, int(minimum_closed_outcomes))
+    except Exception:
+        minimum_closed_outcomes = 30
+
+    candidates = []
+    blocked = []
+    for row in performance_report.get("strategies") or []:
+        if not isinstance(row, dict):
+            continue
+        closed = int(row.get("closed_outcomes") or 0)
+        expectancy = safe_float(row.get("expectancy_r"))
+        mae = safe_float(row.get("avg_mae_r"))
+        ready = closed >= minimum_closed_outcomes
+        item = {
+            "strategy": row.get("strategy"),
+            "closed_outcomes": closed,
+            "minimum_closed_outcomes": minimum_closed_outcomes,
+            "expectancy_r": expectancy,
+            "avg_mae_r": mae,
+            "evidence_level": row.get("evidence_level"),
+            "parameter_review_ready": ready,
+            "recommended_action": "HUMAN_PARAMETER_REVIEW" if ready else "ACCUMULATE_MORE_OUTCOMES",
+            "reasons": [],
+            "manual_review_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        if not ready:
+            item["reasons"].append("INSUFFICIENT_CLOSED_OUTCOMES")
+        if expectancy is None:
+            item["reasons"].append("EXPECTANCY_MISSING")
+        elif expectancy < 0:
+            item["reasons"].append("NEGATIVE_EXPECTANCY_REVIEW_REQUIRED")
+        if mae is not None and mae <= -2.0:
+            item["reasons"].append("MAE_RISK_REVIEW_REQUIRED")
+
+        if ready:
+            candidates.append(item)
+        else:
+            blocked.append(item)
+
+    return {
+        "engine": "PARAMETER_REVIEW_EVIDENCE_REPORT",
+        "parameter_review_report_version": PARAMETER_REVIEW_REPORT_VERSION,
+        "generated_at": generated_at,
+        "minimum_closed_outcomes": minimum_closed_outcomes,
+        "candidate_count": len(candidates),
+        "blocked_count": len(blocked),
+        "candidates": candidates,
+        "blocked": blocked,
+        "policy": {
+            "does_not_change_thresholds": True,
+            "requires_versioned_rule_change": True,
+            "requires_manual_review": True,
+            "requires_security_review": True,
         },
         "manual_review_required": True,
         "execution_authorized": False,

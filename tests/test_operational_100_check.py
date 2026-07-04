@@ -47,6 +47,11 @@ def fake_step(name, command, timeout, env):
             "execution_authorized": False,
             "not_order_instruction": True,
         },
+        "foundation_health": {
+            "status": "OK",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
     }
     return {
         "name": name,
@@ -73,6 +78,7 @@ class Operational100CheckTests(unittest.TestCase):
         gate_names = {gate["name"] for gate in result["gates"]}
         self.assertIn("gpt_action_backend_health", gate_names)
         self.assertIn("cloud_operational_audit", gate_names)
+        self.assertIn("foundation_health", gate_names)
         self.assertIn("outcome_learning_dry_run", gate_names)
         self.assertIn("real_outcome_write_after_close", gate_names)
         self.assertIn("manual_review_process_surfaces", gate_names)

@@ -45,6 +45,9 @@ import strategy_input_contracts as shared_strategy_input_contracts
 import strategy_regime_policy as shared_strategy_regime_policy
 import strategy_registry as shared_strategy_registry
 import strategy_performance as shared_strategy_performance
+import source_attribution as shared_source_attribution
+import tradingview_signal_ledger as shared_tradingview_signal_ledger
+import foundation_health as shared_foundation_health
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -144,6 +147,9 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_nudge",
     "/v32_operator_nudge_preflight",
     "/v32_actionable_signal_watch",
+    "/v32_signal_events",
+    "/v32_parameter_review_report",
+    "/v32_foundation_health",
     "/gpt_v32_operator_daily_cycle",
     "/gpt_v32_operator_today",
     "/gpt_v32_operator_event",
@@ -1084,10 +1090,54 @@ def save_outcome_file(outcome):
     return outcome
 
 
+def _v32_runtime_journal_file(name):
+    path = Path("runtime") / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _v32_load_runtime_journal(name):
+    path = _v32_runtime_journal_file(name)
+    try:
+        if path.exists():
+            data = json.loads(path.read_text())
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _v32_append_runtime_journal(name, item, *, key_fields=("id",)):
+    path = _v32_runtime_journal_file(name)
+    rows = _v32_load_runtime_journal(name)
+    item = dict(item or {})
+    keys = [str(item.get(field) or "") for field in key_fields if item.get(field)]
+    key = "::".join(keys)
+    replaced = False
+    if key:
+        for index, existing in enumerate(rows):
+            existing_key = "::".join(str(existing.get(field) or "") for field in key_fields if existing.get(field))
+            if existing_key == key:
+                rows[index] = item
+                replaced = True
+                break
+    if not replaced:
+        rows.append(item)
+    rows = rows[-10000:]
+    path.write_text(json.dumps(rows, indent=2, ensure_ascii=False, default=str) + "\n")
+    return {"path": str(path), "count": len(rows), "replaced": replaced}
+
+
 def _journal_outcome(outcome, source="record_outcome"):
     payload = dict(outcome or {})
     payload["not_order_instruction"] = True
+    local_journal = _v32_append_runtime_journal(
+        "v32_outcomes_journal.json",
+        payload,
+        key_fields=("outcome_id", "id", "signal_id"),
+    )
     durable_result = _durable_supabase_persist("outcome", payload)
+    durable_result["local_journal"] = local_journal
     _record_audit_event(
         "OUTCOME_RECORDED",
         {
@@ -1106,12 +1156,22 @@ def _journal_outcome(outcome, source="record_outcome"):
 
 def _journal_decision(decision, source="v31"):
     payload = dict(decision or {})
+    payload = shared_source_attribution.apply_source_attribution(
+        payload,
+        payload.get("source_decision") if isinstance(payload.get("source_decision"), dict) else {},
+    )
     ticker = str(payload.get("ticker") or "UNKNOWN").upper()
     state = str(payload.get("final_state") or payload.get("decision") or "UNKNOWN").upper()
     payload["decision_id"] = payload.get("decision_id") or f"DEC-{ticker}-{state}-{int(now_utc().timestamp())}"
     payload["recorded_at"] = payload.get("recorded_at") or payload.get("generated_at") or now_utc().isoformat()
     payload["not_order_instruction"] = True
+    local_journal = _v32_append_runtime_journal(
+        "v32_decision_journal.json",
+        payload,
+        key_fields=("decision_id", "signal_id"),
+    )
     durable_result = _durable_supabase_persist("decision", payload)
+    durable_result["local_journal"] = local_journal
     _record_audit_event(
         "DECISION_SERVED",
         {
@@ -1121,6 +1181,9 @@ def _journal_decision(decision, source="v31"):
             "final_state": payload.get("final_state"),
             "main_blocker": payload.get("main_blocker"),
             "manual_review_ready": payload.get("manual_review_ready"),
+            "candidate_source": payload.get("candidate_source"),
+            "confirmation_source": payload.get("confirmation_source"),
+            "signal_id": payload.get("signal_id"),
             "durable_saved": durable_result.get("saved"),
             "not_order_instruction": True,
         },
@@ -1200,6 +1263,18 @@ def _v32_strategy_performance_payload(limit=1000):
     }
     payload["durable_storage"] = _durable_storage_summary()
     return payload
+
+
+def _v32_parameter_review_report_payload(limit=1000):
+    performance = _v32_strategy_performance_payload(limit=limit)
+    report = shared_strategy_performance.parameter_review_evidence_report(
+        performance,
+        generated_at=_v29_now(),
+        minimum_closed_outcomes=30,
+    )
+    report["performance_summary"] = performance.get("summary") or {}
+    report["source_endpoint"] = "/v32_strategy_performance"
+    return report
 
 
 def _v32_strategy_performance_dashboard_html(limit=1000):
@@ -4817,6 +4892,15 @@ def health():
 async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
     verify_webhook_secret(x_webhook_secret)
     parsed, raw_text = await parse_request_payload(request)
+    ledger_result = (
+        shared_tradingview_signal_ledger.append_signal_event(
+            parsed,
+            raw_text=raw_text,
+            endpoint="/webhook/tradingview",
+        )
+        if isinstance(parsed, dict)
+        else {"status": "NOT_RECORDED", "reason": "NON_DICT_PAYLOAD"}
+    )
 
     ticker, timeframe, data, classification, unified, storage_result = save_ingested_payload(
         parsed=parsed,
@@ -4831,6 +4915,7 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
         "ticker": ticker,
         "timeframe": timeframe,
         "storage": storage_result,
+        "signal_ledger": ledger_result,
         "classification_state": classification.get("state") if isinstance(classification, dict) else None,
         "final_decision": classification.get("final_decision") if isinstance(classification, dict) else None,
         "accepted": True,
@@ -10234,6 +10319,11 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_2_FORCED",
         "raw_payload_preview": raw_text[:500],
     })
+    signal_ledger = shared_tradingview_signal_ledger.append_signal_event(
+        parsed,
+        raw_text=raw_text,
+        endpoint="/technical_snapshot",
+    )
 
     trade_store.setdefault(ticker, {})
     trade_store[ticker][timeframe] = parsed
@@ -10271,6 +10361,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "available_strategy_contexts": context_storage.get("available_strategy_contexts"),
         "context_storage_version": "strategy_context_store_v1",
         "canonical_context_sync": context_storage.get("canonical"),
+        "signal_ledger": signal_ledger,
         "storage": storage_result,
         "classification_state": parsed.get("state"),
         "final_decision": parsed.get("final_decision"),
@@ -12495,6 +12586,14 @@ async def technical_snapshot_ingest(request: Request):
             payload = raw.decode("utf-8")
         except Exception:
             payload = {}
+    try:
+        shared_tradingview_signal_ledger.append_signal_event(
+            payload if isinstance(payload, dict) else {"raw_text": str(payload or "")[:1000]},
+            raw_text=str(payload or "")[:1000],
+            endpoint="/technical_snapshot_legacy_ingest",
+        )
+    except Exception:
+        pass
 
     rows = _v211_normalize_technical_payload(payload)
     saved = _v211_save_technical_snapshots(rows)
@@ -20803,6 +20902,11 @@ def _v31_entry_ready_signal_seed(decision):
         },
         _strategy_exit_playbook(),
     )
+    attribution = decision.get("source_attribution")
+    if not isinstance(attribution, dict):
+        attribution = shared_source_attribution.build_source_attribution(decision, decision.get("source_decision"))
+    attribution = dict(attribution)
+    attribution["signal_id"] = signal_id
     return {
         "id": signal_id,
         "outcome_id": signal_id,
@@ -20816,6 +20920,13 @@ def _v31_entry_ready_signal_seed(decision):
         "decision_version": decision.get("decision_version"),
         "ruleset_version": decision.get("ruleset_version"),
         "snapshot_version": decision.get("snapshot_version"),
+        "candidate_source": attribution.get("candidate_source"),
+        "confirmation_source": attribution.get("confirmation_source"),
+        "signal_source": attribution.get("signal_source"),
+        "source_confidence": attribution.get("source_confidence"),
+        "snapshot_id": attribution.get("snapshot_id"),
+        "data_lineage": attribution.get("data_lineage"),
+        "source_attribution": attribution,
         "recorded_at": generated_at,
         "entry_ready_at": generated_at,
         "market_regime": market_regime,
@@ -20839,8 +20950,16 @@ def _v31_entry_ready_signal_seed(decision):
         },
         "measurement_plan": {
             "status": "PENDING_MARKET_FOLLOW_UP",
-            "checkpoints": ["EOD", "PLUS_1D", "PLUS_5D"],
-            "metrics": ["underlying_return_pct", "option_mid_change_pct", "max_favorable_excursion_r", "max_adverse_excursion_r"],
+            "checkpoints": ["OPEN", "MIDDAY", "EOD", "PLUS_1D", "PLUS_5D", "EXPIRATION_OR_CLOSE"],
+            "metrics": [
+                "pnl_r",
+                "mfe_r",
+                "mae_r",
+                "underlying_return_pct",
+                "option_mid_change_pct",
+                "max_favorable_excursion_r",
+                "max_adverse_excursion_r",
+            ],
             "exit_guidance_state": exit_guidance.get("regime_exit_guidance_state"),
             "exit_risk_action": (exit_guidance.get("regime_exit_adjustment") or {}).get("risk_action"),
         },
@@ -20941,10 +21060,21 @@ def _v31_manual_review_decision_summary(decision):
     contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
     broker = decision.get("broker_check") if isinstance(decision.get("broker_check"), dict) else {}
     broker_freshness = broker.get("freshness") if isinstance(broker.get("freshness"), dict) else _v31_broker_check_freshness(broker)
+    attribution = decision.get("source_attribution")
+    if not isinstance(attribution, dict):
+        attribution = shared_source_attribution.build_source_attribution(decision, decision.get("source_decision"))
     return {
         "ticker": decision.get("ticker"),
         "strategy": decision.get("strategy"),
         "final_state": decision.get("final_state"),
+        "candidate_source": attribution.get("candidate_source"),
+        "confirmation_source": attribution.get("confirmation_source"),
+        "signal_source": attribution.get("signal_source"),
+        "source_confidence": attribution.get("source_confidence"),
+        "signal_id": attribution.get("signal_id"),
+        "snapshot_id": attribution.get("snapshot_id"),
+        "data_lineage": attribution.get("data_lineage"),
+        "source_attribution": attribution,
         "main_blocker": decision.get("main_blocker"),
         "blockers": decision.get("blockers") or [],
         "technical_status": decision.get("technical_status"),
@@ -21049,6 +21179,12 @@ def _v31_manual_review_payload(payload):
         "reviewed_at": now,
         "ticker": ticker,
         "strategy": decision_summary.get("strategy") or payload.get("strategy"),
+        "candidate_source": decision_summary.get("candidate_source"),
+        "confirmation_source": decision_summary.get("confirmation_source"),
+        "signal_source": decision_summary.get("signal_source"),
+        "source_confidence": decision_summary.get("source_confidence"),
+        "snapshot_id": decision_summary.get("snapshot_id"),
+        "data_lineage": decision_summary.get("data_lineage"),
         "status": status,
         "outcome": status,
         "reason": reason,
@@ -24078,6 +24214,12 @@ def _v31_manual_review_as_outcome(review):
         "signal_id": review.get("signal_id"),
         "ticker": review.get("ticker") or decision.get("ticker"),
         "strategy": review.get("strategy") or decision.get("strategy"),
+        "candidate_source": review.get("candidate_source") or decision.get("candidate_source"),
+        "confirmation_source": review.get("confirmation_source") or decision.get("confirmation_source"),
+        "signal_source": review.get("signal_source") or decision.get("signal_source"),
+        "source_confidence": review.get("source_confidence") or decision.get("source_confidence"),
+        "snapshot_id": review.get("snapshot_id") or decision.get("snapshot_id"),
+        "data_lineage": review.get("data_lineage") or decision.get("data_lineage") or [],
         "paper_outcome": True,
         "selected_contract": contract,
         "not_order_instruction": True,
@@ -24368,6 +24510,10 @@ def _v31_canonical_decision(ticker):
             "main_blocker": d.get("main_blocker"),
             "manual_review_ready": d.get("manual_review_ready"),
             "options_score": d.get("options_score"),
+            "best_row": d.get("best_row"),
+            "selected_contract": d.get("selected_contract"),
+            "technical": d.get("technical"),
+            "master_source": d.get("master_source"),
             "can_operate": False,
         },
         "technical": d.get("technical"),
@@ -24382,7 +24528,8 @@ def _v31_canonical_decision(ticker):
     decision = _v31_apply_event_assignment_gate(decision)
     decision = _v31_apply_risk_profile_gate(decision)
     decision = _v31_apply_broker_check_gate(decision)
-    return _v31_finalize_decision_support_contract(decision)
+    decision = _v31_finalize_decision_support_contract(decision)
+    return shared_source_attribution.apply_source_attribution(decision, d)
 
 
 def _v31_all_decisions(tickers=None):
@@ -24579,6 +24726,13 @@ def _v31_gpt_compact_daily_item(item):
         "why": item.get("why"),
         "instruction": item.get("instruction"),
         "risk_note": item.get("risk_note"),
+        "candidate_source": item.get("candidate_source"),
+        "confirmation_source": item.get("confirmation_source"),
+        "signal_source": item.get("signal_source"),
+        "source_confidence": item.get("source_confidence"),
+        "signal_id": item.get("signal_id"),
+        "snapshot_id": item.get("snapshot_id"),
+        "data_lineage": item.get("data_lineage") or [],
         "risk_blocker": item.get("risk_blocker") or risk_profile.get("primary_blocker"),
         "risk_profile_status": risk_profile.get("status"),
         "risk_profile_blockers": risk_profile.get("blockers") or [],
@@ -26935,6 +27089,31 @@ async def v32_strategy_performance(limit: int = 1000):
 @app.get("/v32_strategy_performance_dashboard", response_class=_V29HTMLResponse)
 async def v32_strategy_performance_dashboard(limit: int = 1000):
     return _V29HTMLResponse(_v32_strategy_performance_dashboard_html(limit=limit))
+
+
+@app.get("/v32_parameter_review_report")
+async def v32_parameter_review_report(limit: int = 1000):
+    return _v32_parameter_review_report_payload(limit=limit)
+
+
+@app.get("/v32_signal_events")
+async def v32_signal_events(limit: int = 1000):
+    events = shared_tradingview_signal_ledger.load_signal_events(limit=limit)
+    return {
+        "engine": "TRADINGVIEW_SIGNAL_LEDGER",
+        "ledger_version": shared_tradingview_signal_ledger.LEDGER_VERSION,
+        "generated_at": _v29_now(),
+        "event_count": len(events),
+        "events": events,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v32_foundation_health")
+async def v32_foundation_health():
+    return shared_foundation_health.build_foundation_health(Path("runtime"), generated_at=_v29_now())
 
 
 @app.get("/v31_data_pipeline_status")
