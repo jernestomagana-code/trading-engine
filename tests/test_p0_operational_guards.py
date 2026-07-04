@@ -527,6 +527,8 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("/v32_operator_daily_summary_email", source)
         self.assertIn("/gpt_v32_operator_daily_cycle", source)
         self.assertIn("/v32_operator_pushover_notify", source)
+        self.assertIn("/v32_operator_nudge", source)
+        self.assertIn("/v32_operator_nudge_preflight", source)
         self.assertIn("project-dashboard.html", source)
         self.assertIn("project-command-center.html", source)
         self.assertIn("def _v32_project_dashboard_doc_html", source)
@@ -535,6 +537,7 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("def _v32_operator_daily_cycle_payload", source)
         self.assertIn("def _v32_operator_tracking_payload", source)
         self.assertIn("def _v32_operator_pushover_notify_payload", source)
+        self.assertIn("def _v32_operator_nudge_preflight_payload", source)
         self.assertIn('"/v32"', source)
 
 

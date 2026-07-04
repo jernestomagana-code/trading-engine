@@ -437,6 +437,27 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operator_nudge_preflight:
+    get:
+      operationId: getOperatorNudgePreflight
+      summary: Get V32 proactive nudge readiness and first-business-day checklist
+      description: >
+        Returns a read-only readiness check for proactive nudges: configured
+        slots, Pushover/read-auth readiness, GPT Action endpoints, current auto
+        preview, first-business-day checklist, and response playbook. Use this
+        when the user asks what remains before the next market day or whether
+        proactive prompts are ready.
+      responses:
+        "200":
+          description: V32 proactive nudge readiness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperatorNudgePreflight"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_tracking_status:
     get:
       operationId: getOperatorTrackingStatus
@@ -1270,6 +1291,110 @@ components:
         pushover_result:
           type: object
           additionalProperties: true
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
+    OperatorNudgePreflight:
+      type: object
+      additionalProperties: true
+      required:
+        - engine
+        - ready
+        - checks
+        - slot_previews
+        - first_business_day_checklist
+        - response_playbook
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+          enum: [V32_OPERATOR_NUDGE_PREFLIGHT]
+        generated_at:
+          type: string
+        market_time:
+          type: string
+        market_session_state:
+          type: string
+        next_market_business_day:
+          type: string
+        ready:
+          type: boolean
+        checks:
+          type: object
+          additionalProperties: true
+          properties:
+            read_auth_required:
+              type: boolean
+            read_access_token_configured:
+              type: boolean
+            pushover_user_key_configured:
+              type: boolean
+            pushover_api_token_configured:
+              type: boolean
+            workflow_expected:
+              type: string
+            workflow_calls_endpoint:
+              type: string
+            gpt_action_endpoints:
+              type: array
+              items:
+                type: string
+            valid_slots:
+              type: array
+              items:
+                type: string
+        auto_preview:
+          $ref: "#/components/schemas/OperatorNudge"
+        slot_previews:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              slot:
+                type: string
+              label:
+                type: string
+              question:
+                type: string
+              gpt_prompt:
+                type: string
+              would_notify:
+                type: boolean
+              status:
+                type: string
+              pushover_sent:
+                type: boolean
+        first_business_day_checklist:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              step:
+                type: integer
+              label:
+                type: string
+              detail:
+                type: string
+        response_playbook:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              user_reply:
+                type: string
+              operator_action:
+                type: string
+              when_to_use:
+                type: string
+        answer_to_user:
+          type: string
         execution_authorized:
           type: boolean
           const: false
