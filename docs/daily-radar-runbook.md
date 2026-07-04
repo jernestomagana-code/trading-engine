@@ -63,6 +63,27 @@ python3 scripts/daily_open_checklist.py --publish --allow-stale-publish
 The checklist never places orders. A `WAIT_MARKET` result is healthy on closed
 market days and must not be treated as permission to operate.
 
+Proactive nudge preflight:
+
+```bash
+python3 scripts/v32_nudge_preflight_check.py
+```
+
+This reads production `/v32_operator_nudge_preflight`, verifies the read token
+without printing it, writes:
+
+```bash
+runtime/v32_nudge_preflight_latest.json
+```
+
+Use this before the next market day to confirm the five nudge slots, first-day
+checklist, and response playbook are available. If it returns `READY`, ask the
+official GPT:
+
+```text
+haz preflight de nudges y dame checklist del lunes
+```
+
 Actionable V32 notifications:
 
 ```bash

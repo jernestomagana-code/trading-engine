@@ -19,6 +19,7 @@ DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
 OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
 DAILY_OPEN_CHECKLIST = ROOT / "scripts" / "daily_open_checklist.py"
+V32_NUDGE_PREFLIGHT_CHECK = ROOT / "scripts" / "v32_nudge_preflight_check.py"
 V32_OPERATOR_NOTIFY = ROOT / "scripts" / "v32_operator_notify.py"
 PUSHOVER_CHANNEL_SETUP = ROOT / "scripts" / "setup_pushover_channel.py"
 PUSHOVER_AUTOMATION = ROOT / "scripts" / "v32_pushover_automation.py"
@@ -422,6 +423,25 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn('"execution_authorized": False', source)
         self.assertIn('"not_order_instruction": True', source)
         self.assertIn("Decision support", source)
+        self.assertNotIn("send_resend_email", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_v32_nudge_preflight_check_is_safe_operator_helper(self):
+        source = V32_NUDGE_PREFLIGHT_CHECK.read_text()
+
+        self.assertIn("STOCK_ULTIMUS_V32_NUDGE_PREFLIGHT_CHECK", source)
+        self.assertIn("/v32_operator_nudge_preflight", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("haz preflight de nudges", source)
+        self.assertIn("first_business_day_checklist", source)
+        self.assertIn("response_playbook", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertIn("Decision support", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("send_resend_email", source)
         self.assertNotIn("placeOrder", source)
         self.assertNotIn(".place_order", source)
