@@ -1104,6 +1104,77 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_not_called()
 
+    def test_v32_actionable_signal_watch_sends_new_entry_ready_push(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "READY",
+            "counts": {"action": 1, "risk": 0, "watch": 0},
+            "active_alerts": [{
+                "alert_id": "ALERT-2026-07-06-NVDA-NAKED_PUT-ENTRY_READY",
+                "ticker": "NVDA",
+                "strategy": "NAKED_PUT",
+                "severity": "ACTION",
+                "state": "ENTRY_READY",
+                "operator_status": "NEW",
+                "manual_review_ready": True,
+                "selected_contract": {"expiration": "2026-07-17", "strike": 140, "mid": 1.25},
+            }],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main, "_v29_load_json_file", return_value={}
+        ), patch.object(main, "_v32_save_actionable_signal_watch_state", return_value=True) as save_state, patch.object(
+            main, "send_pushover_message", return_value={"pushover_sent": True, "provider": "pushover", "status_code": 200}
+        ) as send_push:
+            result = main._v32_actionable_signal_watch_payload()
+
+        self.assertEqual(result["engine"], "V32_ACTIONABLE_SIGNAL_WATCH")
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["would_notify"])
+        self.assertEqual(result["new_candidate_count"], 1)
+        self.assertTrue(result["pushover_sent"])
+        self.assertIn("revisa NVDA", result["message"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
+        save_state.assert_called_once()
+
+    def test_v32_actionable_signal_watch_dedupes_same_signal(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "READY",
+            "counts": {"action": 1, "risk": 0, "watch": 0},
+            "active_alerts": [{
+                "alert_id": "ALERT-2026-07-06-NVDA-NAKED_PUT-ENTRY_READY",
+                "ticker": "NVDA",
+                "strategy": "NAKED_PUT",
+                "severity": "ACTION",
+                "state": "ENTRY_READY",
+                "operator_status": "NEW",
+                "manual_review_ready": True,
+                "selected_contract": {"expiration": "2026-07-17", "strike": 140, "mid": 1.25},
+            }],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        signature = main._v32_actionable_signal_signature(summary["active_alerts"][0])
+        today = main.datetime.now(main.MARKET_TZ).date().isoformat()
+        key = f"{today}:ALERT-2026-07-06-NVDA-NAKED_PUT-ENTRY_READY"
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main, "_v29_load_json_file", return_value={"sent": {key: {"signature": signature, "sent_at": "2026-07-06T14:00:00Z"}}}
+        ), patch.object(main, "send_pushover_message") as send_push:
+            result = main._v32_actionable_signal_watch_payload()
+
+        self.assertEqual(result["status"], "deduped")
+        self.assertFalse(result["would_notify"])
+        self.assertEqual(result["new_candidate_count"], 0)
+        self.assertEqual(result["deduped_candidate_count"], 1)
+        self.assertFalse(result["pushover_sent"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_not_called()
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",

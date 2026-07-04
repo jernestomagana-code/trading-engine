@@ -84,8 +84,10 @@ model nudge the operator during the day, use:
 
 ```text
 GET /v32_operator_nudge_preflight
+GET /v32_actionable_signal_watch/preview
 GET /v32_operator_nudge/preview
 POST /v32_operator_nudge
+POST /v32_actionable_signal_watch
 ```
 
 Use `/v32_operator_nudge_preflight` when the user asks whether nudges are ready
@@ -97,6 +99,13 @@ Slots are `auto`, `premarket`, `open_check`, `midday`, `power_hour`, and
 `post_close`. The preview never sends. The POST sends a Pushover question such
 as "que hago ahora?" or "haz cierre operativo y backtesting pendiente" and is
 deduplicated by session date and slot. It only asks for human review; it never
+authorizes orders.
+
+Use `/v32_actionable_signal_watch/preview` or `/v32_actionable_signal_watch`
+when the user asks whether they will be notified as soon as a new actionable
+manual-review signal appears. This monitor is separate from scheduled nudges:
+it looks for new `ACTION`, `ENTRY_READY`, or `manual_review_ready=true` alerts,
+sends a deduplicated Pushover prompt for manual IBKR review, and never
 authorizes orders.
 
 When the user explicitly asks to record a decision or note, call:
