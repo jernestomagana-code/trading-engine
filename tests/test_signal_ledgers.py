@@ -64,6 +64,7 @@ class SignalLedgerTests(unittest.TestCase):
                     "expiration": "20260821",
                     "dte": 48,
                     "delta": -0.18,
+                    "iv": 0.27,
                     "data_quality": "PRICE_WITH_GREEKS_NO_BIDASK",
                 }
             ],
@@ -72,6 +73,8 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(diagnostic["diagnostic_version"], "ibkr_chain_coverage_v2")
         self.assertEqual(diagnostic["primary_gap"], "INCOMPLETE_OPTION_MARKET_DATA")
         self.assertEqual(diagnostic["missing_execution_field_counts"]["ask"], 1)
+        self.assertEqual(diagnostic["option_rows"][0]["iv"], 0.27)
+        self.assertEqual(diagnostic["option_rows"][0]["delta"], -0.18)
         self.assertEqual(diagnostic["discard_reason_counts"]["NO_BID_ASK"], 1)
         self.assertEqual(diagnostic["discard_reason_counts"]["PRICE_WITH_GREEKS_NO_BIDASK"], 1)
         self.assertEqual(diagnostic["discarded_contract_count"], 1)

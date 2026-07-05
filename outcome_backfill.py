@@ -152,6 +152,28 @@ def contract_from_decision(decision: dict[str, Any]) -> dict[str, Any]:
     return contract if isinstance(contract, dict) else {}
 
 
+def contract_match_key(source: dict[str, Any]) -> tuple[str, str, str, str]:
+    source = source if isinstance(source, dict) else {}
+    return (
+        safe_upper(source.get("ticker") or source.get("symbol"), ""),
+        safe_upper(source.get("strategy") or source.get("strategy_hint"), ""),
+        str(source.get("expiration") or source.get("expiry") or ""),
+        str(source.get("strike") or ""),
+    )
+
+
+def ibkr_option_row_lookup(ibkr_diagnostic: dict[str, Any] | None) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    payload = ibkr_diagnostic if isinstance(ibkr_diagnostic, dict) else {}
+    lookup: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in payload.get("option_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        key = contract_match_key(row)
+        if key[0] and key[2] and key[3]:
+            lookup[key] = row
+    return lookup
+
+
 def fill_field(target: dict[str, Any], field: str, value: Any, source: str, repairs: list[dict[str, Any]]) -> None:
     if has_value(target.get(field)) or not has_value(value):
         return
@@ -192,6 +214,65 @@ def fill_contract(target: dict[str, Any], decision: dict[str, Any], repairs: lis
     if changed:
         target["selected_contract"] = contract
         repairs.append({"field": "selected_contract", "source": "matched_decision.selected_contract", "fields": changed})
+
+
+def fill_contract_from_ibkr_diagnostic(
+    target: dict[str, Any],
+    lookup: dict[tuple[str, str, str, str], dict[str, Any]],
+    repairs: list[dict[str, Any]],
+) -> None:
+    contract = target.get("selected_contract") if isinstance(target.get("selected_contract"), dict) else {}
+    key_source = {
+        "ticker": target.get("ticker") or contract.get("ticker"),
+        "strategy": target.get("strategy") or contract.get("strategy"),
+        "expiration": contract.get("expiration"),
+        "strike": contract.get("strike"),
+    }
+    row = lookup.get(contract_match_key(key_source))
+    if not row:
+        key_without_strategy = (
+            safe_upper(key_source.get("ticker"), ""),
+            "",
+            str(key_source.get("expiration") or ""),
+            str(key_source.get("strike") or ""),
+        )
+        row = next(
+            (
+                candidate
+                for candidate_key, candidate in lookup.items()
+                if (candidate_key[0], "", candidate_key[2], candidate_key[3]) == key_without_strategy
+            ),
+            None,
+        )
+    if not row:
+        return
+
+    changed = []
+    for field in [
+        "bid",
+        "ask",
+        "mid",
+        "spread",
+        "spread_pct",
+        "delta",
+        "iv",
+        "volume",
+        "open_interest",
+        "option_market_data_source",
+        "market_data_source",
+        "market_data_attempts",
+        "data_quality",
+    ]:
+        target_field = "option_market_data_source" if field == "market_data_source" else field
+        value = row.get(field)
+        if field == "iv" and not has_value(value):
+            value = row.get("implied_volatility")
+        if not has_value(contract.get(target_field)) and has_value(value):
+            contract[target_field] = value
+            changed.append(target_field)
+    if changed:
+        target["selected_contract"] = contract
+        repairs.append({"field": "selected_contract", "source": "ibkr_chain_coverage.option_rows", "fields": changed})
 
 
 def pnl_observations(outcome: dict[str, Any], decision: dict[str, Any]) -> list[float]:
@@ -287,7 +368,13 @@ def unresolved_fields(outcome: dict[str, Any]) -> list[str]:
     return unresolved
 
 
-def repair_outcome(outcome: dict[str, Any], decision: dict[str, Any] | None, match_source: str, generated_at: str) -> dict[str, Any]:
+def repair_outcome(
+    outcome: dict[str, Any],
+    decision: dict[str, Any] | None,
+    match_source: str,
+    generated_at: str,
+    ibkr_lookup: dict[tuple[str, str, str, str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     original = dict(outcome or {})
     repaired = dict(outcome or {})
     repairs: list[dict[str, Any]] = []
@@ -296,6 +383,7 @@ def repair_outcome(outcome: dict[str, Any], decision: dict[str, Any] | None, mat
         fill_contract(repaired, decision, repairs)
         fill_regime(repaired, decision, repairs)
         fill_outcome_metrics(repaired, decision, repairs)
+    fill_contract_from_ibkr_diagnostic(repaired, ibkr_lookup or {}, repairs)
 
     unresolved = unresolved_fields(repaired)
     evidence_changed = bool(repairs)
@@ -345,6 +433,7 @@ def build_backfill_report(
     indexes = decision_indexes(decisions)
     tv_events = tradingview_signal_ledger.load_signal_events(runtime / "v32_signal_events.json", limit=20000)
     ibkr_diagnostic = read_json(runtime / "v32_ibkr_chain_coverage.json", {})
+    ibkr_lookup = ibkr_option_row_lookup(ibkr_diagnostic)
 
     repaired_rows = []
     repair_summaries = []
@@ -354,7 +443,7 @@ def build_backfill_report(
 
     for outcome in outcomes:
         decision, match_source = match_decision(outcome, indexes)
-        result = repair_outcome(outcome, decision, match_source, generated_at)
+        result = repair_outcome(outcome, decision, match_source, generated_at, ibkr_lookup)
         repaired = result["outcome"]
         repaired_rows.append(repaired)
         if result["changed"]:
