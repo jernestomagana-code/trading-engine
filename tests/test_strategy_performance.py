@@ -21,6 +21,8 @@ class StrategyPerformanceTests(unittest.TestCase):
                 "mae_r": -0.2,
                 "market_regime": "BULLISH_LOW_VOL",
                 "parameter_review_status": "PASS",
+                "signal_source": "TRADINGVIEW_ALERT",
+                "selected_contract": {"delta": -0.18, "dte": 48, "spread_pct": 6.5, "iv": 0.31},
             },
             {
                 "strategy": "CASH_SECURED_PUT",
@@ -31,6 +33,8 @@ class StrategyPerformanceTests(unittest.TestCase):
                 "mae_r": -1.2,
                 "market_regime": "HIGH_VOL_EVENT_RISK",
                 "parameter_review_status": "REVIEW_REQUIRED",
+                "candidate_source": "IBKR_OPTION_CHAIN",
+                "selected_contract": {"delta": -0.22, "dte": 35, "spread_pct": 9.5, "iv": 0.28},
             },
             {
                 "strategy": "COVERED_CALL",
@@ -46,6 +50,7 @@ class StrategyPerformanceTests(unittest.TestCase):
         self.assertEqual(report["strategy_performance_version"], "strategy_performance_v1")
         self.assertEqual(report["summary"]["strategy_regime_group_count"], 3)
         self.assertEqual(report["summary"]["parameter_review_group_count"], 2)
+        self.assertEqual(report["summary"]["source_group_count"], 3)
         self.assertFalse(report["execution_authorized"])
 
         regime_groups = {item["group"]: item for item in report["strategy_regime_performance"]}
@@ -67,6 +72,9 @@ class StrategyPerformanceTests(unittest.TestCase):
         self.assertIn("HIGH_VOL_EVENT_RISK", by_regime)
         by_review = {item["group"]: item for item in cash_secured["by_parameter_review_status"]}
         self.assertEqual(by_review["PASS"]["expectancy_r"], 0.6)
+        by_source = {item["group"]: item for item in cash_secured["by_source"]}
+        self.assertEqual(by_source["TRADINGVIEW_ALERT"]["avg_abs_delta"], 0.18)
+        self.assertEqual(by_source["IBKR_OPTION_CHAIN"]["avg_spread_pct"], 9.5)
         self.assertTrue(cash_secured["not_order_instruction"])
 
         review = strategy_performance.parameter_review_evidence_report(

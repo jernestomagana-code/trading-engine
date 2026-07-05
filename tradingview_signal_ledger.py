@@ -13,7 +13,22 @@ from pathlib import Path
 from typing import Any
 
 
-LEDGER_VERSION = "tradingview_signal_ledger_v1"
+LEDGER_VERSION = "tradingview_signal_ledger_v2"
+REQUIRED_CONTEXT_FIELDS = [
+    "session_state",
+    "vwap",
+    "opening_range_high",
+    "opening_range_low",
+    "breakout_direction",
+    "adx",
+    "atr",
+    "volume_relative",
+    "premarket_high",
+    "premarket_low",
+    "major_event_window",
+    "risk_daily_status",
+    "portfolio_status",
+]
 DEFAULT_LEDGER_PATH = Path("runtime/v32_signal_events.json")
 MAX_EVENTS = 20000
 
@@ -69,10 +84,12 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "payload_hash": _hash_payload(payload)[:16],
     }
     event_id = "TV-" + _hash_payload(idempotency_seed)[:24]
-    return {
+    session_state = payload.get("session_state") or payload.get("market_session")
+    event = {
         "id": event_id,
         "event_id": event_id,
         "ledger_version": LEDGER_VERSION,
+        "payload_contract_version": "tradingview_signal_payload_v2",
         "received_at": received_at,
         "endpoint": endpoint,
         "ticker": ticker,
@@ -87,7 +104,15 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "opening_range_high": payload.get("opening_range_high"),
         "opening_range_low": payload.get("opening_range_low"),
         "breakout_direction": payload.get("breakout_direction") or payload.get("direction"),
-        "session_state": payload.get("session_state") or payload.get("market_session"),
+        "session_state": session_state,
+        "adx": payload.get("adx"),
+        "atr": payload.get("atr"),
+        "volume_relative": payload.get("volume_relative") or payload.get("relative_volume") or payload.get("rvol"),
+        "premarket_high": payload.get("premarket_high"),
+        "premarket_low": payload.get("premarket_low"),
+        "invalidation": payload.get("invalidation") or payload.get("invalid_above_below") or payload.get("invalidates_at"),
+        "logical_stop": payload.get("logical_stop") or payload.get("stop_logical") or payload.get("stop"),
+        "logical_target": payload.get("logical_target") or payload.get("target_logical") or payload.get("target"),
         "risk_daily_status": payload.get("risk_daily_status"),
         "portfolio_status": payload.get("portfolio_status"),
         "major_event_window": payload.get("major_event_window"),
@@ -101,6 +126,15 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    event["missing_context_fields"] = [
+        field for field in REQUIRED_CONTEXT_FIELDS
+        if event.get(field) in [None, "", "None"]
+    ]
+    event["context_completeness_pct"] = round(
+        ((len(REQUIRED_CONTEXT_FIELDS) - len(event["missing_context_fields"])) / len(REQUIRED_CONTEXT_FIELDS)) * 100,
+        2,
+    )
+    return event
 
 
 def append_signal_event(

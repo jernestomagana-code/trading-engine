@@ -23,7 +23,16 @@ class SignalLedgerTests(unittest.TestCase):
                 "price": 23000.25,
                 "vwap": 22980.0,
                 "opening_range_high": 23010.0,
+                "opening_range_low": 22920.0,
                 "breakout_direction": "LONG",
+                "adx": 24.5,
+                "atr": 52.0,
+                "volume_relative": 1.8,
+                "premarket_high": 23040.0,
+                "premarket_low": 22880.0,
+                "logical_stop": 22950.0,
+                "logical_target": 23120.0,
+                "invalidation": "VWAP_LOST",
             }
 
             first = tradingview_signal_ledger.append_signal_event(payload, raw_text=json.dumps(payload), endpoint="/technical_snapshot", path=path)
@@ -34,6 +43,10 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(second["status"], "DUPLICATE")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["candidate_source"], "TRADINGVIEW_ALERT")
+        self.assertEqual(events[0]["payload_contract_version"], "tradingview_signal_payload_v2")
+        self.assertEqual(events[0]["adx"], 24.5)
+        self.assertEqual(events[0]["logical_stop"], 22950.0)
+        self.assertIn("risk_daily_status", events[0]["missing_context_fields"])
         self.assertFalse(events[0]["execution_authorized"])
 
     def test_ibkr_diagnostic_summarizes_missing_option_fields(self):
@@ -56,9 +69,12 @@ class SignalLedgerTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(diagnostic["diagnostic_version"], "ibkr_chain_coverage_v1")
+        self.assertEqual(diagnostic["diagnostic_version"], "ibkr_chain_coverage_v2")
         self.assertEqual(diagnostic["primary_gap"], "INCOMPLETE_OPTION_MARKET_DATA")
         self.assertEqual(diagnostic["missing_execution_field_counts"]["ask"], 1)
+        self.assertEqual(diagnostic["discard_reason_counts"]["NO_BID_ASK"], 1)
+        self.assertEqual(diagnostic["discard_reason_counts"]["PRICE_WITH_GREEKS_NO_BIDASK"], 1)
+        self.assertEqual(diagnostic["discarded_contract_count"], 1)
         self.assertFalse(diagnostic["execution_authorized"])
 
 

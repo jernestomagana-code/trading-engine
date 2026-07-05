@@ -95,9 +95,23 @@ def _performance_group(label: str, outcomes: list[dict[str, Any]]) -> dict[str, 
     pnl_r = [safe_float(o.get("pnl_r")) for o in closed]
     mfe_r = [safe_float(o.get("mfe_r")) for o in closed]
     mae_r = [safe_float(o.get("mae_r")) for o in closed]
+    deltas = []
+    dtes = []
+    spreads = []
+    ivs = []
+    for outcome in closed:
+        contract = outcome.get("selected_contract") if isinstance(outcome.get("selected_contract"), dict) else {}
+        deltas.append(safe_float(contract.get("delta")))
+        dtes.append(safe_float(contract.get("dte")))
+        spreads.append(safe_float(contract.get("spread_pct")))
+        ivs.append(safe_float(contract.get("iv") or contract.get("implied_volatility")))
     pnl_r = [value for value in pnl_r if value is not None]
     mfe_r = [value for value in mfe_r if value is not None]
     mae_r = [value for value in mae_r if value is not None]
+    deltas = [value for value in deltas if value is not None]
+    dtes = [value for value in dtes if value is not None]
+    spreads = [value for value in spreads if value is not None]
+    ivs = [value for value in ivs if value is not None]
     denominator = len(wins) + len(losses)
     closed_count = len(closed)
     return {
@@ -111,6 +125,10 @@ def _performance_group(label: str, outcomes: list[dict[str, Any]]) -> dict[str, 
         "expectancy_r": _avg(pnl_r),
         "avg_mfe_r": _avg(mfe_r),
         "avg_mae_r": _avg(mae_r),
+        "avg_abs_delta": _avg([abs(value) for value in deltas]),
+        "avg_dte": _avg(dtes),
+        "avg_spread_pct": _avg(spreads),
+        "avg_iv": _avg(ivs),
         "evidence_level": _evidence_level(closed_count),
         "sample_size_warning": closed_count < 30,
         "manual_review_required": True,
@@ -189,6 +207,10 @@ def strategy_performance_report(
             strategy_outcomes,
             lambda o: o.get("parameter_review_status"),
         )
+        by_source = _grouped_performance(
+            strategy_outcomes,
+            lambda o: o.get("signal_source") or o.get("confirmation_source") or o.get("candidate_source"),
+        )
         row = {
             "strategy": strategy,
             **_registry_meta(strategy, registry),
@@ -214,6 +236,7 @@ def strategy_performance_report(
             "tickers": dict(sorted(ticker_counts.items())),
             "by_market_regime": by_market_regime,
             "by_parameter_review_status": by_parameter_review_status,
+            "by_source": by_source,
             "latest_outcome_at": max(outcome_timestamps) if outcome_timestamps else None,
             "evidence_level": _evidence_level(closed_count),
             "parameter_review_ready": closed_count >= 30,
@@ -233,6 +256,10 @@ def strategy_performance_report(
         outcomes or [],
         lambda o: safe_upper(o.get("parameter_review_status")),
     )
+    source_performance = _grouped_performance(
+        outcomes or [],
+        lambda o: safe_upper(o.get("signal_source") or o.get("confirmation_source") or o.get("candidate_source")),
+    )
     return {
         "engine": "V32_STRATEGY_PERFORMANCE",
         "strategy_performance_version": STRATEGY_PERFORMANCE_VERSION,
@@ -246,10 +273,12 @@ def strategy_performance_report(
             "insufficient_sample": [item["strategy"] for item in rows if item["sample_size_warning"]],
             "strategy_regime_group_count": len(strategy_regime_performance),
             "parameter_review_group_count": len(parameter_review_performance),
+            "source_group_count": len(source_performance),
         },
         "strategies": rows,
         "strategy_regime_performance": strategy_regime_performance,
         "parameter_review_performance": parameter_review_performance,
+        "source_performance": source_performance,
         "review_policy": {
             "minimum_closed_outcomes_for_parameter_review": 30,
             "purpose": "Evidence for strategy and parameter review only.",

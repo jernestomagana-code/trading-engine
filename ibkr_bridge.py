@@ -2776,6 +2776,19 @@ def send_options_intelligence():
                         len(missing_confirmations) == 0
                         and decision in ["OPERAR", "ENTRY", "ENTRY_READY"]
                     )
+                    option_discard_reasons = ibkr_diagnostics.option_discard_reasons({
+                        "bid": bid,
+                        "ask": ask,
+                        "spread": spread,
+                        "spread_pct": spread_pct,
+                        "delta": greeks.get("delta"),
+                        "iv": greeks.get("iv"),
+                        "volume": volume,
+                        "open_interest": open_interest,
+                        "data_quality": data_quality,
+                        "decision_cap": decision_cap,
+                        "manual_review_ready": manual_review_ready,
+                    })
 
                     tv_context = tradingview_context_stub(symbol)
 
@@ -2822,6 +2835,8 @@ def send_options_intelligence():
                         "open_interest": open_interest,
                         "option_market_data_source": option_market_data_source,
                         "option_market_data_attempts": option_market_data_attempts,
+                        "option_discard_reasons": option_discard_reasons,
+                        "discarded_for_manual_review": bool(option_discard_reasons),
                         "can_operate": False,
                         "manual_review_ready": manual_review_ready,
                         "not_order_instruction": True,
