@@ -32,7 +32,13 @@ Add these two after the core alerts are present:
 
 ## Required Pine Plot Names
 
-The Pine scripts used by these alerts must expose plots with these exact names:
+Use the canonical Pine source in:
+
+```text
+tradingview/stock_ultimus_intraday_futures_alerts_v1.pine
+```
+
+The Pine script used by these alerts must expose plots with these exact names:
 
 - `VWAP`
 - `ORH`
@@ -84,6 +90,15 @@ For each alert:
 If an alert condition title differs in TradingView, use the Pine condition that
 matches the same event semantics and keep the Stock Ultimus alert name/event code
 unchanged.
+
+Canonical condition titles:
+
+- `ORB Breakout Long`
+- `ORB Breakout Short`
+- `VWAP Reclaim Long`
+- `VWAP Reject Short`
+- `Risk Invalidation`
+- `Session Snapshot`
 
 ## Next Phase
 
