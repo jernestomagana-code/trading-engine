@@ -28,11 +28,13 @@ decision-support engine connected to a custom GPT.
 7. Configure GPT Action authentication with `X-Stock-Ultimus-Read-Token`.
 8. In GPT instructions, tell the GPT to call `/gpt_v31_daily_answer` first for
    daily opportunity questions.
-9. Run `scripts/monitor_gpt_action_health.py --no-write`.
-10. Run `scripts/run_daily_outcome_evaluation.py --dry-run`.
-11. Open `/v31_operating_suite` and confirm all sections are present.
-12. Open `/v31_manual_review_inbox` and confirm ENTRY_READY cards render.
-13. Open `/v32_strategy_performance_dashboard` and confirm it renders.
+9. Keep `READ_ACCESS_TOKEN` as the canonical read-secret name in deployment
+   config and docs.
+10. Run `scripts/monitor_gpt_action_health.py --no-write`.
+11. Run `scripts/run_daily_outcome_evaluation.py --dry-run`.
+12. Open `/v31_operating_suite` and confirm all sections are present.
+13. Open `/v31_manual_review_inbox` and confirm ENTRY_READY cards render.
+14. Open `/v32_strategy_performance_dashboard` and confirm it renders.
 
 ## GPT Behavior
 

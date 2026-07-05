@@ -24,7 +24,15 @@ DEFAULT_HEALTH_OUT = ROOT / "runtime" / "gpt_action_health_latest.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Stock Ultimus GPT Action health.")
     parser.add_argument("--base-url", default=os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL))
-    parser.add_argument("--token", default=os.getenv("READ_ACCESS_TOKEN") or os.getenv("STOCK_ULTIMUS_READ_TOKEN") or "")
+    parser.add_argument(
+        "--token",
+        default=(
+            os.getenv("READ_ACCESS_TOKEN")
+            or os.getenv("STOCK_ULTIMUS_READ_TOKEN")
+            or os.getenv("STOCK_ULTIMUS_READ_ACCESS_TOKEN")
+            or ""
+        ),
+    )
     parser.add_argument("--timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--health-out", default=os.getenv("STOCK_ULTIMUS_GPT_ACTION_HEALTH_OUT", str(DEFAULT_HEALTH_OUT)))
     parser.add_argument("--no-write", action="store_true", help="Do not write the latest health JSON file.")

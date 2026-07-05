@@ -87,6 +87,11 @@ For each alert:
 - Paste the generated JSON message.
 - Keep the alert active.
 
+Legacy, duplicate, RSI, crossing-price, or old `Any alert() function call`
+alerts should remain paused. If one fires anyway, the backend persists it in the
+TradingView ledger but marks it `QUARANTINED` and does not feed it into the
+decision engine.
+
 If an alert condition title differs in TradingView, use the Pine condition that
 matches the same event semantics and keep the Stock Ultimus alert name/event code
 unchanged.
@@ -102,8 +107,43 @@ Canonical condition titles:
 
 ## Next Phase
 
-After the futures alerts are receiving real ledger events, add market-regime
-confirmations for options:
+Do not add `NQ1!` or `ES1!` while `MNQ1!` and `MES1!` already cover the same
+index signal semantics. The next phase is operational depth, not more equivalent
+symbols:
 
-- `SPY_MARKET_REGIME_15M`
-- `QQQ_MARKET_REGIME_15M`
+- Confirm real TradingView events are reaching `/technical_snapshot`.
+- Keep the two `Session Snapshot` alerts active as heartbeat/context evidence.
+- Monitor alert health, stale payloads, source attribution, and raw payload
+  persistence.
+- Close paper outcomes before changing parameters or expanding coverage.
+
+## Operational Commands
+
+Check alert health from the real ledger:
+
+```bash
+python3 scripts/run_tradingview_alert_health.py --market-closed-ok
+```
+
+Check the first open-market-day checklist:
+
+```bash
+python3 scripts/run_tradingview_first_open_day_checklist.py --market-closed-ok
+```
+
+Check whether the real end-to-end loop is confirmed:
+
+```bash
+python3 scripts/run_tradingview_e2e_check.py --market-closed-ok
+```
+
+Audit production coverage, source attribution, raw payload persistence, and
+the no-`NQ`/`ES` expansion policy:
+
+```bash
+python3 scripts/run_tradingview_production_audit.py --market-closed-ok
+```
+
+The visible health summary should read `TV_OK` and `IBKR_OK` before any
+`ENTRY_READY` decision is trusted for manual review. Until then, the operational
+gate must remain in evidence collection mode.

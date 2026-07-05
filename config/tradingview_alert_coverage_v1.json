@@ -15,7 +15,10 @@
     "core_freshness_minutes": 2,
     "snapshot_freshness_minutes": 10,
     "missing_core_alert_behavior": "WAIT_TECHNICAL",
-    "missing_snapshot_behavior": "TV_COVERAGE_DEGRADED"
+    "missing_snapshot_behavior": "TV_COVERAGE_DEGRADED",
+    "approved_symbols": ["MNQ1!", "MES1!"],
+    "disallowed_equivalent_futures_expansion": ["NQ1!", "ES1!"],
+    "expansion_policy": "Do not add NQ/ES while MNQ/MES cover the same index signal semantics; improve health, persistence, and outcomes first."
   },
   "required_plot_names": [
     "VWAP",
@@ -223,16 +226,7 @@
       "freshness_minutes": 10
     }
   ],
-  "next_phase": [
-    {
-      "alert_name": "SPY_MARKET_REGIME_15M",
-      "purpose": "Options market-regime confirmation after futures alerts are stable."
-    },
-    {
-      "alert_name": "QQQ_MARKET_REGIME_15M",
-      "purpose": "Options market-regime confirmation after futures alerts are stable."
-    }
-  ],
+  "next_phase": [],
   "manual_review_required": true,
   "execution_authorized": false,
   "not_order_instruction": true

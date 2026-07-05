@@ -47,6 +47,7 @@ import strategy_registry as shared_strategy_registry
 import strategy_performance as shared_strategy_performance
 import source_attribution as shared_source_attribution
 import tradingview_signal_ledger as shared_tradingview_signal_ledger
+import tradingview_operational_health as shared_tradingview_operational_health
 import foundation_health as shared_foundation_health
 import evidence_quality as shared_evidence_quality
 
@@ -4862,6 +4863,17 @@ def root():
 @app.get("/health")
 def health():
     signals = load_signals(limit=100)
+    try:
+        tv_health = shared_tradingview_operational_health.build_alert_health(Path("runtime"), market_closed_ok=True)
+        tradingview_visible_health = tv_health.get("visible_health") or {}
+    except Exception as exc:
+        tradingview_visible_health = {
+            "state": "UNAVAILABLE",
+            "tv": "TV_HEALTH_UNAVAILABLE",
+            "ibkr": "IBKR_UNKNOWN",
+            "paper_loop": "PAPER_LOOP_UNKNOWN",
+            "blockers": [str(exc)[:120]],
+        }
 
     return {
         "status": "ok",
@@ -4873,6 +4885,7 @@ def health():
         "snapshot_ingest_token_required": REQUIRE_SNAPSHOT_INGEST_TOKEN,
         "read_auth_required": REQUIRE_READ_AUTH,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
+        "operational_visible_health": tradingview_visible_health,
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
         "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),
@@ -4900,8 +4913,29 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
             endpoint="/webhook/tradingview",
         )
         if isinstance(parsed, dict)
-        else {"status": "NOT_RECORDED", "reason": "NON_DICT_PAYLOAD"}
+        else {
+            "status": "NOT_RECORDED",
+            "reason": "NON_DICT_PAYLOAD",
+            "accepted_for_engine": False,
+            "quarantine_reasons": ["NON_DICT_PAYLOAD"],
+        }
     )
+    if ledger_result.get("accepted_for_engine") is False:
+        event = ledger_result.get("event") if isinstance(ledger_result.get("event"), dict) else {}
+        return {
+            "status": "quarantined",
+            "engine": "v8.0",
+            "message": "TradingView webhook saved to ledger but quarantined before engine ingestion.",
+            "ticker": event.get("ticker"),
+            "timeframe": event.get("timeframe"),
+            "event_code": event.get("event_code"),
+            "signal_ledger": ledger_result,
+            "accepted": False,
+            "quarantine_reasons": ledger_result.get("quarantine_reasons") or [],
+            "manual_review_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
 
     ticker, timeframe, data, classification, unified, storage_result = save_ingested_payload(
         parsed=parsed,
@@ -27184,6 +27218,60 @@ async def v32_signal_events(limit: int = 1000):
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+@app.get("/v32_tradingview_alert_health")
+async def v32_tradingview_alert_health(market_closed_ok: bool = False):
+    return shared_tradingview_operational_health.build_alert_health(
+        Path("runtime"),
+        market_closed_ok=market_closed_ok,
+    )
+
+
+@app.get("/v32_tradingview_e2e_readiness")
+async def v32_tradingview_e2e_readiness(
+    market_closed_ok: bool = False,
+    local_replay_validation: bool = False,
+):
+    return shared_tradingview_operational_health.build_e2e_readiness(
+        Path("runtime"),
+        market_closed_ok=market_closed_ok,
+        allow_local_replay_validation=local_replay_validation,
+    )
+
+
+@app.get("/v32_tradingview_production_audit")
+async def v32_tradingview_production_audit(market_closed_ok: bool = False):
+    return shared_tradingview_operational_health.build_production_audit(
+        Path("runtime"),
+        market_closed_ok=market_closed_ok,
+    )
+
+
+@app.get("/v32_tradingview_first_open_day_checklist")
+async def v32_tradingview_first_open_day_checklist(market_closed_ok: bool = False):
+    return shared_tradingview_operational_health.build_first_open_day_checklist(
+        Path("runtime"),
+        market_closed_ok=market_closed_ok,
+    )
+
+
+@app.get("/v32_options_underlying_alert_health")
+async def v32_options_underlying_alert_health(market_closed_ok: bool = False):
+    return shared_tradingview_operational_health.build_alert_health(
+        Path("runtime"),
+        coverage_path=Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
+        market_closed_ok=market_closed_ok,
+    )
+
+
+@app.get("/v32_options_underlying_production_audit")
+async def v32_options_underlying_production_audit(market_closed_ok: bool = False):
+    return shared_tradingview_operational_health.build_production_audit(
+        Path("runtime"),
+        coverage_path=Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
+        market_closed_ok=market_closed_ok,
+    )
 
 
 @app.get("/v32_foundation_health")

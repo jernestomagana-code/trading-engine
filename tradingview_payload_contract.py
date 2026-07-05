@@ -9,6 +9,7 @@ from typing import Any
 
 
 PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2"
+OPTIONS_UNDERLYING_CONTEXT = "OPTIONS_UNDERLYING_CONFIRMATION"
 REQUIRED_FIELDS = [
     "ticker",
     "timeframe",
@@ -28,6 +29,15 @@ REQUIRED_FIELDS = [
     "risk_daily_status",
     "portfolio_status",
 ]
+CONTEXT_REQUIRED_FIELDS = {
+    OPTIONS_UNDERLYING_CONTEXT: [
+        "rsi",
+        "rsi_state",
+        "trend_state",
+        "market_regime",
+        "underlying_signal",
+    ],
+}
 OPTIONAL_FIELDS = [
     "event",
     "event_code",
@@ -36,6 +46,17 @@ OPTIONAL_FIELDS = [
     "invalidation",
     "logical_stop",
     "logical_target",
+    "rsi",
+    "rsi_state",
+    "rsi_divergence",
+    "ema_fast",
+    "ema_slow",
+    "trend_state",
+    "trend_strength",
+    "market_regime",
+    "underlying_signal",
+    "volatility_state",
+    "confirmation_bias",
     "source",
 ]
 NUMERIC_FIELDS = [
@@ -50,6 +71,10 @@ NUMERIC_FIELDS = [
     "premarket_low",
     "logical_stop",
     "logical_target",
+    "rsi",
+    "ema_fast",
+    "ema_slow",
+    "trend_strength",
 ]
 ALLOWED_DIRECTIONS = {"LONG", "SHORT", "NONE", "RANGE", "BULLISH", "BEARISH", "NEUTRAL"}
 ALLOWED_SESSION_STATES = {
@@ -126,13 +151,16 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_payload(payload: dict[str, Any], *, allow_placeholders: bool = True) -> dict[str, Any]:
     normalized = normalize_payload(payload)
-    missing_fields = [field for field in REQUIRED_FIELDS if not has_value(normalized.get(field))]
+    strategy_context = safe_upper(normalized.get("strategy_context"))
+    context_required_fields = CONTEXT_REQUIRED_FIELDS.get(strategy_context, [])
+    required_fields = REQUIRED_FIELDS + [field for field in context_required_fields if field not in REQUIRED_FIELDS]
+    missing_fields = [field for field in required_fields if not has_value(normalized.get(field))]
     invalid_numeric_fields = [
         field
         for field in NUMERIC_FIELDS
         if has_value(normalized.get(field)) and not numeric_like(normalized.get(field))
     ]
-    placeholder_fields = [field for field in REQUIRED_FIELDS + OPTIONAL_FIELDS if is_placeholder(normalized.get(field))]
+    placeholder_fields = [field for field in required_fields + OPTIONAL_FIELDS if is_placeholder(normalized.get(field))]
     if placeholder_fields and not allow_placeholders:
         invalid_placeholder_fields = placeholder_fields
     else:
@@ -152,7 +180,7 @@ def validate_payload(payload: dict[str, Any], *, allow_placeholders: bool = True
     if portfolio_status and not is_placeholder(normalized.get("portfolio_status")) and portfolio_status not in ALLOWED_PORTFOLIO_STATUS:
         warnings.append("UNUSUAL_PORTFOLIO_STATUS")
 
-    total_required = len(REQUIRED_FIELDS)
+    total_required = len(required_fields)
     completeness = round(((total_required - len(missing_fields)) / total_required) * 100, 2)
     valid = not missing_fields and not invalid_numeric_fields and not invalid_placeholder_fields
     return {
@@ -161,7 +189,9 @@ def validate_payload(payload: dict[str, Any], *, allow_placeholders: bool = True
         "generated_at": now_iso(),
         "valid": valid,
         "context_completeness_pct": completeness,
-        "required_fields": REQUIRED_FIELDS,
+        "required_fields": required_fields,
+        "base_required_fields": REQUIRED_FIELDS,
+        "context_required_fields": context_required_fields,
         "optional_fields": OPTIONAL_FIELDS,
         "missing_fields": missing_fields,
         "invalid_numeric_fields": invalid_numeric_fields,
@@ -180,8 +210,8 @@ def sample_payload() -> dict[str, Any]:
         "ticker": "MNQ1!",
         "timeframe": "5",
         "strategy_context": "INTRADAY_INDEX_FUTURES",
-        "event": "ORB_VWAP_BREAKOUT",
-        "event_code": "MNQ_ORB_LONG_V1",
+        "event": "ORB_BREAKOUT",
+        "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
         "action": "ALERT_ONLY",
         "price": 23000.25,
         "session_state": "OPENING_RANGE",
@@ -205,8 +235,27 @@ def sample_payload() -> dict[str, Any]:
     }
 
 
-def tradingview_placeholder_template() -> dict[str, Any]:
+def tradingview_placeholder_template(strategy_context: str | None = None) -> dict[str, Any]:
     payload = sample_payload()
+    if safe_upper(strategy_context) == OPTIONS_UNDERLYING_CONTEXT:
+        payload.update(
+            {
+                "strategy_context": OPTIONS_UNDERLYING_CONTEXT,
+                "event": "TECH_CONFIRM",
+                "event_code": "QQQ_TECH_CONFIRM_LONG_15M",
+                "ticker": "QQQ",
+                "timeframe": "15",
+                "session_state": "REGULAR",
+                "breakout_direction": "LONG",
+                "rsi_state": "BULLISH_CONFIRMATION",
+                "rsi_divergence": "NONE",
+                "trend_state": "BULLISH",
+                "market_regime": "RISK_ON",
+                "underlying_signal": "TECH_CONFIRM_LONG",
+                "volatility_state": "NORMAL",
+                "confirmation_bias": "LONG",
+            }
+        )
     payload.update(
         {
             "ticker": "{{ticker}}",
@@ -224,6 +273,15 @@ def tradingview_placeholder_template() -> dict[str, Any]:
             "logical_target": "{{plot(\"TARGET\")}}",
         }
     )
+    if safe_upper(strategy_context) == OPTIONS_UNDERLYING_CONTEXT:
+        payload.update(
+            {
+                "rsi": "{{plot(\"RSI\")}}",
+                "ema_fast": "{{plot(\"EMA_FAST\")}}",
+                "ema_slow": "{{plot(\"EMA_SLOW\")}}",
+                "trend_strength": "{{plot(\"TREND_STRENGTH\")}}",
+            }
+        )
     return payload
 
 

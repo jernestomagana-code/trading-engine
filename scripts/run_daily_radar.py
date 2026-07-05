@@ -430,7 +430,7 @@ def main() -> int:
             return bridge_code
 
     read_token = secret_from_env_or_keychain(
-        ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN"],
+        ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN", "STOCK_ULTIMUS_READ_ACCESS_TOKEN"],
         READ_KEYCHAIN_SERVICE,
     )
     if not read_token:

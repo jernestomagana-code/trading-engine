@@ -29,7 +29,15 @@ DEFAULT_OUT = ROOT / "runtime" / "daily_outcome_evaluation_latest.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate V31 pending outcomes and manual reviews.")
     parser.add_argument("--base-url", default=os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL))
-    parser.add_argument("--token", default=os.getenv("READ_ACCESS_TOKEN") or os.getenv("STOCK_ULTIMUS_READ_TOKEN") or "")
+    parser.add_argument(
+        "--token",
+        default=(
+            os.getenv("READ_ACCESS_TOKEN")
+            or os.getenv("STOCK_ULTIMUS_READ_TOKEN")
+            or os.getenv("STOCK_ULTIMUS_READ_ACCESS_TOKEN")
+            or ""
+        ),
+    )
     parser.add_argument("--checkpoints", default=os.getenv("STOCK_ULTIMUS_EVALUATION_CHECKPOINTS", "EOD,PLUS_1D,PLUS_5D"))
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_EVALUATION_LIMIT", "100")))
     parser.add_argument("--dry-run", action="store_true", help="Preview without persisting evaluation updates.")

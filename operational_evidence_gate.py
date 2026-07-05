@@ -13,11 +13,13 @@ from typing import Any
 
 import foundation_evidence_recovery
 import foundation_health
+import tradingview_operational_health
 
 
 OPERATIONAL_EVIDENCE_GATE_VERSION = "operational_evidence_gate_v1"
 MIN_SOURCE_COVERAGE_FOR_ENTRY_READY = 95.0
 MIN_COMPLETE_OUTCOMES_FOR_PARAMETER_REVIEW = 30
+OPTIONS_UNDERLYING_COVERAGE_PATH = Path("config/tradingview_options_underlying_alert_coverage_v1.json")
 
 
 def now_iso() -> str:
@@ -115,6 +117,18 @@ def _next_actions(state: str, blockers: list[str]) -> list[str]:
         actions.append("Run source attribution recovery or generate fresh V31/V32 decisions with source fields.")
     if "NO_TRADINGVIEW_LEDGER_EVENTS" in blockers:
         actions.append("Send or replay real TradingView payloads into v32_signal_events.json.")
+    if "NO_ACCEPTED_TRADINGVIEW_ALERT_EVENTS" in blockers:
+        actions.append("Confirm TradingView alerts are using the enriched ALERT_ONLY JSON payload and expected event_code values.")
+    if "MISSING_EXPECTED_TRADINGVIEW_ALERT_COVERAGE" in blockers:
+        actions.append("Wait for all expected MNQ/MES TradingView alerts to fire during market hours, including session snapshots.")
+    if "UNKNOWN_OR_QUARANTINED_TRADINGVIEW_PAYLOADS" in blockers:
+        actions.append("Review quarantined TradingView payloads and keep legacy/unknown alerts paused.")
+    if "NO_OPTIONS_UNDERLYING_ALERT_EVENTS" in blockers:
+        actions.append("Create and validate SPY/QQQ/VIX enriched TradingView alerts before trusting options ENTRY_READY.")
+    if "MISSING_OPTIONS_UNDERLYING_CONFIRMATION_COVERAGE" in blockers:
+        actions.append("Wait for SPY/QQQ/VIX underlying confirmation alerts to produce real accepted payloads.")
+    if "UNKNOWN_OR_QUARANTINED_OPTIONS_UNDERLYING_PAYLOADS" in blockers:
+        actions.append("Review quarantined SPY/QQQ/VIX TradingView payloads and keep old RSI/crossing alerts paused.")
     if "IBKR_CHAIN_COVERAGE_NOT_REVIEWABLE" in blockers:
         actions.append("Run IBKR bridge during a data window to refresh greeks, IV, bid/ask, spread, OI, and volume.")
     if "INSUFFICIENT_COMPLETE_OUTCOMES" in blockers:
@@ -143,6 +157,27 @@ def build_operational_evidence_gate(
     source_coverage = _safe_float(data_quality.get("source_attribution_coverage_pct"))
     decision_count = _safe_int(data_quality.get("decision_count"))
     tv_events = _safe_int(_metrics(checks, "tradingview_signal_ledger").get("event_count"))
+    tv_health = tradingview_operational_health.build_alert_health(runtime)
+    tv_accepted_events = max(0, tv_health.get("ledger_event_count", 0) - tv_health.get("quarantine_event_count", 0))
+    tv_missing_required = tv_health.get("missing_required_event_codes") or []
+    tv_missing_health = tv_health.get("missing_health_event_codes") or []
+    tv_quarantine_count = _safe_int(tv_health.get("quarantine_event_count"))
+    options_tv_health = tradingview_operational_health.build_alert_health(
+        runtime,
+        coverage_path=OPTIONS_UNDERLYING_COVERAGE_PATH,
+    ) if OPTIONS_UNDERLYING_COVERAGE_PATH.exists() else {}
+    tv_bundle_health = tradingview_operational_health.build_alert_bundle_health(
+        runtime,
+        generated_at=generated_at,
+        market_closed_ok=True,
+    )
+    options_tv_accepted_events = max(
+        0,
+        _safe_int(options_tv_health.get("ledger_event_count")) - _safe_int(options_tv_health.get("quarantine_event_count")),
+    )
+    options_tv_missing_required = options_tv_health.get("missing_required_event_codes") or []
+    options_tv_missing_health = options_tv_health.get("missing_health_event_codes") or []
+    options_tv_quarantine_count = _safe_int(options_tv_health.get("quarantine_event_count"))
     ibkr_gap = str(_metrics(checks, "ibkr_chain_coverage").get("primary_gap") or "NO_IBKR_OPTION_DIAGNOSTICS")
     complete_outcomes = _safe_int(outcome_completeness.get("complete_closed_outcomes"))
     incomplete_outcomes = _safe_int(outcome_completeness.get("incomplete_closed_outcomes"))
@@ -158,9 +193,24 @@ def build_operational_evidence_gate(
         entry_blockers.append("SOURCE_ATTRIBUTION_BELOW_ENTRY_READY_MINIMUM")
     if tv_events <= 0:
         entry_blockers.append("NO_TRADINGVIEW_LEDGER_EVENTS")
+    if tv_accepted_events <= 0:
+        entry_blockers.append("NO_ACCEPTED_TRADINGVIEW_ALERT_EVENTS")
+    if tv_missing_required or tv_missing_health:
+        entry_blockers.append("MISSING_EXPECTED_TRADINGVIEW_ALERT_COVERAGE")
+    if tv_quarantine_count:
+        entry_blockers.append("UNKNOWN_OR_QUARANTINED_TRADINGVIEW_PAYLOADS")
     if ibkr_gap != "COVERAGE_REVIEWABLE":
         entry_blockers.append("IBKR_CHAIN_COVERAGE_NOT_REVIEWABLE")
     can_create_entry_ready = can_collect_signals and not entry_blockers
+
+    options_entry_blockers = list(entry_blockers)
+    if options_tv_accepted_events <= 0:
+        options_entry_blockers.append("NO_OPTIONS_UNDERLYING_ALERT_EVENTS")
+    if options_tv_missing_required or options_tv_missing_health:
+        options_entry_blockers.append("MISSING_OPTIONS_UNDERLYING_CONFIRMATION_COVERAGE")
+    if options_tv_quarantine_count:
+        options_entry_blockers.append("UNKNOWN_OR_QUARANTINED_OPTIONS_UNDERLYING_PAYLOADS")
+    can_create_options_entry_ready = can_collect_signals and not options_entry_blockers
 
     outcome_blockers = []
     if not can_create_entry_ready:
@@ -170,13 +220,20 @@ def build_operational_evidence_gate(
     can_evaluate_outcomes = can_create_entry_ready and (complete_outcomes > 0 or incomplete_outcomes > 0)
 
     parameter_blockers = []
+    if not can_create_entry_ready:
+        parameter_blockers.extend(entry_blockers)
     if guard_allowed <= 0:
         parameter_blockers.append("PARAMETER_CHANGE_GUARD_BLOCKED")
     if complete_outcomes < MIN_COMPLETE_OUTCOMES_FOR_PARAMETER_REVIEW:
         parameter_blockers.append("INSUFFICIENT_COMPLETE_OUTCOMES")
     if incomplete_outcomes:
         parameter_blockers.append("INCOMPLETE_CLOSED_OUTCOME_EVIDENCE")
-    can_review_parameters = guard_allowed > 0 and complete_outcomes >= MIN_COMPLETE_OUTCOMES_FOR_PARAMETER_REVIEW and not incomplete_outcomes
+    can_review_parameters = (
+        can_create_entry_ready
+        and guard_allowed > 0
+        and complete_outcomes >= MIN_COMPLETE_OUTCOMES_FOR_PARAMETER_REVIEW
+        and not incomplete_outcomes
+    )
 
     capabilities = {
         "can_collect_signals": _capability(
@@ -190,6 +247,12 @@ def build_operational_evidence_gate(
             can_create_entry_ready,
             _dedupe(entry_blockers),
             "ENTRY_READY can be considered only when source, TV, and IBKR evidence are reviewable.",
+        ),
+        "can_create_options_entry_ready": _capability(
+            "can_create_options_entry_ready",
+            can_create_options_entry_ready,
+            _dedupe(options_entry_blockers),
+            "Options ENTRY_READY requires IBKR chain evidence plus SPY/QQQ/VIX TradingView underlying confirmation.",
         ),
         "can_evaluate_outcomes": _capability(
             "can_evaluate_outcomes",
@@ -219,6 +282,7 @@ def build_operational_evidence_gate(
     all_blockers = _dedupe(
         collect_blockers
         + entry_blockers
+        + options_entry_blockers
         + outcome_blockers
         + parameter_blockers
         + ["VERSIONED_HUMAN_RULE_CHANGE_REQUIRED", "AUTOMATED_EXECUTION_NOT_AUTHORIZED"]
@@ -254,6 +318,24 @@ def build_operational_evidence_gate(
             "decision_count": decision_count,
             "source_attribution_coverage_pct": source_coverage,
             "tradingview_event_count": tv_events,
+            "tradingview_accepted_event_count": tv_accepted_events,
+            "tradingview_quarantine_event_count": tv_quarantine_count,
+            "tradingview_missing_required_event_codes": tv_missing_required,
+            "tradingview_missing_health_event_codes": tv_missing_health,
+            "tradingview_visible_health": tv_health.get("visible_health") or {},
+            "options_underlying_tradingview_accepted_event_count": options_tv_accepted_events,
+            "options_underlying_tradingview_quarantine_event_count": options_tv_quarantine_count,
+            "options_underlying_missing_required_event_codes": options_tv_missing_required,
+            "options_underlying_missing_health_event_codes": options_tv_missing_health,
+            "options_underlying_visible_health": options_tv_health.get("visible_health") or {},
+            "tradingview_bundle_status": tv_bundle_health.get("status"),
+            "tradingview_bundle_coverage_valid": tv_bundle_health.get("coverage_valid"),
+            "tradingview_bundle_real_e2e_confirmed": tv_bundle_health.get("real_e2e_confirmed"),
+            "tradingview_bundle_total_expected_alert_count": tv_bundle_health.get("total_expected_alert_count"),
+            "tradingview_bundle_total_required_alert_count": tv_bundle_health.get("total_required_alert_count"),
+            "tradingview_bundle_total_received_required_event_count": tv_bundle_health.get("total_received_required_event_count"),
+            "tradingview_bundle_total_quarantine_event_count": tv_bundle_health.get("total_quarantine_event_count"),
+            "tradingview_bundle_blockers": tv_bundle_health.get("blockers") or [],
             "ibkr_primary_gap": ibkr_gap,
             "closed_outcomes": _safe_int(performance.get("closed_outcomes")),
             "complete_closed_outcomes": complete_outcomes,

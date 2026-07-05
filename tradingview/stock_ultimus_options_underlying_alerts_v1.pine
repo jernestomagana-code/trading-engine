@@ -1,0 +1,111 @@
+//@version=5
+indicator("Stock Ultimus Options Underlying Alerts v1", overlay=true, max_labels_count=200)
+
+// Technical evidence only. This script does not authorize orders.
+
+timezoneInput = input.string("America/New_York", "Session timezone")
+premarketSession = input.session("0400-0929", "Premarket session")
+openingRangeSession = input.session("0930-0945", "Opening range session")
+regularSession = input.session("0930-1600", "Regular session")
+emaFastLength = input.int(21, "EMA fast length", minval=1)
+emaSlowLength = input.int(50, "EMA slow length", minval=1)
+rsiLength = input.int(14, "RSI length", minval=1)
+adxLength = input.int(14, "ADX length", minval=1)
+adxSmoothing = input.int(14, "ADX smoothing", minval=1)
+atrLength = input.int(14, "ATR length", minval=1)
+rvolLength = input.int(20, "RVOL length", minval=1)
+minAdx = input.float(18.0, "Minimum ADX", minval=0.0, step=0.5)
+minRvol = input.float(1.05, "Minimum RVOL", minval=0.0, step=0.05)
+longRsiFloor = input.float(52.0, "Long RSI floor", minval=0.0, maxval=100.0, step=0.5)
+shortRsiCeiling = input.float(48.0, "Short RSI ceiling", minval=0.0, maxval=100.0, step=0.5)
+vixElevatedLevel = input.float(22.0, "VIX elevated level", minval=1.0, step=0.5)
+vixNormalizedLevel = input.float(18.0, "VIX normalized level", minval=1.0, step=0.5)
+stopAtrMultiple = input.float(1.0, "Stop ATR multiple", minval=0.1, step=0.1)
+targetAtrMultiple = input.float(2.0, "Target ATR multiple", minval=0.1, step=0.1)
+snapshotEveryBars = input.int(3, "Snapshot every N bars", minval=1)
+
+inPremarket = not na(time(timeframe.period, premarketSession, timezoneInput))
+inOpeningRange = not na(time(timeframe.period, openingRangeSession, timezoneInput))
+inRegular = not na(time(timeframe.period, regularSession, timezoneInput))
+newDay = ta.change(time("D", "0000-2359", timezoneInput)) != 0
+newRegularSession = inRegular and not inRegular[1]
+
+var float premarketHigh = na
+var float premarketLow = na
+var float openingRangeHigh = na
+var float openingRangeLow = na
+var float logicalStop = na
+var float logicalTarget = na
+
+if newDay
+    premarketHigh := na
+    premarketLow := na
+    openingRangeHigh := na
+    openingRangeLow := na
+    logicalStop := na
+    logicalTarget := na
+
+if inPremarket
+    premarketHigh := na(premarketHigh) ? high : math.max(premarketHigh, high)
+    premarketLow := na(premarketLow) ? low : math.min(premarketLow, low)
+
+if newRegularSession
+    openingRangeHigh := high
+    openingRangeLow := low
+
+if inOpeningRange
+    openingRangeHigh := na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)
+    openingRangeLow := na(openingRangeLow) ? low : math.min(openingRangeLow, low)
+
+vwapValue = ta.vwap(hlc3)
+emaFast = ta.ema(close, emaFastLength)
+emaSlow = ta.ema(close, emaSlowLength)
+rsiValue = ta.rsi(close, rsiLength)
+[plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxSmoothing)
+atrValue = ta.atr(atrLength)
+avgVolume = ta.sma(volume, rvolLength)
+rvolValue = avgVolume > 0 ? volume / avgVolume : na
+trendStrength = atrValue > 0 ? math.abs(emaFast - emaSlow) / atrValue : na
+
+qualityOk = adxValue >= minAdx and rvolValue >= minRvol
+bullTrend = close > vwapValue and emaFast > emaSlow and rsiValue >= longRsiFloor
+bearTrend = close < vwapValue and emaFast < emaSlow and rsiValue <= shortRsiCeiling
+underlyingTechConfirmLong = barstate.isconfirmed and inRegular and bullTrend and qualityOk
+underlyingTechConfirmShort = barstate.isconfirmed and inRegular and bearTrend and qualityOk
+underlyingRegimeSnapshot = barstate.isconfirmed and inRegular and bar_index % snapshotEveryBars == 0
+vixRiskElevated = barstate.isconfirmed and close >= vixElevatedLevel and close > emaFast
+vixRiskNormalized = barstate.isconfirmed and close <= vixNormalizedLevel and close < emaFast
+
+if underlyingTechConfirmLong
+    logicalStop := math.min(vwapValue, close - atrValue * stopAtrMultiple)
+    logicalTarget := close + atrValue * targetAtrMultiple
+
+if underlyingTechConfirmShort
+    logicalStop := math.max(vwapValue, close + atrValue * stopAtrMultiple)
+    logicalTarget := close - atrValue * targetAtrMultiple
+
+plot(vwapValue, title="VWAP", color=color.new(color.blue, 0), linewidth=2)
+plot(openingRangeHigh, title="ORH", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(openingRangeLow, title="ORL", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(premarketHigh, title="PMH", color=color.new(color.teal, 35), linewidth=1, style=plot.style_linebr)
+plot(premarketLow, title="PML", color=color.new(color.orange, 35), linewidth=1, style=plot.style_linebr)
+plot(logicalStop, title="STOP", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
+plot(logicalTarget, title="TARGET", color=color.new(color.green, 60), linewidth=1, style=plot.style_linebr)
+plot(adxValue, title="ADX", display=display.data_window)
+plot(atrValue, title="ATR", display=display.data_window)
+plot(rvolValue, title="RVOL", display=display.data_window)
+plot(rsiValue, title="RSI", display=display.data_window)
+plot(emaFast, title="EMA_FAST", color=color.new(color.aqua, 0), linewidth=1)
+plot(emaSlow, title="EMA_SLOW", color=color.new(color.purple, 0), linewidth=1)
+plot(trendStrength, title="TREND_STRENGTH", display=display.data_window)
+
+plotshape(underlyingTechConfirmLong, title="Underlying long marker", style=shape.triangleup, color=color.new(color.green, 0), location=location.belowbar, size=size.tiny, text="UL")
+plotshape(underlyingTechConfirmShort, title="Underlying short marker", style=shape.triangledown, color=color.new(color.red, 0), location=location.abovebar, size=size.tiny, text="US")
+plotshape(vixRiskElevated, title="VIX elevated marker", style=shape.xcross, color=color.new(color.orange, 0), location=location.top, size=size.tiny, text="VIX+")
+plotshape(vixRiskNormalized, title="VIX normalized marker", style=shape.circle, color=color.new(color.green, 0), location=location.bottom, size=size.tiny, text="VIX-")
+
+alertcondition(underlyingTechConfirmLong, title="Underlying Tech Confirm Long", message="Stock Ultimus Underlying Tech Confirm Long")
+alertcondition(underlyingTechConfirmShort, title="Underlying Tech Confirm Short", message="Stock Ultimus Underlying Tech Confirm Short")
+alertcondition(underlyingRegimeSnapshot, title="Underlying Regime Snapshot", message="Stock Ultimus Underlying Regime Snapshot")
+alertcondition(vixRiskElevated, title="VIX Risk Elevated", message="Stock Ultimus VIX Risk Elevated")
+alertcondition(vixRiskNormalized, title="VIX Risk Normalized", message="Stock Ultimus VIX Risk Normalized")

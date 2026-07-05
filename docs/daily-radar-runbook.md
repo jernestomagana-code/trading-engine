@@ -26,6 +26,40 @@ before asking for the daily radar.
 
 ## Manual Run
 
+Market-open go/no-go:
+
+```bash
+python3 scripts/run_market_open_readiness.py --market-closed-ok
+```
+
+This produces the single local readiness answer for the open:
+
+```bash
+runtime/market_open_readiness_latest.json
+runtime/market_open_checklist_latest.json
+```
+
+It combines TradingView bundle health, IBKR chain coverage, source attribution,
+operational gate state, and paper-outcome readiness. Detailed operating steps
+live in:
+
+```bash
+docs/market-open-operator-runbook.md
+docs/next-market-day-checklist.md
+```
+
+Post-open monitor:
+
+```bash
+python3 scripts/run_post_open_monitor.py
+```
+
+For a short six-cycle watch after open:
+
+```bash
+python3 scripts/run_post_open_monitor.py --watch --cycles 6 --interval-seconds 300
+```
+
 Daily open checklist:
 
 ```bash
@@ -189,12 +223,14 @@ python3 scripts/run_daily_radar.py --audit-out runtime/daily_radar_audit.jsonl
 ```
 
 The helper reads secrets from environment variables first, then from macOS
-Keychain:
+Keychain. `READ_ACCESS_TOKEN` is the canonical name; the other environment
+names below are transitional compatibility aliases:
 
 - Ingest token: `TRADING_ENGINE_INGEST_TOKEN`, `SNAPSHOT_INGEST_TOKEN`, or
   Keychain service `stock-ultimus-snapshot-ingest`
-- Read token: `READ_ACCESS_TOKEN`, `STOCK_ULTIMUS_READ_TOKEN`, or Keychain
-  service `stock-ultimus-read-access-token`
+- Read token: `READ_ACCESS_TOKEN`, `STOCK_ULTIMUS_READ_TOKEN`,
+  `STOCK_ULTIMUS_READ_ACCESS_TOKEN`, or Keychain service
+  `stock-ultimus-read-access-token`
 
 The script never places orders and never prints tokens.
 
@@ -218,10 +254,11 @@ runtime/gpt_action_health_latest.json
 ```
 
 If the authenticated request returns 401, the backend token and the hidden API
-key inside the official GPT Action are out of sync. Re-copy the Keychain value
-into the GPT Action authentication field without pasting it into prompts, docs,
-screenshots, or logs. After saving the Action, use its built-in `Test` button on
-`getDailyNow`, then ask the published GPT `que oportunidades tengo hoy?`.
+key inside the official GPT Action are out of sync. Re-copy the canonical
+`READ_ACCESS_TOKEN` value into the GPT Action authentication field without
+pasting it into prompts, docs, screenshots, or logs. After saving the Action,
+use its built-in `Test` button on `getDailyNow`, then ask the published GPT
+`que oportunidades tengo hoy?`.
 
 ## Suggested Windows
 

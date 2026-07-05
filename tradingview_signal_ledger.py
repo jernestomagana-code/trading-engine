@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import tradingview_alert_coverage
 import tradingview_payload_contract
 
 
@@ -31,8 +32,19 @@ REQUIRED_CONTEXT_FIELDS = [
     "risk_daily_status",
     "portfolio_status",
 ]
+OPTIONS_CONTEXT_FIELDS = [
+    "rsi",
+    "rsi_state",
+    "trend_state",
+    "market_regime",
+    "underlying_signal",
+]
 DEFAULT_LEDGER_PATH = Path("runtime/v32_signal_events.json")
 MAX_EVENTS = 20000
+DEFAULT_COVERAGE_PATH = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH
+DEFAULT_EXTRA_COVERAGE_PATHS = [
+    Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
+]
 
 
 def now_iso() -> str:
@@ -47,6 +59,24 @@ def safe_upper(value: Any, default: str = "") -> str:
 def _hash_payload(payload: Any) -> str:
     raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _known_event_codes(coverage_path: str | Path = DEFAULT_COVERAGE_PATH) -> set[str]:
+    paths = [Path(coverage_path)]
+    if Path(coverage_path) == DEFAULT_COVERAGE_PATH:
+        paths.extend(path for path in DEFAULT_EXTRA_COVERAGE_PATHS if path.exists())
+    codes: set[str] = set()
+    for path in paths:
+        try:
+            coverage = tradingview_alert_coverage.load_coverage(path)
+        except Exception:
+            continue
+        codes.update(
+            safe_upper(item.get("event_code"))
+            for item in tradingview_alert_coverage.alerts(coverage)
+            if safe_upper(item.get("event_code"))
+        )
+    return codes
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:
@@ -68,8 +98,23 @@ def _write_events(path: Path, events: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(events[-MAX_EVENTS:], indent=2, sort_keys=True, default=str) + "\n")
 
 
-def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpoint: str = "", received_at: str | None = None) -> dict[str, Any]:
-    payload = payload if isinstance(payload, dict) else {}
+def _required_context_fields(strategy_context: str) -> list[str]:
+    fields = list(REQUIRED_CONTEXT_FIELDS)
+    if safe_upper(strategy_context) == tradingview_payload_contract.OPTIONS_UNDERLYING_CONTEXT:
+        fields.extend(field for field in OPTIONS_CONTEXT_FIELDS if field not in fields)
+    return fields
+
+
+def normalize_signal_event(
+    payload: dict[str, Any],
+    *,
+    raw_text: str = "",
+    endpoint: str = "",
+    received_at: str | None = None,
+    coverage_path: str | Path = DEFAULT_COVERAGE_PATH,
+) -> dict[str, Any]:
+    original_is_dict = isinstance(payload, dict)
+    payload = payload if original_is_dict else {}
     validation = tradingview_payload_contract.validate_payload(payload)
     normalized_payload = validation.get("normalized_payload") if isinstance(validation.get("normalized_payload"), dict) else payload
     received_at = received_at or now_iso()
@@ -88,6 +133,21 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "payload_hash": _hash_payload(payload)[:16],
     }
     event_id = "TV-" + _hash_payload(idempotency_seed)[:24]
+    known_codes = _known_event_codes(coverage_path)
+    event_code = safe_upper(normalized_payload.get("event_code"))
+    action = safe_upper(normalized_payload.get("action") or normalized_payload.get("signal"))
+    quarantine_reasons = []
+    if not validation.get("valid"):
+        quarantine_reasons.append("PAYLOAD_CONTRACT_FAILED")
+    if not event_code:
+        quarantine_reasons.append("MISSING_EVENT_CODE")
+    elif known_codes and event_code not in known_codes:
+        quarantine_reasons.append("UNKNOWN_EVENT_CODE")
+    if action and action != "ALERT_ONLY":
+        quarantine_reasons.append("NON_ALERT_ONLY_ACTION")
+    if not original_is_dict:
+        quarantine_reasons.append("NON_DICT_PAYLOAD")
+    accepted_for_engine = not quarantine_reasons
     session_state = normalized_payload.get("session_state")
     event = {
         "id": event_id,
@@ -100,8 +160,8 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "timeframe": timeframe,
         "strategy_context": strategy_context,
         "event": normalized_payload.get("event"),
-        "event_code": normalized_payload.get("event_code"),
-        "action": normalized_payload.get("action") or normalized_payload.get("signal"),
+        "event_code": event_code or normalized_payload.get("event_code"),
+        "action": action or normalized_payload.get("action") or normalized_payload.get("signal"),
         "price": normalized_payload.get("price"),
         "vwap": normalized_payload.get("vwap"),
         "vwap_position": normalized_payload.get("vwap_position"),
@@ -120,7 +180,19 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         "risk_daily_status": normalized_payload.get("risk_daily_status"),
         "portfolio_status": normalized_payload.get("portfolio_status"),
         "major_event_window": normalized_payload.get("major_event_window"),
+        "rsi": normalized_payload.get("rsi"),
+        "rsi_state": normalized_payload.get("rsi_state"),
+        "rsi_divergence": normalized_payload.get("rsi_divergence"),
+        "ema_fast": normalized_payload.get("ema_fast"),
+        "ema_slow": normalized_payload.get("ema_slow"),
+        "trend_state": normalized_payload.get("trend_state"),
+        "trend_strength": normalized_payload.get("trend_strength"),
+        "market_regime": normalized_payload.get("market_regime"),
+        "underlying_signal": normalized_payload.get("underlying_signal"),
+        "volatility_state": normalized_payload.get("volatility_state"),
+        "confirmation_bias": normalized_payload.get("confirmation_bias"),
         "payload_hash": _hash_payload(payload),
+        "idempotency_key": event_id,
         "raw_payload": payload,
         "raw_payload_preview": raw_preview,
         "payload_validation": {
@@ -132,17 +204,21 @@ def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpo
         },
         "candidate_source": "TRADINGVIEW_ALERT",
         "confirmation_source": "TRADINGVIEW_ALERT",
-        "delivery_status": "RECEIVED",
+        "alert_contract_status": "ACCEPTED" if accepted_for_engine else "QUARANTINED",
+        "delivery_status": "RECEIVED" if accepted_for_engine else "QUARANTINED",
+        "accepted_for_engine": accepted_for_engine,
+        "quarantine_reasons": quarantine_reasons,
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    required_context_fields = _required_context_fields(strategy_context)
     event["missing_context_fields"] = [
-        field for field in REQUIRED_CONTEXT_FIELDS
+        field for field in required_context_fields
         if event.get(field) in [None, "", "None"]
     ]
     event["context_completeness_pct"] = round(
-        ((len(REQUIRED_CONTEXT_FIELDS) - len(event["missing_context_fields"])) / len(REQUIRED_CONTEXT_FIELDS)) * 100,
+        ((len(required_context_fields) - len(event["missing_context_fields"])) / len(required_context_fields)) * 100,
         2,
     )
     return event
@@ -154,9 +230,10 @@ def append_signal_event(
     raw_text: str = "",
     endpoint: str = "",
     path: str | Path = DEFAULT_LEDGER_PATH,
+    coverage_path: str | Path = DEFAULT_COVERAGE_PATH,
 ) -> dict[str, Any]:
     target = Path(path)
-    event = normalize_signal_event(payload, raw_text=raw_text, endpoint=endpoint)
+    event = normalize_signal_event(payload, raw_text=raw_text, endpoint=endpoint, coverage_path=coverage_path)
     events = _read_events(target)
     existing_ids = {item.get("event_id") or item.get("id") for item in events}
     duplicate = event["event_id"] in existing_ids
@@ -164,11 +241,13 @@ def append_signal_event(
         events.append(event)
         _write_events(target, events)
     return {
-        "status": "DUPLICATE" if duplicate else "RECORDED",
+        "status": "DUPLICATE" if duplicate else event["delivery_status"],
         "saved": not duplicate,
         "event_id": event["event_id"],
         "path": str(target),
         "event": event,
+        "accepted_for_engine": event["accepted_for_engine"],
+        "quarantine_reasons": event["quarantine_reasons"],
         "event_count": len(events),
         "execution_authorized": False,
         "not_order_instruction": True,

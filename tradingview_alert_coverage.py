@@ -94,12 +94,13 @@ def validate_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
 
 
 def payload_for_alert(alert: dict[str, Any]) -> dict[str, Any]:
-    payload = tradingview_payload_contract.tradingview_placeholder_template()
+    strategy_context = alert.get("strategy_context") or "INTRADAY_INDEX_FUTURES"
+    payload = tradingview_payload_contract.tradingview_placeholder_template(strategy_context)
     payload.update(
         {
             "ticker": "{{ticker}}",
             "timeframe": "{{interval}}",
-            "strategy_context": alert.get("strategy_context") or "INTRADAY_INDEX_FUTURES",
+            "strategy_context": strategy_context,
             "event": alert.get("event"),
             "event_code": alert.get("event_code"),
             "action": "ALERT_ONLY",
@@ -110,6 +111,17 @@ def payload_for_alert(alert: dict[str, Any]) -> dict[str, Any]:
             "source": "TRADINGVIEW",
         }
     )
+    for key in [
+        "rsi_state",
+        "rsi_divergence",
+        "trend_state",
+        "market_regime",
+        "underlying_signal",
+        "volatility_state",
+        "confirmation_bias",
+    ]:
+        if alert.get(key) is not None:
+            payload[key] = alert.get(key)
     return payload
 
 
