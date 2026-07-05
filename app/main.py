@@ -48,6 +48,7 @@ import strategy_performance as shared_strategy_performance
 import source_attribution as shared_source_attribution
 import tradingview_signal_ledger as shared_tradingview_signal_ledger
 import foundation_health as shared_foundation_health
+import evidence_quality as shared_evidence_quality
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -20880,10 +20881,15 @@ def _v31_apply_entry_evidence_gate(decision):
     if decision.get("final_state") != "ENTRY_READY":
         return decision
 
+    decision = shared_evidence_quality.apply_evidence_quality(decision)
     gaps = shared_source_attribution.entry_ready_evidence_gaps(decision)
+    quality = decision.get("evidence_quality") if isinstance(decision.get("evidence_quality"), dict) else {}
     decision["entry_evidence_gate"] = {
-        "status": "PASS" if not gaps else "BLOCKED",
+        "status": "PASS" if not gaps and quality.get("score", 0) >= shared_evidence_quality.ENTRY_READY_MIN_EVIDENCE_SCORE else "BLOCKED",
         "gaps": gaps,
+        "evidence_quality_score": quality.get("score"),
+        "evidence_quality_blockers": quality.get("blockers") or [],
+        "minimum_evidence_quality_score": shared_evidence_quality.ENTRY_READY_MIN_EVIDENCE_SCORE,
         "required_contract_fields": list(shared_source_attribution.ENTRY_READY_REQUIRED_CONTRACT_FIELDS),
         "requires_candidate_source": True,
         "requires_confirmation_source": True,
@@ -20891,11 +20897,12 @@ def _v31_apply_entry_evidence_gate(decision):
         "execution_authorized": False,
         "not_order_instruction": True,
     }
-    if not gaps:
+    if not gaps and quality.get("score", 0) >= shared_evidence_quality.ENTRY_READY_MIN_EVIDENCE_SCORE:
         return decision
 
-    wait_state = shared_source_attribution.entry_ready_evidence_wait_state(gaps)
-    blockers = [wait_state, "ENTRY_EVIDENCE_GATE_FAILED", *gaps]
+    wait_state = shared_source_attribution.entry_ready_evidence_wait_state(gaps) if gaps else shared_evidence_quality.evidence_quality_wait_state(quality)
+    quality_blockers = quality.get("blockers") if isinstance(quality.get("blockers"), list) else []
+    blockers = [wait_state, "ENTRY_EVIDENCE_GATE_FAILED", "EVIDENCE_QUALITY_TOO_LOW", *gaps, *quality_blockers]
     deduped = []
     for blocker in blockers:
         if blocker and blocker not in deduped:
@@ -20912,7 +20919,7 @@ def _v31_apply_entry_evidence_gate(decision):
         decision["construction_status"] = "WAIT_OPTIONS_DATA"
     decision["explanation"] = (
         f"{decision.get('ticker')}: {wait_state} por evidencia insuficiente para ENTRY_READY "
-        f"({', '.join(gaps)})."
+        f"(score={quality.get('score')}; gaps={', '.join(gaps or quality_blockers)})."
     )
     return _v31_finalize_decision_support_contract(decision)
 
@@ -24592,7 +24599,9 @@ def _v31_canonical_decision(ticker):
     decision = _v31_apply_broker_check_gate(decision)
     decision = _v31_finalize_decision_support_contract(decision)
     decision = shared_source_attribution.apply_source_attribution(decision, d)
-    return _v31_apply_entry_evidence_gate(decision)
+    decision = shared_evidence_quality.apply_evidence_quality(decision)
+    decision = _v31_apply_entry_evidence_gate(decision)
+    return shared_evidence_quality.apply_evidence_quality(decision)
 
 
 def _v31_all_decisions(tickers=None):
@@ -24782,6 +24791,9 @@ def _v31_gpt_compact_daily_item(item):
         "required_missing_fields": item.get("required_missing_fields") or parameter_review.get("missing_fields") or [],
         "conviction_score": item.get("conviction_score"),
         "ranking_score": item.get("ranking_score"),
+        "evidence_quality_score": item.get("evidence_quality_score"),
+        "evidence_quality_status": item.get("evidence_quality_status"),
+        "evidence_quality_blockers": item.get("evidence_quality_blockers") or [],
         "score": item.get("score"),
         "selected_contract": _v31_gpt_compact_contract(item),
         "option_data_diagnostic": item.get("option_data_diagnostic") if isinstance(item.get("option_data_diagnostic"), dict) else {},

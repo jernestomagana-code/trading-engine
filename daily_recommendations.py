@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import evidence_quality as shared_evidence_quality
 
 RECOMMENDATION_VERSION = "daily_recommendation_v1"
 STATE_PRIORITY = {
@@ -241,11 +242,20 @@ def conviction_score(decision: dict[str, Any]) -> float:
     return round(score, 2)
 
 
+def ranking_score(decision: dict[str, Any]) -> float:
+    quality = shared_evidence_quality.evidence_quality_report(decision)
+    score = conviction_score(decision)
+    score += quality.get("score", 0) * 0.75
+    score -= 20 * len(quality.get("blockers") or [])
+    return round(score, 2)
+
+
 def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
     state = _upper(decision.get("final_state"), "NO_DATA")
     ticker = _upper(decision.get("ticker"), "UNKNOWN")
     strategy = _upper(decision.get("strategy"), "UNKNOWN")
     score = conviction_score(decision)
+    quality = shared_evidence_quality.evidence_quality_report(decision)
     risk_profile = _risk_profile(decision)
     broker_check = _broker_check(decision)
     option_data_diagnostic = _option_data_diagnostic(decision, risk_profile)
@@ -256,6 +266,10 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "final_state": state,
         "recommendation_action": action_for_state(state),
         "conviction_score": score,
+        "ranking_score": ranking_score(decision),
+        "evidence_quality_score": quality.get("score"),
+        "evidence_quality_status": quality.get("status"),
+        "evidence_quality_blockers": quality.get("blockers") or [],
         "manual_review_required": True,
         "manual_review_ready": bool(decision.get("manual_review_ready")),
         "can_operate": False,
@@ -273,6 +287,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "risk_blocker": decision.get("risk_blocker"),
         "risk_blocked_details": decision.get("risk_blocked_details") or risk_profile.get("blocked_checks") or [],
         "evidence": {
+            "quality": quality,
             "technical": _technical(decision),
             "fundamental": _fundamental(decision),
             "options": _options(decision),
@@ -299,7 +314,7 @@ def build_daily_recommendations(
     risk_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_items = [recommendation_item(decision, 0) for decision in decisions]
-    sorted_items = sorted(raw_items, key=lambda item: item["conviction_score"], reverse=True)
+    sorted_items = sorted(raw_items, key=lambda item: item.get("ranking_score", item["conviction_score"]), reverse=True)
     for idx, item in enumerate(sorted_items, start=1):
         item["rank"] = idx
 
