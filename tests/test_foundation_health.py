@@ -40,6 +40,17 @@ class FoundationHealthTests(unittest.TestCase):
                             "strategy": "NAKED_PUT",
                             "outcome": "WIN" if index % 2 else "LOSS",
                             "pnl_r": 0.2 if index % 2 else -0.1,
+                            "mfe_r": 0.5 if index % 2 else 0.1,
+                            "mae_r": -0.15 if index % 2 else -0.4,
+                            "market_regime": "BULLISH_LOW_VOL",
+                            "candidate_source": "IBKR_OPTION_CHAIN",
+                            "confirmation_source": "TRADINGVIEW_ALERT",
+                            "selected_contract": {
+                                "delta": -0.2,
+                                "dte": 42,
+                                "spread_pct": 7.0,
+                                "iv": 0.32,
+                            },
                         }
                         for index in range(30)
                     ]
@@ -79,7 +90,9 @@ class FoundationHealthTests(unittest.TestCase):
             checks = {item["name"]: item for item in payload["checks"]}
             self.assertEqual(checks["source_attribution_coverage"]["status"], "OK")
             self.assertEqual(checks["tradingview_signal_ledger"]["metrics"]["event_count"], 1)
+            self.assertEqual(checks["outcome_sample"]["metrics"]["complete_closed_outcomes"], 30)
             self.assertEqual(payload["parameter_review_summary"]["candidate_count"], 1)
+            self.assertEqual(payload["parameter_review_summary"]["guard_allowed_count"], 1)
             self.assertFalse(payload["execution_authorized"])
 
     def test_foundation_health_waits_when_runtime_is_empty(self):

@@ -80,7 +80,9 @@ def _priorities(checks: list[dict[str, Any]], review_report: dict[str, Any]) -> 
     if ibkr_check.get("status") in {"FAIL", "WARN", "WAITING_FOR_DATA"}:
         priorities.append("Run the IBKR bridge once during the next available data window to populate option-chain coverage diagnostics.")
     if outcome_check.get("status") in {"FAIL", "WARN", "WAITING_FOR_DATA"}:
-        priorities.append("Keep journaling paper outcomes until each active strategy reaches at least 30 closed outcomes.")
+        if outcome_check.get("metrics", {}).get("incomplete_closed_outcomes"):
+            priorities.append("Backfill or re-journal closed outcomes missing MFE/MAE, regime, source attribution, or selected-contract metrics.")
+        priorities.append("Keep journaling paper outcomes until each active strategy reaches at least 30 complete closed outcomes.")
     if not review_report.get("candidate_count"):
         priorities.append("Do not promote parameter changes yet; current evidence is still accumulation/review only.")
     if not priorities:
@@ -112,10 +114,14 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
         generated_at=generated_at,
         minimum_closed_outcomes=30,
     )
+    outcome_completeness = performance.get("outcome_completeness") if isinstance(performance.get("outcome_completeness"), dict) else {}
+    parameter_change_guard = review_report.get("parameter_change_guard") if isinstance(review_report.get("parameter_change_guard"), dict) else {}
 
     data_quality = audit.get("data_quality") if isinstance(audit.get("data_quality"), dict) else {}
     decision_count = int(data_quality.get("decision_count") or 0)
     closed_outcomes = int(data_quality.get("closed_outcome_count") or 0)
+    complete_closed_outcomes = int(outcome_completeness.get("complete_closed_outcomes") or 0)
+    incomplete_closed_outcomes = int(outcome_completeness.get("incomplete_closed_outcomes") or 0)
     source_coverage = float(data_quality.get("source_attribution_coverage_pct") or 0.0)
     ibkr_gap = str(ibkr_payload.get("primary_gap") or ibkr_diagnostics.primary_gap([], []))
 
@@ -180,8 +186,10 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
         )
     )
 
-    if closed_outcomes >= 30:
+    if complete_closed_outcomes >= 30 and not incomplete_closed_outcomes:
         outcome_status = "OK"
+    elif complete_closed_outcomes >= 30:
+        outcome_status = "WARN"
     elif closed_outcomes > 0:
         outcome_status = "WARN"
     else:
@@ -190,9 +198,14 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
         _check(
             "outcome_sample",
             outcome_status,
-            f"Closed outcomes available: {closed_outcomes}.",
+            f"Closed outcomes available: {closed_outcomes}; complete closed outcomes: {complete_closed_outcomes}.",
             closed_outcomes=closed_outcomes,
-            minimum_for_parameter_review=30,
+            complete_closed_outcomes=complete_closed_outcomes,
+            incomplete_closed_outcomes=incomplete_closed_outcomes,
+            complete_closed_pct=outcome_completeness.get("complete_closed_pct"),
+            minimum_complete_for_parameter_review=30,
+            missing_field_counts=outcome_completeness.get("missing_field_counts") or {},
+            missing_contract_field_counts=outcome_completeness.get("missing_contract_field_counts") or {},
         )
     )
 
@@ -203,6 +216,8 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
             "At least one strategy is ready for human parameter review." if review_report.get("candidate_count") else "No strategy has enough closed outcomes for parameter review yet.",
             candidate_count=review_report.get("candidate_count"),
             blocked_count=review_report.get("blocked_count"),
+            guard_allowed_count=parameter_change_guard.get("allowed_count"),
+            guard_blocked_count=parameter_change_guard.get("blocked_count"),
         )
     )
 
@@ -218,10 +233,19 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
         "audit_summary": audit.get("summary") or {},
         "data_quality": data_quality,
         "performance_summary": performance.get("summary") or {},
+        "outcome_completeness_summary": {
+            "complete_closed_outcomes": outcome_completeness.get("complete_closed_outcomes"),
+            "incomplete_closed_outcomes": outcome_completeness.get("incomplete_closed_outcomes"),
+            "complete_closed_pct": outcome_completeness.get("complete_closed_pct"),
+            "missing_field_counts": outcome_completeness.get("missing_field_counts") or {},
+            "missing_contract_field_counts": outcome_completeness.get("missing_contract_field_counts") or {},
+        },
         "parameter_review_summary": {
             "candidate_count": review_report.get("candidate_count"),
             "blocked_count": review_report.get("blocked_count"),
             "minimum_closed_outcomes": review_report.get("minimum_closed_outcomes"),
+            "guard_allowed_count": parameter_change_guard.get("allowed_count"),
+            "guard_blocked_count": parameter_change_guard.get("blocked_count"),
         },
         "manual_review_required": True,
         "execution_authorized": False,
