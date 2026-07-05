@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import tradingview_payload_contract
+
 
 LEDGER_VERSION = "tradingview_signal_ledger_v2"
 REQUIRED_CONTEXT_FIELDS = [
@@ -68,57 +70,66 @@ def _write_events(path: Path, events: list[dict[str, Any]]) -> None:
 
 def normalize_signal_event(payload: dict[str, Any], *, raw_text: str = "", endpoint: str = "", received_at: str | None = None) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
+    validation = tradingview_payload_contract.validate_payload(payload)
+    normalized_payload = validation.get("normalized_payload") if isinstance(validation.get("normalized_payload"), dict) else payload
     received_at = received_at or now_iso()
-    ticker = safe_upper(payload.get("ticker") or payload.get("symbol") or payload.get("chart_ticker"), "UNKNOWN")
-    timeframe = str(payload.get("timeframe") or payload.get("interval") or payload.get("tf") or "UNKNOWN").strip() or "UNKNOWN"
-    strategy_context = safe_upper(payload.get("strategy_context") or payload.get("strategy") or payload.get("setup"), "GENERAL_TECHNICAL")
+    ticker = safe_upper(normalized_payload.get("ticker"), "UNKNOWN")
+    timeframe = str(normalized_payload.get("timeframe") or "UNKNOWN").strip() or "UNKNOWN"
+    strategy_context = safe_upper(normalized_payload.get("strategy_context"), "GENERAL_TECHNICAL")
     raw_preview = raw_text[:1000] if raw_text else json.dumps(payload, sort_keys=True, default=str)[:1000]
     idempotency_seed = {
         "endpoint": endpoint,
         "ticker": ticker,
         "timeframe": timeframe,
         "strategy_context": strategy_context,
-        "event": payload.get("event") or payload.get("event_code") or payload.get("action") or payload.get("signal"),
-        "price": payload.get("price") or payload.get("close") or payload.get("last"),
+        "event": normalized_payload.get("event") or normalized_payload.get("event_code") or normalized_payload.get("action") or normalized_payload.get("signal"),
+        "price": normalized_payload.get("price"),
         "received_minute": received_at[:16],
         "payload_hash": _hash_payload(payload)[:16],
     }
     event_id = "TV-" + _hash_payload(idempotency_seed)[:24]
-    session_state = payload.get("session_state") or payload.get("market_session")
+    session_state = normalized_payload.get("session_state")
     event = {
         "id": event_id,
         "event_id": event_id,
         "ledger_version": LEDGER_VERSION,
-        "payload_contract_version": "tradingview_signal_payload_v2",
+        "payload_contract_version": tradingview_payload_contract.PAYLOAD_CONTRACT_VERSION,
         "received_at": received_at,
         "endpoint": endpoint,
         "ticker": ticker,
         "timeframe": timeframe,
         "strategy_context": strategy_context,
-        "event": payload.get("event"),
-        "event_code": payload.get("event_code"),
-        "action": payload.get("action") or payload.get("signal"),
-        "price": payload.get("price") or payload.get("close") or payload.get("last"),
-        "vwap": payload.get("vwap") or payload.get("vwap_value"),
-        "vwap_position": payload.get("vwap_position"),
-        "opening_range_high": payload.get("opening_range_high"),
-        "opening_range_low": payload.get("opening_range_low"),
-        "breakout_direction": payload.get("breakout_direction") or payload.get("direction"),
+        "event": normalized_payload.get("event"),
+        "event_code": normalized_payload.get("event_code"),
+        "action": normalized_payload.get("action") or normalized_payload.get("signal"),
+        "price": normalized_payload.get("price"),
+        "vwap": normalized_payload.get("vwap"),
+        "vwap_position": normalized_payload.get("vwap_position"),
+        "opening_range_high": normalized_payload.get("opening_range_high"),
+        "opening_range_low": normalized_payload.get("opening_range_low"),
+        "breakout_direction": normalized_payload.get("breakout_direction"),
         "session_state": session_state,
-        "adx": payload.get("adx"),
-        "atr": payload.get("atr"),
-        "volume_relative": payload.get("volume_relative") or payload.get("relative_volume") or payload.get("rvol"),
-        "premarket_high": payload.get("premarket_high"),
-        "premarket_low": payload.get("premarket_low"),
-        "invalidation": payload.get("invalidation") or payload.get("invalid_above_below") or payload.get("invalidates_at"),
-        "logical_stop": payload.get("logical_stop") or payload.get("stop_logical") or payload.get("stop"),
-        "logical_target": payload.get("logical_target") or payload.get("target_logical") or payload.get("target"),
-        "risk_daily_status": payload.get("risk_daily_status"),
-        "portfolio_status": payload.get("portfolio_status"),
-        "major_event_window": payload.get("major_event_window"),
+        "adx": normalized_payload.get("adx"),
+        "atr": normalized_payload.get("atr"),
+        "volume_relative": normalized_payload.get("volume_relative"),
+        "premarket_high": normalized_payload.get("premarket_high"),
+        "premarket_low": normalized_payload.get("premarket_low"),
+        "invalidation": normalized_payload.get("invalidation"),
+        "logical_stop": normalized_payload.get("logical_stop"),
+        "logical_target": normalized_payload.get("logical_target"),
+        "risk_daily_status": normalized_payload.get("risk_daily_status"),
+        "portfolio_status": normalized_payload.get("portfolio_status"),
+        "major_event_window": normalized_payload.get("major_event_window"),
         "payload_hash": _hash_payload(payload),
         "raw_payload": payload,
         "raw_payload_preview": raw_preview,
+        "payload_validation": {
+            "valid": validation.get("valid"),
+            "missing_fields": validation.get("missing_fields") or [],
+            "invalid_numeric_fields": validation.get("invalid_numeric_fields") or [],
+            "warnings": validation.get("warnings") or [],
+            "placeholder_fields": validation.get("placeholder_fields") or [],
+        },
         "candidate_source": "TRADINGVIEW_ALERT",
         "confirmation_source": "TRADINGVIEW_ALERT",
         "delivery_status": "RECEIVED",
