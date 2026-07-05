@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import foundation_health
+import operational_evidence_gate
 
 RUNTIME = ROOT / "runtime"
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
@@ -118,6 +119,23 @@ def local_foundation_health() -> dict[str, Any]:
         "priorities": payload.get("priorities") or [],
         "data_quality": payload.get("data_quality") or {},
         "parameter_review_summary": payload.get("parameter_review_summary") or {},
+        "not_order_instruction": payload.get("not_order_instruction") is True,
+        "execution_authorized": payload.get("execution_authorized") is True,
+    }
+
+
+def local_operational_evidence_gate() -> dict[str, Any]:
+    payload = operational_evidence_gate.build_operational_evidence_gate(
+        RUNTIME,
+        include_recovery_preview=False,
+    )
+    return {
+        "ok": payload.get("state") in {"SIGNAL_COLLECTION_READY", "OUTCOME_COLLECTION_READY", "PARAMETER_REVIEW_READY"},
+        "state": payload.get("state"),
+        "blocked_reasons": payload.get("blocked_reasons") or [],
+        "next_actions": payload.get("next_actions") or [],
+        "capabilities": payload.get("capabilities") or {},
+        "evidence_summary": payload.get("evidence_summary") or {},
         "not_order_instruction": payload.get("not_order_instruction") is True,
         "execution_authorized": payload.get("execution_authorized") is True,
     }
@@ -241,6 +259,11 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         priorities = foundation.get("priorities") if isinstance(foundation.get("priorities"), list) else []
         first_priority = priorities[0] if priorities else "Revisar runtime/foundation_health_latest.json."
         return "ACTION_REQUIRED", "Resolver Foundation Health antes de depender del motor: " + first_priority
+    evidence_gate = checks.get("operational_evidence_gate") or {}
+    if evidence_gate.get("state") == "FOUNDATION_BLOCKED":
+        next_actions = evidence_gate.get("next_actions") if isinstance(evidence_gate.get("next_actions"), list) else []
+        first_action = next_actions[0] if next_actions else "Revisar runtime/operational_evidence_gate_latest.json."
+        return "ACTION_REQUIRED", "Resolver Operational Evidence Gate: " + first_action
     status = str(operator.get("status") or "")
     if status in {"NO_DATA", "WAIT_PIPELINE"} or counts.get("no_data_alerts", 0) > 0:
         return "SNAPSHOT_REQUIRED", "Refrescar/publicar snapshot antes de revisar setups."
@@ -310,6 +333,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             checks["runtime_freshness_after_publish"] = runtime_freshness()
 
     checks["foundation_health"] = local_foundation_health()
+    checks["operational_evidence_gate"] = local_operational_evidence_gate()
 
     if read_token:
         denied_status, _ = request_json(f"{base_url}/v31_system_status", timeout=args.read_timeout)
@@ -351,12 +375,14 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"Siguiente accion: {report.get('next_required_action')}")
     checks = report.get("checks") or {}
     print("\nChecks:")
-    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "foundation_health", "production_auth", "v32_operator_today"]:
+    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "foundation_health", "operational_evidence_gate", "production_auth", "v32_operator_today"]:
         check = checks.get(name) or {}
         marker = "OK" if check.get("ok") else "FAIL"
         detail = check.get("detail") or check.get("error") or ""
         if name == "foundation_health":
             detail = "status=" + str(check.get("status"))
+        if name == "operational_evidence_gate":
+            detail = "state=" + str(check.get("state"))
         print(f"- {name}: {marker} {detail}")
     runtime = checks.get("runtime_freshness_after_publish") or checks.get("runtime_freshness_after_refresh") or checks.get("runtime_freshness") or {}
     if runtime:
