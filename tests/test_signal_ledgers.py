@@ -9,11 +9,29 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import ibkr_diagnostics
+import tradingview_alert_coverage
 import tradingview_payload_contract
 import tradingview_signal_ledger
 
 
 class SignalLedgerTests(unittest.TestCase):
+    def test_tradingview_alert_coverage_generates_valid_minimum_messages(self):
+        coverage = tradingview_alert_coverage.load_coverage()
+        validation = tradingview_alert_coverage.validate_coverage(coverage)
+        required_records = tradingview_alert_coverage.setup_records(coverage, required_only=True)
+        all_records = tradingview_alert_coverage.setup_records(coverage)
+        first = tradingview_alert_coverage.alert_by_code(coverage, "MNQ_ORB_BREAKOUT_LONG_5M")
+        message = tradingview_alert_coverage.payload_for_alert(first)
+        payload_validation = tradingview_payload_contract.validate_payload(message)
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["required_alert_count"], 10)
+        self.assertEqual(validation["health_alert_count"], 2)
+        self.assertEqual(len(required_records), 10)
+        self.assertEqual(len(all_records), 12)
+        self.assertEqual(message["event_code"], "MNQ_ORB_BREAKOUT_LONG_5M")
+        self.assertTrue(payload_validation["valid"])
+
     def test_tradingview_payload_contract_validates_sample_and_missing_fields(self):
         valid = tradingview_payload_contract.validate_payload(
             tradingview_payload_contract.sample_payload()
