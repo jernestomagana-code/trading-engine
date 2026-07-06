@@ -318,6 +318,20 @@ def build_broker_check(
             "status": "PASS" if capacity_ok else ("UNKNOWN" if capacity is None or estimated_cash_secured_requirement is None else "BLOCKED"),
             "value": capacity,
             "required": estimated_cash_secured_requirement,
+            "shortfall": (
+                round(estimated_cash_secured_requirement - capacity, 2)
+                if capacity is not None
+                and estimated_cash_secured_requirement is not None
+                and estimated_cash_secured_requirement > capacity
+                else 0
+            ),
+            "capacity_pct_required": (
+                round((estimated_cash_secured_requirement / capacity) * 100.0, 2)
+                if capacity is not None
+                and capacity > 0
+                and estimated_cash_secured_requirement is not None
+                else None
+            ),
             "note": "Approximate cash-secured requirement. Broker margin can differ; validate manually in TWS.",
         })
         if capacity is None or estimated_cash_secured_requirement is None:

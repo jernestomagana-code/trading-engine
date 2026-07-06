@@ -204,6 +204,24 @@ Run the full refresh and read cycle:
 python3 scripts/run_daily_radar.py --preview 5
 ```
 
+### Market-session bridge loop
+
+For a live market session, use the bridge loop instead of remembering to run the
+bridge by hand:
+
+```bash
+python3 scripts/run_market_bridge_session.py --max-runs 8 --interval-minutes 15 --notify
+```
+
+This runs `ibkr_bridge.py --once` repeatedly with `IBKR_CLIENT_ID=42`,
+`DAILY_RADAR_FAST=1`, and `IBKR_HISTORICAL_DATA_TIMEOUT_SECONDS=4`, publishes
+fresh snapshots, and calls `/v31_monitor_notify` after successful refreshes. It
+never places orders and never prints tokens.
+
+Use `--force-notify` only for a delivery test; normal mode respects the backend
+alert and dedupe rules. Use `--full-scan` only when you intentionally want the
+slower full option-depth scan.
+
 Read the current cloud radar without refreshing IBKR:
 
 ```bash
