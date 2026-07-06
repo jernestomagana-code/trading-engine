@@ -200,10 +200,47 @@ as permission to operate; it means broker checks can be stale or unavailable.
 
 ### IBKR Account Selection
 
-Select the IBKR account before any command that refreshes through
-`ibkr_bridge.py` (`run_operating_day.py`, `run_daily_radar.py --refresh`,
-`daily_open_checklist.py --refresh`, or `run_market_bridge_session.py`).
+Friendly path: save each IBKR account once with a logical alias, then run the
+bridge/checklist by alias. Real IBKR account identifiers stay in macOS Keychain
+and are never printed by the helper.
 
+One-time setup:
+
+```bash
+python3 scripts/ibkr_account_profile.py setup primary --account YOUR_LOCAL_IBKR_ACCOUNT
+python3 scripts/ibkr_account_profile.py setup income --account YOUR_OTHER_LOCAL_IBKR_ACCOUNT
+python3 scripts/ibkr_account_profile.py setup speculative --account YOUR_THIRD_LOCAL_IBKR_ACCOUNT
+```
+
+Normal use:
+
+```bash
+python3 scripts/ibkr_account_profile.py bridge primary
+python3 scripts/ibkr_account_profile.py bridge income
+python3 scripts/ibkr_account_profile.py bridge speculative
+```
+
+For the daily open checklist:
+
+```bash
+python3 scripts/ibkr_account_profile.py daily-open primary
+```
+
+For any custom command that refreshes through the bridge:
+
+```bash
+python3 scripts/ibkr_account_profile.py run primary -- python3 scripts/run_daily_radar.py --preview 5
+```
+
+To check saved aliases without exposing account ids:
+
+```bash
+python3 scripts/ibkr_account_profile.py list
+```
+
+Advanced/env path: select the IBKR account before any command that refreshes
+through `ibkr_bridge.py` (`run_operating_day.py`, `run_daily_radar.py --refresh`,
+`daily_open_checklist.py --refresh`, or `run_market_bridge_session.py`).
 Use logical aliases in prompts, docs, and runtime payloads. Keep the real IBKR
 account numbers local in environment variables or Keychain-managed wrappers.
 

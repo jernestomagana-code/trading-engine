@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "ibkr_bridge.py"
+IBKR_ACCOUNT_PROFILE = ROOT / "scripts" / "ibkr_account_profile.py"
 APP = ROOT / "app" / "main.py"
 GITIGNORE = ROOT / ".gitignore"
 ROTATE_TOKEN_TOOL = ROOT / "tools" / "rotate_snapshot_ingest_token.py"
@@ -121,6 +122,20 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("selected IBKR account is not visible", source)
         self.assertIn('getattr(position, "account"', source)
         self.assertIn('"sensitive_identifiers_excluded": True', source)
+
+    def test_ibkr_account_profile_helper_keeps_real_ids_local(self):
+        source = IBKR_ACCOUNT_PROFILE.read_text()
+        self.assertIn("stock-ultimus-ibkr-account-", source)
+        self.assertIn("add-generic-password", source)
+        self.assertIn("find-generic-password", source)
+        self.assertIn("account_id_printed=false", source)
+        self.assertIn("real_account_id_printed", source)
+        self.assertIn("STOCK_ULTIMUS_ACCOUNT_SCOPE", source)
+        self.assertIn("IBKR_ACCOUNT_ALIAS", source)
+        self.assertIn("IBKR_ACCOUNT_ID", source)
+        self.assertIn("ibkr_bridge.py", source)
+        self.assertIn("daily_open_checklist.py", source)
+        self.assertIn("not_order_instruction", source)
 
     def test_bridge_connection_retries_write_local_health_without_orders(self):
         source = BRIDGE.read_text()
