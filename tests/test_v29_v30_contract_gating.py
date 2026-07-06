@@ -1489,11 +1489,16 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertIn("Estado", html)
         self.assertIn("Pendiente", html)
+        self.assertIn("Lectura operativa", html)
+        self.assertIn("Falta cargar el contexto pre-market", html)
+        self.assertIn("Siguiente paso", html)
+        self.assertIn("Guardar Base defensiva", html)
         self.assertIn("Preparar contexto", html)
         self.assertIn("Inbox revision manual", html)
         self.assertIn("Command Center", html)
         self.assertIn("Ver payload tecnico", html)
         self.assertIn("No autorizadas", html)
+        self.assertIn("Necesita revision", html)
         self.assertIn("Aun no hay contexto guardado", html)
 
     def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):

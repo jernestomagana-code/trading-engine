@@ -93,7 +93,7 @@
         <h1>Stock Ultimus Command Center</h1>
         <p>V32 operator, resumen diario, alertas, tracking y learning.</p>
       </div>
-      <div class="updated">Actualizado<br><strong>3 julio 2026</strong></div>
+      <div class="updated">Actualizado<br><strong>5 julio 2026</strong></div>
     </header>
 
     <main>
@@ -101,7 +101,7 @@
         <article class="status-summary">
           <div class="overline">Donde estamos</div>
           <strong>Panel principal operativo</strong>
-          <p>Usa el GPT o este Command Center para decidir el siguiente paso: refrescar datos, revisar alertas, registrar decisiones, enviar resumen y dar seguimiento para backtesting. Si el mercado esta cerrado, WAIT_MARKET es estado esperado.</p>
+          <p>Usa el GPT o este Command Center para decidir el siguiente paso. Produccion, read-auth y guardrails estan sanos; el avance total sigue en WARN porque falta snapshot fresco, payload TradingView al ledger y outcomes completos suficientes.</p>
         </article>
         <article class="metric">
           <div class="overline">Prioridad</div>
@@ -110,8 +110,8 @@
         </article>
         <article class="metric">
           <div class="overline">Preflight real</div>
-          <div class="metric-value">Daily</div>
-          <div class="metric-note"><a href="/v32_operator_daily_summary">Resumen JSON</a></div>
+          <div class="metric-value">Warn</div>
+          <div class="metric-note">6 gates; 0 fallas.</div>
         </article>
         <article class="metric">
           <div class="overline">Operating day</div>
@@ -120,8 +120,8 @@
         </article>
         <article class="metric">
           <div class="overline">Terceros</div>
-          <div class="metric-value">Notify</div>
-          <div class="metric-note"><a href="/v32_operator_daily_summary_email/preview">Email preview</a></div>
+          <div class="metric-value">Block</div>
+          <div class="metric-note">Compliance + aislamiento.</div>
         </article>
       </section>
 
@@ -139,7 +139,7 @@
 
       <section class="board" aria-label="Tablero de avance">
         <div class="lane done">
-          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">7</span></div>
+          <div class="lane-header"><h3>Hecho Y Validado</h3><span class="count">10</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Operational-100 Preflight</h4><span class="tag">Ops</span></div>
@@ -173,8 +173,13 @@
             </article>
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Audit Cloud</h4><span class="tag">Prod</span></div>
-              <p>Preflight completo pasa con warnings esperados; 5 gates, 0 fallas.</p>
+              <p>Preflight completo pasa con warnings esperados; 6 gates, 0 fallas.</p>
               <div class="evidence"><span class="dot"></span>PASS_WITH_WARNINGS</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Foundation Evidence</h4><span class="tag">Datos</span></div>
+              <p>La base local ya acumula 140 decisiones, 69 ENTRY_READY historicos/locales, 106 option rows y 92.86% de source coverage.</p>
+              <div class="evidence"><span class="dot"></span>foundation_health WARN</div>
             </article>
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Outcome Dry-Run</h4><span class="tag">Learning</span></div>
@@ -190,7 +195,7 @@
         </div>
 
         <div class="lane active">
-          <div class="lane-header"><h3>En Curso</h3><span class="count">3</span></div>
+          <div class="lane-header"><h3>En Curso</h3><span class="count">4</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Refrescar Pipeline</h4><span class="state work">Mercado</span></div>
@@ -202,6 +207,11 @@
               <p>El notificador ya soporta macOS, Pushover, webhook y resumen email por backend.</p>
               <div class="evidence"><span class="dot"></span>v32_operator_notify.py --pushover</div>
             </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Outcome Sample</h4><span class="state work">Muestra</span></div>
+              <p>Hay 1 outcome cerrado y 0 completos; todavia no se deben promover cambios de parametros.</p>
+              <div class="evidence"><span class="dot"></span>minimo 30 completos por estrategia</div>
+            </article>
             <article class="work-item" data-area="third">
               <div class="item-top"><h4>Preparacion Terceros</h4><span class="state risk">Bloqueado</span></div>
               <p>No vender ni operar para terceros hasta cerrar compliance, aislamiento y audit durable.</p>
@@ -211,7 +221,7 @@
         </div>
 
         <div class="lane next">
-          <div class="lane-header"><h3>Siguiente</h3><span class="count">5</span></div>
+          <div class="lane-header"><h3>Siguiente</h3><span class="count">6</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Correr Operating Day</h4><span class="state wait">Proximo</span></div>
@@ -222,6 +232,11 @@
               <div class="item-top"><h4>Manual Review</h4><span class="state wait">Condicional</span></div>
               <p>Usar inbox solo si aparece ENTRY_READY o manual_review_ready mayor a cero.</p>
               <div class="evidence"><span class="dot" style="background:var(--blue)"></span>0 ahora</div>
+            </article>
+            <article class="work-item" data-area="data">
+              <div class="item-top"><h4>Backfill Outcomes</h4><span class="state wait">Learning</span></div>
+              <p>Completar MFE/MAE, regimen, fuente y contrato seleccionado en outcomes cerrados incompletos.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>antes de parametros</div>
             </article>
             <article class="work-item" data-area="third">
               <div class="item-top"><h4>Legal / Compliance</h4><span class="state risk">Terceros</span></div>
@@ -253,7 +268,8 @@
               <tr><td>IBKR/radar</td><td>Broker fresh en ciclo diario.</td><td>Checklist diario publica snapshot cuando TWS/mercado esten disponibles.</td><td><span class="state work">Mercado</span></td></tr>
               <tr><td>Alertas</td><td>Action/Risk/manual review visibles.</td><td>GPT, dashboard, resumen diario y notificador usan V32 operator.</td><td><span class="state good">OK</span></td></tr>
               <tr><td>Manual review</td><td>Humano clasifica setups.</td><td>Consola/rutas/auth OK; ahora no hay setups.</td><td><span class="state good">OK</span></td></tr>
-              <tr><td>Outcomes</td><td>Learning real post-cierre.</td><td>Dry-run OK; no-write.</td><td><span class="state good">OK</span></td></tr>
+              <tr><td>Outcomes</td><td>Learning real post-cierre.</td><td>Dry-run OK; 1 cerrado, 0 completos.</td><td><span class="state work">Muestra</span></td></tr>
+              <tr><td>Foundation</td><td>Evidencia suficiente para ajustar parametros.</td><td>140 decisiones; falta ledger TradingView y 30 outcomes completos por estrategia.</td><td><span class="state work">WARN</span></td></tr>
             </tbody>
           </table>
           <p style="margin:0;color:var(--muted);font-size:12px;line-height:1.4;">Operativo personal esta sano. En feriados o mercado cerrado, WAIT_MARKET no requiere accion ni dispara ruido.</p>
@@ -274,7 +290,8 @@
           <ol class="needs-list">
             <li><span class="priority">1</span><div><strong>Preguntar al GPT</strong><p>Usar "que hago hoy" como interfaz principal.</p></div></li>
             <li><span class="priority">2</span><div><strong>Checklist diario</strong><p>Refrescar snapshot con TWS/IBKR en ventana util.</p></div></li>
-            <li><span class="priority">3</span><div><strong>Backtesting</strong><p>Cerrar alertas con razon/outcome para alimentar learning.</p></div></li>
+            <li><span class="priority">3</span><div><strong>Foundation backfill</strong><p>Completar outcomes/fuentes y ledger TradingView antes de tocar parametros.</p></div></li>
+            <li><span class="priority">4</span><div><strong>Backtesting</strong><p>Cerrar alertas con razon/outcome para alimentar learning.</p></div></li>
           </ol>
         </aside>
       </section>

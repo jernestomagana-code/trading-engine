@@ -1,6 +1,6 @@
 # Stock Ultimus Project Dashboard
 
-Ultima actualizacion: 2026-07-03
+Ultima actualizacion: 2026-07-05
 
 Este tablero resume como vamos, que esta validado y que falta para considerar
 Stock Ultimus operativo al 100% para uso personal controlado. El sistema sigue
@@ -21,7 +21,7 @@ Rutas protegidas en produccion:
 Estado actual separado por frente:
 
 - Operativo personal V31: sano a nivel plataforma, auth, GPT Action, manual
-  review y guardrails. Hoy 2026-07-03 el radar no tiene snapshot maestro activo
+  review y guardrails. Hoy 2026-07-05 el radar no tiene snapshot maestro activo
   y queda en `NO_DATA` / `WAIT_PIPELINE`, esperado para un domingo o antes de
   refrescar IBKR/TWS + TradingView. No hay oportunidades accionables.
 - Terceros/comercial: no liberado. Sigue bloqueado hasta completar
@@ -77,6 +77,13 @@ Resumen:
 - Regla de seguridad: `execution_authorized=false` y `not_order_instruction=true`
   deben conservarse siempre.
 
+Estado de evidencia local al 2026-07-05: `foundation_health` esta en `WARN`,
+con `decision_count=140`, `entry_ready_count=69`, `option_row_count=106`,
+source attribution coverage de 92.86%, `closed_outcomes=1` y
+`complete_closed_outcomes=0`. Esto confirma que ya hay base historica/local,
+pero todavia falta completar ledger TradingView, cobertura completa de opciones
+y outcomes cerrados suficientes antes de promover cambios de parametros.
+
 ## Estado Operativo Personal
 
 Los 5 pendientes reales del uso personal siguen cerrados:
@@ -89,7 +96,7 @@ Los 5 pendientes reales del uso personal siguen cerrados:
 | 4 | Usar manual review como compuerta humana | `check_manual_review_console.py` valida inbox/rutas/cookie auth/email link/no-order; learning evalua 6 de 11 reviews. | Cerrado |
 | 5 | Evaluar outcomes/manual reviews | Operating day ejecuto outcome evaluation: pending outcomes evaluados y manual reviews evaluadas; no-order guardrails intactos. | Cerrado |
 
-Estado actual de datos al 2026-07-03: `monitor_gpt_action_health.py` responde
+Estado actual de datos al 2026-07-05: `monitor_gpt_action_health.py` responde
 OK, endpoints protegidos responden 200 con token y 401 sin token, pero
 `daily_now_status=NO_DATA`, `main_blocker=MASTER_SNAPSHOT_MISSING`,
 `option_rows_found=0` y `technical_count=0`. La siguiente accion operativa es
@@ -123,12 +130,12 @@ review se use como compuerta humana y outcomes se evalúen despues del cierre.
 
 | Gate para 100% | Estado actual | Evidencia requerida | Bloqueo |
 | --- | --- | --- | --- |
-| 1. Preflight operacional completo | OK con warnings | `scripts/stock_ultimus_operational_100_check.py --no-write` devuelve `PASS_WITH_WARNINGS`. | Warnings esperados: outcome real no ejecutado. |
+| 1. Preflight operacional completo | OK con warnings | `scripts/stock_ultimus_operational_100_check.py --no-write` devuelve `PASS_WITH_WARNINGS`: 6 gates, 0 fallas, 2 warnings. | Warnings: `foundation_health` y outcome real post-cierre no ejecutado. |
 | 2. GPT Action Builder | OK | GPT Builder actualizado y `monitor_gpt_action_health.py` confirma endpoints protegidos. | Mantener secreto vigente. |
 | 3. IBKR/TWS real fresco | Listo, requiere refresh | El 2026-06-26 el bridge publico snapshot fresco con 26 filas; hoy no hay snapshot maestro. | Reconsultar durante ventana util. |
-| 4. TradingView real | Listo, requiere refresh | El contrato tecnico funciona; hoy `technical_count=0` porque no hay snapshot maestro. | Confirmar alertas al refrescar pipeline. |
+| 4. TradingView real | Listo, requiere refresh | El contrato tecnico funciona; hoy `technical_count=0` porque no hay snapshot maestro y el ledger local espera payload. | Confirmar alertas al refrescar pipeline y replay/ingest al ledger. |
 | 5. Manual review funcionando | OK | Inbox, historial, learning y performance dashboard abren con read-auth; acciones conservan no-order guardrails. | Usarlo cuando haya `ENTRY_READY` o setups revisables. |
-| 6. Outcomes / learning | OK | Operating day evaluo outcomes/manual reviews; preflight dry-run tambien pasa. | Seguir evaluando post-cierre con snapshots frescos. |
+| 6. Outcomes / learning | OK tecnico, muestra insuficiente | Operating day evalua outcomes/manual reviews; `closed_outcomes=1`, `complete_closed_outcomes=0`. | Backfill/re-journal y acumular minimo 30 outcomes completos por estrategia activa. |
 | 7. Produccion protegida | OK | `READ_ACCESS_TOKEN`, ingest, read-auth y endpoints sensibles verificados en Render. | Mantener tokens en Keychain deduplicados. |
 | 8. Terceros/comercial readiness | Bloqueado | Guia de instalacion y customer package existen. | Faltan legal/compliance, aislamiento, tokens por cliente, audit durable, disclosures, paper onboarding y soporte. |
 
@@ -147,12 +154,13 @@ aislamiento.
 | IBKR Bridge | Listo, requiere refresh | El 2026-06-26 publico snapshot fresco con 26 filas y termino `PASS`; hoy no hay snapshot maestro activo. | Reconsultar en ventana operativa. |
 | TradingView | Listo, requiere refresh | Contrato tecnico integrado; el 2026-06-26 reporto `technical_count=10`; hoy `technical_count=0` por snapshot faltante. | Mantener alertas reales hacia `/technical_snapshot`. |
 | Outcomes/Learning | OK | Operating day evaluo outcomes/manual reviews; dry-run tambien pasa. | Seguir post-cierre con snapshot fresco. |
+| Foundation/Evidencia | WARN | 140 decisiones, 69 `ENTRY_READY` locales, 106 option rows, 92.86% source attribution coverage. | Completar fuentes, ledger TradingView, datos de opciones y outcomes cerrados. |
 | Seguridad | Alineado localmente | Preflight no imprime secretos, no toca IBKR en skip-cloud, no autoriza ejecucion. | Verificar read-auth y secrets en Render. |
 | Terceros / Comercial | Bloqueado por diseño | Docs exigen aislamiento/compliance antes de terceros. | No vender/operar para terceros hasta cerrar gates comerciales. |
 
 ## Validacion Mas Reciente
 
-Fecha: 2026-07-03
+Fecha: 2026-07-05
 
 Comandos ejecutados:
 
@@ -175,15 +183,18 @@ Resultado:
 - `READ_ACCESS_TOKEN` local deduplicado en Keychain; lectura normal ya autentica produccion.
 - Ingest token local deduplicado en Keychain.
 - `verify_production_read_auth.py`: autorizado 200, no autorizado 401, `production_readiness_status=READY`.
-- `operational_100_v1` real: `PASS_WITH_WARNINGS`; 5 gates pasados, 0 fallas, 1 warning esperado por outcome real post-cierre.
+- `operational_100_v1` real: `PASS_WITH_WARNINGS`; 6 gates totales, 0 fallas, 2 warnings (`foundation_health` y outcome real post-cierre no ejecutado).
 - GPT/backend health: `OK`; autorizado 200, no autorizado 401, no-order guardrails OK.
 - Radar diario actual: `NO_DATA`, `MASTER_SNAPSHOT_MISSING`, opciones=0 y tecnicos=0.
+- Foundation health local: `WARN`; `decision_count=140`, `entry_ready_count=69`, `closed_outcomes=1`, `complete_closed_outcomes=0`, `option_row_count=106`.
+- Source attribution coverage: 92.86%; quedan decisiones con fuente `UNKNOWN` o fuentes candidate/confirmation incompletas.
+- TradingView signal ledger: `WAITING_FOR_DATA`; falta replay/ingest de al menos un payload tecnico real.
 - Daily operational audit: `PASS_WITH_WARNINGS`, 24/26 checks, warnings por `NO_MASTER_SNAPSHOT` y `SNAPSHOT_MISSING`.
 - GPT Builder actualizado: la UI confirma `GPT Updated` el 2026-06-26.
 - Outcome/manual-review dry-run: endpoints 200, no-order guardrails intactos, 0 guardados por `--no-write`.
 - Strategy performance: `decision_count=48`, `outcome_count=12`, `closed_outcomes=0`; muestra insuficiencia de muestra para todas las estrategias.
 - No-order guardrails intactos: `execution_authorized=false`, `not_order_instruction=true`.
-- 3 gates locales reportados, 0 fallas, 2 warnings esperados por nube/post-cierre omitidos.
+- Preflight local previo sin nube reporto 0 fallas; la lectura vigente contra produccion es la de 6 gates, 0 fallas y 2 warnings.
 - Manual review console/inbox routes, cookie auth, email link y no-order guardrails validados.
 - 20 pruebas operativas P0/operational pasan.
 - 8 pruebas de `v31_operational_check` pasan.
@@ -211,10 +222,15 @@ Resultado:
 7. Antes del proximo dia habil, consultar `/v32_operator_nudge_preflight` o
    pedir al GPT: `haz preflight de nudges y dame checklist del lunes`.
 8. Confirmar que TradingView vuelva a alimentar `/technical_snapshot`.
-9. Reconsultar el radar y verificar que salga de `NO_DATA`.
-10. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
+9. Reproducir/ingerir al menos un payload TradingView en el ledger tecnico.
+10. Backfill/re-journal de outcomes cerrados incompletos: MFE/MAE, regimen,
+    fuente y contrato seleccionado.
+11. Acumular minimo 30 outcomes cerrados completos por estrategia activa antes
+    de tocar parametros.
+12. Reconsultar el radar y verificar que salga de `NO_DATA`.
+13. Si aparece `ENTRY_READY` o `manual_review_ready>0`, abrir
    `/v31_manual_review_inbox` y registrar decision humana.
-11. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
+14. Despues de cada cierre, seguir evaluando outcomes con snapshot fresco.
 
 ## Proximas Acciones Para Terceros
 
@@ -239,3 +255,4 @@ Resultado:
 | 2026-06-26 | Se cierran los 5 pendientes operativos. | GPT Builder actualizado, option rows=26, technical_count=10, manual review OK, outcomes/manual reviews evaluados; radar queda WAIT_MARKET_WINDOW. |
 | 2026-06-28 | Se actualiza estado operativo y terceros. | Produccion/read-auth/manual review OK; radar actual NO_DATA por MASTER_SNAPSHOT_MISSING; terceros sigue bloqueado por gates comerciales. |
 | 2026-07-03 | Se refresca dashboard operativo/terceros. | Produccion/read-auth/GPT/manual review OK; preflight PASS_WITH_WARNINGS; pipeline sigue sin snapshot maestro; terceros sigue bloqueado. |
+| 2026-07-05 | Se refresca avance real operativo y terceros. | Produccion/read-auth/GPT OK; radar sigue NO_DATA por MASTER_SNAPSHOT_MISSING; foundation_health WARN por muestra/outcomes/fuentes incompletas. |
