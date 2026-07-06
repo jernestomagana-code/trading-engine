@@ -200,6 +200,37 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /gpt_v31_executive_status:
+    get:
+      operationId: getExecutiveStatus
+      summary: Get current executive operating status
+      description: >
+        Returns a compact executive status for live market operation. Prefer
+        this endpoint when the user asks if the system is working, what needs
+        attention now, whether alerts are active, or for a short operational
+        summary. Copy answer_to_user completely. Decision support only; no
+        order authorization.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of manual-review and blocked/waiting items to include.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10
+            default: 8
+      responses:
+        "200":
+          description: Current executive status to return verbatim to the user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutiveStatus"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v31_command_center.json:
     get:
       operationId: getCommandCenter
@@ -818,6 +849,54 @@ components:
           const: false
         not_order_instruction:
           type: boolean
+    ExecutiveStatus:
+      type: object
+      additionalProperties: true
+      required:
+        - response_mode
+        - answer_to_user
+        - first_line
+        - execution_authorized
+        - not_order_instruction
+      properties:
+        engine:
+          type: string
+        generated_at:
+          type: string
+        response_mode:
+          type: string
+          enum: [copy_answer_to_user_exactly]
+        answer_to_user:
+          type: string
+          description: Copy this complete Spanish text verbatim as the user-facing answer.
+        first_line:
+          type: string
+          description: Safe complete first line if the answer must be shortened.
+        status:
+          type:
+            - string
+            - "null"
+        operational_readiness:
+          type:
+            - string
+            - "null"
+        summary:
+          type: object
+          additionalProperties: true
+        data_readiness:
+          type: object
+          additionalProperties: true
+        blocked_cause_groups:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        execution_authorized:
+          type: boolean
+          const: false
+        not_order_instruction:
+          type: boolean
+          const: true
     CommandCenter:
       type: object
       additionalProperties: true
