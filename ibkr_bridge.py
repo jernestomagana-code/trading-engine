@@ -271,9 +271,12 @@ def _v283_extract_technical(data):
 
 def _bridge_cycle_position_rows():
     rows = []
+    account_scope = BRIDGE_ACCOUNT_SCOPE
     try:
         for item in V17_SUMMARY_ROWS:
             if not isinstance(item, dict):
+                continue
+            if item.get("account_scope") not in [None, "", account_scope]:
                 continue
             if (
                 item.get("asset_class") == "POSITION"
@@ -287,6 +290,7 @@ def _bridge_cycle_position_rows():
 
 def _bridge_account_context_snapshot():
     """Read non-sensitive IBKR account capacity fields for broker checks."""
+    selection = _bridge_account_selection()
     fields = {
         "NetLiquidation": "net_liquidation",
         "BuyingPower": "buying_power",
@@ -315,9 +319,22 @@ def _bridge_account_context_snapshot():
         "cushion": None,
         "sensitive_identifiers_excluded": True,
         "not_order_instruction": True,
+        **_bridge_public_account_selection(selection),
     }
+    selected = selection.get("selected") or ""
+    if selection.get("selection_required"):
+        context["error"] = "ACCOUNT_SELECTION_REQUIRED"
+        context["next_required_action"] = "Set IBKR_ACCOUNT_ALIAS with IBKR_ACCOUNT_MAP, or set IBKR_ACCOUNT_ID locally before running ibkr_bridge.py."
+        return context
+    if selected and not selection.get("selected_found"):
+        context["error"] = "SELECTED_ACCOUNT_NOT_AVAILABLE"
+        context["next_required_action"] = "Confirm the selected IBKR account is visible in TWS/IB Gateway managed accounts."
+        return context
     try:
-        summary = ib.accountSummary()
+        try:
+            summary = ib.accountSummary(account=selected) if selected else ib.accountSummary()
+        except TypeError:
+            summary = ib.accountSummary()
     except Exception as exc:
         context["error"] = str(exc)[:160]
         return context
@@ -325,6 +342,8 @@ def _bridge_account_context_snapshot():
     preferred = []
     fallback = []
     for item in summary or []:
+        if selected and str(getattr(item, "account", "") or "").strip() not in ["", selected]:
+            continue
         tag = getattr(item, "tag", None)
         mapped = fields.get(tag)
         if not mapped:
@@ -370,6 +389,8 @@ def _bridge_broker_snapshot_context(options_rows, runtime_data=None, technical_s
     account_context = _bridge_account_context_snapshot()
     positions = _bridge_cycle_position_rows()
     return {
+        "account_scope": BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": BRIDGE_ACCOUNT_ALIAS,
         "options_rows": options_rows if isinstance(options_rows, list) else [],
         "technical_snapshot": technical_snapshot if isinstance(technical_snapshot, dict) else {},
         "account_context": account_context,
@@ -398,6 +419,8 @@ def _v283_publish_to_v28():
     payload = {
         "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
         "generated_at": _v283_now(),
+        "account_scope": broker_context.get("account_scope") or BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": broker_context.get("account_alias") or BRIDGE_ACCOUNT_ALIAS,
         "options_rows": rows,
         "technical_snapshot": tech,
         "account_context": broker_context.get("account_context") or {},
@@ -610,6 +633,8 @@ def _v26_build_master_snapshot(extra_payload=None):
     master = {
         "source": "IBKR_BRIDGE_V26_REMOTE_MASTER_PUBLISHER",
         "generated_at": _v26_now_iso(),
+        "account_scope": broker_context.get("account_scope") or BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": broker_context.get("account_alias") or BRIDGE_ACCOUNT_ALIAS,
         "extra_payload": _v26_safe_jsonable(extra_payload or {}),
         "runtime_context_files": list(ctx.keys()),
         "options_rows": options_rows,
@@ -885,6 +910,78 @@ ib = IB()
 IBKR_CHAIN_DIAGNOSTIC_EVENTS = []
 
 
+BRIDGE_ACCOUNT_SCOPE = (
+    _v283_os.environ.get("STOCK_ULTIMUS_ACCOUNT_SCOPE")
+    or _v283_os.environ.get("IBKR_ACCOUNT_ALIAS")
+    or "default"
+).strip() or "default"
+BRIDGE_ACCOUNT_ALIAS = (
+    _v283_os.environ.get("IBKR_ACCOUNT_ALIAS")
+    or BRIDGE_ACCOUNT_SCOPE
+).strip() or "default"
+
+
+def _bridge_parse_account_map():
+    raw = _v283_os.environ.get("IBKR_ACCOUNT_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = _v283_json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in parsed.items() if str(k).strip() and str(v).strip()}
+
+
+def _bridge_selected_ibkr_account():
+    account_map = _bridge_parse_account_map()
+    return (
+        _v283_os.environ.get("IBKR_ACCOUNT_ID")
+        or _v283_os.environ.get("IBKR_ACCOUNT")
+        or account_map.get(BRIDGE_ACCOUNT_ALIAS)
+        or account_map.get(BRIDGE_ACCOUNT_SCOPE)
+        or ""
+    ).strip()
+
+
+def _bridge_managed_accounts():
+    try:
+        accounts = ib.managedAccounts()
+    except Exception:
+        return []
+    return [str(item).strip() for item in accounts or [] if str(item).strip()]
+
+
+def _bridge_account_selection():
+    selected = _bridge_selected_ibkr_account()
+    managed = _bridge_managed_accounts()
+    multiple_accounts = len(managed) > 1
+    selected_found = bool(selected) and (not managed or selected in managed)
+    return {
+        "account_scope": BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": BRIDGE_ACCOUNT_ALIAS,
+        "selected": selected,
+        "selected_configured": bool(selected),
+        "selected_found": selected_found,
+        "managed_count": len(managed),
+        "selection_required": multiple_accounts and not selected,
+    }
+
+
+def _bridge_public_account_selection(selection=None):
+    selection = selection if isinstance(selection, dict) else _bridge_account_selection()
+    return {
+        "account_scope": selection.get("account_scope") or "default",
+        "account_alias": selection.get("account_alias") or "default",
+        "selected_account_configured": bool(selection.get("selected_configured")),
+        "selected_account_found": bool(selection.get("selected_found")),
+        "managed_account_count": int(selection.get("managed_count") or 0),
+        "account_selection_required": bool(selection.get("selection_required")),
+        "sensitive_identifiers_excluded": True,
+    }
+
+
 def _bridge_health_path():
     return _v283_Path("runtime") / "ibkr_bridge_health_latest.json"
 
@@ -899,6 +996,8 @@ def _write_bridge_health(status, *, detail="", error="", attempt=None, connected
         "host": IB_HOST,
         "port": IB_PORT,
         "client_id": CLIENT_ID,
+        "account_scope": BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": BRIDGE_ACCOUNT_ALIAS,
         "attempt": attempt,
         "max_attempts": max(1, IB_CONNECT_RETRIES),
         "detail": str(detail or "")[:500],
@@ -1687,6 +1786,14 @@ def send_market_data():
 def get_positions_rows():
     rows = []
     total_abs_value = 0
+    selection = _bridge_account_selection()
+    selected = selection.get("selected") or ""
+    if selection.get("selection_required"):
+        print("POSITIONS SKIPPED: multiple IBKR accounts detected; set IBKR_ACCOUNT_ALIAS/IBKR_ACCOUNT_MAP or IBKR_ACCOUNT_ID locally.")
+        return rows
+    if selected and not selection.get("selected_found"):
+        print("POSITIONS SKIPPED: selected IBKR account is not visible in TWS/IB Gateway.")
+        return rows
 
     try:
         positions = ib.positions()
@@ -1697,6 +1804,8 @@ def get_positions_rows():
 
     for position in positions:
         try:
+            if selected and str(getattr(position, "account", "") or "").strip() not in ["", selected]:
+                continue
             contract = position.contract
             symbol = contract.symbol
             sec_type = contract.secType
@@ -1736,7 +1845,10 @@ def get_positions_rows():
                 "market_price": market_price,
                 "market_value": market_value,
                 "unrealized_pl": unrealized_pl,
-                "price_source": price_source
+                "price_source": price_source,
+                "account_scope": BRIDGE_ACCOUNT_SCOPE,
+                "account_alias": BRIDGE_ACCOUNT_ALIAS,
+                "sensitive_identifiers_excluded": True,
             }
 
             rows.append(row)
@@ -1815,6 +1927,9 @@ def send_positions():
             "asset_class": "POSITION",
             "engine_layer": "IBKR_PORTFOLIO_COMMANDER",
             "integration_ready_for_tradingview": True,
+            "account_scope": row["account_scope"],
+            "account_alias": row["account_alias"],
+            "sensitive_identifiers_excluded": True,
             "position_class": position_class,
             "local_symbol": row["local_symbol"],
             "sec_type": row["sec_type"],
@@ -4284,6 +4399,8 @@ def _v28_publish_master_snapshot(extra_payload=None):
     payload = {
         "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
         "generated_at": _v28_bridge_now(),
+        "account_scope": broker_context.get("account_scope") or BRIDGE_ACCOUNT_SCOPE,
+        "account_alias": broker_context.get("account_alias") or BRIDGE_ACCOUNT_ALIAS,
         "options_rows": _v28_bridge_json_safe(options_rows),
         "technical_snapshot": _v28_bridge_json_safe(technical_snapshot),
         "account_context": _v28_bridge_json_safe(broker_context.get("account_context") or {}),

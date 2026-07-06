@@ -87,10 +87,14 @@ class BridgeEntrypointTests(unittest.TestCase):
         source = BRIDGE.read_text()
         self.assertIn("def _bridge_account_context_snapshot", source)
         self.assertIn("ib.accountSummary()", source)
+        self.assertIn("account=selected", source)
         self.assertIn('"NetLiquidation": "net_liquidation"', source)
         self.assertIn('"BuyingPower": "buying_power"', source)
         self.assertIn('"AvailableFunds": "available_funds"', source)
         self.assertIn('"sensitive_identifiers_excluded": True', source)
+        self.assertIn('"account_scope"', source)
+        self.assertIn('"account_alias"', source)
+        self.assertIn('"selected_account_configured"', source)
 
         tree = ast.parse(source, filename=str(BRIDGE))
         functions = {
@@ -102,6 +106,21 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertNotIn("account_id", function_source)
         self.assertNotIn("acctCode", function_source)
         self.assertNotIn("accountNumber", function_source)
+
+    def test_bridge_account_selection_is_local_and_filters_positions(self):
+        source = BRIDGE.read_text()
+        self.assertIn("def _bridge_account_selection", source)
+        self.assertIn("def _bridge_selected_ibkr_account", source)
+        self.assertIn("def _bridge_public_account_selection", source)
+        self.assertIn("IBKR_ACCOUNT_ALIAS", source)
+        self.assertIn("IBKR_ACCOUNT_MAP", source)
+        self.assertIn("IBKR_ACCOUNT_ID", source)
+        self.assertIn("STOCK_ULTIMUS_ACCOUNT_SCOPE", source)
+        self.assertIn("ib.managedAccounts()", source)
+        self.assertIn("ACCOUNT_SELECTION_REQUIRED", source)
+        self.assertIn("selected IBKR account is not visible", source)
+        self.assertIn('getattr(position, "account"', source)
+        self.assertIn('"sensitive_identifiers_excluded": True', source)
 
     def test_bridge_connection_retries_write_local_health_without_orders(self):
         source = BRIDGE.read_text()

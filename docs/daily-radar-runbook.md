@@ -198,6 +198,37 @@ The most common fix is to open or unlock TWS/IB Gateway, confirm API access is
 enabled, and rerun the operating-day cycle. A failed bridge must not be treated
 as permission to operate; it means broker checks can be stale or unavailable.
 
+### IBKR Account Selection
+
+Select the IBKR account before any command that refreshes through
+`ibkr_bridge.py` (`run_operating_day.py`, `run_daily_radar.py --refresh`,
+`daily_open_checklist.py --refresh`, or `run_market_bridge_session.py`).
+
+Use logical aliases in prompts, docs, and runtime payloads. Keep the real IBKR
+account numbers local in environment variables or Keychain-managed wrappers.
+
+Example for one account:
+
+```bash
+export STOCK_ULTIMUS_ACCOUNT_SCOPE=primary
+export IBKR_ACCOUNT_ALIAS=primary
+export IBKR_ACCOUNT_MAP='{"primary":"YOUR_LOCAL_IBKR_ACCOUNT"}'
+python3 ibkr_bridge.py --once
+```
+
+To refresh another account, change only the alias/scope before the run:
+
+```bash
+export STOCK_ULTIMUS_ACCOUNT_SCOPE=income
+export IBKR_ACCOUNT_ALIAS=income
+python3 ibkr_bridge.py --once
+```
+
+If TWS exposes multiple managed accounts and no account is selected, the bridge
+blocks broker account/position context instead of mixing accounts. The bridge
+publishes `account_scope` and `account_alias`, but never persists the real IBKR
+account identifier.
+
 Run the full refresh and read cycle:
 
 ```bash
