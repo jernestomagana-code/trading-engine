@@ -22814,9 +22814,13 @@ def _v32_operator_today_payload(limit=12):
         "operator_version": "v32_operator_assistant_v1",
         "generated_at": _v29_now(),
         "status": readiness.get("status") or command.get("operational_readiness") or command.get("status"),
+        "account_context": command.get("account_context") or {},
+        "account_scope": command.get("account_scope"),
+        "account_alias": command.get("account_alias"),
         "command_center": {
             "status": command.get("status"),
             "operational_readiness": command.get("operational_readiness"),
+            "account_context": command.get("account_context") or {},
             "summary": command.get("summary") or {},
             "data_readiness": command.get("data_readiness") or {},
         },
@@ -22945,6 +22949,9 @@ def _v32_operator_daily_summary_payload(limit=12):
         "status": today.get("status"),
         "headline": summary_lines[0],
         "summary_text": "\n".join(summary_lines),
+        "account_context": today.get("account_context") or {},
+        "account_scope": today.get("account_scope"),
+        "account_alias": today.get("account_alias"),
         "counts": {
             "action": len(action_alerts),
             "risk": len(risk_alerts),
@@ -24784,11 +24791,33 @@ def _v31_all_decisions(tickers=None):
     return [_v31_canonical_decision(t) for t in tickers]
 
 
+def _v31_account_context_from_master(master):
+    master = master if isinstance(master, dict) else {}
+    data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    broker_summary = data.get("broker_check_summary") if isinstance(data.get("broker_check_summary"), dict) else {}
+    account_context = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
+    scope = data.get("account_scope") or broker_summary.get("account_scope") or account_context.get("account_scope")
+    alias = data.get("account_alias") or broker_summary.get("account_alias") or account_context.get("account_alias")
+    return {
+        "account_context_version": "v31_sanitized_account_context_v1",
+        "account_scope": scope or "unknown",
+        "account_alias": alias or scope or "unknown",
+        "master_source": master.get("path"),
+        "master_snapshot_available": bool(master.get("path")),
+        "selected_account_configured": bool(scope or alias),
+        "real_account_id_excluded": True,
+        "gpt_context_rule": "Use this account_scope/account_alias as the active account context for this payload only. If the user changes accounts, require a fresh bridge/snapshot refresh before interpreting broker context.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _v31_system_status_payload(tickers=None):
     master = _v29_discover_master_snapshot()
     market = _v29_market_state(master)
     master_data = master.get("data") if isinstance(master.get("data"), dict) else {}
     broker_check_summary = master_data.get("broker_check_summary") if isinstance(master_data.get("broker_check_summary"), dict) else {}
+    account_context = _v31_account_context_from_master(master)
     decisions = _v31_all_decisions(tickers)
     states = [
         "ENTRY_READY",
@@ -24819,6 +24848,9 @@ def _v31_system_status_payload(tickers=None):
         "technical_tickers": sorted(list(master.get("technical", {}).keys())),
         "market": market,
         "risk_profile": _v31_risk_profile(),
+        "account_context": account_context,
+        "account_scope": account_context.get("account_scope"),
+        "account_alias": account_context.get("account_alias"),
         "broker_check_summary": broker_check_summary,
         "outcome_tracking": {
             "version": "v31_entry_ready_signal_outcome_v1",
@@ -24906,6 +24938,7 @@ def _v31_daily_recommendations_payload(tickers=None):
         "decision_version": status.get("decision_version"),
         "ruleset_version": status.get("ruleset_version"),
         "snapshot_version": status.get("snapshot_version"),
+        "account_context": status.get("account_context") or {},
     }
     payload["data_readiness"] = status.get("data_readiness") or _v31_data_readiness_payload(status)
     payload["answer_guidance"] = _v31_gpt_daily_answer_guidance(payload, payload["data_readiness"])
@@ -25427,12 +25460,16 @@ def _v31_command_center_payload():
     readiness = compact.get("data_readiness") if isinstance(compact.get("data_readiness"), dict) else {}
     source_status = compact.get("source_status") if isinstance(compact.get("source_status"), dict) else {}
     summary = compact.get("summary") if isinstance(compact.get("summary"), dict) else {}
+    account_context = source_status.get("account_context") if isinstance(source_status.get("account_context"), dict) else {}
     return {
         "engine": "V31_COMMAND_CENTER",
         "generated_at": payload.get("generated_at") or _v29_now(),
         "status": readiness.get("status") or payload.get("status"),
         "operational_readiness": readiness.get("operational_readiness"),
         "main_blocker": readiness.get("main_blocker"),
+        "account_context": account_context,
+        "account_scope": account_context.get("account_scope"),
+        "account_alias": account_context.get("account_alias"),
         "summary": {
             **summary,
             "items": len(compact.get("items") or []),
