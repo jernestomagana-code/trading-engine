@@ -108,6 +108,26 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertNotIn("acctCode", function_source)
         self.assertNotIn("accountNumber", function_source)
 
+    def test_ibkr_account_selector_has_local_web_flow_without_printing_ids(self):
+        source = IBKR_ACCOUNT_PROFILE.read_text()
+        self.assertIn("HTTPServer((host, int(args.port)), AccountProfileWebHandler)", source)
+        self.assertIn('"127.0.0.1"', source)
+        self.assertIn("def cmd_serve", source)
+        self.assertIn("WEB_LAST_RESULT_PATH", source)
+        self.assertIn("sanitize_output", source)
+        self.assertIn('"[REDACTED_IBKR_ACCOUNT]"', source)
+        self.assertIn('"account_id_printed": False', source)
+        self.assertIn("Decision support only; no autoriza ordenes", source)
+
+    def test_gpt_payloads_surface_sanitized_account_context(self):
+        source = APP.read_text()
+        self.assertIn("def _v31_account_context_from_master", source)
+        self.assertIn('"v31_sanitized_account_context_v1"', source)
+        self.assertIn('"real_account_id_excluded": True', source)
+        self.assertIn('"gpt_context_rule"', source)
+        self.assertIn('"account_context": account_context', source)
+        self.assertIn('"account_context": today.get("account_context") or {}', source)
+
     def test_bridge_account_selection_is_local_and_filters_positions(self):
         source = BRIDGE.read_text()
         self.assertIn("def _bridge_account_selection", source)
