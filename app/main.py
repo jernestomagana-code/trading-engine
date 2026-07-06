@@ -5308,13 +5308,21 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     payload = template.get("payload") or {}
     current = get_intraday_futures_premarket_context(session_date=payload.get("session_date"))
     modes = template.get("allowed_modes") or []
+    mode_labels = {
+        "base": "Base defensiva",
+        "clear": "Contexto validado",
+        "macro_lockout": "Bloqueo macro",
+        "manual_review": "Revision manual",
+        "risk_blocked": "Riesgo bloqueado",
+        "volatility_extreme": "Volatilidad extrema",
+    }
     mode_buttons = "\n".join(
         '<a class="mode {active}" href="/intraday_futures/premarket?mode={mode}&session_date={session_date}&updated_by={updated_by}">{label}</a>'.format(
             active="active" if item == template.get("mode") else "",
             mode=html.escape(item),
             session_date=html.escape(payload.get("session_date") or ""),
             updated_by=html.escape(payload.get("updated_by") or "manual"),
-            label=html.escape(item.replace("_", " ").title()),
+            label=html.escape(mode_labels.get(item, item.replace("_", " ").title())),
         )
         for item in modes
     )
@@ -5325,6 +5333,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     session = payload.get("session_date") or ""
     current_status = "Cargado" if current_found else "Pendiente"
     current_status_class = "ok" if current_found else "warn"
+    current_found_text = "Si" if current_found else "No"
     max_state = current_context.get("decision_max_state") or payload.get("decision_max_state") or "MANUAL_REVIEW"
     mode_notes = {
         "base": "Contexto base defensivo para iniciar la revision pre-market.",
@@ -5334,6 +5343,79 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
         "risk_blocked": "Fuerza bloqueo de riesgo cuando no conviene avanzar.",
         "volatility_extreme": "Modo defensivo para volatilidad fuera de rango normal.",
     }
+    mode_action_labels = {
+        "base": "Guardar Base defensiva",
+        "clear": "Guardar contexto validado",
+        "macro_lockout": "Guardar bloqueo macro",
+        "manual_review": "Guardar revision manual",
+        "risk_blocked": "Guardar bloqueo de riesgo",
+        "volatility_extreme": "Guardar volatilidad extrema",
+    }
+    status_copy = {
+        "ALIGNED": ("Alineado", "ok"),
+        "CLEAR": ("Sin bloqueo", "ok"),
+        "CLEAR_MANUAL_INPUT": ("Base manual", "ok"),
+        "ENTRY_READY": ("Listo para revisar", "ok"),
+        "MACRO_LOCKOUT": ("Bloqueo macro", "blocked"),
+        "MANUAL_REVIEW": ("Revision manual", "warn"),
+        "NEEDS_REVIEW": ("Necesita revision", "warn"),
+        "NORMAL": ("Normal", "ok"),
+        "NOT_READY": ("No listo", "blocked"),
+        "READY": ("Listo", "ok"),
+        "RANGE_70_USED": ("Rango amplio", "warn"),
+        "RISK_BLOCKED": ("Riesgo bloqueado", "blocked"),
+        "VOLATILITY_EXTREME": ("Volatilidad extrema", "blocked"),
+    }
+    def friendly_status(value, default="NEEDS_REVIEW"):
+        technical = normalize_intraday_futures_status(value, default)
+        label, klass = status_copy.get(technical, (technical.replace("_", " ").title(), "neutral"))
+        return technical, label, klass
+
+    max_state_code, max_state_label, max_state_class = friendly_status(max_state, "MANUAL_REVIEW")
+    if not current_found:
+        summary_title = "Falta cargar el contexto pre-market"
+        summary_body = (
+            "El motor esta protegido: no autoriza ordenes y deja todo en revision manual "
+            "hasta guardar el marco de la sesion."
+        )
+        primary_next_step = "Guardar Base defensiva para iniciar la sesion con proteccion."
+        checklist_items = [
+            "Guardar Base defensiva",
+            "Revisar Radar GPT JSON",
+            "Abrir Inbox de revision manual",
+        ]
+    elif max_state_code == "RISK_BLOCKED":
+        summary_title = "Contexto cargado, pero el riesgo bloquea avanzar"
+        summary_body = "La sesion tiene una condicion defensiva. El sistema queda solo para lectura y revision humana."
+        primary_next_step = "Revisar el motivo del bloqueo antes de evaluar nuevas senales."
+        checklist_items = [
+            "Revisar contexto guardado",
+            "Validar riesgo diario y portfolio",
+            "Mantener ordenes bloqueadas",
+        ]
+    elif max_state_code == "ENTRY_READY":
+        summary_title = "Contexto cargado y listo para revisar senales"
+        summary_body = "El marco pre-market esta guardado. Aun asi, esto es soporte de decision: no ejecuta ni autoriza ordenes automaticas."
+        primary_next_step = "Abrir el inbox y revisar solo senales con evidencia completa."
+        checklist_items = [
+            "Abrir Inbox de revision manual",
+            "Confirmar referencia, VWAP y OR",
+            "Registrar decision humana",
+        ]
+    else:
+        summary_title = "Contexto cargado en revision manual"
+        summary_body = "Hay suficiente marco para orientarse, pero falta validacion humana antes de tratar cualquier senal como accionable."
+        primary_next_step = "Revisar los pendientes marcados abajo antes de avanzar."
+        checklist_items = [
+            "Resolver campos pendientes",
+            "Revisar Radar GPT JSON",
+            "Abrir Inbox de revision manual",
+        ]
+
+    checklist_html = "\n".join(
+        "<li>{item}</li>".format(item=html.escape(item))
+        for item in checklist_items
+    )
     context_rows = [
         ("Market", current_context.get("market_context_status")),
         ("Macro", current_context.get("macro_status")),
@@ -5345,9 +5427,11 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
         ("Max State", current_context.get("decision_max_state")),
     ]
     context_table_rows = "\n".join(
-        '<tr><td>{label}</td><td><span class="pill neutral">{value}</span></td></tr>'.format(
+        '<tr><td>{label}</td><td><span class="pill {klass}">{friendly}</span><div class="tech">{technical}</div></td></tr>'.format(
             label=html.escape(label),
-            value=html.escape(str(value or "NEEDS_REVIEW")),
+            klass=html.escape(friendly_status(value)[2]),
+            friendly=html.escape(friendly_status(value)[1]),
+            technical=html.escape(friendly_status(value)[0]),
         )
         for label, value in context_rows
     )
@@ -5370,6 +5454,14 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
             h1 {{ margin:0 0 6px 0; font-size:24px; letter-spacing:0; }}
             header .sub {{ color:#cbd5e1; font-size:14px; }}
             main {{ padding:22px 28px 36px; max-width:1220px; }}
+            h2 {{ margin:0; font-size:26px; letter-spacing:0; line-height:1.15; }}
+            p {{ margin:0; }}
+            .summary {{ background:white; border:1px solid #dbe3ef; border-radius:8px; padding:18px; margin-bottom:16px; display:grid; grid-template-columns:minmax(0, 1.2fr) minmax(280px, .8fr); gap:18px; align-items:start; }}
+            .summary p {{ color:#4b5563; margin-top:8px; line-height:1.45; }}
+            .summary .eyebrow {{ color:#0369a1; font-size:12px; text-transform:uppercase; font-weight:900; margin-bottom:8px; }}
+            .nextpanel {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:14px; }}
+            .nextpanel p {{ color:#111827; font-weight:800; margin:0 0 10px; }}
+            .nextpanel ol {{ margin:0; padding-left:20px; color:#475569; font-size:13px; line-height:1.65; }}
             .statusbar {{ display:grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap:12px; margin-bottom:16px; }}
             .metric, .card, .notice {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:16px; }}
             .metric .value {{ font-size:20px; font-weight:800; margin-top:4px; }}
@@ -5395,10 +5487,12 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
             .pill.ok {{ background:#dcfce7; color:#166534; }}
             .pill.warn {{ background:#fef3c7; color:#92400e; }}
             .pill.neutral {{ background:#eef2ff; color:#3730a3; }}
+            .pill.blocked {{ background:#fee2e2; color:#991b1b; }}
+            .tech {{ color:#94a3b8; font-size:11px; font-weight:700; margin-top:3px; letter-spacing:0; }}
             .callout {{ background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:14px; margin-top:14px; }}
             .callout strong {{ color:#1e3a8a; }}
             @media (max-width: 900px) {{
-                .statusbar, .layout {{ grid-template-columns:1fr; }}
+                .summary, .statusbar, .layout {{ grid-template-columns:1fr; }}
                 main {{ padding:16px; }}
             }}
         </style>
@@ -5410,6 +5504,18 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
         </header>
         <main>
             {saved_html}
+            <section class="summary">
+                <div>
+                    <div class="eyebrow">Lectura operativa</div>
+                    <h2>{html.escape(summary_title)}</h2>
+                    <p>{html.escape(summary_body)}</p>
+                </div>
+                <div class="nextpanel">
+                    <div class="label">Siguiente paso</div>
+                    <p>{html.escape(primary_next_step)}</p>
+                    <ol>{checklist_html}</ol>
+                </div>
+            </section>
             <section class="statusbar">
                 <div class="metric">
                     <div class="label">Estado</div>
@@ -5422,9 +5528,9 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
                     <div class="hint">{html.escape(mode_notes.get(active_mode, "Modo operativo seleccionado."))}</div>
                 </div>
                 <div class="metric">
-                    <div class="label">Max State</div>
-                    <div class="value">{html.escape(str(max_state))}</div>
-                    <div class="hint">Limite defensivo del contexto pre-market.</div>
+                    <div class="label">Decision maxima</div>
+                    <div class="value"><span class="pill {html.escape(max_state_class)}">{html.escape(max_state_label)}</span></div>
+                    <div class="hint">{html.escape(max_state_code)} es el limite defensivo del contexto.</div>
                 </div>
                 <div class="metric">
                     <div class="label">Ordenes</div>
@@ -5442,7 +5548,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
                         <input type="hidden" name="mode" value="{html.escape(active_mode)}">
                         <input type="hidden" name="session_date" value="{html.escape(session)}">
                         <input type="hidden" name="updated_by" value="{html.escape(payload.get("updated_by") or "manual")}">
-                        <button type="submit">Cargar contexto seleccionado</button>
+                        <button type="submit">{html.escape(mode_action_labels.get(active_mode, "Guardar contexto"))}</button>
                     </form>
                     <div class="actions">
                         <a class="linkbtn primary" href="/v31_manual_review_inbox">Inbox revision manual</a>
@@ -5457,7 +5563,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
                 <div class="card">
                     <div class="label">Contexto actualmente guardado</div>
                     <table>
-                        <tr><td>Encontrado</td><td><span class="pill {current_status_class}">{html.escape(str(current_found))}</span></td></tr>
+                        <tr><td>Encontrado</td><td><span class="pill {current_status_class}">{html.escape(current_found_text)}</span></td></tr>
                         {context_table_rows}
                         <tr><td>Notas</td><td>{html.escape(str(current_context.get("notes") or ""))}</td></tr>
                     </table>
