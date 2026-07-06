@@ -65,7 +65,7 @@ def keychain_password(service: str, disabled: bool = False) -> str | None:
 
 
 def read_token(no_keychain: bool) -> str | None:
-    for name in ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN"]:
+    for name in ["READ_ACCESS_TOKEN", "STOCK_ULTIMUS_READ_TOKEN", "STOCK_ULTIMUS_READ_ACCESS_TOKEN"]:
         value = os.getenv(name)
         if value:
             return value

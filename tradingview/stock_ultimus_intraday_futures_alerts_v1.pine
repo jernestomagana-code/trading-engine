@@ -1,0 +1,114 @@
+//@version=5
+indicator("Stock Ultimus Intraday Futures Alerts v1", overlay=true, max_labels_count=200)
+
+// This script is technical evidence only. It does not authorize orders.
+
+timezoneInput = input.string("America/New_York", "Session timezone")
+premarketSession = input.session("0400-0929", "Premarket session")
+openingRangeSession = input.session("0930-0935", "Opening range session")
+regularSession = input.session("0930-1600", "Regular session")
+minAdx = input.float(18.0, "Minimum ADX", minval=0.0, step=0.5)
+minRvol = input.float(1.10, "Minimum RVOL", minval=0.0, step=0.05)
+adxLength = input.int(14, "ADX length", minval=1)
+adxSmoothing = input.int(14, "ADX smoothing", minval=1)
+atrLength = input.int(14, "ATR length", minval=1)
+rvolLength = input.int(20, "RVOL length", minval=1)
+stopAtrMultiple = input.float(1.0, "Stop ATR multiple", minval=0.1, step=0.1)
+targetAtrMultiple = input.float(2.0, "Target ATR multiple", minval=0.1, step=0.1)
+snapshotEveryBars = input.int(12, "Snapshot every N bars", minval=1)
+
+inPremarket = not na(time(timeframe.period, premarketSession, timezoneInput))
+inOpeningRange = not na(time(timeframe.period, openingRangeSession, timezoneInput))
+inRegular = not na(time(timeframe.period, regularSession, timezoneInput))
+newDay = ta.change(time("D", "0000-2359", timezoneInput)) != 0
+newRegularSession = inRegular and not inRegular[1]
+
+var float premarketHigh = na
+var float premarketLow = na
+var float openingRangeHigh = na
+var float openingRangeLow = na
+var int lastSignalDirection = 0
+var float logicalStop = na
+var float logicalTarget = na
+
+if newDay
+    premarketHigh := na
+    premarketLow := na
+    openingRangeHigh := na
+    openingRangeLow := na
+    lastSignalDirection := 0
+    logicalStop := na
+    logicalTarget := na
+
+if inPremarket
+    premarketHigh := na(premarketHigh) ? high : math.max(premarketHigh, high)
+    premarketLow := na(premarketLow) ? low : math.min(premarketLow, low)
+
+if newRegularSession
+    openingRangeHigh := high
+    openingRangeLow := low
+
+if inOpeningRange
+    openingRangeHigh := na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)
+    openingRangeLow := na(openingRangeLow) ? low : math.min(openingRangeLow, low)
+
+vwapValue = ta.vwap(hlc3)
+[plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxSmoothing)
+atrValue = ta.atr(atrLength)
+avgVolume = ta.sma(volume, rvolLength)
+rvolValue = avgVolume > 0 ? volume / avgVolume : na
+
+hasOpeningRange = not na(openingRangeHigh) and not na(openingRangeLow)
+qualityOk = adxValue >= minAdx and rvolValue >= minRvol
+afterOpeningRange = inRegular and not inOpeningRange
+
+orbBreakoutLong = barstate.isconfirmed and afterOpeningRange and hasOpeningRange and close > openingRangeHigh and close[1] <= openingRangeHigh and close > vwapValue and qualityOk
+orbBreakoutShort = barstate.isconfirmed and afterOpeningRange and hasOpeningRange and close < openingRangeLow and close[1] >= openingRangeLow and close < vwapValue and qualityOk
+vwapReclaimLong = barstate.isconfirmed and inRegular and ta.crossover(close, vwapValue) and (not hasOpeningRange or close > openingRangeLow) and qualityOk
+vwapRejectShort = barstate.isconfirmed and inRegular and ta.crossunder(close, vwapValue) and (not hasOpeningRange or close < openingRangeHigh) and qualityOk
+
+longSignal = orbBreakoutLong or vwapReclaimLong
+shortSignal = orbBreakoutShort or vwapRejectShort
+
+if longSignal
+    lastSignalDirection := 1
+    logicalStop := math.min(vwapValue, close - atrValue * stopAtrMultiple)
+    logicalTarget := close + atrValue * targetAtrMultiple
+
+if shortSignal
+    lastSignalDirection := -1
+    logicalStop := math.max(vwapValue, close + atrValue * stopAtrMultiple)
+    logicalTarget := close - atrValue * targetAtrMultiple
+
+longInvalidation = lastSignalDirection == 1 and (ta.crossunder(close, vwapValue) or (hasOpeningRange and close < openingRangeHigh))
+shortInvalidation = lastSignalDirection == -1 and (ta.crossover(close, vwapValue) or (hasOpeningRange and close > openingRangeLow))
+riskInvalidation = barstate.isconfirmed and inRegular and (longInvalidation or shortInvalidation)
+
+if riskInvalidation
+    lastSignalDirection := 0
+
+sessionSnapshot = barstate.isconfirmed and inRegular and bar_index % snapshotEveryBars == 0
+
+plot(vwapValue, title="VWAP", color=color.new(color.blue, 0), linewidth=2)
+plot(openingRangeHigh, title="ORH", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(openingRangeLow, title="ORL", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(premarketHigh, title="PMH", color=color.new(color.teal, 35), linewidth=1, style=plot.style_linebr)
+plot(premarketLow, title="PML", color=color.new(color.orange, 35), linewidth=1, style=plot.style_linebr)
+plot(logicalStop, title="STOP", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
+plot(logicalTarget, title="TARGET", color=color.new(color.green, 60), linewidth=1, style=plot.style_linebr)
+plot(adxValue, title="ADX", display=display.data_window)
+plot(atrValue, title="ATR", display=display.data_window)
+plot(rvolValue, title="RVOL", display=display.data_window)
+
+plotshape(orbBreakoutLong, title="ORB Long marker", style=shape.triangleup, color=color.new(color.green, 0), location=location.belowbar, size=size.tiny, text="ORB L")
+plotshape(orbBreakoutShort, title="ORB Short marker", style=shape.triangledown, color=color.new(color.red, 0), location=location.abovebar, size=size.tiny, text="ORB S")
+plotshape(vwapReclaimLong, title="VWAP Reclaim marker", style=shape.circle, color=color.new(color.green, 0), location=location.belowbar, size=size.tiny, text="VWAP L")
+plotshape(vwapRejectShort, title="VWAP Reject marker", style=shape.circle, color=color.new(color.red, 0), location=location.abovebar, size=size.tiny, text="VWAP S")
+plotshape(riskInvalidation, title="Risk invalidation marker", style=shape.xcross, color=color.new(color.yellow, 0), location=location.top, size=size.tiny, text="INV")
+
+alertcondition(orbBreakoutLong, title="ORB Breakout Long", message="Stock Ultimus ORB Breakout Long")
+alertcondition(orbBreakoutShort, title="ORB Breakout Short", message="Stock Ultimus ORB Breakout Short")
+alertcondition(vwapReclaimLong, title="VWAP Reclaim Long", message="Stock Ultimus VWAP Reclaim Long")
+alertcondition(vwapRejectShort, title="VWAP Reject Short", message="Stock Ultimus VWAP Reject Short")
+alertcondition(riskInvalidation, title="Risk Invalidation", message="Stock Ultimus Risk Invalidation")
+alertcondition(sessionSnapshot, title="Session Snapshot", message="Stock Ultimus Session Snapshot")

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import runtime_local_technical
 import broker_check
+import ibkr_diagnostics
 
 
 # === V26 REMOTE MASTER SNAPSHOT PUBLISHER ===
@@ -881,6 +882,7 @@ if not SHOW_IBKR_CONTRACT_ERRORS:
     logging.getLogger("ib_insync.wrapper").setLevel(logging.CRITICAL)
 
 ib = IB()
+IBKR_CHAIN_DIAGNOSTIC_EVENTS = []
 
 
 def _bridge_health_path():
@@ -1990,13 +1992,29 @@ def get_option_chain(symbol):
 
         if not chains:
             print(symbol, "sin option chains desde IBKR")
+            IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                "ticker": symbol,
+                "status": "NO_CHAIN",
+                "chain_count": 0,
+                "generated_at": now_iso(),
+                "not_order_instruction": True,
+            })
             return None, None, None
 
         usable = []
+        chain_summaries = []
 
         for chain in chains:
             expirations = list(chain.expirations or [])
             strikes = list(chain.strikes or [])
+            chain_summaries.append({
+                "exchange": getattr(chain, "exchange", None),
+                "tradingClass": getattr(chain, "tradingClass", None),
+                "multiplier": getattr(chain, "multiplier", None),
+                "expiration_count": len(expirations),
+                "strike_count": len(strikes),
+                "symbol_match_rank": option_chain_symbol_match_rank(symbol, chain),
+            })
 
             if not expirations or not strikes:
                 continue
@@ -2025,6 +2043,20 @@ def get_option_chain(symbol):
                     -x["strike_count"]
                 )
             )[0]
+            IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                "ticker": symbol,
+                "status": "CHAIN_SELECTED",
+                "chain_count": len(chains),
+                "usable_chain_count": len(usable),
+                "selected_expiry": selected["expiry"],
+                "selected_dte": selected["dte"],
+                "selected_exchange": getattr(selected["chain"], "exchange", None),
+                "selected_trading_class": getattr(selected["chain"], "tradingClass", None),
+                "selected_multiplier": getattr(selected["chain"], "multiplier", None),
+                "chain_summaries": chain_summaries,
+                "generated_at": now_iso(),
+                "not_order_instruction": True,
+            })
 
             return selected["chain"], selected["expiry"], selected["dte"]
 
@@ -2070,14 +2102,45 @@ def get_option_chain(symbol):
                     -x["strike_count"]
                 )
             )[0]
+            IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                "ticker": symbol,
+                "status": "FALLBACK_CHAIN_SELECTED",
+                "chain_count": len(chains),
+                "usable_chain_count": len(usable),
+                "fallback_count": len(fallback),
+                "selected_expiry": selected["expiry"],
+                "selected_dte": selected["dte"],
+                "selected_exchange": getattr(selected["chain"], "exchange", None),
+                "selected_trading_class": getattr(selected["chain"], "tradingClass", None),
+                "selected_multiplier": getattr(selected["chain"], "multiplier", None),
+                "chain_summaries": chain_summaries,
+                "generated_at": now_iso(),
+                "not_order_instruction": True,
+            })
 
             return selected["chain"], selected["expiry"], selected["dte"]
 
         print(symbol, "sin expiración válida")
+        IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+            "ticker": symbol,
+            "status": "NO_VALID_EXPIRATION",
+            "chain_count": len(chains),
+            "usable_chain_count": len(usable),
+            "chain_summaries": chain_summaries,
+            "generated_at": now_iso(),
+            "not_order_instruction": True,
+        })
         return None, None, None
 
     except Exception as e:
         print(symbol, "CHAIN ERROR:", e)
+        IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+            "ticker": symbol,
+            "status": "CHAIN_ERROR",
+            "error": str(e)[:500],
+            "generated_at": now_iso(),
+            "not_order_instruction": True,
+        })
         return None, None, None
 
 
@@ -2229,6 +2292,20 @@ def build_option_candidates(symbol, stock_price):
         "| multiplier:",
         getattr(chain, "multiplier", None)
     )
+    IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+        "ticker": symbol,
+        "status": "CONTRACT_CANDIDATES_BUILT",
+        "stock_price": stock_price,
+        "expiry": expiry,
+        "dte": dte,
+        "put_strikes_selected": puts,
+        "call_strikes_selected": calls,
+        "valid_contract_count": len(valid),
+        "invalid_contract_count": invalid_count,
+        "max_options_per_symbol": MAX_OPTIONS_PER_SYMBOL,
+        "generated_at": now_iso(),
+        "not_order_instruction": True,
+    })
 
     return valid[:MAX_OPTIONS_PER_SYMBOL]
 
@@ -2616,6 +2693,8 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
 
 def send_options_intelligence():
     print("\n=== OPTIONS INTELLIGENCE V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
+    IBKR_CHAIN_DIAGNOSTIC_EVENTS.clear()
+    cycle_option_rows = []
 
     for symbol in OPTION_SYMBOLS:
         try:
@@ -2697,6 +2776,19 @@ def send_options_intelligence():
                         len(missing_confirmations) == 0
                         and decision in ["OPERAR", "ENTRY", "ENTRY_READY"]
                     )
+                    option_discard_reasons = ibkr_diagnostics.option_discard_reasons({
+                        "bid": bid,
+                        "ask": ask,
+                        "spread": spread,
+                        "spread_pct": spread_pct,
+                        "delta": greeks.get("delta"),
+                        "iv": greeks.get("iv"),
+                        "volume": volume,
+                        "open_interest": open_interest,
+                        "data_quality": data_quality,
+                        "decision_cap": decision_cap,
+                        "manual_review_ready": manual_review_ready,
+                    })
 
                     tv_context = tradingview_context_stub(symbol)
 
@@ -2743,6 +2835,8 @@ def send_options_intelligence():
                         "open_interest": open_interest,
                         "option_market_data_source": option_market_data_source,
                         "option_market_data_attempts": option_market_data_attempts,
+                        "option_discard_reasons": option_discard_reasons,
+                        "discarded_for_manual_review": bool(option_discard_reasons),
                         "can_operate": False,
                         "manual_review_ready": manual_review_ready,
                         "not_order_instruction": True,
@@ -2760,6 +2854,7 @@ def send_options_intelligence():
                     }
 
                     v17_store_row(payload)
+                    cycle_option_rows.append(payload)
 
                     status = post(payload)
 
@@ -2780,6 +2875,27 @@ def send_options_intelligence():
 
         except Exception as e:
             print(symbol, "OPTIONS ERROR:", e)
+            IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                "ticker": symbol,
+                "status": "OPTIONS_INTELLIGENCE_ERROR",
+                "error": str(e)[:500],
+                "generated_at": now_iso(),
+                "not_order_instruction": True,
+            })
+    diagnostic = ibkr_diagnostics.build_cycle_diagnostic(
+        symbols=list(OPTION_SYMBOLS),
+        chain_events=list(IBKR_CHAIN_DIAGNOSTIC_EVENTS),
+        option_rows=cycle_option_rows,
+        generated_at=now_iso(),
+    )
+    saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
+    print(
+        "IBKR CHAIN COVERAGE DIAGNOSTIC"
+        f" | rows:{diagnostic.get('option_row_count')}"
+        f" | gap:{diagnostic.get('primary_gap')}"
+        f" | path:{saved.get('path')}"
+    )
+    return diagnostic
 
 
 # ============================================================

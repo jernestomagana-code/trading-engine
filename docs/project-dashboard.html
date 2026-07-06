@@ -81,14 +81,16 @@
   <main>
     <section class="hero" aria-label="Resumen Stock Ultimus">
       <div class="hero-inner">
-        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-07-03</div>
+        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-07-05</div>
         <h1>Operativo sano; terceros bloqueado</h1>
         <p>
           Produccion, read-auth, GPT Action, manual review y no-order guardrails
           siguen OK. Hoy el radar esta NO_DATA por MASTER_SNAPSHOT_MISSING:
-          falta refrescar IBKR/TWS y TradingView en una ventana util. Terceros
-          no esta liberado: requiere aislamiento, disclosures, audit durable y
-          legal/compliance.
+          falta refrescar IBKR/TWS y TradingView en una ventana util. La base
+          local ya tiene 140 decisiones y 69 ENTRY_READY historicos, pero
+          foundation_health esta en WARN por outcomes/fuentes/datos incompletos.
+          Terceros no esta liberado: requiere aislamiento, disclosures, audit
+          durable y legal/compliance.
         </p>
       </div>
     </section>
@@ -101,8 +103,8 @@
       </article>
       <article class="metric">
         <div class="metric-label">Preflight real</div>
-        <div class="metric-value">OK</div>
-        <div class="metric-note">5 gates; 0 fallas.</div>
+        <div class="metric-value">Warn</div>
+        <div class="metric-note">6 gates; 0 fallas.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Ciclo operativo</div>
@@ -136,7 +138,7 @@
             </li>
             <li class="missing-item">
               <span class="missing-num">3</span>
-              <div><strong>Confirmar TradingView real</strong><p>Contrato integrado; hoy no hay tecnicos porque no hay snapshot maestro activo.</p></div>
+              <div><strong>Confirmar TradingView real</strong><p>Contrato integrado; hoy no hay tecnicos porque no hay snapshot maestro activo y el ledger tecnico espera payload.</p></div>
               <span class="status-pill is-work">Refresh</span>
             </li>
             <li class="missing-item">
@@ -146,8 +148,8 @@
             </li>
             <li class="missing-item">
               <span class="missing-num">5</span>
-              <div><strong>Outcomes/manual reviews</strong><p>Dry-run actual responde 200, no guarda por <span class="code">--no-write</span> y conserva guardrails.</p></div>
-              <span class="status-pill is-good">OK</span>
+              <div><strong>Outcomes/manual reviews</strong><p>Dry-run responde 200; hay 1 outcome cerrado y 0 completos. Falta backfill y acumular minimo 30 outcomes completos por estrategia activa.</p></div>
+              <span class="status-pill is-work">Muestra</span>
             </li>
           </ol>
           <p class="area-text" style="margin-top:14px;">
@@ -196,7 +198,12 @@
             <div class="area-row">
               <div class="area-name">TradingView</div>
               <span class="status-pill is-work">Refresh</span>
-              <div class="area-text">Contrato integrado; hoy <span class="code">technical_count=0</span> por snapshot faltante.</div>
+              <div class="area-text">Contrato integrado; hoy <span class="code">technical_count=0</span> por snapshot faltante y ledger sin payload nuevo.</div>
+            </div>
+            <div class="area-row">
+              <div class="area-name">Foundation</div>
+              <span class="status-pill is-work">WARN</span>
+              <div class="area-text">140 decisiones, 69 ENTRY_READY locales, 106 option rows y 92.86% source coverage; faltan fuentes/outcomes completos.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Terceros</div>
@@ -205,8 +212,8 @@
             </div>
             <div class="area-row">
               <div class="area-name">Outcomes</div>
-              <span class="status-pill is-good">OK</span>
-              <div class="area-text">Outcome/manual-review evaluation ejecutado y dry-run del preflight OK.</div>
+              <span class="status-pill is-work">Muestra</span>
+              <div class="area-text">Outcome/manual-review evaluation ejecutado; falta completar outcomes cerrados antes de cambios de parametros.</div>
             </div>
           </div>
         </section>
@@ -226,7 +233,8 @@
             <div class="check-item"><span class="check">✓</span> Produccion protegida verificada en Render.</div>
             <div class="check-item"><span class="check">✓</span> GPT Builder actualizado.</div>
             <div class="check-item"><span class="check">•</span> Hoy falta snapshot maestro fresco: NO_DATA / WAIT_PIPELINE.</div>
-            <div class="check-item"><span class="check">•</span> Reconfirmar TradingView al publicar snapshot.</div>
+            <div class="check-item"><span class="check">•</span> Reconfirmar TradingView y alimentar ledger tecnico.</div>
+            <div class="check-item"><span class="check">•</span> Backfill outcomes y llegar a 30 completos por estrategia activa.</div>
             <div class="check-item"><span class="check">•</span> Terceros/comercial bloqueado por gobernanza.</div>
           </div>
         </section>
@@ -281,9 +289,12 @@
             <li>Ingest token local creado y verificado en Keychain.</li>
             <li>Commit f56ada7 subido por SSH y desplegado live en Render.</li>
             <li>Production read-auth: autorizado 200, sin token 401, readiness READY.</li>
-            <li>Operational-100 real: PASS_WITH_WARNINGS; 5 gates, 0 fallas, 1 warning esperado.</li>
+            <li>Operational-100 real: PASS_WITH_WARNINGS; 6 gates, 0 fallas, 2 warnings.</li>
             <li>GPT/backend health OK: autorizado 200, sin token 401, no-order guardrails OK.</li>
             <li>Radar actual: NO_DATA por MASTER_SNAPSHOT_MISSING; opciones=0, tecnicos=0.</li>
+            <li>Foundation health local WARN: 140 decisiones, 69 ENTRY_READY, 106 option rows.</li>
+            <li>Outcomes: 1 cerrado, 0 completos; muestra insuficiente para parametros.</li>
+            <li>TradingView ledger WAITING_FOR_DATA; falta replay/ingest de payload tecnico.</li>
             <li>Daily operational audit: PASS_WITH_WARNINGS, 24/26 checks, warnings por snapshot faltante.</li>
             <li>Outcome/manual-review dry-run responde 200 sin guardar cambios.</li>
             <li>Strategy performance: decision_count=48, outcome_count=12, closed_outcomes=0.</li>
@@ -304,8 +315,9 @@
           <ol class="action-list">
             <li><span class="number">1</span><span>Correr <span class="code">scripts/daily_open_checklist.py --refresh --publish</span> al inicio de la ventana util.</span></li>
             <li><span class="number">2</span><span>Usar <span class="code">scripts/v32_operator_notify.py --macos-notify</span> para avisos ACTION/RISK/manual review sin ruido WAIT_MARKET.</span></li>
-            <li><span class="number">3</span><span>Confirmar alertas TradingView hacia technical_snapshot.</span></li>
-            <li><span class="number">4</span><span>Para terceros: cerrar compliance, aislamiento, tokens, audit y disclosures.</span></li>
+            <li><span class="number">3</span><span>Confirmar alertas TradingView hacia technical_snapshot y ledger tecnico.</span></li>
+            <li><span class="number">4</span><span>Backfill/re-journal de outcomes incompletos y acumular 30 completos por estrategia activa.</span></li>
+            <li><span class="number">5</span><span>Para terceros: cerrar compliance, aislamiento, tokens, audit y disclosures.</span></li>
           </ol>
         </section>
 
@@ -350,8 +362,8 @@
             Ciclo operativo PASS; radar queda READY_FOR_DECISION_REVIEW con WAIT_MARKET_WINDOW.
           </div>
           <div class="timeline-item">
-            <time>2026-07-03</time>
-            Produccion sigue OK; radar actual NO_DATA por snapshot faltante; terceros queda bloqueado por gates comerciales.
+            <time>2026-07-05</time>
+            Produccion sigue OK; radar actual NO_DATA por snapshot faltante; foundation_health WARN por outcomes/fuentes incompletas; terceros bloqueado por gates comerciales.
           </div>
         </section>
       </aside>

@@ -45,6 +45,10 @@ Required:
 - `READ_ACCESS_TOKEN`: protects GPT and dashboard read endpoints.
 - `SNAPSHOT_INGEST_TOKEN`: protects snapshot publishing from the local bridge.
 
+`READ_ACCESS_TOKEN` is the canonical read-secret name. Transitional aliases may
+remain available in local tooling during migration, but deployments should use
+the canonical name.
+
 Recommended for production:
 
 - `WEBHOOK_SECRET`: protects external TradingView-style webhook writes.

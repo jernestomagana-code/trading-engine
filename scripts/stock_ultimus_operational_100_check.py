@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Run the Stock Ultimus operational-100 preflight.
 
-This local helper closes the five operating-model gates:
+This local helper closes the operating-model gates:
 
-1) GPT Action/backend read health,
-2) manual review surfaces,
-3) outcome/learning dry-run,
-4) cloud operational audit,
-5) optional real outcome write only after the operator explicitly confirms the
+1) local foundation health,
+2) GPT Action/backend read health,
+3) manual review surfaces,
+4) outcome/learning dry-run,
+5) cloud operational audit,
+6) optional real outcome write only after the operator explicitly confirms the
    post-close/fresh-snapshot condition.
 
 It never places orders, never authorizes execution, and never prints tokens.
@@ -129,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_OPERATIONAL_100_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--skip-cloud", action="store_true", help="Do not call production; useful for local CI.")
+    parser.add_argument("--skip-foundation-health", action="store_true", help="Skip the local foundation health gate.")
     parser.add_argument("--real-outcomes-after-close", action="store_true", help="Persist outcome evaluations. Use only after close with fresh snapshot.")
     return parser
 
@@ -141,6 +143,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     limit = max(1, min(int(args.limit or 100), 1000))
     steps: list[dict[str, Any]] = []
     gates: list[dict[str, Any]] = []
+
+    if getattr(args, "skip_foundation_health", False):
+        gates.append(summarize_gate("foundation_health", True, "skipped by operator", severity="WARN"))
+    else:
+        foundation = run_command(
+            "foundation_health",
+            [
+                sys.executable,
+                "scripts/run_foundation_health_check.py",
+                "--json-only",
+                "--no-write",
+            ],
+            timeout=60,
+            env=env,
+        )
+        steps.append(foundation)
+        foundation_payload = command_json(foundation)
+        foundation_status = str(foundation_payload.get("status") or "UNKNOWN").upper()
+        foundation_ok = foundation.get("ok") and foundation_status == "OK"
+        gates.append(summarize_gate(
+            "foundation_health",
+            foundation_ok,
+            f"local foundation health status={foundation_status}",
+            severity="FAIL" if foundation_ok else "WARN",
+        ))
 
     if args.skip_cloud:
         gates.append(summarize_gate("cloud_preflight", True, "skipped by operator", severity="WARN"))
