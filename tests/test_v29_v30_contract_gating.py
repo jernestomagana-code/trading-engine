@@ -1347,6 +1347,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             html = main._v31_manual_review_inbox_html()
 
         self.assertIn("Daily Review Inbox", html)
+        self.assertIn("Inbox de revision manual", html)
+        self.assertIn("Hay setups pendientes de revision humana", html)
+        self.assertIn("Que hago ahora", html)
         self.assertIn("QQQ", html)
         self.assertIn("Approve manual", html)
         self.assertIn("/v31_manual_review_inbox/record", html)
@@ -1356,6 +1359,53 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("/v32_strategy_performance_dashboard", html)
         self.assertIn("/v31_manual_reviews_dashboard", html)
         self.assertIn("/v31_manual_review_learning_dashboard", html)
+
+    def test_command_center_html_renders_operator_friendly_summary(self):
+        with patch.object(main, "_v31_command_center_payload", return_value={
+            "status": "READY_FOR_DECISION_REVIEW",
+            "operational_readiness": "READY_FOR_MANUAL_REVIEW",
+            "generated_at": "2026-07-06T14:00:00+00:00",
+            "summary": {
+                "items": 2,
+                "entry_ready": 1,
+                "blocked_or_waiting": 1,
+                "option_rows_found": 12,
+                "snapshot": "unit-test-master.json",
+                "decision_state_counts": {"ENTRY_READY": 1, "WAIT_OPTIONS_DATA": 1},
+            },
+            "top_recommendations": [{
+                "ticker": "QQQ",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "conviction_score": 1200,
+                "main_blocker": "Manual review",
+                "selected_contract": {
+                    "strike": 645,
+                    "expiration": "20260731",
+                    "bid": 6.1,
+                    "ask": 6.2,
+                    "delta": -0.14,
+                },
+            }],
+            "blocked_or_waiting": [{
+                "ticker": "TSLA",
+                "strategy": "NAKED_PUT",
+                "final_state": "WAIT_OPTIONS_DATA",
+                "main_blocker": "MISSING_DELTA",
+                "required_missing_fields": ["delta"],
+            }],
+            "next_required_actions": ["Revisar QQQ manualmente."],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }):
+            html = main._v31_command_center_html()
+
+        self.assertIn("Hay setups listos para revision manual", html)
+        self.assertIn("Siguiente paso", html)
+        self.assertIn("Abrir Inbox revision manual", html)
+        self.assertIn("/v31_manual_review_inbox", html)
+        self.assertIn("ENTRY_READY no autoriza ordenes", html)
+        self.assertIn("Bloqueadas o en espera", html)
 
     def test_wait_options_inbox_renders_contract_alternatives(self):
         decision = {

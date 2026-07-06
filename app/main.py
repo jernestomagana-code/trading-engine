@@ -21468,6 +21468,18 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
     error_html = '<div class="notice error">{}</div>'.format(_v29_html_escape(error)) if error else ""
     mode_link = "/v31_manual_review_inbox" if show_all else "/v31_manual_review_inbox?show_all=true"
     mode_text = "Ver solo ENTRY_READY" if show_all else "Ver tambien bloqueadas/en espera"
+    if progress.get("pending"):
+        inbox_title = "Hay setups pendientes de revision humana"
+        inbox_body = "Revisa uno por uno: contrato, spread, liquidez, riesgo, evento y ticket en TWS antes de registrar cualquier decision."
+        inbox_next = "Empieza por el primer setup y marca Reviewing, Watchlist, Reject o Approve manual segun la evidencia."
+    elif show_all:
+        inbox_title = "Vista ampliada sin pendientes ENTRY_READY"
+        inbox_body = "Estas viendo setups bloqueados o en espera para diagnostico. No son candidatos accionables."
+        inbox_next = "Usa los bloqueadores para refrescar datos, esperar mercado o descartar ruido."
+    else:
+        inbox_title = "No hay setups ENTRY_READY pendientes"
+        inbox_body = "El inbox esta limpio para revision rapida. El sistema sigue en modo decision support."
+        inbox_next = "Vuelve al Command Center o abre la vista ampliada si quieres revisar bloqueadas/en espera."
     return """
     <!doctype html>
     <html>
@@ -21479,11 +21491,18 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#111827; }}
         .hero {{ background:#111827; color:white; padding:24px 28px; }}
         .hero h1 {{ margin:0 0 6px 0; font-size:28px; letter-spacing:0; }}
+        .hero p {{ margin:0; color:#cbd5e1; line-height:1.45; }}
         .hero a {{ color:#bfdbfe; font-weight:800; }}
         .wrap {{ max-width:1160px; margin:0 auto; padding:22px 18px 44px; }}
         .notice {{ padding:12px 14px; border-radius:8px; margin-bottom:14px; font-weight:800; }}
         .notice.ok {{ background:#dcfce7; color:#166534; }}
         .notice.error {{ background:#fee2e2; color:#991b1b; }}
+        .operator-read {{ background:white; border:1px solid #dbe3ef; border-radius:8px; padding:16px; margin-bottom:16px; display:grid; grid-template-columns:minmax(0,1.1fr) minmax(280px,.9fr); gap:14px; }}
+        .operator-read h2 {{ margin:0; font-size:24px; letter-spacing:0; }}
+        .operator-read p {{ margin:8px 0 0; color:#475569; line-height:1.45; }}
+        .next-box {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; }}
+        .next-box span {{ color:#64748b; font-size:11px; font-weight:900; text-transform:uppercase; }}
+        .next-box strong {{ display:block; margin-top:5px; line-height:1.4; }}
         .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; padding:12px 14px; border-radius:8px; margin-bottom:18px; line-height:1.45; }}
         .toolbar {{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }}
         .toolbar a {{ color:#2563eb; font-weight:800; }}
@@ -21524,15 +21543,27 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         button.rejected {{ background:#dc2626; }}
         button.expired {{ background:#475569; }}
         .empty {{ background:white; border:1px solid #e5e7eb; border-radius:8px; padding:22px; color:#64748b; font-weight:800; }}
+        @media (max-width: 820px) {{ .operator-read, .progress, .contract-grid, .button-row {{ grid-template-columns:1fr; }} }}
       </style>
     </head>
     <body>
       <div class="hero">
-        <h1>Daily Review Inbox</h1>
-        <div>Revision rapida · <a href="/v31_manual_review_console">Consola completa</a> · <a href="/v31_operating_suite">Operating Suite</a> · <a href="/read_auth_logout">Logout</a></div>
+        <h1>Inbox de revision manual</h1>
+        <p>Revision rapida de setups. ENTRY_READY significa listo para revisar, no permiso para operar.</p>
+        <div><a href="/v31_manual_review_console">Consola completa</a> · <a href="/v31_operating_suite">Operating Suite</a> · <a href="/read_auth_logout">Logout</a></div>
       </div>
       <main class="wrap">
         {message_html}{error_html}
+        <section class="operator-read">
+          <div>
+            <h2>{inbox_title}</h2>
+            <p>{inbox_body}</p>
+          </div>
+          <div class="next-box">
+            <span>Que hago ahora</span>
+            <strong>{inbox_next}</strong>
+          </div>
+        </section>
         <div class="guardrail">Marca tu revisión humana. Esta pantalla no coloca órdenes, no autoriza ejecución automática y no reemplaza validar manualmente el ticket en TWS. Approve manual solo registra que tú validaste contrato, liquidez, spread, eventos, riesgo de cuenta y ticket manual.</div>
         <section class="progress">
           <div><span>Total</span><strong>{total}</strong></div>
@@ -21558,6 +21589,9 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
         total=_v29_html_escape(progress.get("total")),
         reviewed=_v29_html_escape(progress.get("reviewed")),
         pending=_v29_html_escape(progress.get("pending")),
+        inbox_title=_v29_html_escape(inbox_title),
+        inbox_body=_v29_html_escape(inbox_body),
+        inbox_next=_v29_html_escape(inbox_next),
         mode_link=_v29_html_escape(mode_link),
         mode_text=_v29_html_escape(mode_text),
         cards="".join(cards) or '<div class="empty">No hay ENTRY_READY pendientes para revision rapida.</div>',
@@ -25165,6 +25199,29 @@ def _v31_command_center_html():
     payload = _v31_command_center_payload()
     summary = payload.get("summary") or {}
     states = summary.get("decision_state_counts") or {}
+    def _summary_int(key):
+        try:
+            return int(summary.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    entry_ready_count = _summary_int("entry_ready")
+    blocked_count = _summary_int("blocked_or_waiting")
+    if entry_ready_count:
+        operator_title = "Hay setups listos para revision manual"
+        operator_body = "Abre el inbox y revisa evidencia completa antes de registrar una decision. ENTRY_READY no autoriza ordenes."
+        operator_next = "Abrir Inbox revision manual"
+        operator_href = "/v31_manual_review_inbox"
+    elif blocked_count:
+        operator_title = "No hay setups listos; hay bloqueadas o en espera"
+        operator_body = "El motor encontro candidatos, pero faltan datos, mercado, broker, riesgo o confirmacion tecnica."
+        operator_next = "Revisar bloqueadores principales"
+        operator_href = "#blocked-waiting"
+    else:
+        operator_title = "Sin candidatos activos para revisar"
+        operator_body = "El Command Center no detecta ENTRY_READY ni bloqueadas relevantes en este corte."
+        operator_next = "Actualizar payload GPT"
+        operator_href = "/gpt_v31_daily_rankings"
     top_rows = ""
     for item in payload.get("top_recommendations") or []:
         contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
@@ -25181,6 +25238,8 @@ def _v31_command_center_html():
           <td>{_v29_html_escape(item.get('main_blocker') or 'Manual review')}</td>
         </tr>
         """
+    if not top_rows:
+        top_rows = '<tr><td colspan="9" class="empty-cell">No hay oportunidades ENTRY_READY para revision manual en este momento.</td></tr>'
     blocked_rows = ""
     for item in (payload.get("blocked_or_waiting") or [])[:16]:
         blocked_rows += f"""
@@ -25192,11 +25251,17 @@ def _v31_command_center_html():
           <td>{_v29_html_escape(', '.join(item.get('required_missing_fields') or []))}</td>
         </tr>
         """
+    if not blocked_rows:
+        blocked_rows = '<tr><td colspan="5" class="empty-cell">No hay bloqueadas/en espera en esta vista.</td></tr>'
     actions = "".join(f"<li>{_v29_html_escape(action)}</li>" for action in payload.get("next_required_actions") or [])
+    if not actions:
+        actions = "<li>Sin acciones requeridas reportadas por el motor.</li>"
     state_cards = "".join(
         f'<div class="metric"><span>{_v29_html_escape(state)}</span><strong>{_v29_html_escape(count)}</strong></div>'
         for state, count in sorted(states.items())
     )
+    if not state_cards:
+        state_cards = '<div class="metric"><span>Estados</span><strong>0</strong></div>'
     return f"""
     <!doctype html>
     <html>
@@ -25206,7 +25271,14 @@ def _v31_command_center_html():
         body {{font-family: Inter, Arial, sans-serif; margin:0; background:#f6f7f9; color:#101828;}}
         header {{background:#111827; color:white; padding:26px 32px;}}
         h1 {{margin:0; font-size:28px; letter-spacing:0;}}
+        header p {{margin:8px 0 0; color:#cbd5e1;}}
         main {{padding:24px 32px 40px;}}
+        .operator-read {{background:white; border:1px solid #dbe3ef; border-radius:8px; padding:18px; display:grid; grid-template-columns:minmax(0,1.25fr) minmax(260px,.75fr); gap:16px; align-items:start; margin-bottom:18px;}}
+        .operator-read h2 {{margin:0; font-size:26px; letter-spacing:0; line-height:1.15;}}
+        .operator-read p {{margin:8px 0 0; color:#475467; line-height:1.45;}}
+        .next-card {{background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:14px;}}
+        .next-card span {{display:block; color:#667085; font-size:11px; font-weight:900; text-transform:uppercase;}}
+        .next-card a {{display:inline-flex; margin-top:8px; background:#175cd3; color:white; border-radius:8px; padding:10px 12px; text-decoration:none;}}
         .grid {{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0;}}
         .metric {{background:white; border:1px solid #e5e7eb; border-radius:8px; padding:14px;}}
         .metric span {{display:block; color:#667085; font-size:12px; font-weight:700; text-transform:uppercase;}}
@@ -25215,7 +25287,9 @@ def _v31_command_center_html():
         th,td {{text-align:left; padding:12px; border-bottom:1px solid #eaecf0; font-size:13px; vertical-align:top;}}
         th {{color:#667085; font-size:11px; text-transform:uppercase;}}
         .note {{color:#475467; font-size:14px;}}
+        .empty-cell {{color:#667085; font-weight:800; background:#f8fafc;}}
         a {{color:#175cd3; font-weight:700;}}
+        @media (max-width: 880px) {{ main {{padding:18px;}} .operator-read, .grid {{grid-template-columns:1fr;}} table {{display:block; overflow-x:auto;}} }}
       </style>
     </head>
     <body>
@@ -25224,6 +25298,16 @@ def _v31_command_center_html():
         <p>{_v29_html_escape(payload.get('status'))} · {_v29_html_escape(payload.get('operational_readiness'))} · generado {_v29_html_escape(payload.get('generated_at'))}</p>
       </header>
       <main>
+        <section class="operator-read">
+          <div>
+            <h2>{_v29_html_escape(operator_title)}</h2>
+            <p>{_v29_html_escape(operator_body)}</p>
+          </div>
+          <div class="next-card">
+            <span>Siguiente paso</span>
+            <a href="{_v29_html_escape(operator_href)}">{_v29_html_escape(operator_next)}</a>
+          </div>
+        </section>
         <section class="grid">
           <div class="metric"><span>Evaluados</span><strong>{_v29_html_escape(summary.get('items'))}</strong></div>
           <div class="metric"><span>Entry Ready</span><strong>{_v29_html_escape(summary.get('entry_ready'))}</strong></div>
@@ -25234,7 +25318,7 @@ def _v31_command_center_html():
         <p class="note">Snapshot: {_v29_html_escape(summary.get('snapshot'))}</p>
         <h2>Oportunidades para revision manual</h2>
         <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Score</th><th>Strike</th><th>Exp</th><th>Bid/Ask</th><th>Delta</th><th>Nota</th></tr></thead><tbody>{top_rows}</tbody></table>
-        <h2>Bloqueadas o en espera</h2>
+        <h2 id="blocked-waiting">Bloqueadas o en espera</h2>
         <table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Bloqueador</th><th>Campos faltantes</th></tr></thead><tbody>{blocked_rows}</tbody></table>
         <h2>Siguientes acciones</h2>
         <ul>{actions}</ul>
