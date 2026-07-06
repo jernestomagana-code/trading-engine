@@ -92,6 +92,36 @@ class BrokerCheckTests(unittest.TestCase):
         trade_size = [item for item in check["checks"] if item["name"] == "TRADE_CAPACITY_PCT"][0]
         self.assertEqual(trade_size["status"], "BLOCKED")
 
+    def test_naked_put_capacity_block_includes_shortfall_details(self):
+        snapshot = {
+            "options_rows": [
+                {
+                    "ticker": "MSFT",
+                    "strategy": "NAKED_PUT",
+                    "strike": 365,
+                    "expiration": "20260731",
+                    "dte": 39,
+                    "bid": 4.20,
+                    "ask": 4.35,
+                    "delta": -0.18,
+                }
+            ],
+            "positions": [{"ticker": "MSFT", "sec_type": "STK", "position_size": 0}],
+            "account": {"available_funds": 25000},
+            "broker_check_policy": {"max_trade_capacity_pct": 100},
+        }
+
+        check = broker_check.merge_broker_checks(snapshot)["broker_checks"][0]
+
+        self.assertEqual(check["status"], "BLOCKED")
+        self.assertIn("BROKER_PUT_CAPACITY_INSUFFICIENT", check["blockers"])
+        capacity = [item for item in check["checks"] if item["name"] == "PUT_CAPACITY_CHECK"][0]
+        self.assertEqual(capacity["status"], "BLOCKED")
+        self.assertEqual(capacity["value"], 25000)
+        self.assertEqual(capacity["required"], 36500)
+        self.assertEqual(capacity["shortfall"], 11500)
+        self.assertEqual(capacity["capacity_pct_required"], 146.0)
+
     def test_existing_short_put_blocks_additional_naked_put(self):
         snapshot = {
             "options_rows": [

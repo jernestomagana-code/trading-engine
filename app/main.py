@@ -24586,6 +24586,7 @@ def _v31_gpt_compact_daily_item(item):
         "broker_check_status": broker.get("status"),
         "broker_check_blockers": broker.get("blockers") or [],
         "broker_check_warnings": broker.get("warnings") or [],
+        "broker_check_checks": broker.get("checks") or [],
         "parameter_review_status": parameter_review.get("status"),
         "parameter_review_blockers": parameter_review.get("blockers") or [],
         "execution_authorized": False,
@@ -24624,6 +24625,7 @@ def _v31_gpt_compact_daily_payload(payload):
         "top_recommendations": top,
         "items": items,
         "blocked_or_waiting": blocked_or_waiting,
+        "blocked_cause_groups": _v31_blocker_cause_summary(blocked_or_waiting),
         "no_trade": no_trade,
         "source_status": payload.get("source_status") or {},
         "risk_notes": [
@@ -24688,6 +24690,22 @@ def _v31_primary_block_reason(item):
 
     broker_blockers = item.get("broker_check_blockers") or []
     if broker_blockers:
+        broker_checks = item.get("broker_check_checks") if isinstance(item.get("broker_check_checks"), list) else []
+        blocked_check = next(
+            (check for check in broker_checks if isinstance(check, dict) and check.get("status") == "BLOCKED"),
+            None,
+        )
+        if blocked_check:
+            parts = [
+                str(blocked_check.get("name") or broker_blockers[0]),
+                "actual={value}".format(value=blocked_check.get("value")),
+                "requiere={required}".format(required=blocked_check.get("required") or blocked_check.get("limit")),
+            ]
+            if blocked_check.get("shortfall") not in [None, 0, ""]:
+                parts.append("faltante={value}".format(value=blocked_check.get("shortfall")))
+            if blocked_check.get("capacity_pct_required") not in [None, ""]:
+                parts.append("capacidad_requerida={value}%".format(value=blocked_check.get("capacity_pct_required")))
+            return "Broker check: {detail}".format(detail=" ".join(part for part in parts if "None" not in part))
         return "Broker check: {blockers}".format(blockers=", ".join(str(blocker) for blocker in broker_blockers))
 
     risk_blockers = item.get("risk_profile_blockers") or []
@@ -24705,6 +24723,64 @@ def _v31_primary_block_reason(item):
     return "Sin razon primaria disponible; revisar decision completa por ticker."
 
 
+def _v31_blocker_cause_bucket(item):
+    item = item if isinstance(item, dict) else {}
+    text = " ".join(
+        str(value)
+        for value in [
+            item.get("final_state"),
+            item.get("main_blocker"),
+            item.get("risk_blocker"),
+            item.get("primary_block_reason"),
+            " ".join(str(v) for v in (item.get("blockers") or [])),
+            " ".join(str(v) for v in (item.get("required_missing_fields") or [])),
+            " ".join(str(v) for v in (item.get("broker_check_blockers") or [])),
+            " ".join(str(v) for v in (item.get("risk_profile_blockers") or [])),
+        ]
+        if value
+    ).upper()
+    if "BROKER_PUT_CAPACITY" in text or "BROKER_TRADE_SIZE" in text:
+        return "broker_capacity"
+    if "BROKER_EXISTING_SHORT_PUT" in text or "BROKER_COVERED_CALL_SHARES" in text:
+        return "broker_position"
+    if "BROKER" in text:
+        return "broker_other"
+    if "TECHNICAL" in text or "CANSLIM" in text:
+        return "technical_or_canslim"
+    if "WAIT_OPTIONS" in text or "OPTION" in text or "MISSING_EXECUTABLE_OPTION" in text:
+        return "options_data"
+    if "RISK_PROFILE" in text or "DELTA" in text or "SPREAD" in text or "DTE" in text:
+        return "contract_risk"
+    if "MARKET" in text or "PIPELINE" in text or "SNAPSHOT" in text:
+        return "market_or_pipeline"
+    return "other"
+
+
+def _v31_blocker_cause_summary(items, limit=12):
+    items = items if isinstance(items, list) else []
+    buckets: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        bucket = _v31_blocker_cause_bucket(item)
+        entry = buckets.setdefault(bucket, {"cause": bucket, "bucket": bucket, "count": 0, "tickers": [], "examples": []})
+        entry["count"] += 1
+        ticker = item.get("ticker")
+        if ticker and ticker not in entry["tickers"]:
+            entry["tickers"].append(ticker)
+        if len(entry["examples"]) < 3:
+            reason = item.get("primary_block_reason") or _v31_primary_block_reason(item)
+            entry["examples"].append({
+                "ticker": item.get("ticker"),
+                "state": item.get("final_state"),
+                "reason": reason,
+                "primary_block_reason": reason,
+                "not_order_instruction": True,
+            })
+    ordered = sorted(buckets.values(), key=lambda row: (-row["count"], row["cause"]))
+    return ordered[: max(1, int(limit or 12))]
+
+
 def _v31_gpt_institutional_answer_payload(limit=5):
     try:
         limit = max(1, min(int(limit or 5), 10))
@@ -24716,6 +24792,7 @@ def _v31_gpt_institutional_answer_payload(limit=5):
     summary = compact.get("summary") if isinstance(compact.get("summary"), dict) else {}
     top = (compact.get("top_recommendations") or [])[:limit]
     blocked = (compact.get("blocked_or_waiting") or [])[:limit]
+    cause_groups = compact.get("blocked_cause_groups") or _v31_blocker_cause_summary(compact.get("blocked_or_waiting") or [])
 
     lines = [
         "Estado del motor: {status} / {operational}".format(
@@ -24730,8 +24807,23 @@ def _v31_gpt_institutional_answer_payload(limit=5):
             wait_tech=summary.get("wait_technical"),
         ),
         "",
+        "Bloqueos principales:",
+    ]
+    if cause_groups:
+        for group in cause_groups[:5]:
+            lines.append("- {cause}: {count} ticker(s) {tickers}".format(
+                cause=group.get("cause"),
+                count=group.get("count"),
+                tickers=", ".join(str(ticker) for ticker in (group.get("tickers") or [])[:8]),
+            ))
+    else:
+        lines.append("- Ninguno.")
+
+    lines.extend([
+        "",
         "Oportunidades para revision manual:",
     ]
+    )
     if top:
         for item in top:
             lines.append("- {ticker} | {strategy} | {state} | score={score} | {contract}".format(
@@ -24801,6 +24893,7 @@ def _v31_gpt_institutional_answer_payload(limit=5):
         "data_readiness": readiness,
         "top_recommendations": top,
         "blocked_or_waiting": blocked,
+        "blocked_cause_groups": cause_groups,
         "source_endpoint": "/gpt_v31_daily_rankings",
         "manual_review_console": "/v31_manual_review_console",
         "outcome_tracking": "/v31_outcome_tracking_status",
@@ -24862,6 +24955,64 @@ def _v31_gpt_daily_brief_payload(limit=5):
         "brief_text": brief_text,
         "display_text": brief_text,
         "instruction_to_gpt": "Responde al usuario copiando answer_to_user completo. No lo resumas ni agregues oportunidades fuera de este payload.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v31_executive_status_payload(limit=8):
+    answer = _v31_gpt_institutional_answer_payload(limit=limit)
+    readiness = answer.get("data_readiness") if isinstance(answer.get("data_readiness"), dict) else {}
+    summary = answer.get("summary") if isinstance(answer.get("summary"), dict) else {}
+    cause_groups = answer.get("blocked_cause_groups") if isinstance(answer.get("blocked_cause_groups"), list) else []
+    top_causes = [
+        "{cause}={count} ({tickers})".format(
+            cause=group.get("cause") or group.get("bucket"),
+            count=group.get("count"),
+            tickers=", ".join(str(ticker) for ticker in (group.get("tickers") or [])[:6]),
+        )
+        for group in cause_groups[:5]
+    ]
+    entry_ready = summary.get("entry_ready") or 0
+    manual_ready = summary.get("manual_review_ready") or 0
+    rows = readiness.get("option_rows_found")
+    technical = readiness.get("technical_count")
+    status = readiness.get("status") or answer.get("status")
+    readiness_label = readiness.get("operational_readiness") or "UNKNOWN"
+    if entry_ready or manual_ready:
+        first_line = "Motor corrió: hay setups para revisión manual; ENTRY_READY={entry}, manual_review={manual}.".format(
+            entry=entry_ready,
+            manual=manual_ready,
+        )
+    else:
+        first_line = "Motor corrió: sin ENTRY_READY; datos opciones={rows}, técnicos={technical}; principales bloqueos: {causes}.".format(
+            rows=rows,
+            technical=technical,
+            causes="; ".join(top_causes) if top_causes else "ninguno",
+        )
+    answer_to_user = "\n".join([
+        first_line,
+        "Estado: {status} / {readiness}".format(status=status, readiness=readiness_label),
+        "Resumen: total={total}, risk_blocked={risk}, wait_options={wait_options}, wait_technical={wait_technical}.".format(
+            total=summary.get("total"),
+            risk=summary.get("risk_blocked"),
+            wait_options=summary.get("wait_options_data"),
+            wait_technical=summary.get("wait_technical"),
+        ),
+        "Acción: revisar sólo si aparece ENTRY_READY; si no, usar bloqueos por causa para calibrar datos, broker o reglas.",
+        "No autoriza órdenes. Toda ejecución es manual.",
+    ])
+    return {
+        "engine": "V31_EXECUTIVE_STATUS",
+        "generated_at": answer.get("generated_at") or _v29_now(),
+        "response_mode": "copy_answer_to_user_exactly",
+        "answer_to_user": answer_to_user,
+        "first_line": first_line,
+        "status": status,
+        "operational_readiness": readiness_label,
+        "summary": summary,
+        "data_readiness": readiness,
+        "blocked_cause_groups": cause_groups,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -25664,6 +25815,11 @@ def _v31_monitor_status_payload():
     risk_blocked = [d for d in decisions if d.get("final_state") == "RISK_BLOCKED"]
     wait_options = [d for d in decisions if d.get("final_state") == "WAIT_OPTIONS_DATA"]
     wait_technical = [d for d in decisions if d.get("final_state") == "WAIT_TECHNICAL"]
+    blocked_or_waiting_summaries = (
+        [_v31_monitor_decision_summary(d) for d in risk_blocked]
+        + [_v31_monitor_decision_summary(d) for d in wait_options]
+        + [_v31_monitor_decision_summary(d) for d in wait_technical]
+    )
 
     market_context = "REGULAR_MARKET_HOURS" if market.get("is_regular_market_open") else "OUTSIDE_MARKET_HOURS_OR_UNKNOWN"
     pipeline_status = pipeline.get("status")
@@ -25707,9 +25863,10 @@ def _v31_monitor_status_payload():
         "wait_options_tickers": [d.get("ticker") for d in wait_options],
         "wait_technical_tickers": [d.get("ticker") for d in wait_technical],
         "entry_ready_decisions": [_v31_monitor_decision_summary(d) for d in entry_ready],
-        "risk_blocked_decisions": [_v31_monitor_decision_summary(d) for d in risk_blocked],
-        "wait_options_decisions": [_v31_monitor_decision_summary(d) for d in wait_options],
-        "wait_technical_decisions": [_v31_monitor_decision_summary(d) for d in wait_technical],
+        "risk_blocked_decisions": blocked_or_waiting_summaries[:len(risk_blocked)],
+        "wait_options_decisions": blocked_or_waiting_summaries[len(risk_blocked):len(risk_blocked) + len(wait_options)],
+        "wait_technical_decisions": blocked_or_waiting_summaries[len(risk_blocked) + len(wait_options):],
+        "blocked_cause_groups": _v31_blocker_cause_summary(blocked_or_waiting_summaries),
         "summary": summary,
         "message": message,
         "next_required_action": pipeline.get("next_required_action"),
@@ -25743,6 +25900,7 @@ def _v31_monitor_decision_summary(decision):
         "risk_profile_blocked_checks": risk_checks,
         "broker_check_status": broker.get("status"),
         "broker_check_blockers": broker.get("blockers") or [],
+        "broker_check_checks": broker.get("checks") or [],
         "option_data_diagnostic": option_diag,
         "contract": {
             "strike": contract.get("strike"),
@@ -25866,6 +26024,7 @@ def _v31_monitor_email_content(monitor):
     risk_blocked_decisions = monitor.get("risk_blocked_decisions") or []
     wait_options_decisions = monitor.get("wait_options_decisions") or []
     wait_technical_decisions = monitor.get("wait_technical_decisions") or []
+    cause_groups = monitor.get("blocked_cause_groups") or []
     manual_review_endpoint = "{base}/v31_manual_review".format(base=base_url)
     manual_reviews_url = "{base}/v31_manual_reviews".format(base=base_url)
     manual_review_console_url = "{base}/v31_manual_review_console".format(base=base_url)
@@ -25911,6 +26070,14 @@ def _v31_monitor_email_content(monitor):
     risk_text = "\n".join("- " + line for line in risk_lines) or "- None"
     wait_options_text = "\n".join("- " + line for line in wait_options_lines) or "- None"
     wait_technical_text = "\n".join("- " + line for line in wait_technical_lines) or "- None"
+    cause_text = "\n".join(
+        "- {cause}: {count} ticker(s) {tickers}".format(
+            cause=item.get("cause"),
+            count=item.get("count"),
+            tickers=", ".join(str(ticker) for ticker in (item.get("tickers") or [])[:8]),
+        )
+        for item in cause_groups
+    ) or "- None"
 
     def html_decision_rows(items):
         rows = []
@@ -25959,6 +26126,18 @@ def _v31_monitor_email_content(monitor):
     risk_blocked_rows = html_decision_rows(risk_blocked_decisions)
     wait_options_rows = html_decision_rows(wait_options_decisions)
     wait_technical_rows = html_decision_rows(wait_technical_decisions)
+    cause_rows = "\n".join(
+        "<tr><td>{cause}</td><td>{count}</td><td>{tickers}</td><td>{example}</td></tr>".format(
+            cause=_v29_html_escape(item.get("cause") or item.get("bucket")),
+            count=_v29_html_escape(item.get("count")),
+            tickers=_v29_html_escape(", ".join(str(ticker) for ticker in (item.get("tickers") or [])[:8])),
+            example=_v29_html_escape(
+                ((item.get("examples") or [{}])[0] or {}).get("reason")
+                or ((item.get("examples") or [{}])[0] or {}).get("primary_block_reason")
+            ),
+        )
+        for item in cause_groups
+    ) or "<tr><td colspan=\"4\">None</td></tr>"
 
     subject = "Stock Ultimus V31 Monitor: {level}".format(
         level=monitor.get("alert_level")
@@ -25981,6 +26160,9 @@ def _v31_monitor_email_content(monitor):
         "RISK_BLOCKED: {tickers}".format(tickers=monitor.get("risk_blocked_tickers")),
         "WAIT_OPTIONS_DATA: {tickers}".format(tickers=monitor.get("wait_options_tickers")),
         "WAIT_TECHNICAL: {tickers}".format(tickers=monitor.get("wait_technical_tickers")),
+        "",
+        "Bloqueos por causa:",
+        cause_text,
         "",
         "ENTRY_READY detail:",
         actionable_text,
@@ -26024,6 +26206,11 @@ def _v31_monitor_email_content(monitor):
       <li>WAIT_OPTIONS_DATA: {wait_options}</li>
       <li>WAIT_TECHNICAL: {wait_technical}</li>
     </ul>
+    <h3>Bloqueos por causa</h3>
+    <table border="1" cellpadding="6" cellspacing="0">
+      <thead><tr><th>Causa</th><th>Conteo</th><th>Tickers</th><th>Ejemplo</th></tr></thead>
+      <tbody>{cause_rows}</tbody>
+    </table>
     <h3>ENTRY_READY detail</h3>
     <table border="1" cellpadding="6" cellspacing="0">
       <thead>
@@ -26069,6 +26256,7 @@ def _v31_monitor_email_content(monitor):
         risk_blocked_rows=risk_blocked_rows,
         wait_options_rows=wait_options_rows,
         wait_technical_rows=wait_technical_rows,
+        cause_rows=cause_rows,
         manual_review_console_url=_v29_html_escape(manual_review_console_url),
         manual_review_endpoint=_v29_html_escape(manual_review_endpoint),
         manual_reviews_url=_v29_html_escape(manual_reviews_url),
@@ -26498,6 +26686,28 @@ async def gpt_v31_daily_now(limit: int = 5):
         "not_order_instruction": True,
         "instruction_to_gpt": "Responde al usuario copiando answer_to_user completo. Si necesitas abreviar, copia first_line completa. No inventes oportunidades.",
     }
+
+
+@app.get("/v31_executive_status")
+async def v31_executive_status(limit: int = 8):
+    return _v31_executive_status_payload(limit=limit)
+
+
+@app.get("/gpt_v31_executive_status")
+async def gpt_v31_executive_status(limit: int = 8):
+    payload = _v31_executive_status_payload(limit=limit)
+    _record_audit_event(
+        "GPT_V31_EXECUTIVE_STATUS_SERVED",
+        {
+            "status": payload.get("status"),
+            "operational_readiness": payload.get("operational_readiness"),
+            "cause_count": len(payload.get("blocked_cause_groups") or []),
+            "not_order_instruction": True,
+        },
+        actor="system",
+        source="gpt_v31_executive_status",
+    )
+    return payload
 
 
 @app.get("/v31_command_center.json")

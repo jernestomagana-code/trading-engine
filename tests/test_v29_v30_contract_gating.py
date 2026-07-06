@@ -676,6 +676,68 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         audit.assert_called_once()
         self.assertEqual(audit.call_args.args[0], "GPT_DAILY_NOW_SERVED")
 
+    def test_v31_blocker_cause_summary_groups_broker_capacity_detail(self):
+        items = [
+            {
+                "ticker": "MSFT",
+                "strategy": "NAKED_PUT",
+                "final_state": "RISK_BLOCKED",
+                "risk_status": "RISK_BLOCKED",
+                "broker_check_blockers": ["BROKER_PUT_CAPACITY_INSUFFICIENT"],
+                "broker_check_checks": [
+                    {
+                        "name": "PUT_CAPACITY_CHECK",
+                        "status": "BLOCKED",
+                        "value": 25000,
+                        "required": 36500,
+                        "shortfall": 11500,
+                        "capacity_pct_required": 146.0,
+                    }
+                ],
+            },
+            {
+                "ticker": "AAPL",
+                "strategy": "NAKED_PUT",
+                "final_state": "WAIT_OPTIONS_DATA",
+                "main_blocker": "WAIT_OPTIONS_DATA",
+            },
+        ]
+
+        groups = main._v31_blocker_cause_summary(items)
+
+        self.assertEqual(groups[0]["bucket"], "broker_capacity")
+        self.assertEqual(groups[0]["count"], 1)
+        self.assertIn("MSFT", groups[0]["tickers"])
+        self.assertIn("faltante=11500", groups[0]["examples"][0]["primary_block_reason"])
+        self.assertEqual(groups[1]["bucket"], "options_data")
+        self.assertEqual(groups[1]["count"], 1)
+
+    def test_gpt_executive_status_exposes_compact_operational_answer(self):
+        answer_payload = {
+            "generated_at": "2026-07-06T14:00:00+00:00",
+            "answer_text": "Estado del motor: READY_FOR_DECISION_REVIEW / READY.\n\nBloqueos principales:\n- broker_capacity: 1 setup. Ejemplos: MSFT.",
+            "summary": {"total": 3, "entry_ready": 0, "manual_review_ready": 0, "risk_blocked": 1},
+            "data_readiness": {
+                "status": "READY_FOR_DECISION_REVIEW",
+                "operational_readiness": "READY",
+                "main_blocker": None,
+            },
+            "blocked_cause_groups": [{"bucket": "broker_capacity", "count": 1, "tickers": ["MSFT"]}],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+        with patch.object(main, "_v31_gpt_institutional_answer_payload", return_value=answer_payload):
+            result = main._v31_executive_status_payload(limit=3)
+
+        self.assertEqual(result["response_mode"], "copy_answer_to_user_exactly")
+        self.assertEqual(result["engine"], "V31_EXECUTIVE_STATUS")
+        self.assertIn("Motor corrió: sin ENTRY_READY", result["first_line"])
+        self.assertIn("broker_capacity=1 (MSFT)", result["first_line"])
+        self.assertEqual(result["blocked_cause_groups"][0]["bucket"], "broker_capacity")
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+
     def test_v31_risk_profile_presets_are_selectable(self):
         conservative = main._v31_risk_profile("conservative")
         paper = main._v31_risk_profile("paper")
@@ -2754,6 +2816,22 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             ],
             "wait_options_tickers": [],
             "wait_options_decisions": [],
+            "blocked_cause_groups": [
+                {
+                    "cause": "broker_capacity",
+                    "bucket": "broker_capacity",
+                    "label": "Capacidad broker / buying power",
+                    "count": 1,
+                    "tickers": ["MSFT"],
+                    "examples": [
+                        {
+                            "ticker": "MSFT",
+                            "strategy": "NAKED_PUT",
+                            "primary_block_reason": "Broker check: PUT_CAPACITY_CHECK actual=25000 requiere=36500 faltante=11500 capacidad_requerida=146.0%",
+                        }
+                    ],
+                }
+            ],
             "message": "Hay setups bloqueados por riesgo.",
             "next_required_action": "Validar blockers.",
             "not_order_instruction": True,
@@ -2769,7 +2847,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["notify_reason"], "BLOCKED_OR_WAITING_SUMMARY")
         sent_args = send_email.call_args.args
         self.assertIn("razon=RISK_PROFILE_SPREAD_TOO_WIDE", sent_args[2])
+        self.assertIn("Bloqueos por causa:", sent_args[2])
+        self.assertIn("broker_capacity", sent_args[2])
         self.assertIn("Razon principal", sent_args[3])
+        self.assertIn("Bloqueos por causa", sent_args[3])
+        self.assertIn("Broker check: PUT_CAPACITY_CHECK", sent_args[3])
         self.assertIn("execution_authorized=false", sent_args[2])
         self.assertTrue(result["not_order_instruction"])
 
