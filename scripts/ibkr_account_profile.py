@@ -13,11 +13,13 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 import urllib.error
 import urllib.request
 
@@ -34,6 +36,8 @@ DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
 REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
+WEB_JOBS: dict[str, dict[str, Any]] = {}
+WEB_JOBS_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -86,6 +90,25 @@ def read_keychain_value(service: str, timeout: float = FAST_KEYCHAIN_TIMEOUT_SEC
             "find-generic-password",
             "-a",
             keychain_account(),
+            "-s",
+            service,
+            "-w",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def read_keychain_value_any_account(service: str, timeout: float = FAST_KEYCHAIN_TIMEOUT_SECONDS) -> str:
+    result = subprocess.run(
+        [
+            "security",
+            "find-generic-password",
             "-s",
             service,
             "-w",
@@ -270,6 +293,56 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     return payload
 
 
+def start_web_job(alias: str, command: list[str], label: str) -> str:
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "job_id": job_id,
+        "job_version": "stock_ultimus_console_job_v1",
+        "status": "RUNNING",
+        "label": label,
+        "alias": normalize_alias(alias),
+        "command": command_label(command),
+        "started_at": now_iso(),
+        "finished_at": None,
+        "result": None,
+        "error": "",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    with WEB_JOBS_LOCK:
+        WEB_JOBS[job_id] = job
+
+    def worker() -> None:
+        try:
+            result = run_with_profile_capture(alias, command)
+            with WEB_JOBS_LOCK:
+                WEB_JOBS[job_id] = {
+                    **WEB_JOBS.get(job_id, job),
+                    "status": "DONE" if int(result.get("returncode") or 0) == 0 else "ERROR",
+                    "finished_at": now_iso(),
+                    "result": result,
+                    "error": "",
+                }
+        except Exception as exc:
+            with WEB_JOBS_LOCK:
+                WEB_JOBS[job_id] = {
+                    **WEB_JOBS.get(job_id, job),
+                    "status": "ERROR",
+                    "finished_at": now_iso(),
+                    "result": None,
+                    "error": str(exc),
+                }
+
+    threading.Thread(target=worker, name=f"stock-ultimus-console-{job_id}", daemon=True).start()
+    return job_id
+
+
+def web_job(job_id: str) -> dict[str, Any]:
+    with WEB_JOBS_LOCK:
+        job = WEB_JOBS.get(str(job_id or ""))
+        return dict(job) if isinstance(job, dict) else {}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.command:
         raise SystemExit("Falta comando despues de --. Ejemplo: run primary -- python3 ibkr_bridge.py --once")
@@ -315,7 +388,7 @@ def read_access_token() -> str:
     if token:
         return token
     for service in READ_KEYCHAIN_SERVICES:
-        token = read_keychain_value(service)
+        token = read_keychain_value(service) or read_keychain_value_any_account(service)
         if token:
             return token
     return ""
@@ -668,7 +741,7 @@ def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
               <strong>{ticker}</strong>
               <span>{severity} | {state}</span>
               <small>blocker: {blocker} | status: {status}</small>
-              <form method="post" action="/operator-event" class="alert-actions">
+              <form method="post" action="/operator-event" class="alert-actions" data-busy="Registrando evento de operador">
                 <input name="alert_id" value="{alert_id}" type="hidden">
                 <input name="ticker" value="{ticker}" type="hidden">
                 <input name="strategy" value="{strategy}" type="hidden">
@@ -726,9 +799,9 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
                 <p class="muted">{status}. ID real oculto.</p>
               </div>
               <div class="actions">
-                <form method="post" action="/select"><input name="alias" value="{alias}" type="hidden"><button>Usar</button></form>
-                <form method="post" action="/bridge"><input name="alias" value="{alias}" type="hidden"><button>Usar + Refresh IBKR</button></form>
-                <form method="post" action="/daily-open"><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
+                <form method="post" action="/select" data-busy="Cambiando perfil activo"><input name="alias" value="{alias}" type="hidden"><button>Usar</button></form>
+                <form method="post" action="/bridge" data-busy="Refresh IBKR en curso"><input name="alias" value="{alias}" type="hidden"><button>Usar + Refresh IBKR</button></form>
+                <form method="post" action="/daily-open" data-busy="Daily open en curso"><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
               </div>
             </article>
             """.format(
@@ -743,13 +816,66 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
     return "\n".join(profile_cards)
 
 
-def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> bytes:
+def render_job_panel(job_id: str = "") -> tuple[str, str]:
+    job = web_job(job_id)
+    if not job:
+        return "", ""
+    status = str(job.get("status") or "UNKNOWN")
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    result_html = ""
+    if result:
+        result_html = """
+        <p><strong>Resultado:</strong> returncode={returncode}</p>
+        <pre>{stdout}{stderr}</pre>
+        """.format(
+            returncode=html_escape(result.get("returncode")),
+            stdout=html_escape(result.get("stdout_tail") or ""),
+            stderr=html_escape(("\nSTDERR:\n" + result.get("stderr_tail")) if result.get("stderr_tail") else ""),
+        )
+    elif job.get("error"):
+        result_html = "<pre>{}</pre>".format(html_escape(job.get("error")))
+    else:
+        result_html = "<p class=\"muted\">El proceso esta corriendo en segundo plano. Esta pagina se actualiza sola.</p>"
+    refresh_meta = (
+        '<meta http-equiv="refresh" content="3;url=/console?job_id={}">'.format(html_escape(job.get("job_id")))
+        if status == "RUNNING" else ""
+    )
+    panel = """
+    <section class="panel job-panel status-{status_class}">
+      <div class="section-head">
+        <h2>Trabajo local</h2>
+        <p><strong>{status}</strong> | {label}</p>
+      </div>
+      <ul class="job-facts">
+        <li><span>Alias</span><strong>{alias}</strong></li>
+        <li><span>Comando</span><strong>{command}</strong></li>
+        <li><span>Inicio</span><strong>{started_at}</strong></li>
+        <li><span>Fin</span><strong>{finished_at}</strong></li>
+      </ul>
+      {result_html}
+      <p><a class="tile inline-link" href="/console">Actualizar consola</a></p>
+    </section>
+    """.format(
+        status_class=html_escape(status.lower()),
+        status=html_escape(status),
+        label=html_escape(job.get("label") or ""),
+        alias=html_escape(job.get("alias") or ""),
+        command=html_escape(job.get("command") or ""),
+        started_at=html_escape(job.get("started_at") or ""),
+        finished_at=html_escape(job.get("finished_at") or "pendiente"),
+        result_html=result_html,
+    )
+    return refresh_meta, panel
+
+
+def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "") -> bytes:
     data = load_profiles()
     profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
     active = active_profile()
     snapshot = latest_master_snapshot()
     operator_payload = console_operator_payload()
     result = result or web_last_result()
+    refresh_meta, job_panel = render_job_panel(job_id)
 
     output = ""
     if result:
@@ -774,6 +900,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
+        {refresh_meta}
         <title>Stock Ultimus Console</title>
         <style>
           :root {{ --ink:#172019; --muted:#5d675f; --paper:#f7f2e8; --card:#fffaf0; --accent:#1d6b4f; --line:#d9cdb7; --warn:#9f4b1b; --risk:#b42318; }}
@@ -800,12 +927,22 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           .muted,.empty {{ color:var(--muted); }}
           .actions {{ display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }}
           button {{ border:0; border-radius:999px; padding:10px 14px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }}
+          button:disabled {{ opacity:.62; cursor:wait; }}
           button.secondary {{ background:#6c5f45; }}
           .panel {{ padding:20px; margin-top:20px; }}
+          .job-panel {{ border-color:#b88b2a; background:#fff8e7; }}
+          .job-panel.status-done {{ border-color:#1d6b4f; background:#eef8ef; }}
+          .job-panel.status-error {{ border-color:var(--risk); background:#fff1ef; }}
+          .job-facts {{ list-style:none; padding:0; margin:12px 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
+          .job-facts li {{ border:1px solid var(--line); border-radius:14px; padding:10px; background:#fffdf6; }}
+          .job-facts span,.job-facts strong {{ display:block; }}
+          .job-facts span {{ color:var(--muted); font-size:.9rem; }}
+          .job-facts strong {{ overflow-wrap:anywhere; }}
           .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }}
           .section-head p {{ margin:0; color:var(--muted); max-width:620px; }}
           .tiles,.alert-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
           .tile,.alert-card {{ border:1px solid var(--line); background:#fffdf6; border-radius:18px; padding:14px; text-decoration:none; color:var(--ink); }}
+          .inline-link {{ display:inline-block; }}
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
@@ -820,14 +957,26 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           label {{ display:block; margin:10px 0 4px; font-weight:700; }}
           input {{ width:min(520px,100%); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
           pre {{ white-space:pre-wrap; overflow:auto; background:#162019; color:#f6f1df; border-radius:14px; padding:14px; max-height:360px; }}
+          .busy-overlay[hidden] {{ display:none; }}
+          .busy-overlay {{ position:fixed; inset:0; background:rgba(23,32,25,.62); display:grid; place-items:center; z-index:20; padding:20px; }}
+          .busy-box {{ width:min(460px,100%); background:#fffaf0; border:1px solid var(--line); border-radius:18px; padding:20px; box-shadow:0 18px 50px rgba(0,0,0,.22); }}
+          .busy-box strong,.busy-box span {{ display:block; }}
+          .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           @media (max-width:820px) {{ .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
       <body>
+        <div id="busy-overlay" class="busy-overlay" hidden>
+          <div class="busy-box">
+            <strong>Trabajando...</strong>
+            <span>La consola envio la accion. Espera el resultado o el panel de estado.</span>
+          </div>
+        </div>
         <main>
           {context}
           {message}
+          {job_panel}
           <section class="panel">
             <div class="section-head">
               <h2>Cuentas</h2>
@@ -839,7 +988,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           {actions}
           <section class="panel">
             <h2>Crear o actualizar perfil</h2>
-            <form method="post" action="/setup" autocomplete="off">
+            <form method="post" action="/setup" autocomplete="off" data-busy="Guardando perfil local">
               <label>Alias amigable</label>
               <input name="alias" placeholder="primary" required>
               <label>Scope publicado</label>
@@ -852,11 +1001,33 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           {output}
           <footer>Decision support solamente. Esta pantalla no autoriza ordenes ni ejecuciones automaticas.</footer>
         </main>
+        <script>
+          (() => {{
+            const overlay = document.getElementById("busy-overlay");
+            if (!overlay) return;
+            const title = overlay.querySelector("strong");
+            const detail = overlay.querySelector("span");
+            document.querySelectorAll("form").forEach((form) => {{
+              form.addEventListener("submit", () => {{
+                const label = form.dataset.busy || "Procesando accion local";
+                title.textContent = label;
+                detail.textContent = "Solicitud enviada. Si es Refresh IBKR, veras un panel RUNNING/DONE en unos segundos.";
+                overlay.hidden = false;
+                form.querySelectorAll("button").forEach((button) => {{
+                  button.disabled = true;
+                  button.textContent = "Trabajando...";
+                }});
+              }});
+            }});
+          }})();
+        </script>
       </body>
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
+        refresh_meta=refresh_meta,
+        job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
         alerts=render_operator_alerts(operator_payload),
         actions=render_console_actions(),
@@ -868,20 +1039,35 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
 class AccountProfileWebHandler(BaseHTTPRequestHandler):
     server_version = "StockUltimusIBKRProfile/1.0"
 
-    def send_html(self, message: str = "", result: dict[str, Any] | None = None, status: int = 200) -> None:
-        payload = render_web_page(message=message, result=result)
+    def send_html(self, message: str = "", result: dict[str, Any] | None = None, status: int = 200, job_id: str = "") -> None:
+        payload = render_web_page(message=message, result=result, job_id=job_id)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+        if path == "/job-status":
+            job_id = (params.get("id") or [""])[0]
+            job = web_job(job_id)
+            self.send_json(job or {"ok": False, "error": "JOB_NOT_FOUND", "job_id": job_id}, status=200 if job else 404)
+            return
         if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
-        self.send_html()
+        self.send_html(job_id=(params.get("job_id") or [""])[0])
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
@@ -908,11 +1094,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 cmd_select(args)
                 self.send_html(f"Perfil activo: alias={normalize_alias(alias)} account_id_printed=false")
             elif self.path == "/bridge":
-                result = run_with_profile_capture(alias, [sys.executable, "ibkr_bridge.py", "--once"])
-                self.send_html("Bridge refresh terminado. Revisa returncode y salida.", result=result)
+                job_id = start_web_job(alias, [sys.executable, "ibkr_bridge.py", "--once"], "Refresh IBKR")
+                self.send_html("Refresh IBKR iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
             elif self.path == "/daily-open":
-                result = run_with_profile_capture(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"])
-                self.send_html("Daily open terminado. Revisa returncode y salida.", result=result)
+                job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
+                self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
             elif self.path == "/operator-event":
                 action = (params.get("action") or [""])[0]
                 reason = (params.get("reason") or [""])[0].strip()
