@@ -277,6 +277,27 @@ selection, IBKR refresh, V32 alerts, GPT context, and protected production links
 The page is intentionally localhost-only because it can read the local Keychain
 and run local TWS/bridge commands. Do not expose it on a public interface.
 
+No-terminal launcher:
+
+```text
+Stock Ultimus Console.command
+```
+
+Double-click that file from Finder to start the local console and open the
+browser. It is the safest fallback when macOS privacy/TCC prevents launchd from
+binding a localhost port from a background job.
+
+Optional one-time autostart install:
+
+```bash
+python3 scripts/install_stock_ultimus_console_launchd.py --install --open
+python3 scripts/install_stock_ultimus_console_launchd.py --status
+```
+
+After that, the local cockpit starts at login and the day-to-day entry point is
+just `http://127.0.0.1:8765`. The LaunchAgent plist contains no IBKR account IDs,
+read tokens, ingest tokens, or order execution permissions.
+
 Operational flow:
 
 1. Pick the account alias in the local selector.
