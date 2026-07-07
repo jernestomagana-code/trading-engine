@@ -34,6 +34,28 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def active_account_context(runtime_dir: Path) -> dict[str, Any]:
+    path = runtime_dir / "ibkr_account_active_profile.json"
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    scope = data.get("account_scope") or ""
+    alias = data.get("account_alias") or scope
+    return {
+        "account_context_version": "local_runtime_active_account_context_v1",
+        "account_scope": scope or "unknown",
+        "account_alias": alias or "unknown",
+        "selected_at": data.get("selected_at"),
+        "selected_account_configured": bool(scope or alias),
+        "real_account_id_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def json_safe(obj: Any) -> Any:
     try:
         json.dumps(obj)
@@ -219,6 +241,7 @@ def extract_technical_snapshot(runtime_data: dict[str, Any]) -> dict[str, dict[s
 
 def build_payload(runtime_dir: Path) -> dict[str, Any]:
     runtime_data = load_runtime_json(runtime_dir)
+    account_context = active_account_context(runtime_dir)
     options_rows = extract_options_rows(runtime_data)
     technical_snapshot = extract_technical_snapshot(runtime_data)
     technical_snapshot = runtime_local_technical.merge_local_technical_snapshot(
@@ -229,6 +252,9 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
     )
     broker_enriched = broker_check.merge_broker_checks(
         {
+            "account_scope": account_context.get("account_scope"),
+            "account_alias": account_context.get("account_alias"),
+            "account_context": account_context,
             "options_rows": options_rows,
             "runtime_data": runtime_data,
             **runtime_data,
@@ -239,6 +265,9 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
     return {
         "source": "LOCAL_RUNTIME_V31_PUBLISHER",
         "generated_at": now_iso(),
+        "account_scope": account_context.get("account_scope"),
+        "account_alias": account_context.get("account_alias"),
+        "account_context": json_safe(account_context),
         "options_rows": json_safe(options_rows),
         "technical_snapshot": json_safe(technical_snapshot),
         "broker_checks": json_safe(broker_enriched.get("broker_checks") or []),
