@@ -37,6 +37,14 @@ FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_
 REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
 LOCAL_JOB_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", "90"))
+CONSOLE_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", "75")))
+CONSOLE_HISTORICAL_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_HISTORICAL_TIMEOUT_SECONDS", "4")))
+CONSOLE_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "73")))
+CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,SPY,AAPL,NVDA,TSLA")
+CONSOLE_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", "1")
+CONSOLE_OPTION_MARKET_DATA_TYPES = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_MARKET_DATA_TYPES", "1,2")
+CONSOLE_OPTION_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_WAIT_SECONDS", "1")
+CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS", "1")
 WEB_JOBS: dict[str, dict[str, Any]] = {}
 WEB_JOBS_LOCK = threading.Lock()
 UNKNOWN_CONTEXT_VALUES = {"", "UNKNOWN", "NONE", "NULL", "N/A"}
@@ -256,6 +264,29 @@ def process_output_text(value: Any) -> str:
     return str(value or "")
 
 
+def enrich_console_bridge_output(text: str) -> str:
+    bridge_report = RUNTIME / "stock_ultimus_console_bridge_latest.json"
+    if not bridge_report.exists():
+        return text
+    try:
+        data = json.loads(bridge_report.read_text())
+    except Exception:
+        return text
+    runs = data.get("runs") if isinstance(data.get("runs"), list) else []
+    last = runs[-1] if runs and isinstance(runs[-1], dict) else {}
+    if not last:
+        return text
+    details = [
+        "\n--- bridge session detail ---",
+        "status: {}".format(last.get("status") or "UNKNOWN"),
+        "published: {}".format(last.get("published")),
+        "timeout_seconds: {}".format(last.get("timeout_seconds") or data.get("bridge_timeout")),
+    ]
+    if last.get("tail"):
+        details.extend(["tail:", str(last.get("tail"))])
+    return (text + "\n" + "\n".join(details)).strip()
+
+
 def run_with_profile(alias: str, command: list[str]) -> int:
     profile = profile_for(alias)
     write_active_profile(profile)
@@ -274,6 +305,12 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     profile = profile_for(alias)
     write_active_profile(profile)
     env = environment_for(profile)
+    if any(str(part).endswith("run_market_bridge_session.py") for part in command):
+        env.setdefault("IBKR_OPTION_SYMBOLS", CONSOLE_OPTION_SYMBOLS)
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", CONSOLE_MAX_OPTIONS_PER_SYMBOL)
+        env.setdefault("IBKR_OPTION_MARKET_DATA_TYPE_SEQUENCE", CONSOLE_OPTION_MARKET_DATA_TYPES)
+        env.setdefault("IBKR_OPTION_MARKET_DATA_WAIT_SECONDS", CONSOLE_OPTION_WAIT_SECONDS)
+        env.setdefault("IBKR_OPTION_SNAPSHOT_WAIT_SECONDS", CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS)
     timed_out = False
     try:
         result = subprocess.run(
@@ -286,7 +323,7 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
             timeout=LOCAL_JOB_TIMEOUT_SECONDS,
         )
         returncode = int(result.returncode)
-        stdout = result.stdout
+        stdout = enrich_console_bridge_output(result.stdout)
         stderr = result.stderr
     except subprocess.TimeoutExpired as exc:
         timed_out = True
@@ -372,8 +409,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run_with_profile(args.alias, command)
 
 
+def console_bridge_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_market_bridge_session.py",
+        "--max-runs",
+        "1",
+        "--bridge-timeout",
+        str(max(30, min(CONSOLE_BRIDGE_TIMEOUT_SECONDS, int(LOCAL_JOB_TIMEOUT_SECONDS) - 10))),
+        "--historical-data-timeout",
+        str(CONSOLE_HISTORICAL_TIMEOUT_SECONDS),
+        "--ibkr-client-id",
+        str(CONSOLE_IBKR_CLIENT_ID),
+        "--json-out",
+        str(RUNTIME / "stock_ultimus_console_bridge_latest.json"),
+    ]
+
+
 def cmd_bridge(args: argparse.Namespace) -> int:
-    return run_with_profile(args.alias, [sys.executable, "ibkr_bridge.py", "--once"])
+    return run_with_profile(args.alias, console_bridge_command())
 
 
 def cmd_daily_open(args: argparse.Namespace) -> int:
@@ -694,6 +748,7 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         warning = """
         <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta y refresca el bridge.</div>
         """
+    remote_status = "cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "timeout" if "timed out" in str(operator_payload.get("error") or "").lower() else "blocked")
     published_value = comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
     if comparison["missing_published_context"]:
         published_note = "sin cuenta publicada; GPT remoto aun no ve " + (comparison["selected_scope"] or "la seleccion local")
@@ -737,7 +792,7 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         operator=render_metric(
             "V32 status",
             status,
-            "remote=" + ("cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "blocked")),
+            "remote=" + remote_status,
         ),
         warning=warning,
     )
@@ -862,10 +917,13 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     result_html = ""
     if result:
+        diagnostic = console_job_diagnostic(result)
         result_html = """
+        {diagnostic}
         <p><strong>Resultado:</strong> returncode={returncode}</p>
         <pre>{stdout}{stderr}</pre>
         """.format(
+            diagnostic=diagnostic,
             returncode=html_escape(result.get("returncode")),
             stdout=html_escape(result.get("stdout_tail") or ""),
             stderr=html_escape(("\nSTDERR:\n" + result.get("stderr_tail")) if result.get("stderr_tail") else ""),
@@ -904,6 +962,26 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
         result_html=result_html,
     )
     return refresh_meta, panel
+
+
+def console_job_diagnostic(result: dict[str, Any]) -> str:
+    text = "\n".join([
+        str(result.get("stdout_tail") or ""),
+        str(result.get("stderr_tail") or ""),
+    ])
+    if "ERROR conectando IBKR" in text or "account updates" in text and "timed out" in text:
+        return """
+        <div class="warning">IBKR esta en puerto abierto, pero la API no esta aceptando/respondiendo a la sesion. No sigas presionando Refresh: reinicia TWS/IB Gateway o desconecta sesiones API viejas, espera que quede conectado, y vuelve a intentar.</div>
+        """
+    if "BRIDGE_TIMEOUT" in text:
+        return """
+        <div class="warning">El bridge no termino dentro del tiempo limite. Puede estar escaneando opciones lento o esperando respuesta de IBKR. Reintenta despues de estabilizar TWS/IB Gateway.</div>
+        """
+    if result.get("timed_out"):
+        return """
+        <div class="warning">La consola detuvo el proceso por timeout local. Revisa TWS/IB Gateway y vuelve a intentar.</div>
+        """
+    return ""
 
 
 def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "") -> bytes:
@@ -1134,7 +1212,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 cmd_select(args)
                 self.send_html(f"Perfil activo: alias={normalize_alias(alias)} account_id_printed=false")
             elif self.path == "/bridge":
-                job_id = start_web_job(alias, [sys.executable, "ibkr_bridge.py", "--once"], "Refresh IBKR")
+                job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")
                 self.send_html("Refresh IBKR iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
             elif self.path == "/daily-open":
                 job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
