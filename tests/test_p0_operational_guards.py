@@ -118,6 +118,14 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn('"[REDACTED_IBKR_ACCOUNT]"', source)
         self.assertIn('"account_id_printed": False', source)
         self.assertIn("Decision support only; no autoriza ordenes", source)
+        self.assertIn("Stock Ultimus Console", source)
+        self.assertIn("def latest_master_snapshot", source)
+        self.assertIn("def console_operator_payload", source)
+        self.assertIn("def selected_vs_published", source)
+        self.assertIn("/gpt_v32_operator_today?limit=12", source)
+        self.assertIn("READ_ACCESS_TOKEN", source)
+        self.assertIn("X-Stock-Ultimus-Read-Token", source)
+        self.assertIn("/v32_operator_daily_summary_email/preview", source)
 
     def test_gpt_payloads_surface_sanitized_account_context(self):
         source = APP.read_text()
