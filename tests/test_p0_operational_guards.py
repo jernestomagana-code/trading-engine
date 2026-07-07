@@ -26,6 +26,8 @@ V32_OPERATOR_NOTIFY = ROOT / "scripts" / "v32_operator_notify.py"
 PUSHOVER_CHANNEL_SETUP = ROOT / "scripts" / "setup_pushover_channel.py"
 PUSHOVER_AUTOMATION = ROOT / "scripts" / "v32_pushover_automation.py"
 PUSHOVER_LAUNCHD_INSTALLER = ROOT / "scripts" / "install_v32_pushover_launchd.py"
+LOCAL_CONSOLE_LAUNCHD_INSTALLER = ROOT / "scripts" / "install_stock_ultimus_console_launchd.py"
+LOCAL_CONSOLE_COMMAND = ROOT / "Stock Ultimus Console.command"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
@@ -111,7 +113,7 @@ class BridgeEntrypointTests(unittest.TestCase):
     def test_ibkr_account_selector_has_local_web_flow_without_printing_ids(self):
         source = IBKR_ACCOUNT_PROFILE.read_text()
         self.assertIn("HTTPServer((host, int(args.port)), AccountProfileWebHandler)", source)
-        self.assertIn('"127.0.0.1"', source)
+        self.assertIn("127.0.0.1", source)
         self.assertIn("def cmd_serve", source)
         self.assertIn("WEB_LAST_RESULT_PATH", source)
         self.assertIn("sanitize_output", source)
@@ -122,6 +124,7 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("def latest_master_snapshot", source)
         self.assertIn("def console_operator_payload", source)
         self.assertIn("def selected_vs_published", source)
+        self.assertIn("def do_HEAD", source)
         self.assertIn("/gpt_v32_operator_today?limit=12", source)
         self.assertIn("READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
@@ -619,6 +622,43 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertNotIn("READ_ACCESS_TOKEN", source)
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_local_console_launchd_installer_is_local_and_secret_free(self):
+        source = LOCAL_CONSOLE_LAUNCHD_INSTALLER.read_text()
+
+        self.assertIn("STOCK_ULTIMUS_LOCAL_CONSOLE_LAUNCHD_INSTALLER", source)
+        self.assertIn("com.stockultimus.local-console", source)
+        self.assertIn("scripts/ibkr_account_profile.py", source)
+        self.assertIn("serve --host 127.0.0.1", source)
+        self.assertIn('"/bin/zsh"', source)
+        self.assertIn("shlex.quote", source)
+        self.assertIn("127.0.0.1", source)
+        self.assertIn('"RunAtLoad": True', source)
+        self.assertIn('"KeepAlive": True', source)
+        self.assertIn("LaunchAgents", source)
+        self.assertIn("secrets_printed", source)
+        self.assertIn('"execution_authorized": False', source)
+        self.assertIn('"not_order_instruction": True', source)
+        self.assertNotIn("READ_ACCESS_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("IBKR_ACCOUNT_ID", source)
+        self.assertNotIn("placeOrder", source)
+        self.assertNotIn(".place_order", source)
+
+    def test_local_console_double_click_launcher_is_local_and_secret_free(self):
+        source = LOCAL_CONSOLE_COMMAND.read_text()
+
+        self.assertIn("ibkr_account_profile.py", source)
+        self.assertIn("serve --host 127.0.0.1 --port 8765", source)
+        self.assertIn("http://127.0.0.1:8765", source)
+        self.assertIn("/usr/bin/python3", source)
+        self.assertNotIn("READ_ACCESS_TOKEN", source)
+        self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
+        self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)
+        self.assertNotIn("IBKR_ACCOUNT_ID", source)
         self.assertNotIn("placeOrder", source)
         self.assertNotIn(".place_order", source)
 

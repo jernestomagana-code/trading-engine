@@ -755,6 +755,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             return
         self.send_html()
 
+    def do_HEAD(self) -> None:
+        path = self.path.split("?", 1)[0]
+        status = 200 if path in ["/", "", "/console"] else 404
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+
     def do_POST(self) -> None:
         try:
             length = int(self.headers.get("Content-Length") or "0")
