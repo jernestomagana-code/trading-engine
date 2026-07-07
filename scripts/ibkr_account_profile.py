@@ -494,6 +494,34 @@ def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS) -
         return cached or {"ok": False, "error": error_text, "token_present": True, "url": url, "data": {}}
 
 
+def post_remote_json(path: str, payload: dict[str, Any], timeout: float = 15) -> dict[str, Any]:
+    token = read_access_token()
+    if not token:
+        return {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
+    url = public_base_url() + path
+    body = json.dumps(payload, default=str).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Stock-Ultimus-Read-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        return {"ok": True, "error": "", "token_present": True, "url": url, "data": data if isinstance(data, dict) else {}}
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "error": f"HTTP_{exc.code}", "token_present": True, "url": url, "text": text[:1000], "data": {}}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
+
+
 def console_operator_payload() -> dict[str, Any]:
     return fetch_remote_json("/gpt_v32_operator_today?limit=12")
 
@@ -640,11 +668,28 @@ def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
               <strong>{ticker}</strong>
               <span>{severity} | {state}</span>
               <small>blocker: {blocker} | status: {status}</small>
+              <form method="post" action="/operator-event" class="alert-actions">
+                <input name="alert_id" value="{alert_id}" type="hidden">
+                <input name="ticker" value="{ticker}" type="hidden">
+                <input name="strategy" value="{strategy}" type="hidden">
+                <input name="state" value="{state}" type="hidden">
+                <label>Nota/razon opcional</label>
+                <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch">
+                <div class="actions">
+                  <button name="action" value="ACK_ALERT">Ack</button>
+                  <button name="action" value="MARK_REVIEWING">Review</button>
+                  <button name="action" value="MARK_WATCHLIST">Watch</button>
+                  <button name="action" value="REJECT_SETUP">Reject</button>
+                  <button name="action" value="CLOSE_ALERT">Close</button>
+                </div>
+              </form>
             </article>
             """.format(
+                alert_id=html_escape(alert.get("alert_id") or ""),
                 ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
                 severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
                 state=html_escape(alert.get("state") or "UNKNOWN"),
+                strategy=html_escape(alert.get("strategy") or ""),
                 blocker=html_escape(alert.get("main_blocker") or "NONE"),
                 status=html_escape(alert.get("operator_status") or "UNKNOWN"),
             )
@@ -764,6 +809,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
+          .alert-actions {{ margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }}
+          .alert-actions label {{ font-size:.9rem; margin-top:0; color:var(--muted); }}
+          .alert-actions input {{ width:100%; margin-bottom:10px; }}
+          .alert-actions .actions {{ justify-content:flex-start; }}
+          .alert-actions button {{ padding:8px 11px; font-size:.9rem; }}
           .severity-action {{ border-color:#d97706; }}
           .severity-risk {{ border-color:var(--risk); }}
           .severity-watch {{ border-color:#2563eb; }}
@@ -863,6 +913,38 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/daily-open":
                 result = run_with_profile_capture(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"])
                 self.send_html("Daily open terminado. Revisa returncode y salida.", result=result)
+            elif self.path == "/operator-event":
+                action = (params.get("action") or [""])[0]
+                reason = (params.get("reason") or [""])[0].strip()
+                if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"} and not reason:
+                    self.send_html("Esta accion requiere nota/razon antes de registrarla.", status=400)
+                    return
+                payload = {
+                    "action": action,
+                    "alert_id": (params.get("alert_id") or [""])[0],
+                    "ticker": (params.get("ticker") or [""])[0],
+                    "strategy": (params.get("strategy") or [""])[0],
+                    "state": (params.get("state") or [""])[0],
+                    "reason": reason,
+                    "actor": "stock_ultimus_console",
+                    "source": "local_stock_ultimus_console",
+                    "execution_authorized": False,
+                    "not_order_instruction": True,
+                }
+                result = post_remote_json("/gpt_v32_operator_event", payload)
+                message = (
+                    "Evento registrado para seguimiento/backtesting. No autoriza ordenes."
+                    if result.get("ok")
+                    else f"No pude registrar evento: {result.get('error') or result.get('text') or 'unknown'}"
+                )
+                self.send_html(message, result={
+                    "command": "POST /gpt_v32_operator_event",
+                    "alias": active_profile().get("account_alias") or "",
+                    "account_scope": active_profile().get("account_scope") or "",
+                    "returncode": 0 if result.get("ok") else 1,
+                    "stdout_tail": json.dumps(result.get("data") or result, indent=2, sort_keys=True)[:6000],
+                    "stderr_tail": "",
+                }, status=200 if result.get("ok") else 400)
             else:
                 self.send_html("Ruta no encontrada.", status=404)
         except Exception as exc:
