@@ -738,7 +738,7 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     warning = ""
     if not comparison["remote_ok"]:
         warning = """
-        <div class="warning">No pude verificar que cuenta ve GPT porque el endpoint remoto no respondio a tiempo. Usa el link GPT payload o reintenta; no interpretes esto como cambio de cuenta confirmado.</div>
+        <div class="warning">No pude verificar que cuenta ve GPT porque el endpoint remoto no respondio a tiempo. Recargar esta consola solo relee la pagina local; no publica cuenta. Para cambiar lo que ve GPT, el refresh IBKR debe terminar en DONE y publicar snapshot.</div>
         """
     elif comparison["needs_refresh"]:
         warning = """
@@ -949,7 +949,7 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
         <li><span>Fin</span><strong>{finished_at}</strong></li>
       </ul>
       {result_html}
-      <p><a class="tile inline-link" href="/console">Actualizar consola</a></p>
+      <p><a class="tile inline-link" href="/console">Volver a consola <span>No refresca IBKR ni cambia GPT</span></a></p>
     </section>
     """.format(
         status_class=html_escape(status.lower()),

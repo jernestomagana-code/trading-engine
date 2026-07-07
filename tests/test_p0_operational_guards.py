@@ -157,6 +157,8 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("IBKR esta en puerto abierto", source)
         self.assertIn("No sigas presionando Refresh", source)
         self.assertIn("stock_ultimus_console_bridge_latest.json", source)
+        self.assertIn("No refresca IBKR ni cambia GPT", source)
+        self.assertIn("Recargar esta consola solo relee la pagina local", source)
         self.assertIn("def do_HEAD", source)
         self.assertIn("/gpt_v32_operator_today?limit=12", source)
         self.assertIn("READ_ACCESS_TOKEN", source)
