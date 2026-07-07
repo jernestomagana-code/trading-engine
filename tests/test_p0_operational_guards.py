@@ -112,7 +112,9 @@ class BridgeEntrypointTests(unittest.TestCase):
 
     def test_ibkr_account_selector_has_local_web_flow_without_printing_ids(self):
         source = IBKR_ACCOUNT_PROFILE.read_text()
-        self.assertIn("HTTPServer((host, int(args.port)), AccountProfileWebHandler)", source)
+        self.assertIn("ThreadingHTTPServer((host, int(args.port)), AccountProfileWebHandler)", source)
+        self.assertIn("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", source)
+        self.assertIn("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", source)
         self.assertIn("127.0.0.1", source)
         self.assertIn("def cmd_serve", source)
         self.assertIn("WEB_LAST_RESULT_PATH", source)
