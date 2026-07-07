@@ -250,6 +250,12 @@ def sanitize_output(text: str, env: dict[str, str] | None = None) -> str:
     return clean[-6000:]
 
 
+def process_output_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value or "")
+
+
 def run_with_profile(alias: str, command: list[str]) -> int:
     profile = profile_for(alias)
     write_active_profile(profile)
@@ -285,8 +291,8 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         returncode = 124
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + f"\nTIMEOUT: comando detenido despues de {LOCAL_JOB_TIMEOUT_SECONDS:.0f}s. Revisa TWS/IBKR Gateway y vuelve a intentar."
+        stdout = process_output_text(exc.stdout)
+        stderr = process_output_text(exc.stderr) + f"\nTIMEOUT: comando detenido despues de {LOCAL_JOB_TIMEOUT_SECONDS:.0f}s. Revisa TWS/IBKR Gateway y vuelve a intentar."
     payload = {
         "result_version": "ibkr_account_profile_web_result_v1",
         "generated_at": now_iso(),

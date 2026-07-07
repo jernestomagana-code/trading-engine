@@ -139,6 +139,8 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("LIVE_REFRESH_SKIPPED_DURING_LOCAL_JOB", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", source)
         self.assertIn("subprocess.TimeoutExpired", source)
+        self.assertIn("def process_output_text", source)
+        self.assertIn("decode(\"utf-8\", errors=\"replace\")", source)
         self.assertIn('"timed_out": timed_out', source)
         self.assertIn("TIMEOUT: comando detenido", source)
         self.assertIn("def do_HEAD", source)
