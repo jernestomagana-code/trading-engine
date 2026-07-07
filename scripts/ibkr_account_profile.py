@@ -36,8 +36,10 @@ DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
 REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
+LOCAL_JOB_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", "90"))
 WEB_JOBS: dict[str, dict[str, Any]] = {}
 WEB_JOBS_LOCK = threading.Lock()
+UNKNOWN_CONTEXT_VALUES = {"", "UNKNOWN", "NONE", "NULL", "N/A"}
 
 
 def now_iso() -> str:
@@ -266,24 +268,36 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     profile = profile_for(alias)
     write_active_profile(profile)
     env = environment_for(profile)
-    result = subprocess.run(
-        command,
-        cwd=str(ROOT),
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=None,
-    )
+    timed_out = False
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(ROOT),
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=LOCAL_JOB_TIMEOUT_SECONDS,
+        )
+        returncode = int(result.returncode)
+        stdout = result.stdout
+        stderr = result.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        returncode = 124
+        stdout = exc.stdout or ""
+        stderr = (exc.stderr or "") + f"\nTIMEOUT: comando detenido despues de {LOCAL_JOB_TIMEOUT_SECONDS:.0f}s. Revisa TWS/IBKR Gateway y vuelve a intentar."
     payload = {
         "result_version": "ibkr_account_profile_web_result_v1",
         "generated_at": now_iso(),
         "alias": profile["alias"],
         "account_scope": profile["account_scope"],
         "command": command_label(command),
-        "returncode": int(result.returncode),
-        "stdout_tail": sanitize_output(result.stdout, env),
-        "stderr_tail": sanitize_output(result.stderr, env),
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": LOCAL_JOB_TIMEOUT_SECONDS,
+        "stdout_tail": sanitize_output(stdout, env),
+        "stderr_tail": sanitize_output(stderr, env),
         "account_id_printed": False,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -536,7 +550,11 @@ def read_remote_cache(path: str, live_error: str = "") -> dict[str, Any] | None:
     return out
 
 
-def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS) -> dict[str, Any]:
+def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, prefer_cache: bool = False) -> dict[str, Any]:
+    if prefer_cache:
+        cached = read_remote_cache(path, live_error="LIVE_REFRESH_SKIPPED_DURING_LOCAL_JOB")
+        if cached:
+            return cached
     token = read_access_token()
     if not token:
         cached = read_remote_cache(path, live_error="MISSING_READ_ACCESS_TOKEN")
@@ -595,8 +613,15 @@ def post_remote_json(path: str, payload: dict[str, Any], timeout: float = 15) ->
         return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
 
 
-def console_operator_payload() -> dict[str, Any]:
-    return fetch_remote_json("/gpt_v32_operator_today?limit=12")
+def console_operator_payload(prefer_cache: bool = False) -> dict[str, Any]:
+    return fetch_remote_json("/gpt_v32_operator_today?limit=12", prefer_cache=prefer_cache)
+
+
+def published_context_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.upper() in UNKNOWN_CONTEXT_VALUES:
+        return ""
+    return text
 
 
 def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
@@ -605,31 +630,33 @@ def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], oper
     remote_ok = bool(operator_payload.get("ok"))
     selected_scope = active.get("account_scope") or ""
     selected_alias = active.get("account_alias") or ""
-    published_scope = (
+    published_scope = published_context_value(
         operator_data.get("account_scope")
         or operator_context.get("account_scope")
         or snapshot.get("account_scope")
         or ""
     )
-    published_alias = (
+    published_alias = published_context_value(
         operator_data.get("account_alias")
         or operator_context.get("account_alias")
         or snapshot.get("account_alias")
         or ""
     )
     matches = bool(selected_scope and published_scope and selected_scope == published_scope)
+    missing_published_context = bool(remote_ok and selected_scope and not published_scope)
     return {
         "selected_scope": selected_scope,
         "selected_alias": selected_alias,
         "published_scope": published_scope,
         "published_alias": published_alias,
+        "missing_published_context": missing_published_context,
         "remote_ok": remote_ok,
         "remote_error": operator_payload.get("error") or "",
         "cached": bool(operator_payload.get("cached")),
         "cache_age_label": operator_payload.get("cache_age_label") or "",
         "live_error": operator_payload.get("live_error") or "",
         "matches": matches,
-        "needs_refresh": bool(remote_ok and selected_scope and published_scope and not matches),
+        "needs_refresh": bool(missing_published_context or (remote_ok and selected_scope and published_scope and not matches)),
         "status": "MATCH" if matches else ("REMOTE_UNAVAILABLE" if not remote_ok else "REFRESH_REQUIRED"),
     }
 
@@ -655,12 +682,21 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         """
     elif comparison["needs_refresh"]:
         warning = """
-        <div class="warning">Seleccion local y contexto publicado no coinciden. Refresca IBKR antes de pedirle al GPT que interprete broker/account context.</div>
+        <div class="warning">GPT todavia no tiene publicada la cuenta seleccionada. Usa <strong>Usar + Refresh IBKR</strong> y espera DONE antes de pedir interpretacion de broker/account context.</div>
         """
     elif not comparison["published_scope"]:
         warning = """
         <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta y refresca el bridge.</div>
         """
+    published_value = comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
+    if comparison["missing_published_context"]:
+        published_note = "sin cuenta publicada; GPT remoto aun no ve " + (comparison["selected_scope"] or "la seleccion local")
+    elif comparison["cached"]:
+        published_note = "cache=" + comparison["cache_age_label"] + (" | live_error=" + comparison["live_error"] if comparison["live_error"] else "")
+    elif not comparison["remote_ok"]:
+        published_note = "error=" + comparison["remote_error"]
+    else:
+        published_note = "scope=" + (comparison["published_scope"] or "pendiente")
     return """
     <section class="panel hero-panel">
       <div>
@@ -684,12 +720,8 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         ),
         published=render_metric(
             "GPT ve",
-            comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "none"),
-            (
-                "cache=" + comparison["cache_age_label"] + (" | live_error=" + comparison["live_error"] if comparison["live_error"] else "")
-            ) if comparison["cached"] else (
-                ("error=" + comparison["remote_error"]) if not comparison["remote_ok"] else "scope=" + (comparison["published_scope"] or "none")
-            ),
+            published_value,
+            published_note,
         ),
         snapshot=render_metric(
             "Snapshot",
@@ -869,11 +901,13 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
 
 
 def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "") -> bytes:
+    current_job = web_job(job_id)
+    prefer_cache = str(current_job.get("status") or "").upper() == "RUNNING"
     data = load_profiles()
     profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
     active = active_profile()
     snapshot = latest_master_snapshot()
-    operator_payload = console_operator_payload()
+    operator_payload = console_operator_payload(prefer_cache=prefer_cache)
     result = result or web_last_result()
     refresh_meta, job_panel = render_job_panel(job_id)
 
