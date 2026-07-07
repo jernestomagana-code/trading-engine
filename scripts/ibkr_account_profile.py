@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -30,6 +30,8 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
+FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
+REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
 
 
 def now_iso() -> str:
@@ -75,7 +77,7 @@ def save_keychain_value(service: str, value: str) -> None:
         raise SystemExit("No pude guardar el account en Keychain.")
 
 
-def read_keychain_value(service: str) -> str:
+def read_keychain_value(service: str, timeout: float = FAST_KEYCHAIN_TIMEOUT_SECONDS) -> str:
     result = subprocess.run(
         [
             "security",
@@ -89,7 +91,7 @@ def read_keychain_value(service: str) -> str:
         check=False,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=timeout,
     )
     if result.returncode != 0:
         return ""
@@ -199,7 +201,7 @@ def cmd_select(args: argparse.Namespace) -> int:
 
 def environment_for(profile: dict[str, Any]) -> dict[str, str]:
     service = str(profile.get("keychain_service") or "")
-    account = read_keychain_value(service)
+    account = read_keychain_value(service, timeout=10)
     if not account:
         raise SystemExit(f"Falta account en Keychain para alias '{profile.get('alias')}'.")
     env = os.environ.copy()
@@ -406,7 +408,7 @@ def age_label(value: Any) -> str:
     return f"{hours // 24}d ago"
 
 
-def fetch_remote_json(path: str, timeout: int = 8) -> dict[str, Any]:
+def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS) -> dict[str, Any]:
     token = read_access_token()
     if not token:
         return {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
@@ -798,7 +800,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     host = args.host
     if host not in ["127.0.0.1", "localhost"]:
         raise SystemExit("Por seguridad, el selector web solo escucha en 127.0.0.1/localhost.")
-    server = HTTPServer((host, int(args.port)), AccountProfileWebHandler)
+    server = ThreadingHTTPServer((host, int(args.port)), AccountProfileWebHandler)
     print(f"Selector web local: http://{host}:{int(args.port)}")
     print("IDs reales permanecen en Keychain. Decision support only; no autoriza ordenes.")
     try:
