@@ -439,6 +439,7 @@ def console_operator_payload() -> dict[str, Any]:
 def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
     operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     operator_context = operator_data.get("account_context") if isinstance(operator_data.get("account_context"), dict) else {}
+    remote_ok = bool(operator_payload.get("ok"))
     selected_scope = active.get("account_scope") or ""
     selected_alias = active.get("account_alias") or ""
     published_scope = (
@@ -459,9 +460,11 @@ def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], oper
         "selected_alias": selected_alias,
         "published_scope": published_scope,
         "published_alias": published_alias,
+        "remote_ok": remote_ok,
+        "remote_error": operator_payload.get("error") or "",
         "matches": matches,
-        "needs_refresh": bool(selected_scope and published_scope and not matches),
-        "status": "MATCH" if matches else "REFRESH_REQUIRED",
+        "needs_refresh": bool(remote_ok and selected_scope and published_scope and not matches),
+        "status": "MATCH" if matches else ("REMOTE_UNAVAILABLE" if not remote_ok else "REFRESH_REQUIRED"),
     }
 
 
@@ -480,7 +483,11 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     status = operator_data.get("status") or ("OK" if operator_payload.get("ok") else operator_payload.get("error") or "UNKNOWN")
     warning = ""
-    if comparison["needs_refresh"]:
+    if not comparison["remote_ok"]:
+        warning = """
+        <div class="warning">No pude verificar que cuenta ve GPT porque el endpoint remoto no respondio a tiempo. Usa el link GPT payload o reintenta; no interpretes esto como cambio de cuenta confirmado.</div>
+        """
+    elif comparison["needs_refresh"]:
         warning = """
         <div class="warning">Seleccion local y contexto publicado no coinciden. Refresca IBKR antes de pedirle al GPT que interprete broker/account context.</div>
         """
@@ -511,8 +518,8 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         ),
         published=render_metric(
             "GPT ve",
-            comparison["published_alias"] or "none",
-            "scope=" + (comparison["published_scope"] or "none"),
+            comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "none"),
+            ("error=" + comparison["remote_error"]) if not comparison["remote_ok"] else "scope=" + (comparison["published_scope"] or "none"),
         ),
         snapshot=render_metric(
             "Snapshot",
