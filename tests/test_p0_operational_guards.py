@@ -131,6 +131,13 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
         self.assertIn("/v32_operator_daily_summary_email/preview", source)
+        self.assertIn("def post_remote_json", source)
+        self.assertIn('"/operator-event"', source)
+        self.assertIn('"/gpt_v32_operator_event"', source)
+        self.assertIn('"MARK_REVIEWING"', source)
+        self.assertIn('"MARK_WATCHLIST"', source)
+        self.assertIn('"REJECT_SETUP"', source)
+        self.assertIn('"execution_authorized": False', source)
 
     def test_gpt_payloads_surface_sanitized_account_context(self):
         source = APP.read_text()
