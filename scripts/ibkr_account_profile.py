@@ -27,11 +27,13 @@ RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
 ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
 WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
+REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
 REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
+REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
 
 
 def now_iso() -> str:
@@ -331,6 +333,11 @@ def load_json_file(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def write_json_file(path: Path, data: dict[str, Any]) -> None:
+    RUNTIME.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
 def latest_master_snapshot() -> dict[str, Any]:
     candidates = []
     fixed_names = [
@@ -408,10 +415,59 @@ def age_label(value: Any) -> str:
     return f"{hours // 24}d ago"
 
 
+def cache_age_seconds(cached_at: Any) -> float | None:
+    dt = parse_iso_datetime(cached_at)
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+
+
+def write_remote_cache(path: str, result: dict[str, Any]) -> None:
+    if not result.get("ok"):
+        return
+    payload = {
+        "cache_version": "stock_ultimus_console_remote_cache_v1",
+        "cached_at": now_iso(),
+        "path": path,
+        "result": {
+            "ok": True,
+            "error": "",
+            "token_present": bool(result.get("token_present")),
+            "url": result.get("url"),
+            "data": result.get("data") if isinstance(result.get("data"), dict) else {},
+        },
+        "secrets_printed": False,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    write_json_file(REMOTE_CACHE_PATH, payload)
+
+
+def read_remote_cache(path: str, live_error: str = "") -> dict[str, Any] | None:
+    cache = load_json_file(REMOTE_CACHE_PATH)
+    if cache.get("path") != path:
+        return None
+    age_seconds = cache_age_seconds(cache.get("cached_at"))
+    if age_seconds is None or age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS:
+        return None
+    result = cache.get("result") if isinstance(cache.get("result"), dict) else {}
+    if not result.get("ok"):
+        return None
+    out = dict(result)
+    out["cached"] = True
+    out["cached_at"] = cache.get("cached_at")
+    out["cache_age_label"] = age_label(cache.get("cached_at"))
+    out["live_error"] = live_error
+    return out
+
+
 def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS) -> dict[str, Any]:
     token = read_access_token()
     if not token:
-        return {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
+        cached = read_remote_cache(path, live_error="MISSING_READ_ACCESS_TOKEN")
+        return cached or {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
     url = public_base_url() + path
     request = urllib.request.Request(
         url,
@@ -425,11 +481,17 @@ def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS) -
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
         data = json.loads(raw)
-        return {"ok": True, "error": "", "token_present": True, "url": url, "data": data if isinstance(data, dict) else {}}
+        result = {"ok": True, "error": "", "token_present": True, "url": url, "data": data if isinstance(data, dict) else {}}
+        write_remote_cache(path, result)
+        return result
     except urllib.error.HTTPError as exc:
-        return {"ok": False, "error": f"HTTP_{exc.code}", "token_present": True, "url": url, "data": {}}
+        error_text = f"HTTP_{exc.code}"
+        cached = read_remote_cache(path, live_error=error_text)
+        return cached or {"ok": False, "error": error_text, "token_present": True, "url": url, "data": {}}
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
+        error_text = str(exc)
+        cached = read_remote_cache(path, live_error=error_text)
+        return cached or {"ok": False, "error": error_text, "token_present": True, "url": url, "data": {}}
 
 
 def console_operator_payload() -> dict[str, Any]:
@@ -462,6 +524,9 @@ def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], oper
         "published_alias": published_alias,
         "remote_ok": remote_ok,
         "remote_error": operator_payload.get("error") or "",
+        "cached": bool(operator_payload.get("cached")),
+        "cache_age_label": operator_payload.get("cache_age_label") or "",
+        "live_error": operator_payload.get("live_error") or "",
         "matches": matches,
         "needs_refresh": bool(remote_ok and selected_scope and published_scope and not matches),
         "status": "MATCH" if matches else ("REMOTE_UNAVAILABLE" if not remote_ok else "REFRESH_REQUIRED"),
@@ -519,7 +584,11 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         published=render_metric(
             "GPT ve",
             comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "none"),
-            ("error=" + comparison["remote_error"]) if not comparison["remote_ok"] else "scope=" + (comparison["published_scope"] or "none"),
+            (
+                "cache=" + comparison["cache_age_label"] + (" | live_error=" + comparison["live_error"] if comparison["live_error"] else "")
+            ) if comparison["cached"] else (
+                ("error=" + comparison["remote_error"]) if not comparison["remote_ok"] else "scope=" + (comparison["published_scope"] or "none")
+            ),
         ),
         snapshot=render_metric(
             "Snapshot",
@@ -529,7 +598,7 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         operator=render_metric(
             "V32 status",
             status,
-            "remote=" + ("ok" if operator_payload.get("ok") else "blocked"),
+            "remote=" + ("cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "blocked")),
         ),
         warning=warning,
     )
