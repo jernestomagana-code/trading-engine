@@ -266,16 +266,16 @@ blocks broker account/position context instead of mixing accounts. The bridge
 publishes `account_scope` and `account_alias`, but never persists the real IBKR
 account identifier.
 
-Friendly local selector:
+Friendly local console:
 
 ```bash
 python3 scripts/ibkr_account_profile.py serve
 ```
 
-Then open `http://127.0.0.1:8765`, create each account profile once, and click
-the alias you want to use. The page is intentionally localhost-only because it
-can read the local Keychain and run local TWS/bridge commands. Do not expose it
-on a public interface.
+Then open `http://127.0.0.1:8765`. This is the single local cockpit for account
+selection, IBKR refresh, V32 alerts, GPT context, and protected production links.
+The page is intentionally localhost-only because it can read the local Keychain
+and run local TWS/bridge commands. Do not expose it on a public interface.
 
 Operational flow:
 
@@ -283,6 +283,8 @@ Operational flow:
 2. Click `Refrescar bridge` or run the daily-open action.
 3. The refreshed snapshot publishes only `account_scope` and `account_alias`.
 4. GPT/action payloads use that sanitized account context for the current answer.
+5. Use the console alert panel and protected links to review V32 alerts, email
+   preview, tracking, and the exact GPT payload for the selected context.
 
 If you change accounts without refreshing the bridge/snapshot, GPT still sees the
 previous published account context. Treat a stale or missing `account_context` as

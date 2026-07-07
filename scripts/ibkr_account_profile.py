@@ -18,6 +18,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+import urllib.error
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +28,8 @@ PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
 ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
 WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
+READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
+DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 
 
 def now_iso() -> str:
@@ -297,11 +301,293 @@ def web_last_result() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> bytes:
-    data = load_profiles()
-    profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
-    active = active_profile()
-    result = result or web_last_result()
+def read_access_token() -> str:
+    token = (
+        os.getenv("READ_ACCESS_TOKEN")
+        or os.getenv("STOCK_ULTIMUS_READ_TOKEN")
+        or os.getenv("STOCK_ULTIMUS_READ_ACCESS_TOKEN")
+        or ""
+    ).strip()
+    if token:
+        return token
+    for service in READ_KEYCHAIN_SERVICES:
+        token = read_keychain_value(service)
+        if token:
+            return token
+    return ""
+
+
+def public_base_url() -> str:
+    return (os.getenv("PUBLIC_BASE_URL") or DEFAULT_PUBLIC_BASE_URL).rstrip("/")
+
+
+def load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def latest_master_snapshot() -> dict[str, Any]:
+    candidates = []
+    fixed_names = [
+        "v31_master_snapshot.json",
+        "v28_master_snapshot.json",
+        "v26_master_snapshot.json",
+        "v26_local_master_snapshot.json",
+        "v25_master_snapshot.json",
+    ]
+    for name in fixed_names:
+        path = RUNTIME / name
+        if path.exists():
+            candidates.append(path)
+    if RUNTIME.exists():
+        candidates.extend(path for path in RUNTIME.glob("*master_snapshot*.json") if path.is_file())
+    unique = sorted({path.resolve(): path for path in candidates}.values(), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not unique:
+        return {
+            "available": False,
+            "path": "",
+            "data": {},
+            "account_scope": "",
+            "account_alias": "",
+            "generated_at": "",
+            "rows_found": 0,
+        }
+    path = unique[0]
+    data = load_json_file(path)
+    rows = data.get("options_rows") if isinstance(data.get("options_rows"), list) else []
+    broker_summary = data.get("broker_check_summary") if isinstance(data.get("broker_check_summary"), dict) else {}
+    account_context = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
+    scope = data.get("account_scope") or broker_summary.get("account_scope") or account_context.get("account_scope") or ""
+    alias = data.get("account_alias") or broker_summary.get("account_alias") or account_context.get("account_alias") or scope
+    return {
+        "available": True,
+        "path": str(path.relative_to(ROOT)),
+        "mtime": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "data": data,
+        "account_scope": scope,
+        "account_alias": alias,
+        "generated_at": data.get("generated_at") or data.get("timestamp") or "",
+        "rows_found": len(rows),
+        "broker_summary": broker_summary,
+        "real_account_id_excluded": True,
+    }
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def age_label(value: Any) -> str:
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return "unknown"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    if seconds < 90:
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
+def fetch_remote_json(path: str, timeout: int = 8) -> dict[str, Any]:
+    token = read_access_token()
+    if not token:
+        return {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
+    url = public_base_url() + path
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "X-Stock-Ultimus-Read-Token": token,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        return {"ok": True, "error": "", "token_present": True, "url": url, "data": data if isinstance(data, dict) else {}}
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": f"HTTP_{exc.code}", "token_present": True, "url": url, "data": {}}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
+
+
+def console_operator_payload() -> dict[str, Any]:
+    return fetch_remote_json("/gpt_v32_operator_today?limit=12")
+
+
+def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
+    operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    operator_context = operator_data.get("account_context") if isinstance(operator_data.get("account_context"), dict) else {}
+    selected_scope = active.get("account_scope") or ""
+    selected_alias = active.get("account_alias") or ""
+    published_scope = (
+        operator_data.get("account_scope")
+        or operator_context.get("account_scope")
+        or snapshot.get("account_scope")
+        or ""
+    )
+    published_alias = (
+        operator_data.get("account_alias")
+        or operator_context.get("account_alias")
+        or snapshot.get("account_alias")
+        or ""
+    )
+    matches = bool(selected_scope and published_scope and selected_scope == published_scope)
+    return {
+        "selected_scope": selected_scope,
+        "selected_alias": selected_alias,
+        "published_scope": published_scope,
+        "published_alias": published_alias,
+        "matches": matches,
+        "needs_refresh": bool(selected_scope and published_scope and not matches),
+        "status": "MATCH" if matches else "REFRESH_REQUIRED",
+    }
+
+
+def render_metric(title: str, value: Any, note: str = "") -> str:
+    return """
+    <article class="metric">
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </article>
+    """.format(title=html_escape(title), value=html_escape(value), note=html_escape(note))
+
+
+def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> str:
+    comparison = selected_vs_published(active, snapshot, operator_payload)
+    operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    status = operator_data.get("status") or ("OK" if operator_payload.get("ok") else operator_payload.get("error") or "UNKNOWN")
+    warning = ""
+    if comparison["needs_refresh"]:
+        warning = """
+        <div class="warning">Seleccion local y contexto publicado no coinciden. Refresca IBKR antes de pedirle al GPT que interprete broker/account context.</div>
+        """
+    elif not comparison["published_scope"]:
+        warning = """
+        <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta y refresca el bridge.</div>
+        """
+    return """
+    <section class="panel hero-panel">
+      <div>
+        <p class="eyebrow">Contexto activo</p>
+        <h1>Stock Ultimus Console</h1>
+        <p class="lede">Un solo cockpit para escoger cuenta, refrescar IBKR, revisar alertas y verificar que GPT este usando el contexto correcto.</p>
+      </div>
+      <div class="context-grid">
+        {selected}
+        {published}
+        {snapshot}
+        {operator}
+      </div>
+      {warning}
+    </section>
+    """.format(
+        selected=render_metric(
+            "Seleccion local",
+            comparison["selected_alias"] or "none",
+            "scope=" + (comparison["selected_scope"] or "none"),
+        ),
+        published=render_metric(
+            "GPT ve",
+            comparison["published_alias"] or "none",
+            "scope=" + (comparison["published_scope"] or "none"),
+        ),
+        snapshot=render_metric(
+            "Snapshot",
+            "available" if snapshot.get("available") else "missing",
+            (snapshot.get("path") or "no file") + " | " + age_label(snapshot.get("generated_at") or snapshot.get("mtime")),
+        ),
+        operator=render_metric(
+            "V32 status",
+            status,
+            "remote=" + ("ok" if operator_payload.get("ok") else "blocked"),
+        ),
+        warning=warning,
+    )
+
+
+def render_console_actions() -> str:
+    base = public_base_url()
+    return """
+    <section class="panel">
+      <h2>Perifericos y salidas</h2>
+      <div class="tiles">
+        <a class="tile" href="{base}/v32_operator_dashboard" target="_blank">V32 dashboard<span>Alertas y acciones guiadas</span></a>
+        <a class="tile" href="{base}/gpt_v32_operator_today" target="_blank">GPT payload<span>Contexto exacto que lee el GPT</span></a>
+        <a class="tile" href="{base}/v32_operator_daily_summary_email/preview" target="_blank">Email preview<span>Resumen antes de enviar</span></a>
+        <a class="tile" href="{base}/v32_operator_tracking_status" target="_blank">Tracking<span>Eventos, outcomes y aprendizaje</span></a>
+      </div>
+      <p class="muted">Los links protegidos pueden pedir READ_ACCESS_TOKEN en el navegador. La consola local nunca imprime ese token.</p>
+    </section>
+    """.format(base=html_escape(base))
+
+
+def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
+    if not operator_payload.get("ok"):
+        return """
+        <section class="panel">
+          <h2>Alertas V32</h2>
+          <p class="muted">No pude leer el endpoint protegido: {error}. Configura READ_ACCESS_TOKEN o revisa produccion.</p>
+        </section>
+        """.format(error=html_escape(operator_payload.get("error") or "unknown"))
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
+    if not alerts:
+        alert_html = '<p class="empty">Sin alertas activas en el payload V32 actual.</p>'
+    else:
+        alert_html = "".join(
+            """
+            <article class="alert-card severity-{severity}">
+              <strong>{ticker}</strong>
+              <span>{severity} | {state}</span>
+              <small>blocker: {blocker} | status: {status}</small>
+            </article>
+            """.format(
+                ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+                severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
+                state=html_escape(alert.get("state") or "UNKNOWN"),
+                blocker=html_escape(alert.get("main_blocker") or "NONE"),
+                status=html_escape(alert.get("operator_status") or "UNKNOWN"),
+            )
+            for alert in alerts[:12]
+        )
+    action = next_actions[0] if next_actions else {}
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Alertas V32</h2>
+        <p>{next_action}</p>
+      </div>
+      <div class="alert-grid">{alerts}</div>
+    </section>
+    """.format(
+        next_action=html_escape((action.get("label") or "Sin accion inmediata") + ". " + (action.get("detail") or "")),
+        alerts=alert_html,
+    )
+
+
+def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> str:
     profile_cards = []
     for alias in sorted(profiles):
         profile = profiles[alias]
@@ -317,8 +603,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
                 <p class="muted">{status}. ID real oculto.</p>
               </div>
               <div class="actions">
-                <form method="post" action="/select"><input name="alias" value="{alias}" type="hidden"><button>Usar esta cuenta</button></form>
-                <form method="post" action="/bridge"><input name="alias" value="{alias}" type="hidden"><button>Refrescar bridge</button></form>
+                <form method="post" action="/select"><input name="alias" value="{alias}" type="hidden"><button>Usar</button></form>
+                <form method="post" action="/bridge"><input name="alias" value="{alias}" type="hidden"><button>Usar + Refresh IBKR</button></form>
                 <form method="post" action="/daily-open"><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
               </div>
             </article>
@@ -331,6 +617,16 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
         )
     if not profile_cards:
         profile_cards.append('<p class="empty">Todavia no hay perfiles. Crea uno abajo; el ID se guarda en Keychain y no se imprime.</p>')
+    return "\n".join(profile_cards)
+
+
+def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> bytes:
+    data = load_profiles()
+    profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
+    active = active_profile()
+    snapshot = latest_master_snapshot()
+    operator_payload = console_operator_payload()
+    result = result or web_last_result()
 
     output = ""
     if result:
@@ -355,16 +651,24 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Stock Ultimus IBKR Accounts</title>
+        <title>Stock Ultimus Console</title>
         <style>
-          :root {{ --ink:#172019; --muted:#5d675f; --paper:#f7f2e8; --card:#fffaf0; --accent:#1d6b4f; --line:#d9cdb7; }}
-          body {{ margin:0; font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; color:var(--ink); background:radial-gradient(circle at top left,#e2f0dc,transparent 35%),var(--paper); }}
-          main {{ max-width:980px; margin:0 auto; padding:36px 18px 60px; }}
+          :root {{ --ink:#172019; --muted:#5d675f; --paper:#f7f2e8; --card:#fffaf0; --accent:#1d6b4f; --line:#d9cdb7; --warn:#9f4b1b; --risk:#b42318; }}
+          body {{ margin:0; font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; color:var(--ink); background:radial-gradient(circle at top left,#e2f0dc,transparent 35%),linear-gradient(135deg,#f7f2e8,#eee2cc); }}
+          main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
           h1 {{ font-size:clamp(2rem,5vw,4.4rem); line-height:.92; margin:0 0 12px; letter-spacing:-.05em; }}
           h2 {{ margin:0 0 12px; }}
+          h3 {{ margin:0; }}
           .lede {{ color:var(--muted); max-width:720px; font-size:1.08rem; }}
           .notice,.panel,.card {{ border:1px solid var(--line); background:rgba(255,250,240,.82); border-radius:22px; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
           .notice {{ padding:14px 18px; margin:22px 0; }}
+          .hero-panel {{ display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:end; padding:28px; }}
+          .eyebrow {{ text-transform:uppercase; letter-spacing:.16em; color:var(--accent); font-weight:800; font-size:.78rem; margin:0 0 12px; }}
+          .context-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+          .metric {{ background:#fffdf6; border:1px solid var(--line); border-radius:18px; padding:14px; }}
+          .metric span,.metric small {{ display:block; color:var(--muted); }}
+          .metric strong {{ display:block; font-size:1.45rem; margin:4px 0; }}
+          .warning {{ grid-column:1 / -1; background:#fff3df; color:var(--warn); border:1px solid #efc99d; border-radius:16px; padding:12px 14px; font-weight:700; }}
           .grid {{ display:grid; gap:14px; margin:22px 0; }}
           .card {{ display:flex; justify-content:space-between; gap:18px; padding:20px; align-items:center; }}
           .card.active {{ outline:3px solid rgba(29,107,79,.25); }}
@@ -375,19 +679,36 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
           button {{ border:0; border-radius:999px; padding:10px 14px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }}
           button.secondary {{ background:#6c5f45; }}
           .panel {{ padding:20px; margin-top:20px; }}
+          .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }}
+          .section-head p {{ margin:0; color:var(--muted); max-width:620px; }}
+          .tiles,.alert-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
+          .tile,.alert-card {{ border:1px solid var(--line); background:#fffdf6; border-radius:18px; padding:14px; text-decoration:none; color:var(--ink); }}
+          .tile {{ font-weight:800; }}
+          .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
+          .alert-card strong {{ font-size:1.35rem; }}
+          .severity-action {{ border-color:#d97706; }}
+          .severity-risk {{ border-color:var(--risk); }}
+          .severity-watch {{ border-color:#2563eb; }}
           label {{ display:block; margin:10px 0 4px; font-weight:700; }}
           input {{ width:min(520px,100%); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
           pre {{ white-space:pre-wrap; overflow:auto; background:#162019; color:#f6f1df; border-radius:14px; padding:14px; max-height:360px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
-          @media (max-width:720px) {{ .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
+          @media (max-width:820px) {{ .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
       <body>
         <main>
-          <h1>IBKR account selector</h1>
-          <p class="lede">Escoge la cuenta por alias. Stock Ultimus guarda el ID real en Keychain y publica solo <code>account_scope</code>/<code>account_alias</code> para que el GPT y los perifericos sepan de que contexto hablan.</p>
+          {context}
           {message}
+          <section class="panel">
+            <div class="section-head">
+              <h2>Cuentas</h2>
+              <p>Escoge la cuenta que quieres revisar. Para que GPT cambie de contexto, usa <strong>Usar + Refresh IBKR</strong>.</p>
+            </div>
+          </section>
           <section class="grid">{profile_cards}</section>
+          {alerts}
+          {actions}
           <section class="panel">
             <h2>Crear o actualizar perfil</h2>
             <form method="post" action="/setup" autocomplete="off">
@@ -406,8 +727,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None) -> 
       </body>
     </html>
     """.format(
+        context=render_console_context(active, snapshot, operator_payload),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
-        profile_cards="\n".join(profile_cards),
+        profile_cards=render_profile_cards(profiles, active),
+        alerts=render_operator_alerts(operator_payload),
+        actions=render_console_actions(),
         output=output,
     )
     return body.encode("utf-8")
@@ -425,7 +749,8 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self) -> None:
-        if self.path not in ["/", ""]:
+        path = self.path.split("?", 1)[0]
+        if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
         self.send_html()
