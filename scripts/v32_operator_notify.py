@@ -185,13 +185,13 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
         elif state == "NO_DATA":
             no_data.append(compact)
 
-    should_notify = force or bool(actionable)
+    should_notify = force or bool(actionable) or bool(no_data)
     if actionable:
         reason = "ACTIONABLE_OPERATOR_ALERT"
     elif force:
         reason = "FORCED"
     elif no_data:
-        reason = "NO_DATA_SUPPRESSED"
+        reason = "DATA_REFRESH_REQUIRED"
     elif wait_market:
         reason = "WAIT_MARKET_SUPPRESSED"
     else:
@@ -205,6 +205,7 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
         "no_data_count": len(no_data),
         "active_alert_count": len(alerts),
         "actionable_alerts": actionable,
+        "data_alerts": no_data,
     }
 
 
@@ -213,12 +214,16 @@ def notification_text(report: dict[str, Any]) -> tuple[str, str]:
     classification = report.get("classification") or {}
     custom_message = str(report.get("custom_message") or "").strip()
     actionable = classification.get("actionable_alerts") or []
+    data_alerts = classification.get("data_alerts") or []
     title = "Stock Ultimus V32"
     if custom_message:
         body = custom_message
     elif actionable:
         tickers = ", ".join(str(item.get("ticker")) for item in actionable[:5] if item.get("ticker"))
         body = f"{classification.get('actionable_count')} alerta(s) accionables: {tickers}. Estado {status}."
+    elif data_alerts:
+        tickers = ", ".join(str(item.get("ticker")) for item in data_alerts[:5] if item.get("ticker"))
+        body = f"Datos pendientes para {tickers or 'watchlist'}. Refrescar snapshot/IBKR/opciones. Estado {status}."
     else:
         body = f"Sin alertas accionables. Estado {status}; razon {classification.get('notify_reason')}."
     return title, body[:220]
