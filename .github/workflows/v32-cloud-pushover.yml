@@ -9,7 +9,7 @@ on:
         default: "false"
   schedule:
     # Broad US market-hours window in UTC. The backend decides whether to send
-    # and dedupes repeated ACTION/RISK alerts.
+    # and dedupes repeated ACTION/RISK or operational data-refresh alerts.
     - cron: "*/5 13-21 * * 1-5"
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
     name: Call V32 cloud Pushover
     runs-on: ubuntu-latest
     steps:
-      - name: Send only actionable V32 operator push
+      - name: Send V32 operator push when action or data attention is needed
         env:
           READ_ACCESS_TOKEN: ${{ secrets.STOCK_ULTIMUS_READ_ACCESS_TOKEN }}
           STOCK_ULTIMUS_BASE_URL: https://trading-engine-p097.onrender.com
@@ -67,6 +67,7 @@ jobs:
               "status_code": status_code,
               "status": payload.get("status"),
               "would_notify": payload.get("would_notify"),
+              "notify_reason": payload.get("notify_reason"),
               "pushover_sent": payload.get("pushover_sent"),
               "provider": result.get("provider"),
               "provider_status_code": result.get("status_code"),
@@ -76,6 +77,8 @@ jobs:
                   "action": counts.get("action"),
                   "risk": counts.get("risk"),
                   "watch": counts.get("watch"),
+                  "no_data": counts.get("no_data"),
+                  "data_refresh_required": counts.get("data_refresh_required"),
               },
               "not_order_instruction": payload.get("not_order_instruction"),
               "execution_authorized": payload.get("execution_authorized"),

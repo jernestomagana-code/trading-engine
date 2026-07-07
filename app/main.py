@@ -22750,11 +22750,18 @@ def _v32_operator_answer_text(payload):
     action_count = len([item for item in active if item.get("severity") == "ACTION"])
     risk_count = len([item for item in active if item.get("severity") == "RISK"])
     watch_count = len([item for item in active if item.get("severity") == "WATCH"])
+    no_data_count = len([
+        item for item in active
+        if item.get("state") == "NO_DATA" or item.get("main_blocker") in {"NO_DATA", "NO_OPTION_ROWS"}
+    ])
+    data_refresh_required = any(item.get("kind") == "DATA_REFRESH" for item in actions) or no_data_count > 0
     first = actions[0] if actions else {}
     lines = [
-        f"Modo operador: {status}. Alertas: {action_count} action, {risk_count} risk, {watch_count} watch.",
+        f"Modo operador: {status}. Alertas: {action_count} action, {risk_count} risk, {watch_count} watch, {no_data_count} no_data.",
         f"Siguiente paso: {first.get('label') or 'Sin accion inmediata'}. {first.get('detail') or ''}",
     ]
+    if data_refresh_required:
+        lines.append("Estado interno: no esta pensando una entrada; esta esperando snapshot/IBKR/opciones frescas.")
     if active:
         lines.append("")
         lines.append("Alertas activas:")
@@ -22774,6 +22781,31 @@ def _v32_operator_answer_text(payload):
         "Decision support solamente. Esto no autoriza ordenes ni ejecucion automatica.",
     ])
     return "\n".join(lines)
+
+
+def _v32_summary_data_issue(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    status = _v29_safe_upper(summary.get("status"), "")
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    actions = summary.get("next_actions") if isinstance(summary.get("next_actions"), list) else []
+    alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    no_data_alerts = [
+        alert for alert in alerts
+        if _v29_safe_upper(alert.get("state"), "") == "NO_DATA"
+        or _v29_safe_upper(alert.get("main_blocker"), "") in {"NO_DATA", "NO_OPTION_ROWS"}
+    ]
+    has_data_refresh_action = any(
+        _v29_safe_upper(action.get("kind"), "") == "DATA_REFRESH"
+        for action in actions
+        if isinstance(action, dict)
+    )
+    return bool(
+        counts.get("data_refresh_required")
+        or counts.get("no_data")
+        or has_data_refresh_action
+        or no_data_alerts
+        or status in {"NO_DATA", "STALE_DATA", "WAIT_PIPELINE", "BLOCKED"}
+    )
 
 
 def _v32_operator_today_payload(limit=12):
@@ -22930,15 +22962,28 @@ def _v32_operator_daily_summary_payload(limit=12):
     action_alerts = [item for item in alerts if item.get("severity") == "ACTION"]
     risk_alerts = [item for item in alerts if item.get("severity") == "RISK"]
     watch_alerts = [item for item in alerts if item.get("severity") == "WATCH"]
+    info_alerts = [item for item in alerts if item.get("severity") == "INFO"]
+    no_data_alerts = [
+        item for item in alerts
+        if item.get("state") == "NO_DATA" or item.get("main_blocker") in {"NO_DATA", "NO_OPTION_ROWS"}
+    ]
     next_action = (today.get("next_actions") or [{}])[0]
+    data_refresh_required = (
+        bool(no_data_alerts)
+        or next_action.get("kind") == "DATA_REFRESH"
+        or today.get("status") in {"NO_DATA", "STALE_DATA", "WAIT_PIPELINE", "BLOCKED"}
+    )
     summary_lines = [
         "Stock Ultimus V32 daily summary",
         f"Estado: {today.get('status') or 'UNKNOWN'}",
-        f"Alertas: {len(action_alerts)} action, {len(risk_alerts)} risk, {len(watch_alerts)} watch.",
+        f"Alertas: {len(action_alerts)} action, {len(risk_alerts)} risk, {len(watch_alerts)} watch, {len(no_data_alerts)} no_data.",
         f"Siguiente paso: {next_action.get('label') or 'Sin accion inmediata'}.",
     ]
     if action_alerts or risk_alerts:
         summary_lines.append("Requiere atencion humana antes de cualquier decision.")
+    elif data_refresh_required:
+        summary_lines.append("Requiere atencion de datos: refrescar snapshot/IBKR/opciones antes de evaluar entradas.")
+        summary_lines.append("Estado interno: esperando datos frescos; no esta pensando ni autorizando una operacion.")
     elif watch_alerts:
         summary_lines.append("Monitoreo solamente; no convertir WAIT_* en entrada.")
     else:
@@ -22956,7 +23001,10 @@ def _v32_operator_daily_summary_payload(limit=12):
             "action": len(action_alerts),
             "risk": len(risk_alerts),
             "watch": len(watch_alerts),
+            "info": len(info_alerts),
+            "no_data": len(no_data_alerts),
             "active": len(alerts),
+            "data_refresh_required": bool(data_refresh_required),
             "operator_events": tracking.get("operator_event_count"),
             "open_tracked_alerts": tracking.get("open_alert_count"),
             "pending_outcomes": (tracking.get("outcome_tracking") or {}).get("pending_entry_ready_signals"),
@@ -23069,15 +23117,19 @@ def _v32_operator_daily_summary_email_payload(force=False, to_email=None, dry_ru
 def _v32_operator_pushover_message(summary):
     summary = summary if isinstance(summary, dict) else {}
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    data_issue = _v32_summary_data_issue(summary)
     lines = [
         "Stock Ultimus V32",
         "Estado: {}".format(summary.get("status") or "UNKNOWN"),
-        "Alertas: {action} action, {risk} risk, {watch} watch.".format(
+        "Alertas: {action} action, {risk} risk, {watch} watch, {no_data} no_data.".format(
             action=counts.get("action", 0),
             risk=counts.get("risk", 0),
             watch=counts.get("watch", 0),
+            no_data=counts.get("no_data", 0),
         ),
     ]
+    if data_issue:
+        lines.append("Datos: requiere refrescar snapshot/IBKR/opciones; no esta pensando una entrada.")
     next_actions = summary.get("next_actions") if isinstance(summary.get("next_actions"), list) else []
     if next_actions:
         lines.append("Siguiente: {}".format(next_actions[0].get("label") or "Revisar dashboard"))
@@ -23097,6 +23149,7 @@ def _v32_operator_pushover_message(summary):
 def _v32_operator_pushover_signature(summary):
     summary = summary if isinstance(summary, dict) else {}
     alerts = summary.get("active_alerts") if isinstance(summary.get("active_alerts"), list) else []
+    data_issue = _v32_summary_data_issue(summary)
     actionable = [
         {
             "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
@@ -23109,15 +23162,30 @@ def _v32_operator_pushover_signature(summary):
         if _v29_safe_upper(alert.get("severity"), "") in {"ACTION", "RISK"}
     ]
     actionable.sort(key=lambda item: (item.get("alert_id"), item.get("ticker"), item.get("severity")))
+    data_alerts = [
+        {
+            "alert_id": alert.get("alert_id") or _v32_operator_alert_id(alert),
+            "ticker": _v29_safe_upper(alert.get("ticker"), "UNKNOWN"),
+            "state": _v29_safe_upper(alert.get("state"), "UNKNOWN"),
+            "blocker": _v29_safe_upper(alert.get("main_blocker"), "NONE"),
+        }
+        for alert in alerts
+        if _v29_safe_upper(alert.get("state"), "") == "NO_DATA"
+        or _v29_safe_upper(alert.get("main_blocker"), "") in {"NO_DATA", "NO_OPTION_ROWS"}
+    ]
+    data_alerts.sort(key=lambda item: (item.get("alert_id"), item.get("ticker"), item.get("blocker")))
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
     return {
-        "version": "v32_pushover_dedupe_v1",
+        "version": "v32_pushover_dedupe_v2",
         "status": summary.get("status") or "UNKNOWN",
         "counts": {
             "action": counts.get("action", 0),
             "risk": counts.get("risk", 0),
+            "no_data": counts.get("no_data", 0),
+            "data_refresh_required": bool(counts.get("data_refresh_required") or data_issue),
         },
         "alerts": actionable,
+        "data_alerts": data_alerts[:12],
     }
 
 
@@ -23207,7 +23275,18 @@ def send_pushover_message(title, message):
 def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     summary = _v32_operator_daily_summary_payload(limit=12)
     counts = summary.get("counts") or {}
-    should_notify = bool(force or counts.get("action") or counts.get("risk"))
+    data_issue = _v32_summary_data_issue(summary)
+    has_action_or_risk = bool(counts.get("action") or counts.get("risk"))
+    should_notify = bool(force or has_action_or_risk or data_issue)
+    notify_reason = (
+        "FORCED"
+        if force else
+        "ACTION_OR_RISK_ALERT"
+        if has_action_or_risk else
+        "DATA_REFRESH_REQUIRED"
+        if data_issue else
+        "NO_ACTIONABLE_V32_ALERTS"
+    )
     message = _v32_operator_pushover_message(summary)
     title = "Stock Ultimus V32: {}".format(summary.get("status") or "UNKNOWN")
     dedupe = _v32_operator_pushover_dedupe_decision(summary, force=force)
@@ -23215,6 +23294,7 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
         "engine": "V32_OPERATOR_PUSHOVER_NOTIFY",
         "generated_at": _v29_now(),
         "would_notify": should_notify,
+        "notify_reason": notify_reason,
         "title": title,
         "summary": summary,
         "dedupe": dedupe,
@@ -23225,7 +23305,7 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     if dry_run:
         return {**base_payload, "status": "preview", "pushover_sent": False, "message": message}
     if not should_notify:
-        return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": "NO_ACTIONABLE_V32_ALERTS"}
+        return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": notify_reason}
     if dedupe.get("deduped"):
         return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_V32_PUSHOVER_ALERT"}
     result = send_pushover_message(title, message)

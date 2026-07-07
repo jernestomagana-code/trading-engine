@@ -901,6 +901,40 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(tracking["execution_authorized"])
         self.assertTrue(tracking["not_order_instruction"])
 
+    def test_v32_operator_daily_summary_marks_data_refresh_issue(self):
+        with patch.object(main, "_v32_operator_today_payload", return_value={
+            "status": "WAIT_MARKET",
+            "active_alerts": [{
+                "alert_id": "ALERT-NODATA-QQQ",
+                "ticker": "QQQ",
+                "severity": "INFO",
+                "state": "NO_DATA",
+                "main_blocker": "NO_OPTION_ROWS",
+                "operator_status": "NEW",
+            }],
+            "next_actions": [{
+                "kind": "DATA_REFRESH",
+                "label": "Refrescar datos del motor",
+                "detail": "Ejecutar ibkr_bridge.py y publicar snapshot fresco.",
+            }],
+            "account_context": {},
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }), patch.object(main, "_v32_operator_tracking_payload", return_value={
+            "operator_event_count": 0,
+            "open_alert_count": 0,
+            "closed_alert_count": 0,
+            "outcome_tracking": {"pending_entry_ready_signals": 0},
+        }):
+            summary = main._v32_operator_daily_summary_payload()
+
+        self.assertEqual(summary["counts"]["action"], 0)
+        self.assertEqual(summary["counts"]["no_data"], 1)
+        self.assertTrue(summary["counts"]["data_refresh_required"])
+        self.assertIn("esperando datos frescos", summary["summary_text"])
+        self.assertFalse(summary["execution_authorized"])
+        self.assertTrue(summary["not_order_instruction"])
+
     def test_v32_operator_daily_summary_email_preview_never_sends(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
@@ -953,6 +987,52 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(result["pushover_sent"])
         self.assertEqual(result["reason"], "NO_ACTIONABLE_V32_ALERTS")
         send_push.assert_not_called()
+
+    def test_v32_operator_pushover_notifies_data_refresh_issue(self):
+        summary = {
+            "engine": "V32_OPERATOR_DAILY_SUMMARY",
+            "status": "WAIT_MARKET",
+            "summary_text": "Requiere atencion de datos.",
+            "counts": {
+                "action": 0,
+                "risk": 0,
+                "watch": 0,
+                "info": 1,
+                "no_data": 1,
+                "active": 1,
+                "data_refresh_required": True,
+            },
+            "active_alerts": [{
+                "alert_id": "ALERT-NODATA-QQQ",
+                "ticker": "QQQ",
+                "severity": "INFO",
+                "state": "NO_DATA",
+                "main_blocker": "NO_OPTION_ROWS",
+                "operator_status": "NEW",
+            }],
+            "next_actions": [{"kind": "DATA_REFRESH", "label": "Refrescar datos del motor"}],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "_v32_operator_daily_summary_payload", return_value=summary), patch.object(
+            main,
+            "_v29_load_json_file",
+            return_value={},
+        ), patch.object(main, "send_pushover_message", return_value={
+            "pushover_sent": True,
+            "provider": "pushover",
+            "status_code": 200,
+        }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True) as save_state:
+            result = main._v32_operator_pushover_notify_payload(dry_run=False)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertTrue(result["would_notify"])
+        self.assertTrue(result["pushover_sent"])
+        self.assertEqual(result["notify_reason"], "DATA_REFRESH_REQUIRED")
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
+        save_state.assert_called_once()
 
     def test_v32_operator_pushover_force_sends_decision_support_only(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
