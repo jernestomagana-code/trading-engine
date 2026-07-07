@@ -22548,6 +22548,13 @@ _V32_OPERATOR_ACTION_TO_MANUAL_STATUS = {
     "APPROVE_MANUAL_REVIEW": "APPROVED_FOR_MANUAL_TRADE",
     "MARK_EXPIRED": "EXPIRED",
 }
+_V32_OPERATOR_CLOSED_STATUSES = {
+    "REJECTED",
+    "EXPIRED",
+    "CLOSED",
+    "APPROVED_FOR_MANUAL_REVIEW",
+    "APPROVED_FOR_MANUAL_TRADE",
+}
 
 
 def _v32_operator_events_file():
@@ -22657,6 +22664,8 @@ def _v32_operator_active_alerts(command, events=None, limit=12):
         alert["operator_status"] = (last_event or {}).get("operator_status") or "NEW"
         alert["last_operator_action"] = (last_event or {}).get("action")
         alert["last_operator_reason"] = (last_event or {}).get("reason")
+        if str(alert["operator_status"] or "").upper() in _V32_OPERATOR_CLOSED_STATUSES:
+            continue
         alerts.append(alert)
     severity_rank = {"ACTION": 0, "RISK": 1, "WATCH": 2, "INFO": 3}
     return sorted(alerts, key=lambda item: severity_rank.get(item.get("severity"), 9))[:limit]

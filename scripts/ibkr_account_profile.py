@@ -32,9 +32,11 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
+SNAPSHOT_INGEST_KEYCHAIN_SERVICES = ("stock-ultimus-snapshot-ingest", "stock-ultimus-snapshot-ingest-token")
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
-REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "2"))
+REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "5"))
+REMOTE_VERIFY_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_VERIFY_TIMEOUT_SECONDS", "20"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
 LOCAL_JOB_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", "90"))
 CONSOLE_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", "75")))
@@ -48,6 +50,13 @@ CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_S
 WEB_JOBS: dict[str, dict[str, Any]] = {}
 WEB_JOBS_LOCK = threading.Lock()
 UNKNOWN_CONTEXT_VALUES = {"", "UNKNOWN", "NONE", "NULL", "N/A"}
+CLOSED_OPERATOR_STATUSES = {
+    "REJECTED",
+    "EXPIRED",
+    "CLOSED",
+    "APPROVED_FOR_MANUAL_REVIEW",
+    "APPROVED_FOR_MANUAL_TRADE",
+}
 
 
 def now_iso() -> str:
@@ -372,10 +381,44 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
     def worker() -> None:
         try:
             result = run_with_profile_capture(alias, command)
+            returncode = int(result.get("returncode") or 0)
+            if returncode == 0:
+                verification = fetch_remote_json(
+                    "/gpt_v32_operator_today?limit=12",
+                    timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
+                    prefer_cache=False,
+                )
+                result["remote_verification_ok"] = bool(verification.get("ok"))
+                result["remote_verification_status"] = (
+                    (verification.get("data") if isinstance(verification.get("data"), dict) else {}).get("status")
+                    or verification.get("error")
+                    or "UNKNOWN"
+                )
+                WEB_LAST_RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+            elif is_console_bridge_command(command):
+                fallback = publish_account_context_fallback()
+                result["account_context_fallback"] = fallback
+                result["stdout_tail"] = (
+                    str(result.get("stdout_tail") or "")
+                    + "\n\n--- account context fallback ---\n"
+                    + "status: {status}\nok: {ok}\nreturncode: {returncode}\n".format(
+                        status=fallback.get("status"),
+                        ok=fallback.get("ok"),
+                        returncode=fallback.get("returncode"),
+                    )
+                    + str(fallback.get("stdout_tail") or "")
+                )[-6000:]
+                if fallback.get("stderr_tail"):
+                    result["stderr_tail"] = (
+                        str(result.get("stderr_tail") or "")
+                        + "\nFALLBACK STDERR:\n"
+                        + str(fallback.get("stderr_tail") or "")
+                    )[-6000:]
+                WEB_LAST_RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
             with WEB_JOBS_LOCK:
                 WEB_JOBS[job_id] = {
                     **WEB_JOBS.get(job_id, job),
-                    "status": "DONE" if int(result.get("returncode") or 0) == 0 else "ERROR",
+                    "status": "DONE" if returncode == 0 else "ERROR",
                     "finished_at": now_iso(),
                     "result": result,
                     "error": "",
@@ -466,6 +509,65 @@ def read_access_token() -> str:
         if token:
             return token
     return ""
+
+
+def snapshot_ingest_token() -> str:
+    token = (
+        os.getenv("TRADING_ENGINE_INGEST_TOKEN")
+        or os.getenv("SNAPSHOT_INGEST_TOKEN")
+        or os.getenv("STOCK_ULTIMUS_SNAPSHOT_INGEST_TOKEN")
+        or ""
+    ).strip()
+    if token:
+        return token
+    for service in SNAPSHOT_INGEST_KEYCHAIN_SERVICES:
+        token = read_keychain_value(service) or read_keychain_value_any_account(service)
+        if token:
+            return token
+    return ""
+
+
+def is_console_bridge_command(command: list[str]) -> bool:
+    return any(str(part).endswith("run_market_bridge_session.py") for part in command)
+
+
+def publish_account_context_fallback() -> dict[str, Any]:
+    token = snapshot_ingest_token()
+    if not token:
+        return {
+            "ok": False,
+            "status": "MISSING_SNAPSHOT_INGEST_TOKEN",
+            "detail": "No pude publicar fallback de cuenta porque falta el token de ingest.",
+        }
+    env = os.environ.copy()
+    env["TRADING_ENGINE_INGEST_TOKEN"] = token
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/publish_v31_snapshot_from_runtime.py",
+            "--publish",
+            "--allow-stale",
+            "--timeout",
+            "30",
+        ],
+        cwd=str(ROOT),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    stdout = sanitize_output(result.stdout, {})
+    stderr = sanitize_output(result.stderr, {})
+    return {
+        "ok": result.returncode == 0,
+        "status": "FALLBACK_PUBLISHED" if result.returncode == 0 else "FALLBACK_FAILED",
+        "returncode": int(result.returncode),
+        "stdout_tail": stdout[-1800:],
+        "stderr_tail": stderr[-1000:],
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
 
 
 def public_base_url() -> str:
@@ -771,6 +873,10 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         {snapshot}
         {operator}
       </div>
+      <form method="post" action="/refresh-remote" class="hero-actions" data-busy="Actualizando estado remoto">
+        <button>Actualizar estado</button>
+        <span>Fuerza lectura de GPT/alertas y actualiza cache local.</span>
+      </form>
       {warning}
     </section>
     """.format(
@@ -814,6 +920,117 @@ def render_console_actions() -> str:
     """.format(base=html_escape(base))
 
 
+def compact_contract_value(value: Any, suffix: str = "") -> str:
+    if value in [None, "", "None"]:
+        return "-"
+    try:
+        number = float(value)
+        text = ("{:.4f}".format(number)).rstrip("0").rstrip(".")
+    except Exception:
+        text = str(value)
+    return text + suffix
+
+
+def render_alert_contract(alert: dict[str, Any]) -> str:
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    strike = contract.get("strike") or alert.get("strike")
+    expiration = contract.get("expiration") or alert.get("expiration") or alert.get("expiry")
+    dte = contract.get("dte") or alert.get("dte")
+    bid = contract.get("bid")
+    ask = contract.get("ask")
+    mid = contract.get("mid") or alert.get("price")
+    spread = contract.get("spread_pct")
+    delta = contract.get("delta")
+    has_contract = any(value not in [None, "", "None"] for value in [strike, expiration, dte, bid, ask, mid, spread, delta])
+    if not has_contract:
+        return "Contrato: pendiente de datos"
+    return (
+        "Contrato: strike {strike} | exp {expiration} | DTE {dte} | bid/ask {bid}/{ask} | mid {mid} | spread {spread} | delta {delta}"
+    ).format(
+        strike=compact_contract_value(strike),
+        expiration=compact_contract_value(expiration),
+        dte=compact_contract_value(dte),
+        bid=compact_contract_value(bid),
+        ask=compact_contract_value(ask),
+        mid=compact_contract_value(mid),
+        spread=compact_contract_value(spread, "%"),
+        delta=compact_contract_value(delta),
+    )
+
+
+def alert_review_guidance(alert: dict[str, Any]) -> str:
+    state = str(alert.get("state") or "").upper()
+    severity = str(alert.get("severity") or "").upper()
+    blocker = str(alert.get("main_blocker") or "").upper()
+    if severity == "RISK" or state == "RISK_BLOCKED":
+        return "Revision: no aprobar. Documentar el bloqueo de riesgo o rechazar el setup."
+    if state == "WAIT_TECHNICAL" or blocker == "WAIT_TECHNICAL":
+        return "Revision: mantener en watch hasta que llegue confirmacion tecnica."
+    if state == "WAIT_OPTIONS_DATA" or blocker == "WAIT_OPTIONS_DATA":
+        return "Revision: mantener en watch; faltan datos completos/confiables de opciones."
+    if state == "ENTRY_READY":
+        return "Revision: revisar manualmente contrato, riesgo, portfolio y contexto antes de cualquier decision."
+    return "Revision: ack si ya fue visto, watch si sigue vivo, reject si no cumple."
+
+
+def operator_status(alert: dict[str, Any]) -> str:
+    return str(alert.get("operator_status") or "NEW").upper()
+
+
+def is_closed_alert(alert: dict[str, Any]) -> bool:
+    return operator_status(alert) in CLOSED_OPERATOR_STATUSES
+
+
+def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
+    actions_html = ""
+    if not readonly:
+        actions_html = """
+              <form method="post" action="/operator-event" class="alert-actions" data-busy="Registrando evento de operador">
+                <input name="alert_id" value="{alert_id}" type="hidden">
+                <input name="ticker" value="{ticker}" type="hidden">
+                <input name="strategy" value="{strategy}" type="hidden">
+                <input name="state" value="{state}" type="hidden">
+                <label>Nota/razon</label>
+                <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch">
+                <small>Opcional para Ack/Review/Watch/Close. Requerida para Reject y Journal.</small>
+                <div class="actions">
+                  <button name="action" value="ACK_ALERT">Ack</button>
+                  <button name="action" value="MARK_REVIEWING">Review</button>
+                  <button name="action" value="MARK_WATCHLIST">Watch</button>
+                  <button name="action" value="REJECT_SETUP">Reject</button>
+                  <button name="action" value="CLOSE_ALERT">Close</button>
+                </div>
+              </form>
+        """.format(
+            alert_id=html_escape(alert.get("alert_id") or ""),
+            ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+            strategy=html_escape(alert.get("strategy") or ""),
+            state=html_escape(alert.get("state") or "UNKNOWN"),
+        )
+    return """
+            <article class="alert-card severity-{severity}{closed_class}">
+              <strong>{ticker}</strong>
+              <span>{strategy} | {severity_label} | {state}</span>
+              <div class="contract-line">{contract}</div>
+              <div class="review-line">{guidance}</div>
+              <small>blocker: {blocker} | status: {status}</small>
+              {actions}
+            </article>
+            """.format(
+        severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
+        closed_class=" closed-alert" if readonly else "",
+        ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+        severity_label=html_escape(alert.get("severity") or "UNKNOWN"),
+        state=html_escape(alert.get("state") or "UNKNOWN"),
+        strategy=html_escape(alert.get("strategy") or ""),
+        contract=html_escape(render_alert_contract(alert)),
+        guidance=html_escape(alert_review_guidance(alert)),
+        blocker=html_escape(alert.get("main_blocker") or "NONE"),
+        status=html_escape(operator_status(alert)),
+        actions=actions_html,
+    )
+
+
 def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
     if not operator_payload.get("ok"):
         return """
@@ -825,43 +1042,39 @@ def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
     next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
-    if not alerts:
+    open_alerts = [alert for alert in alerts if not is_closed_alert(alert)]
+    closed_alerts = [alert for alert in alerts if is_closed_alert(alert)]
+    if not open_alerts:
         alert_html = '<p class="empty">Sin alertas activas en el payload V32 actual.</p>'
     else:
-        alert_html = "".join(
-            """
-            <article class="alert-card severity-{severity}">
-              <strong>{ticker}</strong>
-              <span>{severity} | {state}</span>
-              <small>blocker: {blocker} | status: {status}</small>
-              <form method="post" action="/operator-event" class="alert-actions" data-busy="Registrando evento de operador">
-                <input name="alert_id" value="{alert_id}" type="hidden">
-                <input name="ticker" value="{ticker}" type="hidden">
-                <input name="strategy" value="{strategy}" type="hidden">
-                <input name="state" value="{state}" type="hidden">
-                <label>Nota/razon opcional</label>
-                <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch">
-                <div class="actions">
-                  <button name="action" value="ACK_ALERT">Ack</button>
-                  <button name="action" value="MARK_REVIEWING">Review</button>
-                  <button name="action" value="MARK_WATCHLIST">Watch</button>
-                  <button name="action" value="REJECT_SETUP">Reject</button>
-                  <button name="action" value="CLOSE_ALERT">Close</button>
-                </div>
-              </form>
-            </article>
-            """.format(
-                alert_id=html_escape(alert.get("alert_id") or ""),
-                ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
-                severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
-                state=html_escape(alert.get("state") or "UNKNOWN"),
-                strategy=html_escape(alert.get("strategy") or ""),
-                blocker=html_escape(alert.get("main_blocker") or "NONE"),
-                status=html_escape(alert.get("operator_status") or "UNKNOWN"),
-            )
-            for alert in alerts[:12]
+        alert_html = "".join(render_alert_card(alert) for alert in open_alerts[:12])
+    closed_html = ""
+    if closed_alerts:
+        closed_html = """
+        <details class="reviewed-alerts">
+          <summary>{count} alerta(s) ya revisada(s) / cerrada(s)</summary>
+          <div class="alert-grid">{alerts}</div>
+        </details>
+        """.format(
+            count=html_escape(len(closed_alerts)),
+            alerts="".join(render_alert_card(alert, readonly=True) for alert in closed_alerts[:12]),
         )
     action = next_actions[0] if next_actions else {}
+    local_counts = {
+        "action": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
+        "risk": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "RISK"),
+        "watch": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
+        "closed": len(closed_alerts),
+    }
+    next_action = (
+        "Pendientes visibles: {risk} riesgo, {watch} watch, {action} action. Cerradas/revisadas: {closed}. Siguiente: {label}."
+    ).format(
+        risk=local_counts["risk"],
+        watch=local_counts["watch"],
+        action=local_counts["action"],
+        closed=local_counts["closed"],
+        label=action.get("label") or "Sin accion inmediata",
+    )
     return """
     <section class="panel">
       <div class="section-head">
@@ -869,10 +1082,12 @@ def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
         <p>{next_action}</p>
       </div>
       <div class="alert-grid">{alerts}</div>
+      {closed_alerts}
     </section>
     """.format(
-        next_action=html_escape((action.get("label") or "Sin accion inmediata") + ". " + (action.get("detail") or "")),
+        next_action=html_escape(next_action),
         alerts=alert_html,
+        closed_alerts=closed_html,
     )
 
 
@@ -986,7 +1201,7 @@ def console_job_diagnostic(result: dict[str, Any]) -> str:
 
 def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "") -> bytes:
     current_job = web_job(job_id)
-    prefer_cache = str(current_job.get("status") or "").upper() == "RUNNING"
+    prefer_cache = True
     data = load_profiles()
     profiles = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
     active = active_profile()
@@ -1036,6 +1251,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .metric {{ background:#fffdf6; border:1px solid var(--line); border-radius:18px; padding:14px; }}
           .metric span,.metric small {{ display:block; color:var(--muted); }}
           .metric strong {{ display:block; font-size:1.45rem; margin:4px 0; }}
+          .hero-actions {{ grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:10px; border-top:1px solid var(--line); padding-top:14px; }}
+          .hero-actions span {{ color:var(--muted); font-size:.92rem; }}
           .warning {{ grid-column:1 / -1; background:#fff3df; color:var(--warn); border:1px solid #efc99d; border-radius:16px; padding:12px 14px; font-weight:700; }}
           .grid {{ display:grid; gap:14px; margin:22px 0; }}
           .card {{ display:flex; justify-content:space-between; gap:18px; padding:20px; align-items:center; }}
@@ -1064,6 +1281,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
+          .contract-line,.review-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
+          .contract-line {{ font-weight:800; color:var(--ink); }}
+          .review-line {{ color:var(--warn); background:#fff7e8; }}
+          .closed-alert {{ opacity:.76; border-style:dashed; }}
+          .reviewed-alerts {{ margin-top:14px; }}
+          .reviewed-alerts summary {{ cursor:pointer; font-weight:800; color:var(--muted); }}
+          .reviewed-alerts .alert-grid {{ margin-top:12px; }}
           .alert-actions {{ margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }}
           .alert-actions label {{ font-size:.9rem; margin-top:0; color:var(--muted); }}
           .alert-actions input {{ width:100%; margin-bottom:10px; }}
@@ -1126,7 +1350,25 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             const title = overlay.querySelector("strong");
             const detail = overlay.querySelector("span");
             document.querySelectorAll("form").forEach((form) => {{
-              form.addEventListener("submit", () => {{
+              form.addEventListener("submit", (event) => {{
+                const submitter = event.submitter;
+                const actionValue = submitter && submitter.name === "action" ? submitter.value : "";
+                const reasonInput = form.querySelector('input[name="reason"]');
+                const reasonRequired = ["REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"].includes(actionValue);
+                if (reasonRequired && reasonInput && !reasonInput.value.trim()) {{
+                  event.preventDefault();
+                  reasonInput.setCustomValidity("Esta accion requiere nota/razon.");
+                  reasonInput.reportValidity();
+                  setTimeout(() => reasonInput.setCustomValidity(""), 1200);
+                  return;
+                }}
+                if (actionValue && !form.querySelector('input[name="action"][type="hidden"]')) {{
+                  const hiddenAction = document.createElement("input");
+                  hiddenAction.type = "hidden";
+                  hiddenAction.name = "action";
+                  hiddenAction.value = actionValue;
+                  form.appendChild(hiddenAction);
+                }}
                 const label = form.dataset.busy || "Procesando accion local";
                 title.textContent = label;
                 detail.textContent = "Solicitud enviada. Si es Refresh IBKR, veras un panel RUNNING/DONE en unos segundos.";
@@ -1217,6 +1459,25 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/daily-open":
                 job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
                 self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
+            elif self.path == "/refresh-remote":
+                result = fetch_remote_json(
+                    "/gpt_v32_operator_today?limit=12",
+                    timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
+                    prefer_cache=False,
+                )
+                data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                if result.get("ok"):
+                    self.send_html(
+                        "Estado actualizado desde produccion: {status} | cuenta={account}.".format(
+                            status=data.get("status") or "OK",
+                            account=data.get("account_alias") or data.get("account_scope") or "unknown",
+                        )
+                    )
+                else:
+                    self.send_html(
+                        "No pude actualizar estado remoto: {}".format(result.get("error") or "unknown"),
+                        status=400,
+                    )
             elif self.path == "/operator-event":
                 action = (params.get("action") or [""])[0]
                 reason = (params.get("reason") or [""])[0].strip()
@@ -1236,6 +1497,12 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     "not_order_instruction": True,
                 }
                 result = post_remote_json("/gpt_v32_operator_event", payload)
+                if result.get("ok"):
+                    fetch_remote_json(
+                        "/gpt_v32_operator_today?limit=12",
+                        timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
+                        prefer_cache=False,
+                    )
                 message = (
                     "Evento registrado para seguimiento/backtesting. No autoriza ordenes."
                     if result.get("ok")
