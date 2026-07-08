@@ -21,9 +21,11 @@ Create these ten alerts first, all on 5 minute charts:
 | `MES_VWAP_REJECT_SHORT_5M` | `MES1!` | VWAP Reject Short | Entry confirmation |
 | `MES_RISK_INVALIDATION_5M` | `MES1!` | Risk Invalidation | Invalidation |
 
-## Phase 1 Health Alerts
+## Optional Health Alerts
 
-Add these two after the core alerts are present:
+Keep these paused unless the plan has spare active alert capacity. They are
+heartbeat/context signals, not decision-making alerts, so operational health no
+longer requires them while the active TradingView plan is capped at 20 alerts:
 
 | Alert name | Symbol | Condition hint | Role |
 | --- | --- | --- | --- |
@@ -112,7 +114,8 @@ index signal semantics. The next phase is operational depth, not more equivalent
 symbols:
 
 - Confirm real TradingView events are reaching `/technical_snapshot`.
-- Keep the two `Session Snapshot` alerts active as heartbeat/context evidence.
+- Keep the two `Session Snapshot` alerts paused unless there is spare active
+  alert capacity after all decision-making alerts are recurring.
 - Monitor alert health, stale payloads, source attribution, and raw payload
   persistence.
 - Close paper outcomes before changing parameters or expanding coverage.

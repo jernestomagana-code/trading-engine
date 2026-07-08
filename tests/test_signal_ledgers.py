@@ -145,7 +145,7 @@ class SignalLedgerTests(unittest.TestCase):
             runtime = Path(tmp)
             ledger_path = runtime / "v32_signal_events.json"
             payload = tradingview_operational_health.concrete_payload_for_event_code(
-                "MNQ_SESSION_SNAPSHOT_5M"
+                "MNQ_ORB_BREAKOUT_LONG_5M"
             )
             tradingview_signal_ledger.append_signal_event(
                 payload,
@@ -173,9 +173,9 @@ class SignalLedgerTests(unittest.TestCase):
 
         self.assertTrue(health["coverage_valid"])
         self.assertEqual(health["required_alert_count"], 10)
-        self.assertEqual(health["health_alert_count"], 2)
-        self.assertEqual(health["received_health_event_count"], 1)
-        self.assertIn("MES_SESSION_SNAPSHOT_5M", health["missing_health_event_codes"])
+        self.assertEqual(health["health_alert_count"], 0)
+        self.assertEqual(health["received_health_event_count"], 0)
+        self.assertEqual(health["missing_health_event_codes"], [])
         self.assertFalse(e2e["real_e2e_confirmed"])
         self.assertEqual(e2e["local_replay_validation"]["candidate_source"], "TRADINGVIEW_ALERT")
         self.assertTrue(audit["checks"]["no_nq_es_expansion"])
@@ -194,7 +194,7 @@ class SignalLedgerTests(unittest.TestCase):
             )
 
         self.assertFalse(e2e["real_e2e_confirmed"])
-        self.assertEqual(e2e["local_replay_validation"]["event_code"], "QQQ_REGIME_SNAPSHOT_15M")
+        self.assertEqual(e2e["local_replay_validation"]["event_code"], "QQQ_TECH_CONFIRM_LONG_15M")
         self.assertTrue(e2e["local_replay_validation"]["payload_valid"])
         self.assertIn("SPY/QQQ/VIX", e2e["next_real_trigger"])
 
@@ -236,11 +236,11 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(bundle["coverage_valid"])
         self.assertTrue(bundle["real_e2e_confirmed"])
         self.assertEqual(bundle["coverage_count"], 2)
-        self.assertEqual(bundle["total_expected_alert_count"], 20)
+        self.assertEqual(bundle["total_expected_alert_count"], 16)
         self.assertEqual(bundle["total_required_alert_count"], 16)
-        self.assertEqual(bundle["total_health_alert_count"], 4)
+        self.assertEqual(bundle["total_health_alert_count"], 0)
         self.assertEqual(bundle["total_received_required_event_count"], 16)
-        self.assertEqual(bundle["total_received_health_event_count"], 4)
+        self.assertEqual(bundle["total_received_health_event_count"], 0)
         self.assertEqual(bundle["missing_required_event_codes_by_coverage"], {})
         self.assertEqual(bundle["total_quarantine_event_count"], 0)
 

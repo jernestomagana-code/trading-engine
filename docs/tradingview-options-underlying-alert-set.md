@@ -7,7 +7,7 @@ only and never authorize orders.
 
 ## Alerts
 
-Create these eight alerts:
+Create these six decision-making alerts first:
 
 | Alert name | Symbol | Timeframe | Condition hint | Role |
 | --- | --- | --- | --- | --- |
@@ -15,10 +15,17 @@ Create these eight alerts:
 | `QQQ_TECH_CONFIRM_SHORT_15M` | `QQQ` | `15m` | Underlying Tech Confirm Short | Options confirmation |
 | `SPY_TECH_CONFIRM_LONG_15M` | `SPY` | `15m` | Underlying Tech Confirm Long | Options confirmation |
 | `SPY_TECH_CONFIRM_SHORT_15M` | `SPY` | `15m` | Underlying Tech Confirm Short | Options confirmation |
-| `QQQ_REGIME_SNAPSHOT_15M` | `QQQ` | `15m` | Underlying Regime Snapshot | Heartbeat/snapshot |
-| `SPY_REGIME_SNAPSHOT_15M` | `SPY` | `15m` | Underlying Regime Snapshot | Heartbeat/snapshot |
 | `VIX_RISK_ELEVATED_D` | `VIX` | `1D` | VIX Risk Elevated | Volatility risk |
 | `VIX_RISK_NORMALIZED_D` | `VIX` | `1D` | VIX Risk Normalized | Volatility risk |
+
+Leave these optional snapshot alerts paused unless the active-alert plan has
+spare capacity. They provide context, but they do not directly change an entry,
+exit, or risk decision:
+
+| Alert name | Symbol | Timeframe | Condition hint | Role |
+| --- | --- | --- | --- | --- |
+| `QQQ_REGIME_SNAPSHOT_15M` | `QQQ` | `15m` | Underlying Regime Snapshot | Heartbeat/snapshot |
+| `SPY_REGIME_SNAPSHOT_15M` | `SPY` | `15m` | Underlying Regime Snapshot | Heartbeat/snapshot |
 
 Use this Pine source:
 

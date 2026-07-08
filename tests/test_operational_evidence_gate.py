@@ -183,7 +183,7 @@ class OperationalEvidenceGateTests(unittest.TestCase):
             self.assertFalse(blocked["evidence_summary"]["tradingview_bundle_real_e2e_confirmed"])
             self.assertTrue(allowed["capabilities"]["can_create_options_entry_ready"]["allowed"])
             self.assertTrue(allowed["evidence_summary"]["tradingview_bundle_real_e2e_confirmed"])
-            self.assertEqual(allowed["evidence_summary"]["tradingview_bundle_total_expected_alert_count"], 20)
+            self.assertEqual(allowed["evidence_summary"]["tradingview_bundle_total_expected_alert_count"], 16)
 
     def test_thirty_complete_outcomes_allow_human_parameter_review_only(self):
         with TemporaryDirectory() as tmp:
