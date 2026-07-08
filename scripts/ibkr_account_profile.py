@@ -388,12 +388,19 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
                     timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
                     prefer_cache=False,
                 )
+                verification_data = verification.get("data") if isinstance(verification.get("data"), dict) else {}
                 result["remote_verification_ok"] = bool(verification.get("ok"))
                 result["remote_verification_status"] = (
-                    (verification.get("data") if isinstance(verification.get("data"), dict) else {}).get("status")
+                    verification_data.get("status")
                     or verification.get("error")
                     or "UNKNOWN"
                 )
+                result["remote_verification_account"] = (
+                    verification_data.get("account_alias")
+                    or verification_data.get("account_scope")
+                    or "unknown"
+                )
+                result["remote_verification_counts"] = operator_alert_counts(verification_data)
                 WEB_LAST_RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
             elif is_console_bridge_command(command):
                 fallback = publish_account_context_fallback()
@@ -466,6 +473,14 @@ def console_bridge_command() -> list[str]:
         str(CONSOLE_IBKR_CLIENT_ID),
         "--json-out",
         str(RUNTIME / "stock_ultimus_console_bridge_latest.json"),
+    ]
+
+
+def account_publish_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/ibkr_account_profile.py",
+        "publish-context",
     ]
 
 
@@ -568,6 +583,24 @@ def publish_account_context_fallback() -> dict[str, Any]:
         "not_order_instruction": True,
         "execution_authorized": False,
     }
+
+
+def cmd_publish_context(_: argparse.Namespace) -> int:
+    result = publish_account_context_fallback()
+    print(
+        json.dumps(
+            {
+                "status": result.get("status"),
+                "ok": result.get("ok"),
+                "returncode": result.get("returncode"),
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.get("ok") else 1
 
 
 def public_base_url() -> str:
@@ -840,15 +873,15 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     warning = ""
     if not comparison["remote_ok"]:
         warning = """
-        <div class="warning">No pude verificar que cuenta ve GPT porque el endpoint remoto no respondio a tiempo. Recargar esta consola solo relee la pagina local; no publica cuenta. Para cambiar lo que ve GPT, el refresh IBKR debe terminar en DONE y publicar snapshot.</div>
+        <div class="warning">No pude verificar que cuenta ve GPT porque produccion no respondio a tiempo. <strong>Actualizar estado</strong> solo relee GPT/alertas; <strong>Usar cuenta</strong> publica la cuenta seleccionada para GPT; <strong>Refresh IBKR</strong> trae datos frescos del broker.</div>
         """
     elif comparison["needs_refresh"]:
         warning = """
-        <div class="warning">GPT todavia no tiene publicada la cuenta seleccionada. Usa <strong>Usar + Refresh IBKR</strong> y espera DONE antes de pedir interpretacion de broker/account context.</div>
+        <div class="warning">La seleccion local no coincide con lo que GPT ve. Usa <strong>Usar cuenta</strong> y espera DONE en el trabajo local; usa <strong>Refresh IBKR</strong> solo si necesitas datos nuevos del broker/opciones.</div>
         """
     elif not comparison["published_scope"]:
         warning = """
-        <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta y refresca el bridge.</div>
+        <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta con <strong>Usar cuenta</strong>; no necesitas tocar IBKR para publicar el contexto.</div>
         """
     remote_status = "cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "timeout" if "timed out" in str(operator_payload.get("error") or "").lower() else "blocked")
     published_value = comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
@@ -873,9 +906,9 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         {snapshot}
         {operator}
       </div>
-      <form method="post" action="/refresh-remote" class="hero-actions" data-busy="Actualizando estado remoto">
+      <form method="post" action="/refresh-remote" class="hero-actions" data-busy="Actualizando estado remoto" data-busy-detail="Leyendo GPT/alertas desde produccion. No cambia cuenta ni conecta con IBKR.">
         <button>Actualizar estado</button>
-        <span>Fuerza lectura de GPT/alertas y actualiza cache local.</span>
+        <span>Relee lo que produccion ya tiene publicado. No cambia cuenta ni refresca IBKR.</span>
       </form>
       {warning}
     </section>
@@ -981,11 +1014,41 @@ def is_closed_alert(alert: dict[str, Any]) -> bool:
     return operator_status(alert) in CLOSED_OPERATOR_STATUSES
 
 
+def operator_alert_counts(data: dict[str, Any]) -> dict[str, int]:
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    open_alerts = [alert for alert in alerts if isinstance(alert, dict) and not is_closed_alert(alert)]
+    closed_alerts = [alert for alert in alerts if isinstance(alert, dict) and is_closed_alert(alert)]
+    return {
+        "open": len(open_alerts),
+        "risk": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "RISK"),
+        "watch": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
+        "action": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
+        "closed": len(closed_alerts),
+    }
+
+
+def operator_state_message(data: dict[str, Any]) -> str:
+    counts = operator_alert_counts(data)
+    account = data.get("account_alias") or data.get("account_scope") or "unknown"
+    return (
+        "Estado actualizado desde produccion: {status} | GPT ve cuenta={account} | "
+        "pendientes={open} ({risk} riesgo, {watch} watch, {action} action) | cerradas={closed}."
+    ).format(
+        status=data.get("status") or "OK",
+        account=account,
+        open=counts["open"],
+        risk=counts["risk"],
+        watch=counts["watch"],
+        action=counts["action"],
+        closed=counts["closed"],
+    )
+
+
 def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
     actions_html = ""
     if not readonly:
         actions_html = """
-              <form method="post" action="/operator-event" class="alert-actions" data-busy="Registrando evento de operador">
+              <form method="post" action="/operator-event" class="alert-actions" data-busy="Registrando evento de operador" data-busy-detail="Guardando revision en produccion y releyendo alertas actualizadas.">
                 <input name="alert_id" value="{alert_id}" type="hidden">
                 <input name="ticker" value="{ticker}" type="hidden">
                 <input name="strategy" value="{strategy}" type="hidden">
@@ -1105,11 +1168,12 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
                 <h3>{alias}</h3>
                 <p>scope: <strong>{scope}</strong></p>
                 <p class="muted">{status}. ID real oculto.</p>
+                <p class="muted">Usar cuenta publica este scope para GPT; Refresh IBKR solo si necesitas datos frescos del broker.</p>
               </div>
               <div class="actions">
-                <form method="post" action="/select" data-busy="Cambiando perfil activo"><input name="alias" value="{alias}" type="hidden"><button>Usar</button></form>
-                <form method="post" action="/bridge" data-busy="Refresh IBKR en curso"><input name="alias" value="{alias}" type="hidden"><button>Usar + Refresh IBKR</button></form>
-                <form method="post" action="/daily-open" data-busy="Daily open en curso"><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
+                <form method="post" action="/select" data-busy="Publicando cuenta para GPT" data-busy-detail="La cuenta se selecciona localmente y se abre un trabajo RUNNING/DONE para verificar produccion."><input name="alias" value="{alias}" type="hidden"><button>Usar cuenta</button></form>
+                <form method="post" action="/bridge" data-busy="Refresh IBKR en curso" data-busy-detail="Conecta con IBKR para traer datos frescos. Puede tardar y no autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Refresh IBKR</button></form>
+                <form method="post" action="/daily-open" data-busy="Daily open en curso" data-busy-detail="Ejecutando checklist local de apertura."><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
               </div>
             </article>
             """.format(
@@ -1133,12 +1197,26 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
     result_html = ""
     if result:
         diagnostic = console_job_diagnostic(result)
+        verification_html = ""
+        if "remote_verification_ok" in result:
+            counts = result.get("remote_verification_counts") if isinstance(result.get("remote_verification_counts"), dict) else {}
+            verification_html = """
+            <p><strong>Verificacion GPT:</strong> {ok} | status={status} | cuenta={account} | pendientes={open} | cerradas={closed}</p>
+            """.format(
+                ok="ok" if result.get("remote_verification_ok") else "fallo",
+                status=html_escape(result.get("remote_verification_status") or "UNKNOWN"),
+                account=html_escape(result.get("remote_verification_account") or "unknown"),
+                open=html_escape(counts.get("open", "unknown")),
+                closed=html_escape(counts.get("closed", "unknown")),
+            )
         result_html = """
         {diagnostic}
+        {verification}
         <p><strong>Resultado:</strong> returncode={returncode}</p>
         <pre>{stdout}{stderr}</pre>
         """.format(
             diagnostic=diagnostic,
+            verification=verification_html,
             returncode=html_escape(result.get("returncode")),
             stdout=html_escape(result.get("stdout_tail") or ""),
             stderr=html_escape(("\nSTDERR:\n" + result.get("stderr_tail")) if result.get("stderr_tail") else ""),
@@ -1164,7 +1242,7 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
         <li><span>Fin</span><strong>{finished_at}</strong></li>
       </ul>
       {result_html}
-      <p><a class="tile inline-link" href="/console">Volver a consola <span>No refresca IBKR ni cambia GPT</span></a></p>
+      <p><a class="tile inline-link" href="/console">Volver a consola <span>Solo relee la pantalla local; no lanza otro trabajo</span></a></p>
     </section>
     """.format(
         status_class=html_escape(status.lower()),
@@ -1322,7 +1400,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <section class="panel">
             <div class="section-head">
               <h2>Cuentas</h2>
-              <p>Escoge la cuenta que quieres revisar. Para que GPT cambie de contexto, usa <strong>Usar + Refresh IBKR</strong>.</p>
+              <p>Escoge la cuenta que quieres revisar. <strong>Usar cuenta</strong> publica contexto para GPT; <strong>Refresh IBKR</strong> solo trae datos frescos del broker.</p>
             </div>
           </section>
           <section class="grid">{profile_cards}</section>
@@ -1371,7 +1449,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 }}
                 const label = form.dataset.busy || "Procesando accion local";
                 title.textContent = label;
-                detail.textContent = "Solicitud enviada. Si es Refresh IBKR, veras un panel RUNNING/DONE en unos segundos.";
+                detail.textContent = form.dataset.busyDetail || "Solicitud enviada. Veras confirmacion o un panel RUNNING/DONE en unos segundos.";
                 overlay.hidden = false;
                 form.querySelectorAll("button").forEach((button) => {{
                   button.disabled = true;
@@ -1452,10 +1530,16 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/select":
                 args = argparse.Namespace(alias=alias)
                 cmd_select(args)
-                self.send_html(f"Perfil activo: alias={normalize_alias(alias)} account_id_printed=false")
+                job_id = start_web_job(alias, account_publish_command(), "Publicar cuenta a GPT")
+                self.send_html(
+                    "Cuenta seleccionada localmente: alias={alias}. Publicando contexto para GPT; espera DONE y revisa Verificacion GPT.".format(
+                        alias=normalize_alias(alias)
+                    ),
+                    job_id=job_id,
+                )
             elif self.path == "/bridge":
                 job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")
-                self.send_html("Refresh IBKR iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
+                self.send_html("Refresh IBKR iniciado. Esto lee broker/opciones; la consola mostrara RUNNING hasta que termine.", job_id=job_id)
             elif self.path == "/daily-open":
                 job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
                 self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
@@ -1467,12 +1551,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 )
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
                 if result.get("ok"):
-                    self.send_html(
-                        "Estado actualizado desde produccion: {status} | cuenta={account}.".format(
-                            status=data.get("status") or "OK",
-                            account=data.get("account_alias") or data.get("account_scope") or "unknown",
-                        )
-                    )
+                    self.send_html(operator_state_message(data))
                 else:
                     self.send_html(
                         "No pude actualizar estado remoto: {}".format(result.get("error") or "unknown"),
@@ -1570,6 +1649,9 @@ def build_parser() -> argparse.ArgumentParser:
     daily_open = sub.add_parser("daily-open", help="Run daily_open_checklist.py --refresh under the selected profile.")
     daily_open.add_argument("alias")
     daily_open.set_defaults(func=cmd_daily_open)
+
+    publish_context = sub.add_parser("publish-context", help="Publish the currently active account context for GPT visibility.")
+    publish_context.set_defaults(func=cmd_publish_context)
 
     serve = sub.add_parser("serve", help="Start a localhost-only web selector for saved IBKR account profiles.")
     serve.add_argument("--host", default="127.0.0.1", help="Must be 127.0.0.1 or localhost.")
