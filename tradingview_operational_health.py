@@ -192,6 +192,14 @@ def _expected_alerts(coverage: dict[str, Any], *, include_optional: bool = True)
     return rows
 
 
+def _include_optional_alerts_in_health(coverage: dict[str, Any]) -> bool:
+    policy = coverage.get("global_policy") if isinstance(coverage.get("global_policy"), dict) else {}
+    value = policy.get("include_optional_alerts_in_health")
+    if value is None:
+        return True
+    return value is True
+
+
 def _event_status(
     expected: dict[str, Any],
     event: dict[str, Any] | None,
@@ -257,7 +265,7 @@ def build_alert_health(
     generated = generated_dt.isoformat()
     events = load_runtime_events(runtime_dir)
     latest_by_code = latest_events_by_code(events)
-    expected = _expected_alerts(coverage, include_optional=True)
+    expected = _expected_alerts(coverage, include_optional=_include_optional_alerts_in_health(coverage))
     rows = [
         _event_status(
             item,
@@ -450,9 +458,13 @@ def _first_replayable_event_code(coverage_path: Path | str) -> str:
     coverage = tradingview_alert_coverage.load_coverage(coverage_path)
     health_alerts = [
         item for item in tradingview_alert_coverage.alerts(coverage)
-        if item.get("alert_role") == "HEARTBEAT_SNAPSHOT"
+        if item.get("alert_role") == "HEARTBEAT_SNAPSHOT" and item.get("required") is True
     ]
-    candidates = health_alerts or tradingview_alert_coverage.alerts(coverage)
+    required_alerts = [
+        item for item in tradingview_alert_coverage.alerts(coverage)
+        if item.get("required") is True
+    ]
+    candidates = health_alerts or required_alerts or tradingview_alert_coverage.alerts(coverage)
     if not candidates:
         raise ValueError(f"No replayable alerts in coverage: {coverage_path}")
     return str(candidates[0].get("event_code") or "")
