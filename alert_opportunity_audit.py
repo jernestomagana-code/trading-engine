@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,21 @@ def safe_float(value: Any) -> float | None:
     if result != result or result in {float("inf"), float("-inf")}:
         return None
     return result
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    text = safe_text(value)
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -326,6 +341,39 @@ def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str,
     }
 
 
+def build_freshness(decisions: list[dict[str, Any]], generated_at: str, recent_days: int = 14) -> dict[str, Any]:
+    generated_dt = parse_datetime(generated_at) or datetime.now(timezone.utc)
+    cutoff = generated_dt - timedelta(days=max(1, int(recent_days)))
+    recent = []
+    historical = []
+    undated = []
+    for item in decisions:
+        recorded = parse_datetime(item.get("recorded_at"))
+        if recorded is None:
+            undated.append(item)
+        elif recorded >= cutoff:
+            recent.append(item)
+        else:
+            historical.append(item)
+    return {
+        "recent_days": max(1, int(recent_days)),
+        "cutoff_at": cutoff.isoformat(),
+        "recent_decision_count": len(recent),
+        "historical_decision_count": len(historical),
+        "undated_decision_count": len(undated),
+        "recent_entry_ready_count": sum(1 for item in recent if item.get("final_state") == "ENTRY_READY"),
+        "recent_state_counts": group_decisions(recent, "final_state"),
+        "recent_blocker_counts": group_decisions(
+            [item for item in recent if item.get("main_blocker") != UNKNOWN],
+            "main_blocker",
+        ),
+        "recent_source_counts": group_decisions(recent, "signal_source"),
+        "recent_unknown_source_decisions": sum(1 for item in recent if item.get("signal_source") == UNKNOWN),
+        "historical_unknown_source_decisions": sum(1 for item in historical if item.get("signal_source") == UNKNOWN),
+        "recent_missed_opportunity_review": build_missed_opportunity_rows(recent),
+    }
+
+
 def primary_gap(decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]]) -> str:
     if not decisions:
         return "NO_DECISION_JOURNAL"
@@ -369,7 +417,7 @@ def load_runtime_inputs(runtime_dir: Path) -> tuple[list[dict[str, Any]], list[d
     return decisions, outcomes, source_files
 
 
-def build_alert_opportunity_audit(runtime_dir: Path, generated_at: str | None = None) -> dict[str, Any]:
+def build_alert_opportunity_audit(runtime_dir: Path, generated_at: str | None = None, recent_days: int = 14) -> dict[str, Any]:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     decisions, outcomes, source_files = load_runtime_inputs(runtime_dir)
     state_counts = group_decisions(decisions, "final_state")
@@ -398,6 +446,7 @@ def build_alert_opportunity_audit(runtime_dir: Path, generated_at: str | None = 
             "blocker_counts": blocker_counts,
             "source_counts": source_counts,
         },
+        "freshness": build_freshness(decisions, generated_at, recent_days=recent_days),
         "data_quality": build_data_quality(decisions, outcomes, source_files),
         "strategy_coverage": strategy_rows,
         "missed_opportunity_review": build_missed_opportunity_rows(decisions),

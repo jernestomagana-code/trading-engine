@@ -805,11 +805,13 @@ To review alert coverage, missed opportunities, source attribution, and whether
 there is enough outcome sample before changing thresholds, run:
 
 ```bash
-python3 scripts/run_alert_opportunity_audit.py --preview 10
+python3 scripts/run_alert_opportunity_audit.py --preview 10 --recent-days 14
 ```
 
 This writes a JSON and CSV under `runtime/` for manual review. It is evidence
-for strategy improvement only; it does not authorize orders.
+for strategy improvement only; it does not authorize orders. The JSON includes
+both full-history counts and a `freshness` section so old decisions do not mask
+the current live-readiness picture.
 
 Then ask Super Engine Bolsa:
 
