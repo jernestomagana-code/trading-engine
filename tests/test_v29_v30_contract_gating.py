@@ -783,13 +783,33 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         with patch.object(main, "_v31_command_center_payload", return_value={
             "status": "READY_FOR_DECISION_REVIEW",
             "operational_readiness": "READY_FOR_MANUAL_REVIEW",
+            "account_context": {
+                "account_scope": "primary",
+                "account_alias": "primary",
+                "available_funds": 70000,
+                "excess_liquidity": 80000,
+                "buying_power": 100000,
+                "net_liquidation": 150000,
+                "currency": "USD",
+            },
+            "account_scope": "primary",
+            "account_alias": "primary",
             "summary": {"entry_ready": 1, "manual_review_ready": 1},
             "top_recommendations": [{
                 "ticker": "QQQ",
                 "strategy": "NAKED_PUT",
+                "generated_at": "2026-07-08T13:45:00+00:00",
                 "final_state": "ENTRY_READY",
                 "manual_review_ready": True,
-                "selected_contract": {"strike": 645, "expiration": "20260731", "bid": 6.1, "ask": 6.2},
+                "selected_contract": {
+                    "strike": 645,
+                    "expiration": "20260731",
+                    "dte": 30,
+                    "bid": 6.1,
+                    "ask": 6.2,
+                    "mid": 6.15,
+                    "delta": -0.2,
+                },
                 "next_required_action": "Validar spread, liquidez y ticket broker.",
             }],
             "blocked_or_waiting": [],
@@ -813,6 +833,18 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(payload["engine"], "V32_OPERATOR_ASSISTANT")
         self.assertEqual(payload["active_alerts"][0]["severity"], "ACTION")
+        self.assertEqual(payload["active_alerts"][0]["alert_date"], "2026-07-08")
+        self.assertEqual(payload["active_alerts"][0]["economics"]["capital_required"], 63890.0)
+        self.assertEqual(payload["active_alerts"][0]["economics"]["capital_source"], "estimated_cash_secured_put")
+        self.assertEqual(payload["active_alerts"][0]["economics"]["probability_success_pct"], 80.0)
+        self.assertEqual(payload["active_alerts"][0]["economics"]["probability_source"], "delta_proxy")
+        self.assertEqual(payload["account_capacity"]["available_capacity"], 70000.0)
+        self.assertEqual(payload["account_capacity"]["capacity_source"], "available_funds")
+        self.assertEqual(payload["active_alerts"][0]["account_capacity_check"]["status"], "WITHIN_AVAILABLE_CAPACITY")
+        self.assertTrue(payload["active_alerts"][0]["account_capacity_check"]["within_available_capacity"])
+        self.assertEqual(payload["active_alerts"][0]["account_capacity_check"]["capacity_pct_required"], 91.27)
+        self.assertEqual(payload["active_alerts"][0]["account_capacity_check"]["warning"], "USES_HIGH_CAPACITY_PCT")
+        self.assertEqual(payload["intraday_futures"]["status"], "NO_ACTIVE_INTRADAY_FUTURES_ALERTS")
         self.assertEqual(payload["next_actions"][0]["kind"], "MANUAL_REVIEW")
         self.assertIn("revisar", payload["answer_to_user"].lower())
         self.assertIn("MARK_WATCHLIST", payload["allowed_operator_actions"])
@@ -1482,7 +1514,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertIn("Hay setups listos para revision manual", html)
         self.assertIn("Siguiente paso", html)
-        self.assertIn("Abrir Inbox revision manual", html)
+        self.assertIn("Usar Inbox revision manual", html)
         self.assertIn("/v31_manual_review_inbox", html)
         self.assertIn("ENTRY_READY no autoriza ordenes", html)
         self.assertIn("Bloqueadas o en espera", html)
@@ -1620,16 +1652,17 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("Estado", html)
         self.assertIn("Pendiente", html)
         self.assertIn("Lectura operativa", html)
-        self.assertIn("Falta cargar el contexto pre-market", html)
+        self.assertIn("Falta cargar el contexto operativo de sesion", html)
         self.assertIn("Siguiente paso", html)
         self.assertIn("Guardar Base defensiva", html)
-        self.assertIn("Preparar contexto", html)
+        self.assertIn("Seleccionar contexto de sesion", html)
         self.assertIn("Inbox revision manual", html)
         self.assertIn("Command Center", html)
         self.assertIn("Ver payload tecnico", html)
         self.assertIn("No autorizadas", html)
         self.assertIn("Necesita revision", html)
-        self.assertIn("Aun no hay contexto guardado", html)
+        self.assertIn("Aun no hay contexto operativo guardado", html)
+        self.assertIn("Todo se carga aqui, sin salir de la consola", html)
 
     def test_v31_daily_payload_exposes_data_readiness_for_gpt(self):
         with patch.object(main, "_v29_discover_master_snapshot", return_value={
@@ -2908,7 +2941,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "wait_options_tickers": [],
             "wait_options_decisions": [],
             "message": "Hay setups ENTRY_READY para revision manual.",
-            "next_required_action": "Abrir dashboard.",
+            "next_required_action": "Revisar consola.",
             "not_order_instruction": True,
         }
 
@@ -3031,7 +3064,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "risk_blocked_tickers": [],
             "wait_options_tickers": [],
             "message": "Hay setups ENTRY_READY para revision manual.",
-            "next_required_action": "Abrir dashboard.",
+            "next_required_action": "Revisar consola.",
             "not_order_instruction": True,
         }
         alert_key = "ACTION_REQUIRED|OK|SPY|||"
@@ -3067,7 +3100,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "risk_blocked_tickers": [],
             "wait_options_tickers": [],
             "message": "Hay setups ENTRY_READY para revision manual.",
-            "next_required_action": "Abrir dashboard.",
+            "next_required_action": "Revisar consola.",
             "not_order_instruction": True,
         }
         alert_key = "ACTION_REQUIRED|OK|SPY|||"
