@@ -23984,7 +23984,7 @@ def _v32_operator_nudge_message(slot_config, summary, tracking):
     return "\n".join(lines)
 
 
-def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False):
+def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False, summary=None, tracking=None):
     now_market = datetime.now(MARKET_TZ)
     session_date = now_market.date().isoformat()
     explicit_slot = str(slot or "auto").strip().lower() != "auto"
@@ -24006,8 +24006,8 @@ def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False):
             "not_order_instruction": True,
         }
 
-    summary = _v32_operator_daily_summary_payload(limit=12)
-    tracking = _v32_operator_tracking_payload(limit=500)
+    summary = summary if isinstance(summary, dict) else _v32_operator_daily_summary_payload(limit=12)
+    tracking = tracking if isinstance(tracking, dict) else _v32_operator_tracking_payload(limit=500)
     signature = _v32_operator_nudge_signature(slot_config["slot"], summary, tracking)
     dedupe = _v32_operator_nudge_dedupe_decision(slot_config["slot"], session_date, signature, force=force)
     message = _v32_operator_nudge_message(slot_config, summary, tracking)
@@ -24061,9 +24061,17 @@ def _v32_next_market_business_day(start=None):
 
 def _v32_operator_nudge_preflight_payload():
     now_market_dt = datetime.now(MARKET_TZ)
+    summary = _v32_operator_daily_summary_payload(limit=12)
+    tracking = _v32_operator_tracking_payload(limit=500)
     slot_previews = []
     for slot in [item["slot"] for item in _V32_OPERATOR_NUDGE_SLOTS]:
-        preview = _v32_operator_nudge_payload(slot=slot, force=True, dry_run=True)
+        preview = _v32_operator_nudge_payload(
+            slot=slot,
+            force=True,
+            dry_run=True,
+            summary=summary,
+            tracking=tracking,
+        )
         slot_previews.append({
             "slot": slot,
             "label": preview.get("slot_label"),
@@ -24075,7 +24083,12 @@ def _v32_operator_nudge_preflight_payload():
             "execution_authorized": False,
             "not_order_instruction": True,
         })
-    auto_preview = _v32_operator_nudge_payload(slot="auto", dry_run=True)
+    auto_preview = _v32_operator_nudge_payload(
+        slot="auto",
+        dry_run=True,
+        summary=summary,
+        tracking=tracking,
+    )
     checks = {
         "read_auth_required": REQUIRE_READ_AUTH,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
