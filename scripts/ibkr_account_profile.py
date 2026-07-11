@@ -932,6 +932,34 @@ def age_label(value: Any) -> str:
     return f"{hours // 24}d ago"
 
 
+def duration_label(started_at: Any, finished_at: Any = None) -> str:
+    start = parse_iso_datetime(started_at)
+    if not start:
+        return "unknown"
+    end = parse_iso_datetime(finished_at) or datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((end - start).total_seconds()))
+    if seconds < 90:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes}m"
+    return f"{minutes // 60}h"
+
+
+def active_web_jobs() -> list[dict[str, Any]]:
+    with WEB_JOBS_LOCK:
+        jobs = [
+            dict(job)
+            for job in WEB_JOBS.values()
+            if isinstance(job, dict) and str(job.get("status") or "").upper() == "RUNNING"
+        ]
+    return sorted(jobs, key=lambda item: str(item.get("started_at") or ""), reverse=True)
+
+
 def cache_age_seconds(cached_at: Any) -> float | None:
     dt = parse_iso_datetime(cached_at)
     if not dt:
@@ -1102,6 +1130,142 @@ def render_metric(title: str, value: Any, note: str = "") -> str:
       <small>{note}</small>
     </article>
     """.format(title=html_escape(title), value=html_escape(value), note=html_escape(note))
+
+
+def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
+    comparison = selected_vs_published(active, snapshot, operator_payload)
+    running = active_web_jobs()
+    token_present = bool(operator_payload.get("token_present") or read_access_token())
+    remote_ok = bool(operator_payload.get("ok"))
+    cached = bool(operator_payload.get("cached"))
+    capacity = console_account_capacity(operator_payload, snapshot)
+    blockers = []
+    warnings = []
+    if not token_present:
+        blockers.append("READ_TOKEN_MISSING")
+    if not remote_ok:
+        blockers.append("PRODUCTION_UNREACHABLE")
+    if comparison.get("needs_refresh"):
+        warnings.append("GPT_CONTEXT_REFRESH_REQUIRED")
+    if cached:
+        warnings.append("USING_REMOTE_CACHE")
+    if not snapshot.get("available"):
+        warnings.append("SNAPSHOT_MISSING")
+    if not capacity.get("available"):
+        warnings.append("IBKR_CAPACITY_NOT_REFRESHED")
+    if running:
+        warnings.append("PROCESS_RUNNING")
+
+    if blockers:
+        level = "red"
+        label = "Atencion"
+        detail = "No todo esta conectado. Revisa token/produccion antes de operar la consola."
+    elif running:
+        level = "amber"
+        label = "Pensando"
+        detail = "Hay un proceso corriendo. Espera DONE antes de volver a refrescar."
+    elif warnings:
+        level = "amber"
+        label = "Parcial"
+        detail = "Consola utilizable, con datos que pueden requerir refresh."
+    else:
+        level = "green"
+        label = "Conectado"
+        detail = "Produccion, cuenta, snapshot y capacidad estan alineados para revision manual."
+
+    return {
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "blockers": blockers,
+        "warnings": warnings,
+        "running_jobs": running,
+        "remote_ok": remote_ok,
+        "cached": cached,
+        "token_present": token_present,
+        "context_status": comparison.get("status"),
+        "snapshot_available": bool(snapshot.get("available")),
+        "capacity_available": bool(capacity.get("available")),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> str:
+    health = console_health(active, snapshot, operator_payload)
+    running = health.get("running_jobs") or []
+    running_text = "sin procesos activos"
+    if running:
+        job = running[0]
+        running_text = "{label} | {elapsed} | {status}".format(
+            label=job.get("label") or "Proceso local",
+            elapsed=duration_label(job.get("started_at")),
+            status=job.get("status") or "RUNNING",
+        )
+    details = []
+    details.extend(health.get("blockers") or [])
+    details.extend(health.get("warnings") or [])
+    detail_text = ", ".join(details) if details else "sin bloqueos visibles"
+    return """
+    <section class="control-strip health-{level}">
+      <div class="signal">
+        <span class="signal-dot"></span>
+        <div>
+          <strong>{label}</strong>
+          <small>{detail}</small>
+        </div>
+      </div>
+      <div class="control-facts">
+        <span>Produccion: {production}</span>
+        <span>Contexto GPT: {context}</span>
+        <span>Snapshot: {snapshot}</span>
+        <span>Capacidad: {capacity}</span>
+      </div>
+      <div class="thinking-now">
+        <strong>{running_text}</strong>
+        <small>{detail_text}</small>
+      </div>
+    </section>
+    """.format(
+        level=html_escape(health.get("level")),
+        label=html_escape(health.get("label")),
+        detail=html_escape(health.get("detail")),
+        production="OK" if health.get("remote_ok") else "NO",
+        context=html_escape(health.get("context_status")),
+        snapshot="OK" if health.get("snapshot_available") else "NO",
+        capacity="OK" if health.get("capacity_available") else "NO",
+        running_text=html_escape(running_text),
+        detail_text=html_escape(detail_text),
+    )
+
+
+def render_active_process_panel() -> str:
+    jobs = active_web_jobs()
+    if not jobs:
+        return ""
+    rows = []
+    for job in jobs[:3]:
+        rows.append("""
+        <a class="process-row" href="/console?job_id={job_id}">
+          <span class="process-pulse"></span>
+          <strong>{label}</strong>
+          <small>alias={alias} | corriendo hace {elapsed} | abre detalle RUNNING/DONE</small>
+        </a>
+        """.format(
+            job_id=html_escape(job.get("job_id") or ""),
+            label=html_escape(job.get("label") or "Proceso local"),
+            alias=html_escape(job.get("alias") or ""),
+            elapsed=html_escape(duration_label(job.get("started_at"))),
+        ))
+    return """
+    <section class="panel process-panel">
+      <div class="section-head">
+        <h2>La consola esta trabajando</h2>
+        <p>No presiones Refresh de nuevo hasta que el proceso termine. Puedes abrir el detalle para ver RUNNING/DONE.</p>
+      </div>
+      <div class="process-list">{rows}</div>
+    </section>
+    """.format(rows="".join(rows))
 
 
 def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> str:
@@ -1571,6 +1735,7 @@ def operator_state_message(data: dict[str, Any]) -> str:
 
 def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_capacity: dict[str, Any] | None = None) -> str:
     account_capacity = account_capacity if isinstance(account_capacity, dict) else {}
+    status = operator_status(alert)
     actions_html = ""
     if not readonly:
         actions_html = """
@@ -1583,11 +1748,11 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
                 <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch">
                 <small>Opcional para Ack/Review/Watch/Close. Requerida para Reject y Journal.</small>
                 <div class="actions">
-                  <button name="action" value="ACK_ALERT">Ack</button>
-                  <button name="action" value="MARK_REVIEWING">Review</button>
+                  <button name="action" value="ACK_ALERT">Visto</button>
+                  <button name="action" value="MARK_REVIEWING">Revisando</button>
                   <button name="action" value="MARK_WATCHLIST">Watch</button>
-                  <button name="action" value="REJECT_SETUP">Reject</button>
-                  <button name="action" value="CLOSE_ALERT">Close</button>
+                  <button name="action" value="REJECT_SETUP">Rechazar</button>
+                  <button name="action" value="CLOSE_ALERT">Cerrar</button>
                 </div>
               </form>
         """.format(
@@ -1597,8 +1762,8 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
             state=html_escape(alert.get("state") or "UNKNOWN"),
         )
     return """
-            <article class="alert-card severity-{severity}{closed_class}">
-              <strong>{ticker}</strong>
+            <article class="alert-card severity-{severity} status-{status_class}{closed_class}">
+              <div class="alert-title"><strong>{ticker}</strong><em>{status}</em></div>
               <span>{date_label}</span>
               <span>{strategy} | {severity_label} | {state}</span>
               <div class="contract-line">{contract}</div>
@@ -1610,8 +1775,10 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
             </article>
             """.format(
         severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
+        status_class=html_escape(status.lower().replace("_", "-")),
         closed_class=" closed-alert" if readonly else "",
         ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+        status=html_escape(status),
         date_label=html_escape(alert_date_label(alert)),
         severity_label=html_escape(alert.get("severity") or "UNKNOWN"),
         state=html_escape(alert.get("state") or "UNKNOWN"),
@@ -1621,7 +1788,6 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
         capacity=render_alert_capacity(alert, account_capacity),
         guidance=html_escape(alert_review_guidance(alert)),
         blocker=html_escape(alert.get("main_blocker") or "NONE"),
-        status=html_escape(operator_status(alert)),
         actions=actions_html,
     )
 
@@ -1852,12 +2018,23 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           :root {{ --ink:#172019; --muted:#5d675f; --paper:#f7f2e8; --card:#fffaf0; --accent:#1d6b4f; --line:#d9cdb7; --warn:#9f4b1b; --risk:#b42318; }}
           body {{ margin:0; font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; color:var(--ink); background:radial-gradient(circle at top left,#e2f0dc,transparent 35%),linear-gradient(135deg,#f7f2e8,#eee2cc); }}
           main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
-          h1 {{ font-size:clamp(2rem,5vw,4.4rem); line-height:.92; margin:0 0 12px; letter-spacing:-.05em; }}
+          h1 {{ font-size:3.4rem; line-height:.92; margin:0 0 12px; letter-spacing:0; }}
           h2 {{ margin:0 0 12px; }}
           h3 {{ margin:0; }}
           .lede {{ color:var(--muted); max-width:720px; font-size:1.08rem; }}
           .notice,.panel,.card {{ border:1px solid var(--line); background:rgba(255,250,240,.82); border-radius:22px; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
           .notice {{ padding:14px 18px; margin:22px 0; }}
+          .control-strip {{ display:grid; grid-template-columns:1.15fr 1.35fr 1fr; gap:14px; align-items:center; border:1px solid var(--line); border-radius:22px; padding:14px 16px; margin-bottom:18px; background:#fffdf6; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
+          .signal {{ display:flex; align-items:center; gap:12px; }}
+          .signal strong,.signal small,.thinking-now strong,.thinking-now small {{ display:block; }}
+          .signal small,.thinking-now small {{ color:var(--muted); margin-top:3px; }}
+          .signal-dot {{ width:18px; height:18px; border-radius:999px; flex:0 0 auto; box-shadow:0 0 0 6px rgba(0,0,0,.04); }}
+          .health-green .signal-dot {{ background:#16a34a; box-shadow:0 0 0 6px rgba(22,163,74,.14); }}
+          .health-amber .signal-dot {{ background:#d97706; box-shadow:0 0 0 6px rgba(217,119,6,.16); }}
+          .health-red .signal-dot {{ background:#b42318; box-shadow:0 0 0 6px rgba(180,35,24,.14); }}
+          .control-facts {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
+          .control-facts span {{ border:1px solid var(--line); border-radius:999px; background:#fffaf0; padding:7px 10px; font-size:.9rem; color:var(--muted); font-weight:800; }}
+          .thinking-now {{ border-left:1px solid var(--line); padding-left:14px; }}
           .hero-panel {{ display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:end; padding:28px; }}
           .eyebrow {{ text-transform:uppercase; letter-spacing:.16em; color:var(--accent); font-weight:800; font-size:.78rem; margin:0 0 12px; }}
           .context-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
@@ -1882,6 +2059,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .job-panel {{ border-color:#b88b2a; background:#fff8e7; }}
           .job-panel.status-done {{ border-color:#1d6b4f; background:#eef8ef; }}
           .job-panel.status-error {{ border-color:var(--risk); background:#fff1ef; }}
+          .process-panel {{ border-color:#d97706; background:#fff8e7; }}
+          .process-list {{ display:grid; gap:10px; margin-top:12px; }}
+          .process-row {{ display:flex; align-items:center; gap:12px; border:1px solid #efc99d; border-radius:16px; background:#fffdf6; padding:12px; color:var(--ink); text-decoration:none; }}
+          .process-row strong,.process-row small {{ display:block; }}
+          .process-row small {{ color:var(--muted); }}
+          .process-pulse {{ width:12px; height:12px; border-radius:999px; background:#d97706; box-shadow:0 0 0 6px rgba(217,119,6,.16); animation:pulse 1.2s infinite ease-in-out; }}
+          @keyframes pulse {{ 0%,100% {{ transform:scale(.86); opacity:.72; }} 50% {{ transform:scale(1.12); opacity:1; }} }}
           .job-facts {{ list-style:none; padding:0; margin:12px 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
           .job-facts li {{ border:1px solid var(--line); border-radius:14px; padding:10px; background:#fffdf6; }}
           .job-facts span,.job-facts strong {{ display:block; }}
@@ -1895,6 +2079,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
+          .alert-title {{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }}
+          .alert-title em {{ font-style:normal; border-radius:999px; padding:5px 8px; background:#e8efe7; color:#1d6b4f; font-size:.78rem; font-weight:900; white-space:nowrap; }}
+          .status-new .alert-title em {{ background:#fff4d6; color:#9f4b1b; }}
+          .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
+          .status-rejected .alert-title em,.status-risk-blocked .alert-title em {{ background:#fff1ef; color:var(--risk); }}
+          .status-closed .alert-title em,.status-acknowledged .alert-title em,.status-approved-for-manual-review .alert-title em,.status-approved-for-manual-trade .alert-title em {{ background:#eef8ef; color:#1d6b4f; }}
           .contract-line,.review-line,.economics-line,.capacity-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
           .contract-line {{ font-weight:800; color:var(--ink); }}
           .economics-line {{ color:#1d6b4f; background:#f1fbf4; border-color:#badbcc; font-weight:800; }}
@@ -1921,7 +2111,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box strong,.busy-box span {{ display:block; }}
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
-          @media (max-width:820px) {{ .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
+          @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} }}
+          @media (max-width:820px) {{ h1 {{ font-size:2.4rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
       <body>
@@ -1932,6 +2123,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           </div>
         </div>
         <main>
+          {health}
+          {active_process}
           {context}
           {capacity}
           {message}
@@ -2002,6 +2195,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
+        health=render_console_health(active, snapshot, operator_payload),
+        active_process=render_active_process_panel(),
         capacity=render_account_capacity_panel(operator_payload, snapshot),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -2126,8 +2321,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                         timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
                         prefer_cache=False,
                     )
+                operator_status_label = OPERATOR_STATUS_BY_ACTION.get(action, action or "UNKNOWN")
+                ticker_label = (params.get("ticker") or ["UNKNOWN"])[0] or "UNKNOWN"
                 message = (
-                    "Evento registrado para seguimiento/backtesting. No autoriza ordenes."
+                    "{ticker} marcado como {status}. Queda registrado para seguimiento/backtesting; no autoriza ordenes.".format(
+                        ticker=ticker_label,
+                        status=operator_status_label,
+                    )
                     if result.get("ok")
                     else f"No pude registrar evento: {result.get('error') or result.get('text') or 'unknown'}"
                 )

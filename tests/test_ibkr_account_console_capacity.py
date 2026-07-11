@@ -102,6 +102,68 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(counts["risk"], 0)
         self.assertEqual(counts["closed"], 2)
 
+    def test_console_health_surfaces_green_and_running_process(self):
+        active = {"account_scope": "primary", "account_alias": "primary"}
+        snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary"}
+        operator_payload = {
+            "ok": True,
+            "token_present": True,
+            "data": {
+                "account_context": {"account_scope": "primary", "account_alias": "primary"},
+                "account_capacity": {"available_capacity": 50000, "capacity_source": "available_funds"},
+            },
+        }
+
+        with account_console.WEB_JOBS_LOCK:
+            account_console.WEB_JOBS.clear()
+        health = account_console.console_health(active, snapshot, operator_payload)
+        rendered = account_console.render_console_health(active, snapshot, operator_payload)
+
+        self.assertEqual(health["level"], "green")
+        self.assertIn("health-green", rendered)
+        self.assertIn("signal-dot", rendered)
+        self.assertIn("sin procesos activos", rendered)
+
+        try:
+            with account_console.WEB_JOBS_LOCK:
+                account_console.WEB_JOBS["job-test"] = {
+                    "job_id": "job-test",
+                    "label": "Refresh IBKR",
+                    "alias": "primary",
+                    "status": "RUNNING",
+                    "started_at": account_console.now_iso(),
+                }
+            running_health = account_console.console_health(active, snapshot, operator_payload)
+            process_panel = account_console.render_active_process_panel()
+
+            self.assertEqual(running_health["level"], "amber")
+            self.assertIn("PROCESS_RUNNING", running_health["warnings"])
+            self.assertIn("process-panel", process_panel)
+            self.assertIn("La consola esta trabajando", process_panel)
+            self.assertIn("RUNNING/DONE", process_panel)
+        finally:
+            with account_console.WEB_JOBS_LOCK:
+                account_console.WEB_JOBS.clear()
+
+    def test_render_alert_card_shows_status_badge_and_friendly_actions(self):
+        alert = {
+            "alert_id": "alert-1",
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "state": "ENTRY_READY",
+            "severity": "ACTION",
+            "operator_status": "NEW",
+        }
+
+        html = account_console.render_alert_card(alert)
+
+        self.assertIn("status-new", html)
+        self.assertIn("<em>NEW</em>", html)
+        self.assertIn(">Visto</button>", html)
+        self.assertIn(">Revisando</button>", html)
+        self.assertIn(">Watch</button>", html)
+        self.assertIn("Guardando revision en produccion", html)
+
 
 if __name__ == "__main__":
     unittest.main()

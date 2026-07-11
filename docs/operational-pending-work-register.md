@@ -36,6 +36,10 @@ review. It is decision-support only and never authorizes order execution.
   `python3 scripts/run_operational_edge_report.py --top 5 --preview 5`.
   Protected production routes: `/v32_operational_edge` and
   `/v32_operational_edge_dashboard`.
+- Upgraded the local Stock Ultimus Console into the main operating cockpit:
+  top health light, explicit `La consola esta trabajando` process panel,
+  RUNNING/DONE detail links, capacity/context status, and visible per-alert
+  review badges for `Visto`, `Revisando`, `Watch`, `Rechazar`, and `Cerrar`.
 
 ## Waiting For Market Data
 
