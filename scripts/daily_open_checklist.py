@@ -47,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "10")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_OPEN_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--refresh", action="store_true", help="Run ibkr_bridge.py --once before reading V32.")
+    parser.add_argument("--skip-canslim", action="store_true", help="Skip the free CANSLIM candidate builder before refresh.")
+    parser.add_argument("--refresh-sec-canslim", action="store_true", help="Refresh SEC companyfacts cache during CANSLIM build.")
+    parser.add_argument("--canslim-timeout", type=int, default=int(os.getenv("CANSLIM_BUILDER_TIMEOUT", "120")))
     parser.add_argument("--publish", action="store_true", help="Publish runtime snapshot after refresh/check.")
     parser.add_argument("--allow-stale-publish", action="store_true", help="Pass --allow-stale to the publisher.")
     parser.add_argument("--full-bridge", action="store_true", help="Do not enable DAILY_RADAR_FAST for the bridge.")
@@ -208,6 +211,29 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
     )
 
 
+def build_canslim_candidates(args: argparse.Namespace) -> dict[str, Any]:
+    if args.skip_canslim:
+        return {
+            "name": "build_free_canslim_candidates",
+            "ok": True,
+            "skipped": True,
+            "detail": "SKIPPED_BY_OPERATOR",
+            "not_order_instruction": True,
+        }
+    command = [sys.executable, "scripts/build_canslim_free_candidates.py"]
+    if args.refresh_sec_canslim:
+        command.append("--refresh-sec")
+    result = run_command(
+        "build_free_canslim_candidates",
+        command,
+        timeout=args.canslim_timeout,
+        env=os.environ.copy(),
+    )
+    result["non_blocking"] = True
+    result["not_order_instruction"] = True
+    return result
+
+
 def publish_runtime(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
@@ -317,6 +343,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     if args.refresh:
+        report["canslim_step"] = build_canslim_candidates(args)
         if not ingest_token:
             report["refresh_step"] = {"name": "refresh_ibkr_bridge", "ok": False, "error": "MISSING_INGEST_TOKEN"}
         elif not ibkr_open:

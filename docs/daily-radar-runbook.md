@@ -318,6 +318,11 @@ Run the full refresh and read cycle:
 python3 scripts/run_daily_radar.py --preview 5
 ```
 
+By default this first builds `runtime/canslim_candidates_latest.json` with the
+free SEC/runtime CANSLIM builder, then runs the read-only IBKR bridge. Use
+`--skip-canslim` only for diagnostics. Use `--refresh-sec-canslim` when you want
+to force-refresh the SEC cache before the bridge.
+
 ### Market-session bridge loop
 
 For a live market session, use the bridge loop instead of remembering to run the
@@ -469,9 +474,11 @@ Free automated CANSLIM is available through the local SEC/runtime builder:
 python3 scripts/build_canslim_free_candidates.py
 ```
 
-It writes `runtime/canslim_candidates_latest.json` using free SEC companyfacts
-data plus local runtime/IBKR bars when available. It does not require a paid API,
-does not require CSV exports, and does not authorize orders. Set
+The daily radar and daily-open checklist run this automatically before a bridge
+refresh. The standalone command is useful for diagnostics. It writes
+`runtime/canslim_candidates_latest.json` using free SEC companyfacts data plus
+local runtime/IBKR bars when available. It does not require a paid API, does not
+require CSV exports, and does not authorize orders. Set
 `STOCK_ULTIMUS_SEC_USER_AGENT` to a descriptive SEC user agent before scheduled
 runs.
 

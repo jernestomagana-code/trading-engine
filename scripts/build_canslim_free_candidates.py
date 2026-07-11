@@ -51,6 +51,9 @@ def main() -> int:
 
     companyfacts_by_ticker = {}
     for ticker in universe:
+        if ticker in engine.NON_COMPANY_SYMBOLS:
+            errors[ticker] = "NON_COMPANY_SYMBOL_SKIPPED"
+            continue
         cik = ticker_map.get(ticker)
         if not cik:
             errors[ticker] = "NO_SEC_CIK"
@@ -91,4 +94,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ DEFAULT_UNIVERSE = [
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
     "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT",
 ]
+NON_COMPANY_SYMBOLS = {"QQQ", "SPY", "TLT", "VIX", "DIA", "IWM"}
 
 REVENUE_TAGS = [
     "Revenues",
@@ -129,11 +131,23 @@ def load_runtime_jsons(runtime_dir: Path) -> dict[str, Any]:
 
 
 def sec_user_agent(value: str | None = None) -> str:
-    return (
-        value
-        or os.getenv("STOCK_ULTIMUS_SEC_USER_AGENT")
-        or "StockUltimus/1.0 operator-contact-configurable"
-    )
+    if value:
+        return value
+    env_value = os.getenv("STOCK_ULTIMUS_SEC_USER_AGENT")
+    if env_value:
+        return env_value
+    try:
+        email = subprocess.check_output(
+            ["git", "config", "--get", "user.email"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+    except Exception:
+        email = ""
+    if "@" in email:
+        return f"StockUltimus/1.0 {email}"
+    return "StockUltimus/1.0 set-STOCK_ULTIMUS_SEC_USER_AGENT"
 
 
 def fetch_json(url: str, *, user_agent: str, timeout: int = 20) -> dict[str, Any]:
@@ -481,4 +495,3 @@ def write_payload(payload: dict[str, Any], path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
     return path
-

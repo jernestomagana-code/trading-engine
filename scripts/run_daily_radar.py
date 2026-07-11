@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--skip-bridge", action="store_true", help="Only read the current cloud radar.")
+    parser.add_argument("--skip-canslim", action="store_true", help="Skip the free CANSLIM candidate builder before bridge refresh.")
+    parser.add_argument("--refresh-sec-canslim", action="store_true", help="Refresh SEC companyfacts cache during CANSLIM build.")
+    parser.add_argument("--canslim-timeout", type=int, default=int(os.getenv("CANSLIM_BUILDER_TIMEOUT", "120")))
     parser.add_argument("--full-bridge", action="store_true", help="Use the slower full IBKR option universe.")
     parser.add_argument("--allow-partial", action="store_true", help="Continue to cloud read even if the bridge refresh fails.")
     parser.add_argument("--json-out", help="Optional path to save the raw /gpt_v31_daily_rankings response.")
@@ -119,6 +122,49 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> int:
     else:
         print("Snapshot publicado por bridge.")
     return result.returncode
+
+
+def run_canslim_builder(args: argparse.Namespace) -> int:
+    if args.skip_canslim:
+        print("CANSLIM gratis omitido por --skip-canslim.")
+        return 0
+
+    cmd = [sys.executable, str(ROOT / "scripts" / "build_canslim_free_candidates.py")]
+    if args.refresh_sec_canslim:
+        cmd.append("--refresh-sec")
+    print("Construyendo candidatos CANSLIM gratis antes del bridge ...")
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            timeout=args.canslim_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"CANSLIM gratis excedio {args.canslim_timeout}s; se continua con IBKR.")
+        return 0
+
+    if result.returncode != 0:
+        print(f"CANSLIM gratis termino con codigo {result.returncode}; se continua con IBKR.")
+        tail = "\n".join((result.stdout + "\n" + result.stderr).splitlines()[-8:])
+        if tail:
+            print(tail)
+        return 0
+
+    try:
+        summary = json.loads(result.stdout)
+        print(
+            "CANSLIM gratis listo: "
+            f"candidatos={summary.get('candidate_count')} "
+            f"passes={summary.get('pass_count')} "
+            f"errores={summary.get('errors')}"
+        )
+    except Exception:
+        print("CANSLIM gratis listo.")
+    return 0
 
 
 def read_daily_rankings(base_url: str, read_token: str, timeout: int) -> dict[str, Any]:
@@ -418,6 +464,7 @@ def main() -> int:
     args = parse_args()
 
     if not args.skip_bridge:
+        run_canslim_builder(args)
         ingest_token = secret_from_env_or_keychain(
             ["TRADING_ENGINE_INGEST_TOKEN", "SNAPSHOT_INGEST_TOKEN"],
             INGEST_KEYCHAIN_SERVICE,
