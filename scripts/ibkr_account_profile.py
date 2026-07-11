@@ -30,6 +30,8 @@ PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
 ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
 WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
+OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
+ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 SNAPSHOT_INGEST_KEYCHAIN_SERVICES = ("stock-ultimus-snapshot-ingest", "stock-ultimus-snapshot-ingest-token")
@@ -56,6 +58,22 @@ CLOSED_OPERATOR_STATUSES = {
     "CLOSED",
     "APPROVED_FOR_MANUAL_REVIEW",
     "APPROVED_FOR_MANUAL_TRADE",
+}
+HANDLED_OPERATOR_STATUSES = CLOSED_OPERATOR_STATUSES | {
+    "ACKNOWLEDGED",
+    "REVIEWING",
+    "WATCHLIST",
+    "NOTE_RECORDED",
+}
+OPERATOR_STATUS_BY_ACTION = {
+    "ACK_ALERT": "ACKNOWLEDGED",
+    "MARK_REVIEWING": "REVIEWING",
+    "MARK_WATCHLIST": "WATCHLIST",
+    "REJECT_SETUP": "REJECTED",
+    "APPROVE_MANUAL_REVIEW": "APPROVED_FOR_MANUAL_REVIEW",
+    "MARK_EXPIRED": "EXPIRED",
+    "CLOSE_ALERT": "CLOSED",
+    "JOURNAL_NOTE": "NOTE_RECORDED",
 }
 
 
@@ -484,6 +502,15 @@ def account_publish_command() -> list[str]:
     ]
 
 
+def account_capacity_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/ibkr_account_profile.py",
+        "refresh-account-capacity",
+        "--publish",
+    ]
+
+
 def cmd_bridge(args: argparse.Namespace) -> int:
     return run_with_profile(args.alias, console_bridge_command())
 
@@ -603,6 +630,130 @@ def cmd_publish_context(_: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def account_summary_capacity(host: str, port: int, client_id: int, timeout: float = 12.0) -> dict[str, Any]:
+    try:
+        from ib_insync import IB
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "IB_INSYNC_IMPORT_FAILED",
+            "error": str(exc)[:200],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    active = active_profile()
+    selected = os.getenv("IBKR_ACCOUNT_ID", "").strip()
+    fields = {
+        "NetLiquidation": "net_liquidation",
+        "BuyingPower": "buying_power",
+        "AvailableFunds": "available_funds",
+        "ExcessLiquidity": "excess_liquidity",
+        "TotalCashValue": "total_cash_value",
+        "InitMarginReq": "initial_margin_required",
+        "MaintMarginReq": "maintenance_margin_required",
+        "GrossPositionValue": "gross_position_value",
+        "Cushion": "cushion",
+    }
+    context = {
+        "account_context_version": "local_console_account_capacity_v1",
+        "source": "IBKR_ACCOUNT_SUMMARY_SANITIZED",
+        "generated_at": now_iso(),
+        "account_scope": active.get("account_scope") or os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE") or "unknown",
+        "account_alias": active.get("account_alias") or os.getenv("IBKR_ACCOUNT_ALIAS") or "unknown",
+        "available": False,
+        "currency": None,
+        "net_liquidation": None,
+        "buying_power": None,
+        "available_funds": None,
+        "excess_liquidity": None,
+        "total_cash_value": None,
+        "initial_margin_required": None,
+        "maintenance_margin_required": None,
+        "gross_position_value": None,
+        "cushion": None,
+        "sensitive_identifiers_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    ib = IB()
+    try:
+        ib.connect(host, int(port), clientId=int(client_id), readonly=True, timeout=timeout)
+        try:
+            summary = ib.accountSummary(account=selected) if selected else ib.accountSummary()
+        except TypeError:
+            summary = ib.accountSummary()
+    except Exception as exc:
+        context.update({
+            "ok": False,
+            "status": "ACCOUNT_SUMMARY_FAILED",
+            "error": str(exc)[:240],
+        })
+        return context
+    finally:
+        try:
+            if ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
+
+    preferred: list[tuple[str, Any, str]] = []
+    fallback: list[tuple[str, Any, str]] = []
+    for item in summary or []:
+        if selected and str(getattr(item, "account", "") or "").strip() not in ["", selected]:
+            continue
+        mapped = fields.get(getattr(item, "tag", None))
+        if not mapped:
+            continue
+        currency = str(getattr(item, "currency", "") or "").upper()
+        row = (mapped, getattr(item, "value", None), currency)
+        if currency in ["BASE", "USD", ""]:
+            preferred.append(row)
+        else:
+            fallback.append(row)
+
+    for mapped, value, currency in preferred + fallback:
+        if context.get(mapped) is not None:
+            continue
+        parsed = console_float_or_none(value)
+        if parsed is None:
+            continue
+        context[mapped] = round(parsed, 4)
+        if not context.get("currency") and currency:
+            context["currency"] = currency
+
+    context["available_capacity"] = (
+        context.get("available_funds")
+        if context.get("available_funds") is not None
+        else context.get("excess_liquidity")
+        if context.get("excess_liquidity") is not None
+        else context.get("buying_power")
+    )
+    context["available"] = any(
+        context.get(key) is not None
+        for key in ["net_liquidation", "buying_power", "available_funds", "excess_liquidity", "total_cash_value"]
+    )
+    context["ok"] = bool(context["available"])
+    context["status"] = "ACCOUNT_CAPACITY_READY" if context["available"] else "ACCOUNT_SUMMARY_EMPTY"
+    return context
+
+
+def cmd_refresh_account_capacity(args: argparse.Namespace) -> int:
+    context = account_summary_capacity(args.host, args.port, args.client_id, timeout=args.timeout)
+    RUNTIME.mkdir(exist_ok=True)
+    ACCOUNT_CAPACITY_PATH.write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
+    result = {
+        "account_capacity": context,
+        "capacity_file": str(ACCOUNT_CAPACITY_PATH.relative_to(ROOT)),
+        "publish_result": None,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if args.publish and context.get("ok"):
+        result["publish_result"] = publish_account_context_fallback()
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if context.get("ok") else 1
+
+
 def public_base_url() -> str:
     return (os.getenv("PUBLIC_BASE_URL") or DEFAULT_PUBLIC_BASE_URL).rstrip("/")
 
@@ -618,6 +769,89 @@ def load_json_file(path: Path) -> dict[str, Any]:
 def write_json_file(path: Path, data: dict[str, Any]) -> None:
     RUNTIME.mkdir(exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def load_operator_events() -> list[dict[str, Any]]:
+    try:
+        data = json.loads(OPERATOR_EVENTS_PATH.read_text())
+    except Exception:
+        data = []
+    return data if isinstance(data, list) else []
+
+
+def save_operator_events(events: list[dict[str, Any]]) -> None:
+    RUNTIME.mkdir(exist_ok=True)
+    OPERATOR_EVENTS_PATH.write_text(json.dumps((events or [])[-10000:], indent=2, sort_keys=True) + "\n")
+
+
+def local_operator_alert_id(payload: dict[str, Any]) -> str:
+    alert_id = str(payload.get("alert_id") or "").strip()
+    if alert_id:
+        return alert_id
+    ticker = str(payload.get("ticker") or "UNKNOWN").strip().upper() or "UNKNOWN"
+    strategy = str(payload.get("strategy") or "UNKNOWN").strip().upper() or "UNKNOWN"
+    state = str(payload.get("state") or "UNKNOWN").strip().upper() or "UNKNOWN"
+    return f"ALERT-{datetime.now(timezone.utc).date().isoformat()}-{ticker}-{strategy}-{state}"
+
+
+def record_local_operator_event(payload: dict[str, Any], remote_result: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    remote_result = remote_result if isinstance(remote_result, dict) else {}
+    data = remote_result.get("data") if isinstance(remote_result.get("data"), dict) else {}
+    remote_event = data.get("event") if isinstance(data.get("event"), dict) else {}
+    action = str(remote_event.get("action") or payload.get("action") or "").upper()
+    event = {
+        "event_id": remote_event.get("event_id") or remote_event.get("id") or f"LOCAL-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
+        "id": remote_event.get("id") or remote_event.get("event_id") or f"LOCAL-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
+        "operator_event_version": remote_event.get("operator_event_version") or "local_console_operator_event_v1",
+        "recorded_at": remote_event.get("recorded_at") or now_iso(),
+        "alert_id": remote_event.get("alert_id") or local_operator_alert_id(payload),
+        "ticker": remote_event.get("ticker") or str(payload.get("ticker") or "").upper() or None,
+        "strategy": remote_event.get("strategy") or payload.get("strategy"),
+        "action": action,
+        "operator_status": remote_event.get("operator_status") or OPERATOR_STATUS_BY_ACTION.get(action, action or "UNKNOWN"),
+        "reason": remote_event.get("reason") or payload.get("reason") or "",
+        "actor": remote_event.get("actor") or payload.get("actor") or "stock_ultimus_console",
+        "source": remote_event.get("source") or "local_stock_ultimus_console",
+        "remote_recorded": bool(remote_result.get("ok")),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    events = load_operator_events()
+    if not any(item.get("event_id") == event["event_id"] for item in events if isinstance(item, dict)):
+        events.append(event)
+        save_operator_events(events)
+    return event
+
+
+def apply_local_operator_events(operator_payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(operator_payload, dict):
+        return operator_payload
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    if not alerts:
+        return operator_payload
+    latest: dict[str, dict[str, Any]] = {}
+    for event in load_operator_events():
+        if not isinstance(event, dict):
+            continue
+        alert_id = str(event.get("alert_id") or "")
+        if alert_id:
+            latest[alert_id] = event
+    if not latest:
+        return operator_payload
+    for alert in alerts:
+        if not isinstance(alert, dict):
+            continue
+        event = latest.get(str(alert.get("alert_id") or ""))
+        if not event:
+            continue
+        alert["operator_status"] = event.get("operator_status") or alert.get("operator_status")
+        alert["last_operator_action"] = event.get("action") or alert.get("last_operator_action")
+        alert["last_operator_reason"] = event.get("reason") or alert.get("last_operator_reason")
+        alert["local_operator_event_applied"] = True
+    data["local_operator_event_count"] = len(latest)
+    return operator_payload
 
 
 def latest_master_snapshot() -> dict[str, Any]:
@@ -658,6 +892,7 @@ def latest_master_snapshot() -> dict[str, Any]:
         "path": str(path.relative_to(ROOT)),
         "mtime": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
         "data": data,
+        "account_context": account_context,
         "account_scope": scope,
         "account_alias": alias,
         "generated_at": data.get("generated_at") or data.get("timestamp") or "",
@@ -727,18 +962,21 @@ def write_remote_cache(path: str, result: dict[str, Any]) -> None:
     write_json_file(REMOTE_CACHE_PATH, payload)
 
 
-def read_remote_cache(path: str, live_error: str = "") -> dict[str, Any] | None:
+def read_remote_cache(path: str, live_error: str = "", allow_stale: bool = False) -> dict[str, Any] | None:
     cache = load_json_file(REMOTE_CACHE_PATH)
     if cache.get("path") != path:
         return None
     age_seconds = cache_age_seconds(cache.get("cached_at"))
-    if age_seconds is None or age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS:
+    if age_seconds is None:
+        return None
+    if not allow_stale and age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS:
         return None
     result = cache.get("result") if isinstance(cache.get("result"), dict) else {}
     if not result.get("ok"):
         return None
     out = dict(result)
     out["cached"] = True
+    out["stale_cache"] = bool(age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS)
     out["cached_at"] = cache.get("cached_at")
     out["cache_age_label"] = age_label(cache.get("cached_at"))
     out["live_error"] = live_error
@@ -752,7 +990,7 @@ def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, p
             return cached
     token = read_access_token()
     if not token:
-        cached = read_remote_cache(path, live_error="MISSING_READ_ACCESS_TOKEN")
+        cached = read_remote_cache(path, live_error="MISSING_READ_ACCESS_TOKEN", allow_stale=True)
         return cached or {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
     url = public_base_url() + path
     request = urllib.request.Request(
@@ -772,11 +1010,11 @@ def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, p
         return result
     except urllib.error.HTTPError as exc:
         error_text = f"HTTP_{exc.code}"
-        cached = read_remote_cache(path, live_error=error_text)
+        cached = read_remote_cache(path, live_error=error_text, allow_stale=True)
         return cached or {"ok": False, "error": error_text, "token_present": True, "url": url, "data": {}}
     except Exception as exc:
         error_text = str(exc)
-        cached = read_remote_cache(path, live_error=error_text)
+        cached = read_remote_cache(path, live_error=error_text, allow_stale=True)
         return cached or {"ok": False, "error": error_text, "token_present": True, "url": url, "data": {}}
 
 
@@ -809,7 +1047,7 @@ def post_remote_json(path: str, payload: dict[str, Any], timeout: float = 15) ->
 
 
 def console_operator_payload(prefer_cache: bool = False) -> dict[str, Any]:
-    return fetch_remote_json("/gpt_v32_operator_today?limit=12", prefer_cache=prefer_cache)
+    return apply_local_operator_events(fetch_remote_json("/gpt_v32_operator_today?limit=12", prefer_cache=prefer_cache))
 
 
 def published_context_value(value: Any) -> str:
@@ -937,20 +1175,51 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     )
 
 
-def render_console_actions() -> str:
-    base = public_base_url()
+def render_console_actions(operator_payload: dict[str, Any] | None = None) -> str:
+    operator_payload = operator_payload if isinstance(operator_payload, dict) else {}
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    counts = operator_alert_counts(data)
+    intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    intraday_count = sum(
+        1 for alert in alerts
+        if str((alert or {}).get("strategy") or "").upper() == "INTRADAY_INDEX_FUTURES"
+        or str((alert or {}).get("ticker") or "").upper() in {"MNQ", "NQ", "MES", "ES"}
+    )
+    intraday_message = intraday.get("message")
+    if not intraday_message:
+        intraday_message = (
+            "Hay alertas intradia de futuros en el payload actual."
+            if intraday_count
+            else "Sin alertas intradia de futuros en el payload actual; solo validar monitoreo y datos."
+        )
+    next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
+    next_action = next_actions[0] if next_actions else {}
+    account = data.get("account_alias") or data.get("account_scope") or "pendiente"
+    status = data.get("status") or ("OK" if operator_payload.get("ok") else operator_payload.get("error") or "UNKNOWN")
     return """
     <section class="panel">
-      <h2>Perifericos y salidas</h2>
+      <h2>Administracion desde esta consola</h2>
       <div class="tiles">
-        <a class="tile" href="{base}/v32_operator_dashboard" target="_blank">V32 dashboard<span>Alertas y acciones guiadas</span></a>
-        <a class="tile" href="{base}/gpt_v32_operator_today" target="_blank">GPT payload<span>Contexto exacto que lee el GPT</span></a>
-        <a class="tile" href="{base}/v32_operator_daily_summary_email/preview" target="_blank">Email preview<span>Resumen antes de enviar</span></a>
-        <a class="tile" href="{base}/v32_operator_tracking_status" target="_blank">Tracking<span>Eventos, outcomes y aprendizaje</span></a>
+        <div class="tile">Alertas y acciones<span>{open} pendientes: {risk} riesgo, {watch} watch, {action} action. Usa los botones de cada tarjeta aqui mismo.</span></div>
+        <div class="tile">Contexto GPT activo<span>status={status} | cuenta={account}. Actualiza con el boton de arriba; no necesitas abrir otro dashboard.</span></div>
+        <div class="tile">Siguiente paso<span>{next_label}</span></div>
+        <div class="tile">Futuros intradia<span>{intraday_message}</span></div>
+        <div class="tile">Historial local visible<span>{closed} alerta(s) cerrada(s) o revisada(s) quedan debajo de Alertas V32.</span></div>
       </div>
-      <p class="muted">Los links protegidos pueden pedir READ_ACCESS_TOKEN en el navegador. La consola local nunca imprime ese token.</p>
+      <p class="muted">No hace falta salir de esta consola para administrar cuenta, refrescar IBKR, revisar alertas o registrar decisiones. Rutas de diagnostico protegidas, no requeridas para operar desde consola: /gpt_v32_operator_today · /v32_operator_dashboard · /v32_operator_daily_summary_email/preview · /v32_operator_tracking_status.</p>
     </section>
-    """.format(base=html_escape(base))
+    """.format(
+        open=html_escape(counts["open"]),
+        risk=html_escape(counts["risk"]),
+        watch=html_escape(counts["watch"]),
+        action=html_escape(counts["action"]),
+        closed=html_escape(counts["closed"]),
+        status=html_escape(status),
+        account=html_escape(account),
+        next_label=html_escape(next_action.get("label") or "Sin accion inmediata; mantener monitoreo desde la consola."),
+        intraday_message=html_escape(intraday_message),
+    )
 
 
 def compact_contract_value(value: Any, suffix: str = "") -> str:
@@ -962,6 +1231,133 @@ def compact_contract_value(value: Any, suffix: str = "") -> str:
     except Exception:
         text = str(value)
     return text + suffix
+
+
+def compact_money(value: Any) -> str:
+    try:
+        number = float(value)
+        return "${:,.2f}".format(number)
+    except Exception:
+        return "N/D"
+
+
+def compact_percent(value: Any) -> str:
+    try:
+        number = float(value)
+        return "{:.2f}%".format(number)
+    except Exception:
+        return "N/D"
+
+
+def console_float_or_none(value: Any) -> float | None:
+    try:
+        if value in [None, "", "None", "null", "NULL"]:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    capacity = data.get("account_capacity") if isinstance(data.get("account_capacity"), dict) else {}
+    context = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
+    if not context:
+        context = snapshot.get("account_context") if isinstance(snapshot.get("account_context"), dict) else {}
+    local_capacity = load_json_file(ACCOUNT_CAPACITY_PATH)
+    if isinstance(local_capacity, dict) and local_capacity.get("available"):
+        active = active_profile()
+        local_alias = local_capacity.get("account_alias")
+        local_scope = local_capacity.get("account_scope")
+        if not active or local_alias == active.get("account_alias") or local_scope == active.get("account_scope"):
+            capacity = {**capacity, **local_capacity}
+            context = {**context, **local_capacity}
+    available_funds = console_float_or_none(capacity.get("available_funds", context.get("available_funds")))
+    excess_liquidity = console_float_or_none(capacity.get("excess_liquidity", context.get("excess_liquidity")))
+    buying_power = console_float_or_none(capacity.get("buying_power", context.get("buying_power")))
+    available_capacity = console_float_or_none(capacity.get("available_capacity", context.get("available_capacity")))
+    source = capacity.get("capacity_source") or "available_capacity"
+    if available_capacity is None:
+        if available_funds is not None:
+            available_capacity = available_funds
+            source = "available_funds"
+        elif excess_liquidity is not None:
+            available_capacity = excess_liquidity
+            source = "excess_liquidity"
+        elif buying_power is not None:
+            available_capacity = buying_power
+            source = "buying_power"
+        else:
+            source = "N/D"
+    return {
+        "available": available_capacity is not None,
+        "available_capacity": available_capacity,
+        "capacity_source": source,
+        "currency": capacity.get("currency") or context.get("currency") or "USD",
+        "net_liquidation": console_float_or_none(capacity.get("net_liquidation", context.get("net_liquidation"))),
+        "buying_power": buying_power,
+        "available_funds": available_funds,
+        "excess_liquidity": excess_liquidity,
+        "initial_margin_required": console_float_or_none(capacity.get("initial_margin_required", context.get("initial_margin_required"))),
+        "maintenance_margin_required": console_float_or_none(capacity.get("maintenance_margin_required", context.get("maintenance_margin_required"))),
+        "generated_at": capacity.get("generated_at") or context.get("generated_at") or snapshot.get("generated_at"),
+        "account_alias": data.get("account_alias") or context.get("account_alias") or snapshot.get("account_alias"),
+        "account_scope": data.get("account_scope") or context.get("account_scope") or snapshot.get("account_scope"),
+        "sensitive_identifiers_excluded": True,
+    }
+
+
+def render_account_capacity_panel(operator_payload: dict[str, Any], snapshot: dict[str, Any]) -> str:
+    capacity = console_account_capacity(operator_payload, snapshot)
+    if not capacity.get("available"):
+        note = "No hay capacidad de cuenta disponible todavia. Usa Refresh IBKR para traer AccountSummary de la cuenta seleccionada."
+    else:
+        note = "Comparacion informativa; el ticket final/margen se valida en IBKR antes de cualquier decision manual."
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Capacidad IBKR</h2>
+        <p>{note}</p>
+      </div>
+      <div class="capacity-grid">
+        {usable}
+        {available_funds}
+        {excess}
+        {buying_power}
+        {net_liq}
+        {margin}
+      </div>
+    </section>
+    """.format(
+        note=html_escape(note),
+        usable=render_metric(
+            "Capacidad usable",
+            compact_money(capacity.get("available_capacity")),
+            "fuente=" + str(capacity.get("capacity_source") or "N/D") + " | cuenta=" + str(capacity.get("account_alias") or capacity.get("account_scope") or "N/D"),
+        ),
+        available_funds=render_metric("AvailableFunds", compact_money(capacity.get("available_funds")), capacity.get("currency") or "USD"),
+        excess=render_metric("ExcessLiquidity", compact_money(capacity.get("excess_liquidity")), capacity.get("currency") or "USD"),
+        buying_power=render_metric("BuyingPower", compact_money(capacity.get("buying_power")), capacity.get("currency") or "USD"),
+        net_liq=render_metric("NetLiquidation", compact_money(capacity.get("net_liquidation")), capacity.get("currency") or "USD"),
+        margin=render_metric(
+            "Margen usado",
+            compact_money(capacity.get("initial_margin_required")),
+            "maint=" + compact_money(capacity.get("maintenance_margin_required")) + " | " + age_label(capacity.get("generated_at")),
+        ),
+    )
+
+
+def alert_date_label(alert: dict[str, Any]) -> str:
+    value = alert.get("alert_date") or alert.get("alert_created_at") or alert.get("received_at") or alert.get("generated_at")
+    if not value:
+        alert_id = str(alert.get("alert_id") or "")
+        parts = alert_id.split("-")
+        if len(parts) >= 4 and parts[0] == "ALERT":
+            value = "-".join(parts[1:4])
+    if not value:
+        return "Fecha alerta: N/D"
+    text = str(value)
+    return "Fecha alerta: " + (text[:10] if len(text) >= 10 else text)
 
 
 def render_alert_contract(alert: dict[str, Any]) -> str:
@@ -991,6 +1387,131 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
     )
 
 
+def render_alert_economics(alert: dict[str, Any]) -> str:
+    economics = alert.get("economics") if isinstance(alert.get("economics"), dict) else {}
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    capital = economics.get("capital_required", contract.get("capital_required"))
+    credit = economics.get("gross_credit", contract.get("gross_credit"))
+    probability = economics.get("probability_success_pct", contract.get("probability_success_pct"))
+    annualized = economics.get(
+        "annualized_return_on_capital_pct",
+        contract.get("annualized_return_on_capital_pct"),
+    )
+    capital_source = economics.get("capital_source") or "N/D"
+    probability_source = economics.get("probability_source") or "N/D"
+
+    strategy = str(alert.get("strategy") or contract.get("strategy") or "").upper()
+    strike = console_float_or_none(contract.get("strike") or alert.get("strike"))
+    dte = console_float_or_none(contract.get("dte") or alert.get("dte"))
+    delta = console_float_or_none(contract.get("delta") or alert.get("delta"))
+    bid = console_float_or_none(contract.get("bid"))
+    mid = console_float_or_none(contract.get("mid") or alert.get("price"))
+    option_credit = bid if bid is not None else mid
+
+    if credit is None and option_credit is not None:
+        credit = option_credit * 100.0
+    if capital is None and strike is not None and option_credit is not None and strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+    }:
+        capital = max((strike * 100.0) - (option_credit * 100.0), 0.0)
+        capital_source = "estimated_cash_secured_put"
+    if probability is None and delta is not None and abs(delta) <= 1 and strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+        "COVERED_CALL",
+        "SHORT_CALL_COVERED",
+    }:
+        probability = max(0.0, min((1.0 - abs(delta)) * 100.0, 100.0))
+        probability_source = "delta_proxy"
+    if annualized is None and credit is not None and capital not in [None, 0] and dte not in [None, 0]:
+        annualized = ((float(credit) / float(capital)) * 100.0) * (365.0 / float(dte))
+
+    if capital is None and credit is None and probability is None and annualized is None:
+        return "Capital req: N/D | credito bruto: N/D | prob. exito: N/D | retorno anualizado: N/D | faltan contrato IBKR completo y/o delta"
+
+    return (
+        "Capital req: {capital} ({capital_source}) | credito bruto: {credit} | "
+        "prob. exito: {probability} ({probability_source}) | retorno anualizado: {annualized}"
+    ).format(
+        capital=compact_money(capital),
+        capital_source=html_escape(capital_source),
+        credit=compact_money(credit),
+        probability=compact_percent(probability),
+        probability_source=html_escape(probability_source),
+        annualized=compact_percent(annualized),
+    )
+
+
+def console_alert_capital_required(alert: dict[str, Any]) -> float | None:
+    economics = alert.get("economics") if isinstance(alert.get("economics"), dict) else {}
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    capital = console_float_or_none(economics.get("capital_required", contract.get("capital_required")))
+    if capital is not None:
+        return capital
+    strategy = str(alert.get("strategy") or contract.get("strategy") or "").upper()
+    strike = console_float_or_none(contract.get("strike") or alert.get("strike"))
+    bid = console_float_or_none(contract.get("bid"))
+    mid = console_float_or_none(contract.get("mid") or alert.get("price"))
+    credit = bid if bid is not None else mid
+    if strike is not None and credit is not None and strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+    }:
+        return max((strike * 100.0) - (credit * 100.0), 0.0)
+    spread_width = console_float_or_none(contract.get("spread_width") or alert.get("spread_width"))
+    if spread_width is not None and credit is not None:
+        return max((spread_width * 100.0) - (credit * 100.0), 0.0)
+    underlying_price = console_float_or_none(contract.get("underlying_price") or alert.get("underlying_price"))
+    if strategy in {"COVERED_CALL", "SHORT_CALL_COVERED"} and underlying_price is not None:
+        return max(underlying_price * 100.0, 0.0)
+    return None
+
+
+def render_alert_capacity(alert: dict[str, Any], account_capacity: dict[str, Any]) -> str:
+    check = alert.get("account_capacity_check") if isinstance(alert.get("account_capacity_check"), dict) else {}
+    capital = console_float_or_none(check.get("capital_required"))
+    if capital is None:
+        capital = console_alert_capital_required(alert)
+    available = console_float_or_none(check.get("available_capacity"))
+    if available is None:
+        available = console_float_or_none(account_capacity.get("available_capacity"))
+    source = check.get("capacity_source") or account_capacity.get("capacity_source") or "N/D"
+    if capital is None:
+        return "Cuenta: capacidad {available} ({source}) | alerta no evaluable: falta capital requerido".format(
+            available=compact_money(available),
+            source=html_escape(source),
+        )
+    if available is None:
+        return "Cuenta: capital requerido {capital} | capacidad disponible N/D; usa Refresh IBKR para validar margen".format(
+            capital=compact_money(capital),
+        )
+    pct = (capital / available) * 100.0 if available > 0 else None
+    shortfall = max(capital - available, 0.0)
+    status = "dentro de margen disponible" if shortfall <= 0 else "sin capital suficiente"
+    warning = ""
+    if shortfall <= 0 and pct is not None and pct > 25.0:
+        warning = " | consume >25% de la capacidad"
+    return (
+        "Cuenta: {status} | requerido {capital} vs disponible {available} ({source}) | "
+        "uso {pct} | faltante {shortfall}{warning}"
+    ).format(
+        status=status,
+        capital=compact_money(capital),
+        available=compact_money(available),
+        source=html_escape(source),
+        pct=compact_percent(pct),
+        shortfall=compact_money(shortfall),
+        warning=warning,
+    )
+
+
 def alert_review_guidance(alert: dict[str, Any]) -> str:
     state = str(alert.get("state") or "").upper()
     severity = str(alert.get("severity") or "").upper()
@@ -1014,16 +1535,20 @@ def is_closed_alert(alert: dict[str, Any]) -> bool:
     return operator_status(alert) in CLOSED_OPERATOR_STATUSES
 
 
+def is_handled_alert(alert: dict[str, Any]) -> bool:
+    return operator_status(alert) in HANDLED_OPERATOR_STATUSES
+
+
 def operator_alert_counts(data: dict[str, Any]) -> dict[str, int]:
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
-    open_alerts = [alert for alert in alerts if isinstance(alert, dict) and not is_closed_alert(alert)]
-    closed_alerts = [alert for alert in alerts if isinstance(alert, dict) and is_closed_alert(alert)]
+    pending_alerts = [alert for alert in alerts if isinstance(alert, dict) and not is_handled_alert(alert)]
+    handled_alerts = [alert for alert in alerts if isinstance(alert, dict) and is_handled_alert(alert)]
     return {
-        "open": len(open_alerts),
-        "risk": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "RISK"),
-        "watch": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
-        "action": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
-        "closed": len(closed_alerts),
+        "open": len(pending_alerts),
+        "risk": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "RISK"),
+        "watch": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
+        "action": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
+        "closed": len(handled_alerts),
     }
 
 
@@ -1044,7 +1569,8 @@ def operator_state_message(data: dict[str, Any]) -> str:
     )
 
 
-def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
+def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_capacity: dict[str, Any] | None = None) -> str:
+    account_capacity = account_capacity if isinstance(account_capacity, dict) else {}
     actions_html = ""
     if not readonly:
         actions_html = """
@@ -1073,8 +1599,11 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
     return """
             <article class="alert-card severity-{severity}{closed_class}">
               <strong>{ticker}</strong>
+              <span>{date_label}</span>
               <span>{strategy} | {severity_label} | {state}</span>
               <div class="contract-line">{contract}</div>
+              <div class="economics-line">{economics}</div>
+              <div class="capacity-line">{capacity}</div>
               <div class="review-line">{guidance}</div>
               <small>blocker: {blocker} | status: {status}</small>
               {actions}
@@ -1083,10 +1612,13 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
         severity=html_escape(str(alert.get("severity") or "UNKNOWN").lower()),
         closed_class=" closed-alert" if readonly else "",
         ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+        date_label=html_escape(alert_date_label(alert)),
         severity_label=html_escape(alert.get("severity") or "UNKNOWN"),
         state=html_escape(alert.get("state") or "UNKNOWN"),
         strategy=html_escape(alert.get("strategy") or ""),
         contract=html_escape(render_alert_contract(alert)),
+        economics=render_alert_economics(alert),
+        capacity=render_alert_capacity(alert, account_capacity),
         guidance=html_escape(alert_review_guidance(alert)),
         blocker=html_escape(alert.get("main_blocker") or "NONE"),
         status=html_escape(operator_status(alert)),
@@ -1094,7 +1626,8 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False) -> str:
     )
 
 
-def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
+def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str, Any] | None = None) -> str:
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
     if not operator_payload.get("ok"):
         return """
         <section class="panel">
@@ -1105,32 +1638,33 @@ def render_operator_alerts(operator_payload: dict[str, Any]) -> str:
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
     next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
-    open_alerts = [alert for alert in alerts if not is_closed_alert(alert)]
-    closed_alerts = [alert for alert in alerts if is_closed_alert(alert)]
-    if not open_alerts:
-        alert_html = '<p class="empty">Sin alertas activas en el payload V32 actual.</p>'
+    account_capacity = console_account_capacity(operator_payload, snapshot)
+    pending_alerts = [alert for alert in alerts if not is_handled_alert(alert)]
+    handled_alerts = [alert for alert in alerts if is_handled_alert(alert)]
+    if not pending_alerts:
+        alert_html = '<p class="empty">Sin alertas pendientes de primera revision en el payload V32 actual.</p>'
     else:
-        alert_html = "".join(render_alert_card(alert) for alert in open_alerts[:12])
+        alert_html = "".join(render_alert_card(alert, account_capacity=account_capacity) for alert in pending_alerts[:12])
     closed_html = ""
-    if closed_alerts:
+    if handled_alerts:
         closed_html = """
         <details class="reviewed-alerts">
-          <summary>{count} alerta(s) ya revisada(s) / cerrada(s)</summary>
+          <summary>{count} alerta(s) ya revisada(s), en seguimiento o cerrada(s)</summary>
           <div class="alert-grid">{alerts}</div>
         </details>
         """.format(
-            count=html_escape(len(closed_alerts)),
-            alerts="".join(render_alert_card(alert, readonly=True) for alert in closed_alerts[:12]),
+            count=html_escape(len(handled_alerts)),
+            alerts="".join(render_alert_card(alert, readonly=True, account_capacity=account_capacity) for alert in handled_alerts[:12]),
         )
     action = next_actions[0] if next_actions else {}
     local_counts = {
-        "action": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
-        "risk": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "RISK"),
-        "watch": sum(1 for alert in open_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
-        "closed": len(closed_alerts),
+        "action": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
+        "risk": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "RISK"),
+        "watch": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
+        "closed": len(handled_alerts),
     }
     next_action = (
-        "Pendientes visibles: {risk} riesgo, {watch} watch, {action} action. Cerradas/revisadas: {closed}. Siguiente: {label}."
+        "Pendientes de primera revision: {risk} riesgo, {watch} watch, {action} action. Ya atendidas: {closed}. Siguiente: {label}."
     ).format(
         risk=local_counts["risk"],
         watch=local_counts["watch"],
@@ -1172,6 +1706,7 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
               </div>
               <div class="actions">
                 <form method="post" action="/select" data-busy="Publicando cuenta para GPT" data-busy-detail="La cuenta se selecciona localmente y se abre un trabajo RUNNING/DONE para verificar produccion."><input name="alias" value="{alias}" type="hidden"><button>Usar cuenta</button></form>
+                <form method="post" action="/account-capacity" data-busy="Leyendo capacidad IBKR" data-busy-detail="Lee solo AccountSummary de la cuenta seleccionada y publica margen/capital disponible."><input name="alias" value="{alias}" type="hidden"><button>Refresh cuenta</button></form>
                 <form method="post" action="/bridge" data-busy="Refresh IBKR en curso" data-busy-detail="Conecta con IBKR para traer datos frescos. Puede tardar y no autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Refresh IBKR</button></form>
                 <form method="post" action="/daily-open" data-busy="Daily open en curso" data-busy-detail="Ejecutando checklist local de apertura."><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
               </div>
@@ -1326,6 +1861,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .hero-panel {{ display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:end; padding:28px; }}
           .eyebrow {{ text-transform:uppercase; letter-spacing:.16em; color:var(--accent); font-weight:800; font-size:.78rem; margin:0 0 12px; }}
           .context-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
+          .capacity-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }}
           .metric {{ background:#fffdf6; border:1px solid var(--line); border-radius:18px; padding:14px; }}
           .metric span,.metric small {{ display:block; color:var(--muted); }}
           .metric strong {{ display:block; font-size:1.45rem; margin:4px 0; }}
@@ -1359,8 +1895,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
-          .contract-line,.review-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
+          .contract-line,.review-line,.economics-line,.capacity-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
           .contract-line {{ font-weight:800; color:var(--ink); }}
+          .economics-line {{ color:#1d6b4f; background:#f1fbf4; border-color:#badbcc; font-weight:800; }}
+          .capacity-line {{ color:#174ea6; background:#eef5ff; border-color:#bfd7ff; font-weight:800; }}
           .review-line {{ color:var(--warn); background:#fff7e8; }}
           .closed-alert {{ opacity:.76; border-style:dashed; }}
           .reviewed-alerts {{ margin-top:14px; }}
@@ -1395,6 +1933,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         </div>
         <main>
           {context}
+          {capacity}
           {message}
           {job_panel}
           <section class="panel">
@@ -1463,12 +2002,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
+        capacity=render_account_capacity_panel(operator_payload, snapshot),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
         job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
-        alerts=render_operator_alerts(operator_payload),
-        actions=render_console_actions(),
+        alerts=render_operator_alerts(operator_payload, snapshot),
+        actions=render_console_actions(operator_payload),
         output=output,
     )
     return body.encode("utf-8")
@@ -1537,6 +2077,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     ),
                     job_id=job_id,
                 )
+            elif self.path == "/account-capacity":
+                job_id = start_web_job(alias, account_capacity_command(), "Refresh capacidad IBKR")
+                self.send_html("Refresh de cuenta iniciado. Lee AccountSummary y publica capital/margen disponible.", job_id=job_id)
             elif self.path == "/bridge":
                 job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")
                 self.send_html("Refresh IBKR iniciado. Esto lee broker/opciones; la consola mostrara RUNNING hasta que termine.", job_id=job_id)
@@ -1577,6 +2120,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 }
                 result = post_remote_json("/gpt_v32_operator_event", payload)
                 if result.get("ok"):
+                    record_local_operator_event(payload, result)
                     fetch_remote_json(
                         "/gpt_v32_operator_today?limit=12",
                         timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
@@ -1652,6 +2196,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     publish_context = sub.add_parser("publish-context", help="Publish the currently active account context for GPT visibility.")
     publish_context.set_defaults(func=cmd_publish_context)
+
+    refresh_capacity = sub.add_parser("refresh-account-capacity", help="Read sanitized AccountSummary for the selected account and optionally publish it.")
+    refresh_capacity.add_argument("--host", default=os.getenv("IBKR_HOST", "127.0.0.1"))
+    refresh_capacity.add_argument("--port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
+    refresh_capacity.add_argument("--client-id", type=int, default=int(os.getenv("IBKR_CLIENT_ID", "74")))
+    refresh_capacity.add_argument("--timeout", type=float, default=12.0)
+    refresh_capacity.add_argument("--publish", action="store_true")
+    refresh_capacity.set_defaults(func=cmd_refresh_account_capacity)
 
     serve = sub.add_parser("serve", help="Start a localhost-only web selector for saved IBKR account profiles.")
     serve.add_argument("--host", default="127.0.0.1", help="Must be 127.0.0.1 or localhost.")

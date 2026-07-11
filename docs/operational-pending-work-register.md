@@ -19,6 +19,11 @@ review. It is decision-support only and never authorizes order execution.
 - V32 operator notify handles backend timeouts without traceback.
 - After the targeted IBKR refresh, production operator notify moved from
   `NO_DATA` to `WAIT_MARKET`, with `WAIT_MARKET_SUPPRESSED` and no push sent.
+- Local IBKR account capacity refresh is operational. The console reads
+  sanitized `AccountSummary` fields in readonly mode, writes
+  `runtime/ibkr_account_capacity_latest.json`, publishes the capacity context
+  into the V31 snapshot, and shows per-alert capital/capacity comparisons
+  without exposing real account identifiers.
 
 ## Waiting For Market Data
 
@@ -81,6 +86,9 @@ Next implementation target:
 - Audit `runtime/v32_ibkr_chain_coverage.json` after the next live run. The
   `option_symbol_plan` section should show selected and skipped underlyings with
   their scores, triggers, blockers, and `canslim_candidate_count`.
+- Refresh account capacity from the local IBKR console before reviewing
+  option-heavy alerts when margin/capital has materially changed. The current
+  command path is documented in `docs/daily-radar-runbook.md`.
 - Keep single-name TradingView alerts out of scope unless a measured technical
   confirmation gap is documented.
 

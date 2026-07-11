@@ -44,7 +44,7 @@ def active_account_context(runtime_dir: Path) -> dict[str, Any]:
         data = {}
     scope = data.get("account_scope") or ""
     alias = data.get("account_alias") or scope
-    return {
+    context = {
         "account_context_version": "local_runtime_active_account_context_v1",
         "account_scope": scope or "unknown",
         "account_alias": alias or "unknown",
@@ -54,6 +54,37 @@ def active_account_context(runtime_dir: Path) -> dict[str, Any]:
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    capacity_path = runtime_dir / "ibkr_account_capacity_latest.json"
+    try:
+        capacity = json.loads(capacity_path.read_text())
+    except Exception:
+        capacity = {}
+    if isinstance(capacity, dict):
+        cap_scope = capacity.get("account_scope")
+        cap_alias = capacity.get("account_alias")
+        if not cap_scope or cap_scope == context.get("account_scope") or cap_alias == context.get("account_alias"):
+            for key in [
+                "available",
+                "currency",
+                "net_liquidation",
+                "buying_power",
+                "available_funds",
+                "excess_liquidity",
+                "available_capacity",
+                "total_cash_value",
+                "initial_margin_required",
+                "maintenance_margin_required",
+                "gross_position_value",
+                "cushion",
+                "generated_at",
+                "source",
+                "sensitive_identifiers_excluded",
+            ]:
+                if capacity.get(key) is not None:
+                    context[key] = capacity.get(key)
+            context["account_context_version"] = "local_runtime_account_context_with_capacity_v1"
+            context["capacity_source_file"] = str(capacity_path)
+    return context
 
 
 def json_safe(obj: Any) -> Any:
