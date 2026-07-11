@@ -78,6 +78,9 @@ engine:
   score/confirmation, and CANSLIM pass/score. Chain usage is capped by
   `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` and
   `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN`.
+- Context-only symbols such as `TLT` support market/rates context but should
+  not consume option-chain budget unless priority, position, technical, or
+  CANSLIM confirmation promotes them.
 - `ENTRY_READY` requires the complete backend gate, not merely a TradingView
   event.
 
