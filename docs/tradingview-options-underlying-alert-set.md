@@ -5,18 +5,39 @@ IBKR remains the candidate source for option chains; TradingView confirms the
 underlying technical context for SPY, QQQ, and VIX. These alerts are evidence
 only and never authorize orders.
 
-## Alerts
+The three active alerts here are enough for the current options-underlying
+TradingView layer. Single-name large-cap, CANSLIM, best strike, best delta, and
+best DTE decisions must come from the backend universe, IBKR chain evidence, and
+strategy-regime rules, not from recreating one TradingView alert per ticker.
 
-Create these six decision-making alerts first:
+## Production Active Alerts
 
-| Alert name | Symbol | Timeframe | Condition hint | Role |
+Keep only these three options-underlying alerts active in TradingView:
+
+| Active alert | Symbol | Timeframe | TradingView condition | Role |
 | --- | --- | --- | --- | --- |
-| `QQQ_TECH_CONFIRM_LONG_15M` | `QQQ` | `15m` | Underlying Tech Confirm Long | Options confirmation |
-| `QQQ_TECH_CONFIRM_SHORT_15M` | `QQQ` | `15m` | Underlying Tech Confirm Short | Options confirmation |
-| `SPY_TECH_CONFIRM_LONG_15M` | `SPY` | `15m` | Underlying Tech Confirm Long | Options confirmation |
-| `SPY_TECH_CONFIRM_SHORT_15M` | `SPY` | `15m` | Underlying Tech Confirm Short | Options confirmation |
-| `VIX_RISK_ELEVATED_D` | `VIX` | `1D` | VIX Risk Elevated | Volatility risk |
-| `VIX_RISK_NORMALIZED_D` | `VIX` | `1D` | VIX Risk Normalized | Volatility risk |
+| `Stock Ultimus Options Underlying Alerts v1` | `QQQ` | `15m` | `Any alert() function call` | Consolidated QQQ options evidence |
+| `Stock Ultimus Options Underlying Alerts v1` | `SPY` | `15m` | `Any alert() function call` | Consolidated SPY options evidence |
+| `Stock Ultimus Options Underlying Alerts v1` | `VIX` | `1D` | `Any alert() function call` | Consolidated volatility-risk evidence |
+
+Use webhook `https://trading-engine-p097.onrender.com/technical_snapshot`.
+Leave the TradingView message field at the default value for alert-function
+alerts. The Pine script sends the JSON payload itself.
+
+## Logical Event Coverage
+
+The three active alerts above dynamically emit these six decision-making event
+codes. Do not create these as separate active alerts unless the consolidated
+alert-function setup is unavailable:
+
+| Event code | Symbol | Timeframe | Role |
+| --- | --- | --- | --- |
+| `QQQ_TECH_CONFIRM_LONG_15M` | `QQQ` | `15m` | Options confirmation |
+| `QQQ_TECH_CONFIRM_SHORT_15M` | `QQQ` | `15m` | Options confirmation |
+| `SPY_TECH_CONFIRM_LONG_15M` | `SPY` | `15m` | Options confirmation |
+| `SPY_TECH_CONFIRM_SHORT_15M` | `SPY` | `15m` | Options confirmation |
+| `VIX_RISK_ELEVATED_D` | `VIX` | `1D` | Volatility risk |
+| `VIX_RISK_NORMALIZED_D` | `VIX` | `1D` | Volatility risk |
 
 Leave these optional snapshot alerts paused unless the active-alert plan has
 spare capacity. They provide context, but they do not directly change an entry,
@@ -32,6 +53,24 @@ Use this Pine source:
 ```text
 tradingview/stock_ultimus_options_underlying_alerts_v1.pine
 ```
+
+## Recommended TradingView Setup
+
+Prefer alert-function alerts instead of manually pasted JSON per condition:
+
+- Add the Pine script to `QQQ` on the `15m` chart.
+- Create one alert with condition `Stock Ultimus Options Underlying Alerts v1`
+  / `Any alert() function call`.
+- Use webhook `https://trading-engine-p097.onrender.com/technical_snapshot`.
+- Leave the alert message as TradingView's default for alert-function alerts;
+  the script sends the JSON payload itself.
+- Repeat for `SPY` on `15m`.
+- Repeat for `VIX` on `1D`.
+
+The generated setup-message commands below remain useful as a fallback when a
+plan requires individual alert conditions or for validating expected payload
+shape. The fallback consumes six active-alert slots instead of three, so it is
+not the preferred production setup.
 
 ## Required Pine Plot Names
 
@@ -87,6 +126,10 @@ python3 scripts/run_tradingview_options_underlying_production_audit.py --market-
 Do not recreate old RSI crossing alerts. RSI is now a field inside the enriched
 payload together with VWAP, ADX, ATR, RVOL, EMAs, trend state, market regime,
 logical stop, logical target, raw payload, and idempotency hash.
+
+Legacy, duplicate, RSI, crossing-price, or generic text-message alerts should
+remain paused. If one fires anyway, the backend persists it in the TradingView
+ledger but marks it `QUARANTINED` and does not feed it into the decision engine.
 
 Options `ENTRY_READY` requires reviewable IBKR chain evidence plus this
 underlying TradingView confirmation layer. Until then, options stay in manual

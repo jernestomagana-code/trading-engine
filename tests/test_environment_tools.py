@@ -53,7 +53,9 @@ class EnvironmentToolsTests(unittest.TestCase):
                         "operational_gate_state": "EVIDENCE_COLLECTION_ONLY",
                         "tradingview_bundle": {
                             "real_e2e_confirmed": False,
+                            "total_production_active_alert_count": 5,
                             "total_received_required_event_count": 0,
+                            "total_required_logical_event_count": 16,
                             "total_required_alert_count": 16,
                         },
                     }

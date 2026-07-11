@@ -71,7 +71,8 @@ def compact_summary(name: str, payload: dict[str, Any]) -> list[tuple[str, Any]]
         return [
             ("next", payload.get("next_required_action")),
             ("TV e2e", tv.get("real_e2e_confirmed")),
-            ("TV received", f"{tv.get('total_received_required_event_count')}/{tv.get('total_required_alert_count')}"),
+            ("TV active", tv.get("total_production_active_alert_count")),
+            ("TV logical", f"{tv.get('total_received_required_event_count')}/{tv.get('total_required_logical_event_count') or tv.get('total_required_alert_count')}"),
             ("IBKR", payload.get("ibkr_primary_gap")),
             ("gate", payload.get("operational_gate_state")),
         ]
@@ -90,7 +91,8 @@ def compact_summary(name: str, payload: dict[str, Any]) -> list[tuple[str, Any]]
         return [
             ("coverage", payload.get("coverage_valid")),
             ("real e2e", payload.get("real_e2e_confirmed")),
-            ("expected", payload.get("total_expected_alert_count")),
+            ("active", payload.get("total_production_active_alert_count")),
+            ("logical", payload.get("total_required_logical_event_count") or payload.get("total_expected_alert_count")),
             ("quarantine", payload.get("total_quarantine_event_count")),
         ]
     if name == "branch_pr_readiness":

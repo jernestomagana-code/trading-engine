@@ -74,6 +74,8 @@ class BridgeEntrypointTests(unittest.TestCase):
         default_watchlist = set(module_vars["DEFAULT_WATCHLIST"])
         default_option_symbols = set(module_vars["DEFAULT_OPTION_SYMBOLS"])
         self.assertEqual(default_watchlist, default_option_symbols)
+        self.assertTrue({"AAPL", "MSFT", "NVDA", "META", "AMZN", "TSLA", "GOOGL"}.issubset(default_watchlist))
+        self.assertTrue({"AVGO", "AMD", "COST", "CRM", "ORCL"}.issubset(default_watchlist))
 
         source = BRIDGE.read_text()
         self.assertIn("FAST_WATCHLIST = list(DEFAULT_WATCHLIST)", source)
@@ -599,6 +601,8 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("PUSHOVER_API_TOKEN", source)
         self.assertIn("stock-ultimus-pushover-user-key", source)
         self.assertIn("stock-ultimus-pushover-api-token", source)
+        self.assertIn("socket.timeout", source)
+        self.assertIn("TIMEOUT:", source)
         self.assertIn("api.pushover.net", source)
         self.assertIn("--email-summary", source)
         self.assertIn("/v32_operator_daily_summary_email", source)

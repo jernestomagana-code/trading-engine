@@ -6,6 +6,29 @@
   "webhook_url_template": "https://trading-engine-p097.onrender.com/technical_snapshot",
   "timeframes": ["15", "D"],
   "symbols": ["QQQ", "SPY", "VIX"],
+  "production_active_alerts": [
+    {
+      "symbol": "QQQ",
+      "timeframe": "15",
+      "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
+      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
+      "active_alert_slots": 1
+    },
+    {
+      "symbol": "SPY",
+      "timeframe": "15",
+      "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
+      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
+      "active_alert_slots": 1
+    },
+    {
+      "symbol": "VIX",
+      "timeframe": "D",
+      "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
+      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
+      "active_alert_slots": 1
+    }
+  ],
   "global_policy": {
     "manual_review_required": true,
     "execution_authorized": false,
@@ -18,7 +41,7 @@
     "missing_core_alert_behavior": "WAIT_UNDERLYING_CONFIRMATION",
     "missing_snapshot_behavior": "OPTIONS_UNDERLYING_COVERAGE_DEGRADED",
     "approved_symbols": ["QQQ", "SPY", "VIX"],
-    "expansion_policy": "Start with SPY, QQQ, and VIX only. Add single-name underlyings only after IBKR universe expansion is stable and measurable."
+    "expansion_policy": "SPY, QQQ, and VIX are the TradingView confirmation layer. Single-name large-cap and CANSLIM opportunities should come from the backend universe, IBKR option chains, and scoring first; add new TradingView single-name alerts only after a documented coverage gap is proven."
   },
   "required_plot_names": [
     "VWAP",

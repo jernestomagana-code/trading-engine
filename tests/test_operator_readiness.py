@@ -129,7 +129,10 @@ class OperatorReadinessTests(unittest.TestCase):
             )
 
         self.assertEqual(report["status"], "WAITING_TV")
+        self.assertEqual(report["tradingview_bundle"]["total_production_active_alert_count"], 5)
+        self.assertEqual(report["tradingview_bundle"]["total_required_logical_event_count"], 16)
         self.assertEqual(report["tradingview_bundle"]["total_expected_alert_count"], 16)
+        self.assertIn("5 consolidated production alerts", checklist["steps"][0]["command"])
         self.assertEqual(checklist["steps"][1]["status"], "WAIT_REAL_MARKET")
 
     def test_complete_runtime_is_ready_for_manual_review_and_monitor_ok(self):

@@ -26,6 +26,9 @@ class SignalLedgerTests(unittest.TestCase):
         payload_validation = tradingview_payload_contract.validate_payload(message)
 
         self.assertTrue(validation["valid"])
+        self.assertEqual(validation["production_active_alert_count"], 2)
+        self.assertEqual(validation["logical_event_count"], 12)
+        self.assertEqual(validation["required_logical_event_count"], 10)
         self.assertEqual(validation["required_alert_count"], 10)
         self.assertEqual(validation["health_alert_count"], 2)
         self.assertEqual(len(required_records), 10)
@@ -44,6 +47,9 @@ class SignalLedgerTests(unittest.TestCase):
         payload_validation = tradingview_payload_contract.validate_payload(message)
 
         self.assertTrue(validation["valid"])
+        self.assertEqual(validation["production_active_alert_count"], 3)
+        self.assertEqual(validation["logical_event_count"], 8)
+        self.assertEqual(validation["required_logical_event_count"], 6)
         self.assertEqual(validation["required_alert_count"], 6)
         self.assertEqual(validation["health_alert_count"], 2)
         self.assertEqual(len(required_records), 6)
@@ -172,6 +178,8 @@ class SignalLedgerTests(unittest.TestCase):
             )
 
         self.assertTrue(health["coverage_valid"])
+        self.assertEqual(health["production_active_alert_count"], 2)
+        self.assertEqual(health["required_logical_event_count"], 10)
         self.assertEqual(health["required_alert_count"], 10)
         self.assertEqual(health["health_alert_count"], 0)
         self.assertEqual(health["received_health_event_count"], 0)
@@ -236,6 +244,8 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(bundle["coverage_valid"])
         self.assertTrue(bundle["real_e2e_confirmed"])
         self.assertEqual(bundle["coverage_count"], 2)
+        self.assertEqual(bundle["total_production_active_alert_count"], 5)
+        self.assertEqual(bundle["total_required_logical_event_count"], 16)
         self.assertEqual(bundle["total_expected_alert_count"], 16)
         self.assertEqual(bundle["total_required_alert_count"], 16)
         self.assertEqual(bundle["total_health_alert_count"], 0)

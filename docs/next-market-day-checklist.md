@@ -9,8 +9,16 @@ manual review only.
 2. Confirm API access is enabled and the live/paper port matches `.env`.
 3. Open TradingView alerts panel.
 4. Confirm these alert groups are active:
-   - 12 MNQ/MES futures alerts.
-   - 8 SPY/QQQ/VIX options-underlying alerts.
+   - 5 active consolidated alerts total.
+   - `MNQ1!` `5m` and `MES1!` `5m` with
+     `Stock Ultimus Intraday Futures Alerts v1` / `Any alert() function call`.
+   - `QQQ` `15m`, `SPY` `15m`, and `VIX` `1D` with
+     `Stock Ultimus Options Underlying Alerts v1` / `Any alert() function call`.
+   - Old per-condition, RSI, crossing-price, duplicate, or generic alerts remain
+     paused.
+   - Do not reactivate old alerts to improve scoring; missing strike, delta,
+     DTE, CANSLIM, or large-cap universe evidence is handled by the backend and
+     IBKR, not by more TradingView alert slots.
 5. Run:
 
 ```bash

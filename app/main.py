@@ -1164,8 +1164,13 @@ def _journal_decision(decision, source="v31"):
     )
     ticker = str(payload.get("ticker") or "UNKNOWN").upper()
     state = str(payload.get("final_state") or payload.get("decision") or "UNKNOWN").upper()
-    payload["decision_id"] = payload.get("decision_id") or f"DEC-{ticker}-{state}-{int(now_utc().timestamp())}"
     payload["recorded_at"] = payload.get("recorded_at") or payload.get("generated_at") or now_utc().isoformat()
+    strategy = str(payload.get("strategy") or "UNKNOWN").upper()
+    contract = payload.get("selected_contract") if isinstance(payload.get("selected_contract"), dict) else {}
+    expiration = contract.get("expiration") or "NOEXP"
+    strike = contract.get("strike") if contract.get("strike") not in [None, "", "None"] else "NOSTRIKE"
+    decision_day = str(payload.get("recorded_at") or now_utc().isoformat())[:10]
+    payload["decision_id"] = payload.get("decision_id") or f"DEC-{decision_day}-{ticker}-{strategy}-{state}-{expiration}-{strike}"
     payload["not_order_instruction"] = True
     local_journal = _v32_append_runtime_journal(
         "v32_decision_journal.json",
@@ -1700,7 +1705,7 @@ def intraday_futures_premarket_template(mode="base", session_date=None, updated_
             "risk_daily_status": "CLEAR",
             "portfolio_status": "CLEAR",
             "decision_max_state": "MANUAL_REVIEW",
-            "notes": "Pre-market cargado manualmente. Validar QQQ/SPY, VIX, eventos macro, VWAP y OR15 antes de actuar.",
+            "notes": "Contexto operativo de sesion cargado manualmente desde la consola. Validar QQQ/SPY, VIX, eventos macro, VWAP y OR15 antes de actuar.",
         },
         "clear": {
             "market_context_status": "CLEAR",
@@ -1712,7 +1717,7 @@ def intraday_futures_premarket_template(mode="base", session_date=None, updated_
             "risk_daily_status": "CLEAR",
             "portfolio_status": "CLEAR",
             "decision_max_state": "ENTRY_READY",
-            "notes": "Contexto pre-market validado. Sin bloqueos conocidos. ENTRY_READY sigue significando revision manual, no ejecucion automatica.",
+            "notes": "Contexto operativo de sesion validado. Sin bloqueos conocidos. ENTRY_READY sigue significando revision manual, no ejecucion automatica.",
         },
         "manual_review": {
             "market_context_status": "NEEDS_REVIEW",
@@ -1841,7 +1846,7 @@ def get_intraday_futures_premarket_context(session_date=None):
             "risk_daily_status": "NEEDS_REVIEW",
             "portfolio_status": "NEEDS_REVIEW",
             "decision_max_state": "MANUAL_REVIEW",
-            "notes": "No premarket context has been loaded for this session.",
+            "notes": "No se ha cargado contexto operativo para esta sesion desde la consola.",
         },
     }
 
@@ -2839,7 +2844,7 @@ def intraday_futures_dashboard_premarket_html(premarket_context):
 
     return f"""
         <section class="card premarket">
-            <div class="label">Pre-market context {'cargado' if found else 'pendiente'}</div>
+            <div class="label">Contexto operativo de sesion {'cargado' if found else 'pendiente'}</div>
             <div class="premarket-grid">{chips}</div>
             <p class="note">{intraday_futures_dashboard_escape(context.get("notes"))}</p>
             <p class="note">Actualizado: {intraday_futures_dashboard_escape(context.get("updated_at"))} | Por: {intraday_futures_dashboard_escape(context.get("updated_by"))}</p>
@@ -3062,9 +3067,9 @@ def build_intraday_futures_dashboard_html(session_date=None, include_validation=
                             <th>Risk</th>
                             <th>Portfolio</th>
                             <th>Contratos</th>
-                            <th>Pre</th>
+                            <th>Contexto</th>
                             <th>Evaluacion</th>
-                            <th>Pre-market blockers</th>
+                            <th>Bloqueadores de contexto</th>
                             <th>MFE</th>
                             <th>MAE</th>
                             <th>MFE R</th>
@@ -5456,7 +5461,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     current_found_text = "Si" if current_found else "No"
     max_state = current_context.get("decision_max_state") or payload.get("decision_max_state") or "MANUAL_REVIEW"
     mode_notes = {
-        "base": "Contexto base defensivo para iniciar la revision pre-market.",
+        "base": "Contexto base defensivo para iniciar la revision de la sesion desde la consola.",
         "clear": "Limpia sesgos previos y deja el motor esperando validacion manual.",
         "macro_lockout": "Bloquea accionabilidad si hay riesgo macro/evento que requiere espera.",
         "manual_review": "Mantiene todo en revision humana antes de cualquier decision.",
@@ -5493,16 +5498,16 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
 
     max_state_code, max_state_label, max_state_class = friendly_status(max_state, "MANUAL_REVIEW")
     if not current_found:
-        summary_title = "Falta cargar el contexto pre-market"
+        summary_title = "Falta cargar el contexto operativo de sesion"
         summary_body = (
             "El motor esta protegido: no autoriza ordenes y deja todo en revision manual "
-            "hasta guardar el marco de la sesion."
+            "hasta guardar el marco de la sesion desde esta consola."
         )
         primary_next_step = "Guardar Base defensiva para iniciar la sesion con proteccion."
         checklist_items = [
             "Guardar Base defensiva",
             "Revisar Radar GPT JSON",
-            "Abrir Inbox de revision manual",
+            "Usar Inbox de revision manual",
         ]
     elif max_state_code == "RISK_BLOCKED":
         summary_title = "Contexto cargado, pero el riesgo bloquea avanzar"
@@ -5515,10 +5520,10 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
         ]
     elif max_state_code == "ENTRY_READY":
         summary_title = "Contexto cargado y listo para revisar senales"
-        summary_body = "El marco pre-market esta guardado. Aun asi, esto es soporte de decision: no ejecuta ni autoriza ordenes automaticas."
-        primary_next_step = "Abrir el inbox y revisar solo senales con evidencia completa."
+        summary_body = "El contexto operativo de sesion esta guardado. Aun asi, esto es soporte de decision: no ejecuta ni autoriza ordenes automaticas."
+        primary_next_step = "Usar el Inbox de la consola y revisar solo senales con evidencia completa."
         checklist_items = [
-            "Abrir Inbox de revision manual",
+            "Usar Inbox de revision manual",
             "Confirmar referencia, VWAP y OR",
             "Registrar decision humana",
         ]
@@ -5529,7 +5534,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
         checklist_items = [
             "Resolver campos pendientes",
             "Revisar Radar GPT JSON",
-            "Abrir Inbox de revision manual",
+            "Usar Inbox de revision manual",
         ]
 
     checklist_html = "\n".join(
@@ -5567,7 +5572,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Stock Ultimus Pre-market</title>
+        <title>Stock Ultimus | Contexto de sesion</title>
         <style>
             body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; color:#111827; background:#f5f7fb; }}
             header {{ background:#111827; color:white; padding:22px 28px; }}
@@ -5619,8 +5624,8 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
     </head>
     <body>
         <header>
-            <h1>Stock Ultimus | Pre-market Intraday Futures</h1>
-            <div class="sub">Sesion {html.escape(session)} | Modo {html.escape(active_mode)}</div>
+            <h1>Stock Ultimus | Consola de contexto de sesion</h1>
+            <div class="sub">Sesion {html.escape(session)} | Modo {html.escape(active_mode)} | Todo se carga aqui, sin salir de la consola</div>
         </header>
         <main>
             {saved_html}
@@ -5640,7 +5645,7 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
                 <div class="metric">
                     <div class="label">Estado</div>
                     <div class="value"><span class="pill {current_status_class}">{html.escape(current_status)}</span></div>
-                    <div class="hint">{'Contexto listo para esta sesion.' if current_found else 'Aun no hay contexto guardado para esta sesion.'}</div>
+                    <div class="hint">{'Contexto listo para esta sesion.' if current_found else 'Aun no hay contexto operativo guardado para esta sesion.'}</div>
                 </div>
                 <div class="metric">
                     <div class="label">Modo activo</div>
@@ -5661,8 +5666,8 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
 
             <section class="layout">
                 <div class="card">
-                    <div class="label">Preparar contexto</div>
-                    <p class="small">Selecciona un modo y cargalo para que el motor tenga el marco pre-market de la sesion. Si no estas seguro, usa <b>Base</b>.</p>
+                    <div class="label">Seleccionar contexto de sesion</div>
+                    <p class="small">Selecciona un modo y cargalo aqui para que el motor tenga el marco operativo de la sesion. Si no estas seguro, usa <b>Base</b>.</p>
                     <div class="modes">{mode_buttons}</div>
                     <form method="get" action="/intraday_futures/premarket/load">
                         <input type="hidden" name="mode" value="{html.escape(active_mode)}">
@@ -5677,11 +5682,11 @@ def intraday_futures_premarket_page_html(mode="base", session_date=None, updated
                     </div>
                     <div class="callout">
                         <strong>Lectura rapida:</strong>
-                        {'el contexto ya esta guardado. Ahora puedes revisar radar e inbox.' if current_found else 'esta sesion todavia no tiene contexto pre-market guardado. Cargar Base deja el sistema en modo defensivo de revision manual.'}
+                        {'el contexto ya esta guardado en la consola. Ahora puedes revisar radar e inbox.' if current_found else 'esta sesion todavia no tiene contexto operativo guardado. Cargar Base deja el sistema en modo defensivo de revision manual.'}
                     </div>
                 </div>
                 <div class="card">
-                    <div class="label">Contexto actualmente guardado</div>
+                    <div class="label">Contexto activo en consola</div>
                     <table>
                         <tr><td>Encontrado</td><td><span class="pill {current_status_class}">{html.escape(current_found_text)}</span></td></tr>
                         {context_table_rows}
@@ -5732,7 +5737,7 @@ def intraday_futures_premarket_email_content(mode="base", session_date=None, upd
         "Modo sugerido inicial: {mode}".format(mode=mode),
         "Max state: {state}".format(state=payload.get("decision_max_state")),
         "",
-        "Abrir pantalla pre-market:",
+        "Abrir consola de contexto de sesion:",
         premarket_url,
         "",
         "Dashboard intradia:",
@@ -5752,11 +5757,11 @@ def intraday_futures_premarket_email_content(mode="base", session_date=None, upd
     ])
     html_body = f"""
     <div style="font-family:Arial,sans-serif;color:#111827;line-height:1.45">
-      <h2>Stock Ultimus pre-market {html.escape(str(session_date))}</h2>
+      <h2>Stock Ultimus contexto de sesion {html.escape(str(session_date))}</h2>
       <p><b>Modo sugerido inicial:</b> {html.escape(str(mode))}</p>
       <p><b>Max state:</b> {html.escape(str(payload.get("decision_max_state")))}</p>
       <p>
-        <a href="{html.escape(premarket_url)}" style="display:inline-block;background:#047857;color:white;padding:10px 14px;border-radius:6px;text-decoration:none;font-weight:bold">Abrir pantalla pre-market</a>
+        <a href="{html.escape(premarket_url)}" style="display:inline-block;background:#047857;color:white;padding:10px 14px;border-radius:6px;text-decoration:none;font-weight:bold">Abrir consola de contexto</a>
       </p>
       <p><a href="{html.escape(dashboard_url)}">Dashboard intradia</a> | <a href="{html.escape(report_url)}">Reporte diario</a></p>
       <h3>Checklist breve</h3>
@@ -9763,7 +9768,7 @@ def apply_premarket_context_to_intraday_futures_payload(payload):
         for blocker in blockers:
             if blocker not in warnings:
                 warnings.append(blocker)
-        risk_notes.append("Pre-market context applied: " + ", ".join(blockers))
+        risk_notes.append("Contexto operativo de sesion aplicado: " + ", ".join(blockers))
 
     hard_blockers = {
         "MACRO_LOCKOUT",
@@ -9909,7 +9914,7 @@ def apply_intraday_futures_decision_engine(payload):
     if final_state == "ENTRY_READY":
         explanation = "Senal accionable lista para revision manual; no es autorizacion ni instruccion de orden."
     elif final_state == "RISK_BLOCKED":
-        explanation = "Senal bloqueada por prioridad de riesgo, portfolio, construccion o contexto pre-market."
+        explanation = "Senal bloqueada por prioridad de riesgo, portfolio, construccion o contexto operativo de sesion."
     elif final_state == "MANUAL_REVIEW":
         explanation = "Senal requiere revision manual antes de considerarse entrada."
     else:
@@ -11655,7 +11660,7 @@ def _v20_market_hours_status():
         is_open = False
         options_expected = False
         next_check = "Revisar después de 09:35 ET."
-        label = "Pre-market: opciones aún no confiables"
+        label = "Contexto pre-apertura: opciones aun no confiables"
     elif market_open <= current_time < option_liquidity_start:
         status = "OPENING_NOISE"
         is_open = True
@@ -11679,7 +11684,7 @@ def _v20_market_hours_status():
         is_open = False
         options_expected = False
         next_check = "Revisar próxima sesión después de 09:35 ET."
-        label = "After-hours: opciones no confiables"
+        label = "Contexto post-cierre: opciones no confiables"
 
     return {
         "status": status,
@@ -13971,7 +13976,7 @@ def _v22_market_hours_state():
         if minutes < regular_open:
             return {
                 "status": "PRE_MARKET",
-                "label": "Pre-market: opciones todavía no confiables",
+                "label": "Contexto pre-apertura: opciones aun no confiables",
                 "is_regular_market_open": False,
                 "options_bidask_expected": False,
                 "new_york_time": now.isoformat(),
@@ -14000,7 +14005,7 @@ def _v22_market_hours_state():
 
         return {
             "status": "AFTER_HOURS",
-            "label": "After-hours: opciones no confiables",
+            "label": "Contexto post-cierre: opciones no confiables",
             "is_regular_market_open": False,
             "options_bidask_expected": False,
             "new_york_time": now.isoformat(),
@@ -21703,7 +21708,7 @@ def _v31_manual_review_inbox_html(message="", error="", show_all=False):
     else:
         inbox_title = "No hay setups ENTRY_READY pendientes"
         inbox_body = "El inbox esta limpio para revision rapida. El sistema sigue en modo decision support."
-        inbox_next = "Vuelve al Command Center o abre la vista ampliada si quieres revisar bloqueadas/en espera."
+        inbox_next = "Vuelve al Command Center o usa la vista ampliada si quieres revisar bloqueadas/en espera."
     return """
     <!doctype html>
     <html>
@@ -22600,9 +22605,258 @@ def _v32_operator_alert_id(item):
     return f"ALERT-{day}-{ticker}-{strategy}-{state}"
 
 
+def _v32_first_present(*values):
+    for value in values:
+        if value not in [None, "", "None", "null", "NULL"]:
+            return value
+    return None
+
+
+def _v32_alert_created_at(item):
+    item = item if isinstance(item, dict) else {}
+    value = _v32_first_present(
+        item.get("alert_created_at"),
+        item.get("generated_at"),
+        item.get("received_at"),
+        item.get("timestamp"),
+        item.get("updated_at"),
+        item.get("session_date"),
+    )
+    return str(value) if value is not None else None
+
+
+def _v32_alert_date(value):
+    if not value:
+        return None
+    text = str(value)
+    return text[:10] if len(text) >= 10 else text
+
+
+def _v32_float_or_none(value):
+    try:
+        if value in [None, "", "None", "null", "NULL"]:
+            return None
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+    except Exception:
+        return None
+
+
+def _v32_contract_metric(item, contract, *keys):
+    for source in (contract, item):
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = _v32_float_or_none(source.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _v32_alert_economics(item, contract):
+    item = item if isinstance(item, dict) else {}
+    contract = contract if isinstance(contract, dict) else {}
+    strategy = _v29_safe_upper(item.get("strategy") or contract.get("strategy"), "")
+    strike = _v32_contract_metric(item, contract, "strike")
+    dte = _v32_contract_metric(item, contract, "dte")
+    delta = _v32_contract_metric(item, contract, "delta")
+    bid = _v32_contract_metric(item, contract, "bid")
+    mid = _v32_contract_metric(item, contract, "mid")
+    ask = _v32_contract_metric(item, contract, "ask")
+    credit = _v32_first_present(bid, mid)
+    credit_source = "bid" if bid is not None else "mid" if mid is not None else None
+
+    explicit_capital = _v32_contract_metric(
+        item,
+        contract,
+        "capital_required",
+        "required_capital",
+        "cash_required",
+        "collateral",
+        "margin_required",
+        "initial_margin_required",
+        "maintenance_margin_required",
+        "buying_power_required",
+        "max_loss",
+        "defined_max_loss",
+    )
+    capital_source = "explicit_ibkr_or_risk" if explicit_capital is not None else None
+    capital_required = explicit_capital
+
+    underlying_price = _v32_contract_metric(
+        item,
+        contract,
+        "underlying_price",
+        "price",
+        "underlying",
+        "last",
+    )
+    spread_width = _v32_contract_metric(item, contract, "spread_width", "width")
+
+    if capital_required is None and strike is not None and credit is not None and strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+    }:
+        capital_required = max((strike * 100.0) - (credit * 100.0), 0.0)
+        capital_source = "estimated_cash_secured_put"
+    elif capital_required is None and spread_width is not None and credit is not None:
+        capital_required = max((spread_width * 100.0) - (credit * 100.0), 0.0)
+        capital_source = "estimated_defined_risk_spread"
+    elif capital_required is None and strategy in {"COVERED_CALL", "SHORT_CALL_COVERED"}:
+        if underlying_price is not None:
+            capital_required = max(underlying_price * 100.0, 0.0)
+            capital_source = "estimated_covered_call_underlying"
+        elif strike is not None:
+            capital_required = max(strike * 100.0, 0.0)
+            capital_source = "estimated_covered_call_strike_proxy"
+
+    probability = _v32_contract_metric(
+        item,
+        contract,
+        "probability_success",
+        "probability_of_success",
+        "probability_of_profit",
+        "pop",
+    )
+    probability_source = "explicit" if probability is not None else None
+    if probability is not None and probability <= 1:
+        probability *= 100.0
+    if probability is None and delta is not None and abs(delta) <= 1 and strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+        "COVERED_CALL",
+        "SHORT_CALL_COVERED",
+    }:
+        probability = max(0.0, min((1.0 - abs(delta)) * 100.0, 100.0))
+        probability_source = "delta_proxy"
+
+    gross_credit = credit * 100.0 if credit is not None else None
+    return_on_capital = None
+    annualized_return = None
+    if gross_credit is not None and capital_required not in [None, 0]:
+        return_on_capital = (gross_credit / capital_required) * 100.0
+        if dte is not None and dte > 0:
+            annualized_return = return_on_capital * (365.0 / dte)
+
+    return {
+        "capital_required": round(capital_required, 2) if capital_required is not None else None,
+        "capital_source": capital_source,
+        "gross_credit": round(gross_credit, 2) if gross_credit is not None else None,
+        "gross_credit_source": credit_source,
+        "probability_success_pct": round(probability, 2) if probability is not None else None,
+        "probability_source": probability_source,
+        "return_on_capital_pct": round(return_on_capital, 2) if return_on_capital is not None else None,
+        "annualized_return_on_capital_pct": round(annualized_return, 2) if annualized_return is not None else None,
+        "dte": dte,
+        "delta": delta,
+        "method_note": "Estimaciones para revision manual; validar margen/capital real en IBKR antes de cualquier decision.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_account_capacity_from_context(account_context):
+    account_context = account_context if isinstance(account_context, dict) else {}
+    available_funds = _v32_float_or_none(account_context.get("available_funds"))
+    excess_liquidity = _v32_float_or_none(account_context.get("excess_liquidity"))
+    buying_power = _v32_float_or_none(account_context.get("buying_power"))
+    available_capacity = _v32_float_or_none(account_context.get("available_capacity"))
+    source = "available_capacity"
+    if available_capacity is None:
+        if available_funds is not None:
+            available_capacity = available_funds
+            source = "available_funds"
+        elif excess_liquidity is not None:
+            available_capacity = excess_liquidity
+            source = "excess_liquidity"
+        elif buying_power is not None:
+            available_capacity = buying_power
+            source = "buying_power"
+        else:
+            source = None
+    return {
+        "capacity_version": "v32_account_capacity_v1",
+        "account_scope": account_context.get("account_scope"),
+        "account_alias": account_context.get("account_alias"),
+        "available": available_capacity is not None,
+        "available_capacity": round(available_capacity, 2) if available_capacity is not None else None,
+        "capacity_source": source,
+        "currency": account_context.get("currency"),
+        "net_liquidation": _v32_float_or_none(account_context.get("net_liquidation")),
+        "buying_power": buying_power,
+        "available_funds": available_funds,
+        "excess_liquidity": excess_liquidity,
+        "initial_margin_required": _v32_float_or_none(account_context.get("initial_margin_required")),
+        "maintenance_margin_required": _v32_float_or_none(account_context.get("maintenance_margin_required")),
+        "generated_at": account_context.get("generated_at"),
+        "source": account_context.get("source") or "account_context",
+        "sensitive_identifiers_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_alert_capacity_check(alert, account_capacity):
+    alert = alert if isinstance(alert, dict) else {}
+    account_capacity = account_capacity if isinstance(account_capacity, dict) else {}
+    economics = alert.get("economics") if isinstance(alert.get("economics"), dict) else {}
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    capital_required = _v32_first_present(
+        _v32_float_or_none(economics.get("capital_required")),
+        _v32_float_or_none(contract.get("capital_required")),
+    )
+    available_capacity = _v32_float_or_none(account_capacity.get("available_capacity"))
+    max_single_alert_capacity_pct = 25.0
+    if capital_required is None:
+        status = "UNKNOWN_CAPITAL_REQUIRED"
+        within = None
+        shortfall = None
+        pct_required = None
+        warning = "ALERT_CAPITAL_REQUIRED_MISSING"
+    elif available_capacity is None:
+        status = "UNKNOWN_ACCOUNT_CAPACITY"
+        within = None
+        shortfall = None
+        pct_required = None
+        warning = "ACCOUNT_CAPACITY_MISSING"
+    else:
+        within = capital_required <= available_capacity
+        shortfall = round(max(capital_required - available_capacity, 0.0), 2)
+        pct_required = round((capital_required / available_capacity) * 100.0, 2) if available_capacity > 0 else None
+        status = "WITHIN_AVAILABLE_CAPACITY" if within else "INSUFFICIENT_AVAILABLE_CAPACITY"
+        warning = (
+            "USES_HIGH_CAPACITY_PCT"
+            if within and pct_required is not None and pct_required > max_single_alert_capacity_pct
+            else None
+        )
+    return {
+        "capacity_check_version": "v32_alert_capacity_check_v1",
+        "status": status,
+        "within_available_capacity": within,
+        "capital_required": round(capital_required, 2) if capital_required is not None else None,
+        "available_capacity": round(available_capacity, 2) if available_capacity is not None else None,
+        "capacity_source": account_capacity.get("capacity_source"),
+        "capacity_pct_required": pct_required,
+        "shortfall": shortfall,
+        "warning": warning,
+        "max_single_alert_capacity_pct": max_single_alert_capacity_pct,
+        "method_note": "Comparacion informativa contra capacidad sanitizada de la cuenta IBKR seleccionada; validar ticket/margen final en IBKR.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _v32_operator_alert_from_decision(item):
     item = item if isinstance(item, dict) else {}
     contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+    alert_created_at = _v32_alert_created_at(item)
+    economics = _v32_alert_economics(item, contract)
     state = _v29_safe_upper(item.get("final_state"), "UNKNOWN")
     severity = "INFO"
     if state == "ENTRY_READY" or item.get("manual_review_ready") is True:
@@ -22615,10 +22869,17 @@ def _v32_operator_alert_from_decision(item):
         "alert_id": _v32_operator_alert_id(item),
         "ticker": item.get("ticker"),
         "strategy": item.get("strategy"),
+        "alert_created_at": alert_created_at,
+        "alert_date": _v32_alert_date(alert_created_at),
         "severity": severity,
         "state": state,
         "main_blocker": item.get("main_blocker"),
         "manual_review_ready": item.get("manual_review_ready") is True,
+        "alert_delivery_eligible": severity == "ACTION",
+        "setup_validity_pct": item.get("setup_validity_pct"),
+        "conviction_score": item.get("conviction_score"),
+        "ranking_score": item.get("ranking_score"),
+        "evidence_quality_score": item.get("evidence_quality_score"),
         "selected_contract": {
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
@@ -22628,7 +22889,13 @@ def _v32_operator_alert_from_decision(item):
             "mid": contract.get("mid"),
             "spread_pct": contract.get("spread_pct"),
             "delta": contract.get("delta"),
+            "underlying_price": contract.get("underlying_price"),
+            "capital_required": economics.get("capital_required"),
+            "gross_credit": economics.get("gross_credit"),
+            "probability_success_pct": economics.get("probability_success_pct"),
+            "annualized_return_on_capital_pct": economics.get("annualized_return_on_capital_pct"),
         },
+        "economics": economics,
         "next_required_action": item.get("next_required_action") or item.get("explanation") or item.get("main_blocker"),
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -22843,6 +23110,15 @@ def _v32_operator_today_payload(limit=12):
     ])
     events = _v32_load_operator_events()
     active_alerts = _v32_operator_active_alerts(command, events=events, limit=limit)
+    account_context = command.get("account_context") if isinstance(command.get("account_context"), dict) else {}
+    account_capacity = _v32_account_capacity_from_context(account_context)
+    for alert in active_alerts:
+        alert["account_capacity_check"] = _v32_alert_capacity_check(alert, account_capacity)
+    intraday_futures_alerts = [
+        alert for alert in active_alerts
+        if _v29_safe_upper(alert.get("strategy"), "") == "INTRADAY_INDEX_FUTURES"
+        or _v29_safe_upper(alert.get("ticker"), "") in {"MNQ", "NQ", "MES", "ES"}
+    ]
     next_actions = _v32_operator_next_actions_from_context(
         command,
         readiness,
@@ -22855,17 +23131,30 @@ def _v32_operator_today_payload(limit=12):
         "operator_version": "v32_operator_assistant_v1",
         "generated_at": _v29_now(),
         "status": readiness.get("status") or command.get("operational_readiness") or command.get("status"),
-        "account_context": command.get("account_context") or {},
+        "account_context": account_context,
+        "account_capacity": account_capacity,
         "account_scope": command.get("account_scope"),
         "account_alias": command.get("account_alias"),
         "command_center": {
             "status": command.get("status"),
             "operational_readiness": command.get("operational_readiness"),
-            "account_context": command.get("account_context") or {},
+            "account_context": account_context,
+            "account_capacity": account_capacity,
             "summary": command.get("summary") or {},
             "data_readiness": command.get("data_readiness") or {},
         },
         "active_alerts": active_alerts,
+        "intraday_futures": {
+            "active_alert_count": len(intraday_futures_alerts),
+            "status": "ACTIVE_ALERTS" if intraday_futures_alerts else "NO_ACTIVE_INTRADAY_FUTURES_ALERTS",
+            "message": (
+                "Hay alertas intradia de futuros en el payload actual."
+                if intraday_futures_alerts
+                else "Sin alertas intradia de futuros en el payload actual; solo validar monitoreo y datos."
+            ),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
         "next_actions": next_actions,
         "manual_review": {
             "review_count": manual_reviews.get("review_count"),
@@ -23061,7 +23350,7 @@ def _v32_operator_daily_summary_email_content(summary):
     text = "\n\n".join([
         summary.get("summary_text") or "",
         "Alertas activas:\n" + ("\n".join(alert_lines) if alert_lines else "Sin alertas activas."),
-        "Links: /v32_project_command_center | /v32_operator_tracking_status | /gpt_v32_operator_today",
+        "Vistas internas: /v32_project_command_center | /v32_operator_tracking_status | /gpt_v32_operator_today",
         "Decision support solamente. No coloca ordenes ni autoriza ejecucion automatica.",
     ])
     alert_html = "".join(
@@ -23141,7 +23430,7 @@ def _v32_operator_pushover_message(summary):
         lines.append("Datos: requiere refrescar snapshot/IBKR/opciones; no esta pensando una entrada.")
     next_actions = summary.get("next_actions") if isinstance(summary.get("next_actions"), list) else []
     if next_actions:
-        lines.append("Siguiente: {}".format(next_actions[0].get("label") or "Revisar dashboard"))
+        lines.append("Siguiente: {}".format(next_actions[0].get("label") or "Revisar consola"))
     for alert in (summary.get("active_alerts") or [])[:5]:
         lines.append(
             "- {ticker} | {severity} | {state} | {status}".format(
@@ -24887,7 +25176,7 @@ def _v31_account_context_from_master(master):
     account_context = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
     scope = data.get("account_scope") or broker_summary.get("account_scope") or account_context.get("account_scope")
     alias = data.get("account_alias") or broker_summary.get("account_alias") or account_context.get("account_alias")
-    return {
+    sanitized = {
         "account_context_version": "v31_sanitized_account_context_v1",
         "account_scope": scope or "unknown",
         "account_alias": alias or scope or "unknown",
@@ -24899,6 +25188,26 @@ def _v31_account_context_from_master(master):
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    for key in [
+        "available",
+        "currency",
+        "net_liquidation",
+        "buying_power",
+        "available_funds",
+        "excess_liquidity",
+        "available_capacity",
+        "total_cash_value",
+        "initial_margin_required",
+        "maintenance_margin_required",
+        "gross_position_value",
+        "cushion",
+        "generated_at",
+        "source",
+        "sensitive_identifiers_excluded",
+    ]:
+        if account_context.get(key) is not None:
+            sanitized[key] = account_context.get(key)
+    return sanitized
 
 
 def _v31_system_status_payload(tickers=None):
@@ -25062,6 +25371,22 @@ def _v31_gpt_compact_contract(item):
         "iv",
         "volume",
         "open_interest",
+        "underlying_price",
+        "capital_required",
+        "required_capital",
+        "cash_required",
+        "collateral",
+        "margin_required",
+        "initial_margin_required",
+        "maintenance_margin_required",
+        "buying_power_required",
+        "max_loss",
+        "defined_max_loss",
+        "probability_success",
+        "probability_of_success",
+        "probability_of_profit",
+        "pop",
+        "spread_width",
         "option_score",
         "option_score_source",
         "quality",
@@ -25082,11 +25407,16 @@ def _v31_gpt_compact_daily_item(item):
         "final_state": item.get("final_state"),
         "recommendation_action": item.get("recommendation_action"),
         "manual_review_ready": item.get("manual_review_ready"),
+        "generated_at": item.get("generated_at"),
+        "received_at": item.get("received_at"),
+        "timestamp": item.get("timestamp"),
+        "session_date": item.get("session_date"),
         "main_blocker": item.get("main_blocker"),
         "blockers": item.get("blockers") or [],
         "required_missing_fields": item.get("required_missing_fields") or parameter_review.get("missing_fields") or [],
         "conviction_score": item.get("conviction_score"),
         "ranking_score": item.get("ranking_score"),
+        "setup_validity_pct": item.get("setup_validity_pct"),
         "evidence_quality_score": item.get("evidence_quality_score"),
         "evidence_quality_status": item.get("evidence_quality_status"),
         "evidence_quality_blockers": item.get("evidence_quality_blockers") or [],
@@ -25598,8 +25928,8 @@ def _v31_command_center_html():
     blocked_count = _summary_int("blocked_or_waiting")
     if entry_ready_count:
         operator_title = "Hay setups listos para revision manual"
-        operator_body = "Abre el inbox y revisa evidencia completa antes de registrar una decision. ENTRY_READY no autoriza ordenes."
-        operator_next = "Abrir Inbox revision manual"
+        operator_body = "Usa el Inbox de la consola y revisa evidencia completa antes de registrar una decision. ENTRY_READY no autoriza ordenes."
+        operator_next = "Usar Inbox revision manual"
         operator_href = "/v31_manual_review_inbox"
     elif blocked_count:
         operator_title = "No hay setups listos; hay bloqueadas o en espera"
@@ -26814,7 +27144,7 @@ def _v31_monitor_email_content(monitor):
     <p><strong>Ejemplo body:</strong> <code>{manual_review_example}</code></p>
     <p><a href="{manual_reviews_url}">Abrir historial de revisiones manuales</a></p>
     <p><em>APPROVED_FOR_MANUAL_TRADE solo se acepta si V31 sigue en ENTRY_READY. execution_authorized=false siempre.</em></p>
-    <p><a href="{base}/v31_dashboard">Abrir dashboard V31</a></p>
+    <p><a href="{base}/v31_dashboard">Revisar consola V31 interna</a></p>
     <p><a href="{base}/v31_monitor_status">Abrir estado del monitor</a></p>
     <p><em>Decision support solamente. No es instruccion de operar ni autorizacion para ejecutar ordenes.</em></p>
     """.format(

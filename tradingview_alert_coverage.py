@@ -27,6 +27,14 @@ def alerts(coverage: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in coverage.get("alerts", []) if isinstance(item, dict)]
 
 
+def production_active_alerts(coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in coverage.get("production_active_alerts", [])
+        if isinstance(item, dict)
+    ]
+
+
 def alert_by_code(coverage: dict[str, Any], event_code: str) -> dict[str, Any] | None:
     code = str(event_code or "").strip().upper()
     for item in alerts(coverage):
@@ -80,6 +88,10 @@ def validate_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
         "coverage_version": coverage.get("coverage_version"),
         "generated_at": now_iso(),
         "valid": valid,
+        "production_active_alert_count": len(production_active_alerts(coverage)),
+        "logical_event_count": len(items),
+        "required_logical_event_count": len(required_alerts),
+        "health_logical_event_count": len(health_alerts),
         "alert_count": len(items),
         "required_alert_count": len(required_alerts),
         "health_alert_count": len(health_alerts),

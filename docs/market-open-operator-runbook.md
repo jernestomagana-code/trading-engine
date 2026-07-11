@@ -31,10 +31,18 @@ Expected early status before live alerts fire:
 ## Live-open sequence
 
 1. Confirm TradingView alert panel shows the expected alert set.
-   - 12 MNQ/MES futures alerts.
-   - 8 SPY/QQQ/VIX options-underlying alerts.
+   - 5 active consolidated alerts total.
+   - Futures: `MNQ1!` `5m` and `MES1!` `5m`, both using
+     `Stock Ultimus Intraday Futures Alerts v1` / `Any alert() function call`.
+   - Options-underlying: `QQQ` `15m`, `SPY` `15m`, and `VIX` `1D`, all using
+     `Stock Ultimus Options Underlying Alerts v1` / `Any alert() function call`.
+   - Old per-condition, RSI, crossing-price, duplicate, or generic alerts stay
+     paused and are not part of the production active set.
    - NQ/ES remain out of scope because MNQ/MES already cover the same signal
      semantics.
+   - More single-name alerts are not required for CANSLIM or large-cap scans;
+     those candidates must come from the backend universe, IBKR chains, and
+     scoring rules first.
 
 2. Refresh IBKR when TWS/IB Gateway is connected:
 
