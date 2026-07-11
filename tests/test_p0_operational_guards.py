@@ -19,6 +19,7 @@ V32_OPERATOR_NUDGES_WORKFLOW = ROOT / ".github" / "workflows" / "v32-operator-nu
 V32_ACTIONABLE_SIGNAL_WATCH_WORKFLOW = ROOT / ".github" / "workflows" / "v32-actionable-signal-watch.yml"
 DAILY_OPERATIONAL_AUDIT_TOOL = ROOT / "tools" / "v31_daily_operational_audit.py"
 OPERATING_DAY_RUNNER = ROOT / "scripts" / "run_operating_day.py"
+DAILY_RADAR_RUNNER = ROOT / "scripts" / "run_daily_radar.py"
 OPERATIONAL_100_CHECK = ROOT / "scripts" / "stock_ultimus_operational_100_check.py"
 DAILY_OPEN_CHECKLIST = ROOT / "scripts" / "daily_open_checklist.py"
 V32_NUDGE_PREFLIGHT_CHECK = ROOT / "scripts" / "v32_nudge_preflight_check.py"
@@ -540,6 +541,15 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn('"not_order_instruction": True', source)
         self.assertNotIn("send_resend_email", source)
 
+    def test_daily_radar_builds_free_canslim_before_bridge(self):
+        source = DAILY_RADAR_RUNNER.read_text()
+
+        self.assertIn("build_canslim_free_candidates.py", source)
+        self.assertIn("--skip-canslim", source)
+        self.assertIn("--refresh-sec-canslim", source)
+        self.assertIn("run_canslim_builder(args)", source)
+        self.assertIn("ibkr_bridge.py", source)
+
     def test_operational_100_preflight_closes_five_gates_safely(self):
         source = OPERATIONAL_100_CHECK.read_text()
 
@@ -574,6 +584,9 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("/v32_operator_dashboard", source)
         self.assertIn("/v32_operator_events", source)
         self.assertIn("scripts/daily_open_checklist.py", str(DAILY_OPEN_CHECKLIST))
+        self.assertIn("scripts/build_canslim_free_candidates.py", source)
+        self.assertIn("canslim_step", source)
+        self.assertIn("non_blocking", source)
         self.assertIn("ibkr_bridge.py", source)
         self.assertIn("tools/publish_v31_snapshot_from_runtime.py", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
