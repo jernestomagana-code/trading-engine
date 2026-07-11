@@ -77,6 +77,9 @@ Resumen:
 - La consola local `python3 scripts/ibkr_account_profile.py serve` es el cockpit
   operativo principal: muestra foco de salud, procesos RUNNING/DONE, capacidad
   IBKR, contexto GPT, alertas V32 y marcas visibles de revision.
+- Consola local next-level: `Modo Hoy`, semaforo por modulo, timeline
+  operativo, modo mercado abierto, diagnostico completo y checklist por alerta
+  para score/tecnico/opciones/capacidad/CANSLIM/riesgo.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
   explicita `--real-outcomes-after-close`.

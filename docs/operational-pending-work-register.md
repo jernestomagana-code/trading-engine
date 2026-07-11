@@ -40,6 +40,10 @@ review. It is decision-support only and never authorizes order execution.
   top health light, explicit `La consola esta trabajando` process panel,
   RUNNING/DONE detail links, capacity/context status, and visible per-alert
   review badges for `Visto`, `Revisando`, `Watch`, `Rechazar`, and `Cerrar`.
+- Added the seven next-level console surfaces as one block: `Modo Hoy`,
+  module semaphores, operating timeline, richer alert-review inbox, plain
+  "why/why not" explanations, complete diagnostic button, and market-open mode
+  focused on intraday futures/TradingView/notify timing.
 
 ## Waiting For Market Data
 
