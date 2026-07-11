@@ -539,6 +539,40 @@ For local notifications, use:
 python3 scripts/v32_operator_notify.py --macos-notify
 ```
 
+## Local IBKR Account Capacity
+
+The local IBKR console can now refresh sanitized account capacity before or
+after a bridge run. This closes the loop between "best contract" and "can this
+account reasonably carry the capital/margin requirement?"
+
+From the local console, use the **Refresh cuenta** button for the selected
+alias. From the terminal, use the active profile wrapper so the real IBKR
+account id stays in Keychain and is not printed:
+
+```bash
+python3 scripts/ibkr_account_profile.py run remanente -- python3 scripts/ibkr_account_profile.py refresh-account-capacity --publish
+```
+
+What it does:
+
+- Connects to TWS/IBKR in `readonly=True`.
+- Reads only sanitized `AccountSummary` fields such as `AvailableFunds`,
+  `ExcessLiquidity`, `BuyingPower`, `NetLiquidation`, and margin requirement.
+- Writes `runtime/ibkr_account_capacity_latest.json`.
+- Publishes the account context into the V31 snapshot, without real account IDs.
+- Keeps `execution_authorized=false` and `not_order_instruction=true`.
+
+The console displays:
+
+- Usable capacity source, preferring `AvailableFunds`, then
+  `ExcessLiquidity`, then `BuyingPower`.
+- Option economics per alert: estimated capital required, gross credit,
+  delta-proxy probability, and annualized return on capital when DTE is present.
+- Per-alert capacity comparison, including shortfall or high-capacity warnings.
+
+This is still decision support only. IBKR/TWS remains the final source for
+order ticket margin and the human operator must review before any action.
+
 Optional channels:
 
 ```bash
