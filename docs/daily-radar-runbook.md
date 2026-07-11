@@ -456,6 +456,13 @@ underlyings, then opens chains only for the selected subset. The rank combines:
 - Technical score/confirmation from runtime snapshots.
 - CANSLIM pass/score when available.
 
+CANSLIM can enter dynamically through runtime JSON files. Any runtime payload
+containing rows with `ticker` or `symbol` plus either a nested `canslim` object
+or fields such as `canslim_score`, `canslim_passes`, `canslim_rating`,
+`rating_score`, or `composite_rating` is merged into the technical snapshot
+before ranking. This lets a future CANSLIM screener feed candidates without
+creating extra TradingView alerts or opening option chains for every symbol.
+
 Current guardrails:
 
 - `IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=true` by default.
@@ -470,8 +477,8 @@ Current guardrails:
 - `IBKR_OPTION_TECHNICAL_TRIGGER_SCORE` and
   `IBKR_OPTION_CANSLIM_TRIGGER_SCORE` define the technical/CANSLIM detonators.
 - The IBKR diagnostic file records `option_symbol_plan` with ranked, selected,
-  and skipped underlyings so the operator can audit why a symbol did or did not
-  consume option-chain budget.
+  selected, and skipped underlyings, plus `canslim_candidate_count`, so the
+  operator can audit why a symbol did or did not consume option-chain budget.
 
 If a new stock or strategy repeatedly needs TradingView-specific confirmation,
 document the measured gap first, then add a versioned alert expansion. Until
