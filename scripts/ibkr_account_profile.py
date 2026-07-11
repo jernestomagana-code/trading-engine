@@ -32,6 +32,12 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
 ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
+TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
+MARKET_OPEN_READINESS_PATH = RUNTIME / "market_open_readiness_latest.json"
+POST_OPEN_MONITOR_PATH = RUNTIME / "post_open_monitor_latest.json"
+OPERATOR_NOTIFY_PATH = RUNTIME / "v32_operator_notify_latest.json"
+OPERATIONAL_EDGE_PATH = RUNTIME / "v32_operational_edge_latest.json"
+DAILY_OPEN_CHECKLIST_PATH = RUNTIME / "daily_open_checklist_latest.json"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 SNAPSHOT_INGEST_KEYCHAIN_SERVICES = ("stock-ultimus-snapshot-ingest", "stock-ultimus-snapshot-ingest-token")
@@ -511,6 +517,13 @@ def account_capacity_command() -> list[str]:
     ]
 
 
+def console_diagnostic_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/daily_open_checklist.py",
+    ]
+
+
 def cmd_bridge(args: argparse.Namespace) -> int:
     return run_with_profile(args.alias, console_bridge_command())
 
@@ -960,6 +973,62 @@ def active_web_jobs() -> list[dict[str, Any]]:
     return sorted(jobs, key=lambda item: str(item.get("started_at") or ""), reverse=True)
 
 
+def runtime_json_report(path: Path) -> dict[str, Any]:
+    data = load_json_file(path)
+    if not isinstance(data, dict):
+        data = {}
+    data["_runtime_path"] = str(path.relative_to(ROOT)) if path.exists() else str(path)
+    data["_runtime_available"] = bool(path.exists())
+    if path.exists():
+        try:
+            data["_runtime_mtime"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        except Exception:
+            data["_runtime_mtime"] = ""
+    return data
+
+
+def report_generated_at(report: dict[str, Any]) -> Any:
+    return report.get("generated_at") or report.get("checked_at") or report.get("_runtime_mtime")
+
+
+def report_age_text(report: dict[str, Any]) -> str:
+    if not report.get("_runtime_available"):
+        return "sin reporte"
+    return age_label(report_generated_at(report))
+
+
+def status_level(status: Any, ok: bool | None = None) -> str:
+    text = str(status or "").upper()
+    if ok is True or text in {"OK", "READY", "READY_FOR_MANUAL_REVIEW", "MATCH", "CONNECTED", "CONTRACT_RANKING_AVAILABLE", "RANKING_AVAILABLE"}:
+        return "green"
+    if ok is False or text in {"ERROR", "FAIL", "FAILED", "BLOCKED", "NO_DATA", "ACTION_REQUIRED", "PRODUCTION_UNREACHABLE", "REMOTE_UNAVAILABLE"}:
+        return "red"
+    if any(marker in text for marker in ["WAIT", "WATCH", "PARTIAL", "BUILDING", "NEEDS_REVIEW", "DEGRADED", "PENDING"]):
+        return "amber"
+    return "neutral"
+
+
+def is_us_market_session_now() -> bool:
+    now = datetime.now(timezone.utc)
+    if now.weekday() >= 5:
+        return False
+    minute = now.hour * 60 + now.minute
+    return (13 * 60 + 30) <= minute <= (20 * 60)
+
+
+def console_reports() -> dict[str, dict[str, Any]]:
+    return {
+        "tradingview": runtime_json_report(TRADINGVIEW_BUNDLE_HEALTH_PATH),
+        "readiness": runtime_json_report(MARKET_OPEN_READINESS_PATH),
+        "post_open": runtime_json_report(POST_OPEN_MONITOR_PATH),
+        "notify": runtime_json_report(OPERATOR_NOTIFY_PATH),
+        "edge": runtime_json_report(OPERATIONAL_EDGE_PATH),
+        "daily_open": runtime_json_report(DAILY_OPEN_CHECKLIST_PATH),
+        "events": runtime_json_report(OPERATOR_EVENTS_PATH),
+        "capacity": runtime_json_report(ACCOUNT_CAPACITY_PATH),
+    }
+
+
 def cache_age_seconds(cached_at: Any) -> float | None:
     dt = parse_iso_datetime(cached_at)
     if not dt:
@@ -1266,6 +1335,332 @@ def render_active_process_panel() -> str:
       <div class="process-list">{rows}</div>
     </section>
     """.format(rows="".join(rows))
+
+
+def first_pending_alert(operator_payload: dict[str, Any]) -> dict[str, Any]:
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    for severity in ["RISK", "ACTION", "WATCH"]:
+        for alert in alerts:
+            if isinstance(alert, dict) and not is_handled_alert(alert) and str(alert.get("severity") or "").upper() == severity:
+                return alert
+    for alert in alerts:
+        if isinstance(alert, dict) and not is_handled_alert(alert):
+            return alert
+    return {}
+
+
+def console_today_summary(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    counts = operator_alert_counts(data)
+    health = console_health(active, snapshot, operator_payload)
+    first_alert = first_pending_alert(operator_payload)
+    readiness = reports.get("readiness") or {}
+    notify = reports.get("notify") or {}
+    edge = reports.get("edge") or {}
+    tradingview = reports.get("tradingview") or {}
+    next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
+    next_action = next_actions[0] if next_actions else {}
+
+    if health.get("level") == "red":
+        mode = "Bloqueado"
+        action = "Resolver conexion/token/produccion antes de operar."
+    elif active_web_jobs():
+        mode = "Procesando"
+        action = "Esperar DONE; no lanzar otro refresh mientras corre el proceso."
+    elif counts["risk"]:
+        mode = "Riesgo"
+        action = "Revisar alertas RISK y registrar rechazo/cierre si aplica."
+    elif counts["action"]:
+        mode = "Revision"
+        action = "Revisar alertas ACTION con checklist, contrato y capacidad."
+    elif str(data.get("status") or "").upper() == "WAIT_MARKET":
+        mode = "Esperando mercado"
+        action = "Mantener monitoreo; no convertir WAIT_MARKET en entrada."
+    elif not is_us_market_session_now():
+        mode = "Fuera de mercado"
+        action = "Preparar diagnostico y esperar eventos reales en sesion."
+    else:
+        mode = "Monitoreo"
+        action = next_action.get("label") or "Actualizar estado y revisar si hay nuevas alertas."
+
+    recommended_sequence = edge.get("recommended_sequence") if isinstance(edge.get("recommended_sequence"), list) else []
+    waiting = readiness.get("next_required_action") or (recommended_sequence[0] if recommended_sequence else "") or "Sin bloqueo principal visible."
+    last_alert = "Sin alerta pendiente"
+    if first_alert:
+        last_alert = "{ticker} | {severity} | {state}".format(
+            ticker=first_alert.get("ticker") or "UNKNOWN",
+            severity=first_alert.get("severity") or "UNKNOWN",
+            state=first_alert.get("state") or "UNKNOWN",
+        )
+
+    return {
+        "mode": mode,
+        "action": action,
+        "waiting": waiting,
+        "last_alert": last_alert,
+        "market_session": "abierta" if is_us_market_session_now() else "cerrada",
+        "operator_status": data.get("status") or ("OK" if operator_payload.get("ok") else operator_payload.get("error") or "UNKNOWN"),
+        "edge_score": edge.get("overall_edge_score"),
+        "notify_reason": (notify.get("classification") if isinstance(notify.get("classification"), dict) else {}).get("notify_reason") or notify.get("status") or "N/D",
+        "tv_status": tradingview.get("status") or "N/D",
+        "counts": counts,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> str:
+    today = console_today_summary(active, snapshot, operator_payload, reports)
+    counts = today["counts"]
+    edge_score = today.get("edge_score")
+    edge_text = compact_percent(edge_score) if edge_score is not None else "N/D"
+    return """
+    <section class="panel today-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Modo Hoy</p>
+          <h2>{mode}</h2>
+        </div>
+        <p>{action}</p>
+      </div>
+      <div class="today-grid">
+        {status}
+        {waiting}
+        {alert}
+        {market}
+      </div>
+    </section>
+    """.format(
+        mode=html_escape(today["mode"]),
+        action=html_escape(today["action"]),
+        status=render_metric("Estado operador", today["operator_status"], "pendientes={open} | risk={risk} | action={action}".format(**counts)),
+        waiting=render_metric("Esta esperando", today["waiting"], "TradingView=" + str(today.get("tv_status"))),
+        alert=render_metric("Ultima alerta viva", today["last_alert"], "notify=" + str(today.get("notify_reason"))),
+        market=render_metric("Mercado", today["market_session"], "edge=" + edge_text),
+    )
+
+
+def module_health_items(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    comparison = selected_vs_published(active, snapshot, operator_payload)
+    capacity = console_account_capacity(operator_payload, snapshot)
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    counts = operator_alert_counts(data)
+    tradingview = reports.get("tradingview") or {}
+    readiness = reports.get("readiness") or {}
+    notify = reports.get("notify") or {}
+    edge = reports.get("edge") or {}
+    return [
+        {
+            "name": "TWS/IBKR",
+            "level": status_level("OK" if snapshot.get("available") else "WAITING"),
+            "status": "snapshot OK" if snapshot.get("available") else "sin snapshot",
+            "detail": age_label(snapshot.get("generated_at") or snapshot.get("mtime")),
+        },
+        {
+            "name": "TradingView",
+            "level": status_level(tradingview.get("status"), ok=bool(tradingview.get("real_e2e_confirmed")) if tradingview.get("_runtime_available") else None),
+            "status": tradingview.get("status") or "sin reporte",
+            "detail": "recibidos {}/{}".format(tradingview.get("total_received_required_event_count", 0), tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))),
+        },
+        {
+            "name": "Produccion",
+            "level": status_level("OK" if operator_payload.get("ok") else "ERROR"),
+            "status": "OK" if operator_payload.get("ok") else operator_payload.get("error") or "NO",
+            "detail": "cache " + (operator_payload.get("cache_age_label") or "live"),
+        },
+        {
+            "name": "GPT Action",
+            "level": status_level(comparison.get("status")),
+            "status": comparison.get("status"),
+            "detail": "local={} | GPT={}".format(comparison.get("selected_alias") or "none", comparison.get("published_alias") or "none"),
+        },
+        {
+            "name": "Notificaciones",
+            "level": status_level("OK" if notify.get("status") == "OK" else notify.get("status")),
+            "status": (notify.get("classification") if isinstance(notify.get("classification"), dict) else {}).get("notify_reason") or notify.get("status") or "sin reporte",
+            "detail": report_age_text(notify),
+        },
+        {
+            "name": "Capacidad",
+            "level": status_level("OK" if capacity.get("available") else "WAITING"),
+            "status": "OK" if capacity.get("available") else "pendiente",
+            "detail": compact_money(capacity.get("available_capacity")) + " | " + str(capacity.get("capacity_source") or "N/D"),
+        },
+        {
+            "name": "Alertas",
+            "level": "red" if counts["risk"] else ("amber" if counts["action"] or counts["watch"] else "green"),
+            "status": "{open} abiertas".format(**counts),
+            "detail": "{risk} risk | {action} action | {closed} atendidas".format(**counts),
+        },
+        {
+            "name": "Operational Edge",
+            "level": status_level(edge.get("overall_status")),
+            "status": edge.get("overall_status") or readiness.get("status") or "sin reporte",
+            "detail": "score=" + (compact_percent(edge.get("overall_edge_score")) if edge.get("overall_edge_score") is not None else "N/D"),
+        },
+    ]
+
+
+def render_module_health(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> str:
+    cards = []
+    for item in module_health_items(active, snapshot, operator_payload, reports):
+        cards.append("""
+        <article class="module-card module-{level}">
+          <span class="module-dot"></span>
+          <div>
+            <strong>{name}</strong>
+            <span>{status}</span>
+            <small>{detail}</small>
+          </div>
+        </article>
+        """.format(
+            level=html_escape(item.get("level") or "neutral"),
+            name=html_escape(item.get("name") or ""),
+            status=html_escape(item.get("status") or ""),
+            detail=html_escape(item.get("detail") or ""),
+        ))
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Semaforo por modulo</h2>
+        <p>Lectura rapida de los sistemas que importan antes de revisar alertas.</p>
+      </div>
+      <div class="module-grid">{cards}</div>
+    </section>
+    """.format(cards="".join(cards))
+
+
+def append_timeline_event(events: list[dict[str, Any]], when: Any, title: str, detail: str, level: str = "neutral") -> None:
+    dt = parse_iso_datetime(when)
+    events.append({
+        "when": when or "",
+        "dt": dt,
+        "title": title,
+        "detail": detail,
+        "level": level,
+    })
+
+
+def console_timeline(snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if snapshot.get("available"):
+        append_timeline_event(events, snapshot.get("generated_at") or snapshot.get("mtime"), "Snapshot maestro", "Contexto local disponible", "green")
+    for job in active_web_jobs():
+        append_timeline_event(events, job.get("started_at"), "Proceso corriendo", "{} | {}".format(job.get("label") or "Proceso local", job.get("status") or "RUNNING"), "amber")
+    for event in load_operator_events()[-5:]:
+        append_timeline_event(events, event.get("recorded_at"), "Alerta marcada", "{} {} -> {}".format(event.get("ticker") or "", event.get("action") or "", event.get("operator_status") or ""), "green")
+    notify = reports.get("notify") or {}
+    if notify.get("_runtime_available"):
+        append_timeline_event(events, report_generated_at(notify), "Notificador", "{} | sent={}".format((notify.get("classification") if isinstance(notify.get("classification"), dict) else {}).get("notify_reason") or notify.get("status"), notify.get("notification_sent")), status_level(notify.get("status")))
+    tradingview = reports.get("tradingview") or {}
+    if tradingview.get("_runtime_available"):
+        append_timeline_event(events, report_generated_at(tradingview), "TradingView health", "{} | {}/{} recibidos".format(tradingview.get("status"), tradingview.get("total_received_required_event_count", 0), tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))), status_level(tradingview.get("status")))
+    readiness = reports.get("readiness") or {}
+    if readiness.get("_runtime_available"):
+        append_timeline_event(events, report_generated_at(readiness), "Readiness", readiness.get("next_required_action") or readiness.get("status") or "sin detalle", status_level(readiness.get("status"), ok=readiness.get("ok") is True))
+    if operator_payload.get("cached_at"):
+        append_timeline_event(events, operator_payload.get("cached_at"), "Estado GPT cacheado", operator_payload.get("cache_age_label") or "cache local", "amber")
+    return sorted(events, key=lambda item: item.get("dt") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:8]
+
+
+def render_timeline(snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> str:
+    events = console_timeline(snapshot, operator_payload, reports)
+    if not events:
+        rows = '<p class="empty">Sin eventos locales recientes.</p>'
+    else:
+        rows = "".join("""
+        <li class="timeline-{level}">
+          <span></span>
+          <div><strong>{title}</strong><small>{age} · {detail}</small></div>
+        </li>
+        """.format(
+            level=html_escape(event.get("level") or "neutral"),
+            title=html_escape(event.get("title") or ""),
+            age=html_escape(age_label(event.get("when"))),
+            detail=html_escape(event.get("detail") or ""),
+        ) for event in events)
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Timeline operativo</h2>
+        <p>Lo ultimo que la consola sabe de procesos, alertas, TradingView y notificaciones.</p>
+      </div>
+      <ol class="timeline">{rows}</ol>
+    </section>
+    """.format(rows=rows)
+
+
+def render_market_mode_panel(operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> str:
+    tradingview = reports.get("tradingview") or {}
+    notify = reports.get("notify") or {}
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    futures_alerts = [
+        alert for alert in alerts
+        if isinstance(alert, dict) and (
+            str(alert.get("strategy") or "").upper() == "INTRADAY_INDEX_FUTURES"
+            or str(alert.get("ticker") or "").upper() in {"MNQ", "MNQ1!", "NQ", "MES", "MES1!", "ES"}
+        )
+    ]
+    session = "Mercado abierto" if is_us_market_session_now() else "Mercado cerrado"
+    detail = "Durante mercado abierto, los futuros intradia deben llegar por TradingView -> /technical_snapshot -> notify inmediato."
+    return """
+    <section class="panel market-panel">
+      <div class="section-head">
+        <h2>Modo mercado abierto</h2>
+        <p>{detail}</p>
+      </div>
+      <div class="tiles">
+        <div class="tile">{session}<span>La consola separa espera normal de alertas vivas.</span></div>
+        <div class="tile">Futuros vivos<span>{futures_count} alerta(s) intradia en payload actual.</span></div>
+        <div class="tile">TradingView real<span>{received}/{required} eventos requeridos recibidos.</span></div>
+        <div class="tile">Notify<span>{notify_reason}</span></div>
+      </div>
+    </section>
+    """.format(
+        detail=html_escape(detail),
+        session=html_escape(session),
+        futures_count=html_escape(len(futures_alerts)),
+        received=html_escape(tradingview.get("total_received_required_event_count", 0)),
+        required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))),
+        notify_reason=html_escape((notify.get("classification") if isinstance(notify.get("classification"), dict) else {}).get("notify_reason") or notify.get("status") or "sin reporte"),
+    )
+
+
+def render_diagnostic_panel(active: dict[str, Any], reports: dict[str, dict[str, Any]]) -> str:
+    alias = active.get("account_alias") or ""
+    daily = reports.get("daily_open") or {}
+    edge = reports.get("edge") or {}
+    disabled = "" if alias else " disabled"
+    note = "Usa este boton cuando quieras una revision completa sin salir de la consola."
+    if not alias:
+        note = "Selecciona una cuenta antes de correr diagnostico local."
+    return """
+    <section class="panel diagnostic-panel">
+      <div class="section-head">
+        <h2>Diagnostico completo</h2>
+        <p>{note}</p>
+      </div>
+      <div class="tiles">
+        <div class="tile">Ultimo checklist<span>{daily_status} · {daily_age}</span></div>
+        <div class="tile">Operational Edge<span>{edge_status} · score {edge_score}</span></div>
+      </div>
+      <form method="post" action="/diagnostic" class="hero-actions" data-busy="Diagnosticando sistema" data-busy-detail="Revisando tokens, runtime, produccion, evidencia y alertas. No ejecuta ordenes.">
+        <input name="alias" value="{alias}" type="hidden">
+        <button{disabled}>Revisar sistema</button>
+        <span>Corre el checklist seguro y deja resultado RUNNING/DONE aqui mismo.</span>
+      </form>
+    </section>
+    """.format(
+        note=html_escape(note),
+        daily_status=html_escape(daily.get("status") or daily.get("classification") or "sin reporte"),
+        daily_age=html_escape(report_age_text(daily)),
+        edge_status=html_escape(edge.get("overall_status") or "sin reporte"),
+        edge_score=html_escape(compact_percent(edge.get("overall_edge_score")) if edge.get("overall_edge_score") is not None else "N/D"),
+        alias=html_escape(alias),
+        disabled=disabled,
+    )
 
 
 def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> str:
@@ -1691,6 +2086,64 @@ def alert_review_guidance(alert: dict[str, Any]) -> str:
     return "Revision: ack si ya fue visto, watch si sigue vivo, reject si no cumple."
 
 
+def alert_reason_plain(alert: dict[str, Any]) -> str:
+    state = str(alert.get("state") or "").upper()
+    blocker = str(alert.get("main_blocker") or "").upper()
+    missing = alert.get("required_missing_fields") if isinstance(alert.get("required_missing_fields"), list) else []
+    if state == "ENTRY_READY":
+        return "Cumple lo suficiente para revision manual: aun falta confirmar orden/ticket en IBKR."
+    if state == "WAIT_MARKET":
+        return "La estructura puede existir, pero la ventana/condicion de mercado aun no autoriza revision accionable."
+    if state == "WAIT_TECHNICAL" or blocker == "WAIT_TECHNICAL":
+        return "Falta confirmacion tecnica real; mantener en watch hasta recibir evidencia."
+    if state == "WAIT_OPTIONS_DATA" or blocker == "WAIT_OPTIONS_DATA":
+        return "Faltan datos completos de opciones, spread, delta, DTE o calidad de contrato."
+    if state == "RISK_BLOCKED" or str(alert.get("severity") or "").upper() == "RISK":
+        return "Bloqueada por riesgo; revisar causa y normalmente rechazar/cerrar."
+    if missing:
+        return "Faltan campos: " + ", ".join(str(item) for item in missing[:4])
+    return "No hay razon accionable completa; usar la guia de revision y registrar estado."
+
+
+def alert_checklist_items(alert: dict[str, Any], account_capacity: dict[str, Any]) -> list[tuple[str, bool, str]]:
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    state = str(alert.get("state") or "").upper()
+    blocker = str(alert.get("main_blocker") or "").upper()
+    severity = str(alert.get("severity") or "").upper()
+    capital = console_alert_capital_required(alert)
+    available = console_float_or_none(account_capacity.get("available_capacity"))
+    technical_ok = state in {"ENTRY_READY", "WAIT_MARKET"} and blocker not in {"WAIT_TECHNICAL", "TECHNICAL_NOT_CONFIRMED"}
+    options_ok = all(contract.get(field) not in [None, "", "None"] for field in ["strike", "dte", "delta"]) and (
+        contract.get("bid") not in [None, "", "None"] or contract.get("mid") not in [None, "", "None"]
+    )
+    capacity_ok = capital is not None and available is not None and capital <= available
+    canslim_value = alert.get("canslim_score") or alert.get("canslim_confidence")
+    canslim_ok = canslim_value not in [None, "", "None"]
+    risk_ok = severity != "RISK" and state != "RISK_BLOCKED" and not str(alert.get("risk_blocker") or "")
+    score_ok = any(alert.get(field) not in [None, "", "None"] for field in ["setup_validity_pct", "conviction_score", "ranking_score", "raw_score"])
+    return [
+        ("Score", score_ok, "score/conviccion visible" if score_ok else "falta score visible"),
+        ("Tecnico", technical_ok, "confirmado o esperando mercado" if technical_ok else "falta confirmacion tecnica"),
+        ("Opciones", options_ok, "strike/DTE/delta presentes" if options_ok else "contrato incompleto"),
+        ("Capacidad", capacity_ok, "capital dentro de cuenta" if capacity_ok else "requiere validar capital"),
+        ("CANSLIM", canslim_ok, "contexto dinamico presente" if canslim_ok else "sin dato CANSLIM en alerta"),
+        ("Riesgo", risk_ok, "sin bloqueo de riesgo" if risk_ok else "bloqueo/riesgo activo"),
+    ]
+
+
+def render_alert_checklist(alert: dict[str, Any], account_capacity: dict[str, Any]) -> str:
+    items = []
+    for label, ok, note in alert_checklist_items(alert, account_capacity):
+        items.append("""
+        <li class="{klass}"><span></span><strong>{label}</strong><small>{note}</small></li>
+        """.format(
+            klass="check-ok" if ok else "check-wait",
+            label=html_escape(label),
+            note=html_escape(note),
+        ))
+    return '<ul class="alert-checklist">{}</ul>'.format("".join(items))
+
+
 def operator_status(alert: dict[str, Any]) -> str:
     return str(alert.get("operator_status") or "NEW").upper()
 
@@ -1769,6 +2222,8 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
               <div class="contract-line">{contract}</div>
               <div class="economics-line">{economics}</div>
               <div class="capacity-line">{capacity}</div>
+              <div class="why-line">{why}</div>
+              {checklist}
               <div class="review-line">{guidance}</div>
               <small>blocker: {blocker} | status: {status}</small>
               {actions}
@@ -1786,6 +2241,8 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
         contract=html_escape(render_alert_contract(alert)),
         economics=render_alert_economics(alert),
         capacity=render_alert_capacity(alert, account_capacity),
+        why=html_escape(alert_reason_plain(alert)),
+        checklist=render_alert_checklist(alert, account_capacity),
         guidance=html_escape(alert_review_guidance(alert)),
         blocker=html_escape(alert.get("main_blocker") or "NONE"),
         actions=actions_html,
@@ -1986,6 +2443,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     active = active_profile()
     snapshot = latest_master_snapshot()
     operator_payload = console_operator_payload(prefer_cache=prefer_cache)
+    reports = console_reports()
     result = result or web_last_result()
     refresh_meta, job_panel = render_job_panel(job_id)
 
@@ -2024,6 +2482,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .lede {{ color:var(--muted); max-width:720px; font-size:1.08rem; }}
           .notice,.panel,.card {{ border:1px solid var(--line); background:rgba(255,250,240,.82); border-radius:22px; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
           .notice {{ padding:14px 18px; margin:22px 0; }}
+          .today-panel {{ border-color:#bfd7ff; background:#f7fbff; }}
+          .today-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }}
           .control-strip {{ display:grid; grid-template-columns:1.15fr 1.35fr 1fr; gap:14px; align-items:center; border:1px solid var(--line); border-radius:22px; padding:14px 16px; margin-bottom:18px; background:#fffdf6; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
           .signal {{ display:flex; align-items:center; gap:12px; }}
           .signal strong,.signal small,.thinking-now strong,.thinking-now small {{ display:block; }}
@@ -2059,6 +2519,22 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .job-panel {{ border-color:#b88b2a; background:#fff8e7; }}
           .job-panel.status-done {{ border-color:#1d6b4f; background:#eef8ef; }}
           .job-panel.status-error {{ border-color:var(--risk); background:#fff1ef; }}
+          .module-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }}
+          .module-card {{ display:flex; gap:11px; align-items:flex-start; border:1px solid var(--line); background:#fffdf6; border-radius:16px; padding:12px; }}
+          .module-card strong,.module-card span,.module-card small {{ display:block; }}
+          .module-card span {{ color:var(--ink); margin-top:2px; }}
+          .module-card small {{ color:var(--muted); margin-top:3px; }}
+          .module-dot {{ width:12px; height:12px; border-radius:999px; margin-top:4px; flex:0 0 auto; background:#94a3b8; box-shadow:0 0 0 5px rgba(148,163,184,.15); }}
+          .module-green .module-dot,.timeline-green > span,.check-ok > span {{ background:#16a34a; box-shadow:0 0 0 5px rgba(22,163,74,.14); }}
+          .module-amber .module-dot,.timeline-amber > span,.check-wait > span {{ background:#d97706; box-shadow:0 0 0 5px rgba(217,119,6,.16); }}
+          .module-red .module-dot,.timeline-red > span {{ background:#b42318; box-shadow:0 0 0 5px rgba(180,35,24,.14); }}
+          .timeline {{ list-style:none; padding:0; margin:14px 0 0; display:grid; gap:10px; }}
+          .timeline li {{ display:flex; gap:12px; align-items:flex-start; border:1px solid var(--line); border-radius:16px; background:#fffdf6; padding:12px; }}
+          .timeline li > span {{ width:12px; height:12px; border-radius:999px; margin-top:4px; flex:0 0 auto; background:#94a3b8; }}
+          .timeline strong,.timeline small {{ display:block; }}
+          .timeline small {{ color:var(--muted); margin-top:3px; }}
+          .market-panel {{ border-color:#bfd7ff; background:#f5f9ff; }}
+          .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
           .process-panel {{ border-color:#d97706; background:#fff8e7; }}
           .process-list {{ display:grid; gap:10px; margin-top:12px; }}
           .process-row {{ display:flex; align-items:center; gap:12px; border:1px solid #efc99d; border-radius:16px; background:#fffdf6; padding:12px; color:var(--ink); text-decoration:none; }}
@@ -2085,11 +2561,17 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
           .status-rejected .alert-title em,.status-risk-blocked .alert-title em {{ background:#fff1ef; color:var(--risk); }}
           .status-closed .alert-title em,.status-acknowledged .alert-title em,.status-approved-for-manual-review .alert-title em,.status-approved-for-manual-trade .alert-title em {{ background:#eef8ef; color:#1d6b4f; }}
-          .contract-line,.review-line,.economics-line,.capacity-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
+          .contract-line,.review-line,.economics-line,.capacity-line,.why-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
           .contract-line {{ font-weight:800; color:var(--ink); }}
           .economics-line {{ color:#1d6b4f; background:#f1fbf4; border-color:#badbcc; font-weight:800; }}
           .capacity-line {{ color:#174ea6; background:#eef5ff; border-color:#bfd7ff; font-weight:800; }}
+          .why-line {{ background:#f7fbff; border-color:#bfd7ff; color:#174ea6; font-weight:800; }}
           .review-line {{ color:var(--warn); background:#fff7e8; }}
+          .alert-checklist {{ list-style:none; padding:0; margin:10px 0 0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }}
+          .alert-checklist li {{ display:grid; grid-template-columns:14px 1fr; column-gap:7px; align-items:start; border:1px solid var(--line); border-radius:11px; padding:7px; background:white; }}
+          .alert-checklist li > span {{ width:9px; height:9px; border-radius:999px; margin-top:4px; }}
+          .alert-checklist strong {{ font-size:.82rem; line-height:1.1; }}
+          .alert-checklist small {{ grid-column:2; font-size:.78rem; margin-top:2px; }}
           .closed-alert {{ opacity:.76; border-style:dashed; }}
           .reviewed-alerts {{ margin-top:14px; }}
           .reviewed-alerts summary {{ cursor:pointer; font-weight:800; color:var(--muted); }}
@@ -2112,7 +2594,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} }}
-          @media (max-width:820px) {{ h1 {{ font-size:2.4rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
+          @media (max-width:820px) {{ h1 {{ font-size:2.4rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
       <body>
@@ -2125,8 +2607,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         <main>
           {health}
           {active_process}
+          {today}
+          {modules}
+          {market_mode}
+          {timeline}
           {context}
           {capacity}
+          {diagnostic}
           {message}
           {job_panel}
           <section class="panel">
@@ -2197,7 +2684,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         context=render_console_context(active, snapshot, operator_payload),
         health=render_console_health(active, snapshot, operator_payload),
         active_process=render_active_process_panel(),
+        today=render_today_panel(active, snapshot, operator_payload, reports),
+        modules=render_module_health(active, snapshot, operator_payload, reports),
+        market_mode=render_market_mode_panel(operator_payload, reports),
+        timeline=render_timeline(snapshot, operator_payload, reports),
         capacity=render_account_capacity_panel(operator_payload, snapshot),
+        diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
         job_panel=job_panel,
@@ -2281,6 +2773,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/daily-open":
                 job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
                 self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
+            elif self.path == "/diagnostic":
+                job_id = start_web_job(alias, console_diagnostic_command(), "Diagnostico completo")
+                self.send_html("Diagnostico completo iniciado. Revisa RUNNING/DONE en esta misma consola.", job_id=job_id)
             elif self.path == "/refresh-remote":
                 result = fetch_remote_json(
                     "/gpt_v32_operator_today?limit=12",

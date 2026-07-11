@@ -153,9 +153,17 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             "state": "ENTRY_READY",
             "severity": "ACTION",
             "operator_status": "NEW",
+            "setup_validity_pct": 92,
+            "canslim_score": 78,
+            "selected_contract": {
+                "strike": 650,
+                "dte": 42,
+                "delta": -0.18,
+                "bid": 4.2,
+            },
         }
 
-        html = account_console.render_alert_card(alert)
+        html = account_console.render_alert_card(alert, account_capacity={"available_capacity": 100000})
 
         self.assertIn("status-new", html)
         self.assertIn("<em>NEW</em>", html)
@@ -163,6 +171,81 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn(">Revisando</button>", html)
         self.assertIn(">Watch</button>", html)
         self.assertIn("Guardando revision en produccion", html)
+        self.assertIn("why-line", html)
+        self.assertIn("alert-checklist", html)
+        self.assertIn("Score", html)
+        self.assertIn("CANSLIM", html)
+
+    def test_next_level_console_panels_render_daily_control_surfaces(self):
+        active = {"account_scope": "primary", "account_alias": "primary"}
+        snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary", "generated_at": account_console.now_iso()}
+        operator_payload = {
+            "ok": True,
+            "token_present": True,
+            "data": {
+                "status": "WAIT_MARKET",
+                "account_context": {"account_scope": "primary", "account_alias": "primary"},
+                "account_capacity": {"available_capacity": 50000, "capacity_source": "available_funds"},
+                "active_alerts": [
+                    {
+                        "alert_id": "alert-1",
+                        "ticker": "MNQ",
+                        "strategy": "INTRADAY_INDEX_FUTURES",
+                        "state": "WAIT_MARKET",
+                        "severity": "WATCH",
+                        "operator_status": "NEW",
+                    }
+                ],
+            },
+        }
+        reports = {
+            "tradingview": {
+                "_runtime_available": True,
+                "status": "WAITING_FOR_REAL_TRADINGVIEW_EVENTS",
+                "total_received_required_event_count": 0,
+                "total_required_logical_event_count": 16,
+                "real_e2e_confirmed": False,
+                "generated_at": account_console.now_iso(),
+            },
+            "readiness": {
+                "_runtime_available": True,
+                "status": "WAITING_TV",
+                "next_required_action": "Esperar payloads reales de TradingView.",
+                "generated_at": account_console.now_iso(),
+            },
+            "notify": {
+                "_runtime_available": True,
+                "status": "OK",
+                "classification": {"notify_reason": "WAIT_MARKET_SUPPRESSED"},
+                "checked_at": account_console.now_iso(),
+            },
+            "edge": {
+                "_runtime_available": True,
+                "overall_status": "NEEDS_REVIEW",
+                "overall_edge_score": 75.67,
+                "recommended_sequence": ["Confirmar eventos reales TradingView."],
+                "generated_at": account_console.now_iso(),
+            },
+            "daily_open": {
+                "_runtime_available": True,
+                "status": "WAIT_MARKET",
+                "generated_at": account_console.now_iso(),
+            },
+        }
+
+        today = account_console.render_today_panel(active, snapshot, operator_payload, reports)
+        modules = account_console.render_module_health(active, snapshot, operator_payload, reports)
+        market = account_console.render_market_mode_panel(operator_payload, reports)
+        diagnostic = account_console.render_diagnostic_panel(active, reports)
+
+        self.assertIn("Modo Hoy", today)
+        self.assertIn("Esperando mercado", today)
+        self.assertIn("Semaforo por modulo", modules)
+        self.assertIn("TradingView", modules)
+        self.assertIn("Modo mercado abierto", market)
+        self.assertIn("Futuros vivos", market)
+        self.assertIn("Diagnostico completo", diagnostic)
+        self.assertIn("Revisar sistema", diagnostic)
 
 
 if __name__ == "__main__":

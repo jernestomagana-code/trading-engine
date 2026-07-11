@@ -331,6 +331,22 @@ Control-console contract:
 - Already handled alerts move out of first review into the reviewed/cerradas
   section, so the operator can see what has truly been touched.
 
+Next-level console surfaces:
+
+- `Modo Hoy` is the first operating answer: blocked, processing, risk,
+  review, waiting-market, out-of-market, or monitoring.
+- `Semaforo por modulo` separates TWS/IBKR, TradingView, production, GPT
+  context, notifications, capacity, alerts, and Operational Edge.
+- `Timeline operativo` shows recent local jobs, operator marks, TradingView
+  health, readiness, notification checks, and cached GPT state.
+- `Modo mercado abierto` highlights intraday futures, real TradingView event
+  coverage, and notification status; it keeps the immediate futures webhook path
+  visually separate from the slower reminder loop.
+- `Diagnostico completo` runs the safe daily-open checklist from the console and
+  reports RUNNING/DONE without authorizing execution.
+- Each alert card includes a plain-language "why" line plus checklist for score,
+  technical confirmation, options data, capacity, CANSLIM, and risk.
+
 No-terminal launcher:
 
 ```text
