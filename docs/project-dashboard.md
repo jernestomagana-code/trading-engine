@@ -1,6 +1,6 @@
 # Stock Ultimus Project Dashboard
 
-Ultima actualizacion: 2026-07-05
+Ultima actualizacion: 2026-07-11
 
 Este tablero resume como vamos, que esta validado y que falta para considerar
 Stock Ultimus operativo al 100% para uso personal controlado. El sistema sigue
@@ -74,6 +74,9 @@ Resumen:
 - Hay capa V32 Operational Edge: `/v32_operational_edge` y
   `/v32_operational_edge_dashboard`; consolida los 7 frentes de mejora para
   llevar el sistema al siguiente nivel sin autorizar ordenes.
+- La consola local `python3 scripts/ibkr_account_profile.py serve` es el cockpit
+  operativo principal: muestra foco de salud, procesos RUNNING/DONE, capacidad
+  IBKR, contexto GPT, alertas V32 y marcas visibles de revision.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
   explicita `--real-outcomes-after-close`.

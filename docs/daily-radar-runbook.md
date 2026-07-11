@@ -314,6 +314,23 @@ selection, IBKR refresh, V32 alerts, GPT context, and protected production links
 The page is intentionally localhost-only because it can read the local Keychain
 and run local TWS/bridge commands. Do not expose it on a public interface.
 
+Control-console contract:
+
+- The top status strip is the first thing to read. Green means production,
+  selected account context, snapshot, and account capacity are aligned for
+  manual review. Amber means the console is usable but stale, partial, cached,
+  or currently running a local process. Red means do not operate the console
+  flow until token/production access is restored.
+- When a long process is running, the console shows `La consola esta trabajando`
+  plus a RUNNING/DONE detail link. Do not press another refresh button until the
+  process finishes.
+- Alert buttons are workflow marks only: `Visto`, `Revisando`, `Watch`,
+  `Rechazar`, and `Cerrar`. After clicking, the alert receives a visible status
+  badge and the event is saved for tracking/backtesting. These marks never
+  authorize orders.
+- Already handled alerts move out of first review into the reviewed/cerradas
+  section, so the operator can see what has truly been touched.
+
 No-terminal launcher:
 
 ```text
