@@ -119,6 +119,48 @@ class AlertOpportunityAuditTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["decision_count"], 1)
             self.assertEqual(payload["summary"]["entry_ready_count"], 1)
 
+    def test_audit_separates_recent_from_historical_decisions(self):
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "v32_decision_journal.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "decision_id": "DEC-HIST",
+                            "recorded_at": "2026-06-24T22:54:30+00:00",
+                            "ticker": "MSFT",
+                            "strategy": "UNKNOWN",
+                            "final_state": "NO_DATA",
+                            "main_blocker": "NO_OPTIONS_ROWS_FOR_TICKER",
+                        },
+                        {
+                            "decision_id": "DEC-RECENT",
+                            "recorded_at": "2026-07-10T15:00:00+00:00",
+                            "ticker": "QQQ",
+                            "strategy": "NAKED_PUT",
+                            "final_state": "ENTRY_READY",
+                            "candidate_source": "IBKR_OPTION_CHAIN",
+                            "confirmation_source": "TRADINGVIEW_ALERT",
+                        },
+                    ]
+                )
+            )
+
+            payload = alert_opportunity_audit.build_alert_opportunity_audit(
+                runtime,
+                generated_at="2026-07-11T03:20:00+00:00",
+                recent_days=7,
+            )
+
+            freshness = payload["freshness"]
+            self.assertEqual(freshness["recent_decision_count"], 1)
+            self.assertEqual(freshness["historical_decision_count"], 1)
+            self.assertEqual(freshness["recent_entry_ready_count"], 1)
+            self.assertEqual(freshness["recent_state_counts"], {"ENTRY_READY": 1})
+            self.assertEqual(freshness["historical_unknown_source_decisions"], 1)
+            self.assertEqual(freshness["recent_unknown_source_decisions"], 0)
+            self.assertEqual(freshness["recent_missed_opportunity_review"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

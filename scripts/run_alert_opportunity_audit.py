@@ -26,12 +26,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json-out", default=str(DEFAULT_JSON_OUT))
     parser.add_argument("--csv-out", default=str(DEFAULT_CSV_OUT))
     parser.add_argument("--preview", type=int, default=10)
+    parser.add_argument("--recent-days", type=int, default=14)
     return parser.parse_args()
 
 
 def print_summary(payload: dict, preview: int) -> None:
     summary = payload.get("summary") or {}
     data_quality = payload.get("data_quality") or {}
+    freshness = payload.get("freshness") or {}
     print("Stock Ultimus Alert Opportunity Audit")
     print(f"Version: {payload.get('audit_version')} | generated_at={payload.get('generated_at')}")
     print(
@@ -45,6 +47,15 @@ def print_summary(payload: dict, preview: int) -> None:
     )
     print(f"Primary gap: {data_quality.get('primary_gap')}")
     print(f"Unknown source decisions: {data_quality.get('unknown_source_decisions')} ({data_quality.get('unknown_source_pct')}%)")
+    print(
+        "Recent window: {days}d | recent={recent} | historical={historical} | recent ENTRY_READY={entry}".format(
+            days=freshness.get("recent_days"),
+            recent=freshness.get("recent_decision_count"),
+            historical=freshness.get("historical_decision_count"),
+            entry=freshness.get("recent_entry_ready_count"),
+        )
+    )
+    print(f"Undated decisions: {freshness.get('undated_decision_count')}")
     print(f"State counts: {summary.get('state_counts')}")
     print(f"Blocker counts: {summary.get('blocker_counts')}")
     print(f"Source counts: {summary.get('source_counts')}")
@@ -86,7 +97,7 @@ def print_summary(payload: dict, preview: int) -> None:
 def main() -> int:
     args = parse_args()
     runtime_dir = Path(args.runtime_dir)
-    payload = alert_opportunity_audit.build_alert_opportunity_audit(runtime_dir)
+    payload = alert_opportunity_audit.build_alert_opportunity_audit(runtime_dir, recent_days=args.recent_days)
 
     json_out = Path(args.json_out)
     json_out.parent.mkdir(parents=True, exist_ok=True)
