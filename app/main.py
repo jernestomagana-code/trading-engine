@@ -50,6 +50,7 @@ import tradingview_signal_ledger as shared_tradingview_signal_ledger
 import tradingview_operational_health as shared_tradingview_operational_health
 import foundation_health as shared_foundation_health
 import evidence_quality as shared_evidence_quality
+import operational_edge as shared_operational_edge
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -1395,6 +1396,135 @@ def _v32_strategy_performance_dashboard_html(limit=1000):
         regime_count=_v29_html_escape(summary.get("strategy_regime_group_count")),
         rows="".join(rows) or '<tr><td colspan="10">Sin estrategias disponibles.</td></tr>',
         regime_rows="".join(regime_rows) or '<tr><td colspan="7">Sin evidencia por regimen.</td></tr>',
+    )
+
+
+def _v32_operational_edge_payload(top=5, recent_days=14):
+    try:
+        top = max(1, min(int(top or 5), 25))
+    except Exception:
+        top = 5
+    try:
+        recent_days = max(1, min(int(recent_days or 14), 90))
+    except Exception:
+        recent_days = 14
+    return shared_operational_edge.build_operational_edge_report(
+        Path("runtime"),
+        generated_at=_v29_now(),
+        recent_days=recent_days,
+        top_limit=top,
+    )
+
+
+def _v32_operational_edge_dashboard_html(top=5, recent_days=14):
+    payload = _v32_operational_edge_payload(top=top, recent_days=recent_days)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else {}
+
+    capability_rows = []
+    for key, item in capabilities.items():
+        item = item if isinstance(item, dict) else {}
+        capability_rows.append("""
+        <tr>
+          <td>{name}</td>
+          <td>{status}</td>
+          <td>{score}</td>
+          <td>{next_action}</td>
+        </tr>
+        """.format(
+            name=_v29_html_escape(key),
+            status=_v29_html_escape(item.get("status")),
+            score=_v29_html_escape(item.get("score")),
+            next_action=_v29_html_escape(item.get("next_action")),
+        ))
+
+    opportunity_rows = []
+    for item in summary.get("best_opportunities") or []:
+        opportunity_rows.append("""
+        <tr>
+          <td>{ticker}</td><td>{strategy}</td><td>{state}</td><td>{score}</td><td>{blocker}</td>
+        </tr>
+        """.format(
+            ticker=_v29_html_escape(item.get("ticker")),
+            strategy=_v29_html_escape(item.get("strategy")),
+            state=_v29_html_escape(item.get("final_state")),
+            score=_v29_html_escape(item.get("institutional_score")),
+            blocker=_v29_html_escape(item.get("main_blocker")),
+        ))
+
+    contract_rows = []
+    for item in summary.get("best_contracts") or []:
+        contract_rows.append("""
+        <tr>
+          <td>{ticker}</td><td>{strategy}</td><td>{expiration}</td><td>{strike}</td>
+          <td>{dte}</td><td>{delta}</td><td>{spread}</td><td>{score}</td>
+        </tr>
+        """.format(
+            ticker=_v29_html_escape(item.get("ticker")),
+            strategy=_v29_html_escape(item.get("strategy")),
+            expiration=_v29_html_escape(item.get("expiration")),
+            strike=_v29_html_escape(item.get("strike")),
+            dte=_v29_html_escape(item.get("dte")),
+            delta=_v29_html_escape(item.get("delta")),
+            spread=_v29_html_escape(item.get("spread_pct")),
+            score=_v29_html_escape(item.get("contract_score")),
+        ))
+
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>V32 Operational Edge</title>
+      <style>
+        body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f8fafc; color:#111827; }}
+        .hero {{ background:#0f172a; color:white; padding:28px 34px; }}
+        .hero h1 {{ margin:0 0 8px 0; font-size:30px; }}
+        .hero a {{ color:#bfdbfe; }}
+        .wrap {{ padding:24px 34px 48px; }}
+        .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; border-radius:8px; padding:13px 15px; margin-bottom:20px; line-height:1.45; }}
+        .grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:20px; }}
+        .metric {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:16px; }}
+        .metric span {{ display:block; color:#64748b; font-size:12px; text-transform:uppercase; font-weight:800; }}
+        .metric strong {{ display:block; font-size:26px; margin-top:6px; }}
+        .card {{ background:white; border:1px solid #e2e8f0; border-radius:8px; overflow:auto; margin:18px 0; }}
+        table {{ width:100%; border-collapse:collapse; min-width:760px; }}
+        th, td {{ padding:11px 12px; border-bottom:1px solid #e2e8f0; text-align:left; font-size:13px; vertical-align:top; }}
+        th {{ background:#f1f5f9; color:#475569; text-transform:uppercase; font-size:11px; }}
+      </style>
+    </head>
+    <body>
+      <div class="hero">
+        <h1>V32 Operational Edge</h1>
+        <div>Generado: {generated} · <a href="/v32_operational_edge">JSON</a> · <a href="/v32_project_command_center">Command Center</a></div>
+      </div>
+      <div class="wrap">
+        <div class="guardrail">Capa de mejora continua: confirma mercado, calibra scores, rankea oportunidades, evalua contratos, degrada CANSLIM por confianza y prepara post-mortem. No autoriza ordenes.</div>
+        <div class="grid">
+          <div class="metric"><span>Edge score</span><strong>{score}</strong></div>
+          <div class="metric"><span>Status</span><strong>{status}</strong></div>
+          <div class="metric"><span>Decisiones</span><strong>{decisions}</strong></div>
+          <div class="metric"><span>Outcomes</span><strong>{outcomes}</strong></div>
+        </div>
+        <h2>7 frentes</h2>
+        <div class="card"><table><thead><tr><th>Frente</th><th>Status</th><th>Score</th><th>Siguiente accion</th></tr></thead><tbody>{capabilities}</tbody></table></div>
+        <h2>Shortlist institucional</h2>
+        <div class="card"><table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Estado</th><th>Score</th><th>Bloqueador</th></tr></thead><tbody>{opportunities}</tbody></table></div>
+        <h2>Contratos mejor rankeados</h2>
+        <div class="card"><table><thead><tr><th>Ticker</th><th>Estrategia</th><th>Exp</th><th>Strike</th><th>DTE</th><th>Delta</th><th>Spread %</th><th>Score</th></tr></thead><tbody>{contracts}</tbody></table></div>
+      </div>
+    </body>
+    </html>
+    """.format(
+        generated=_v29_html_escape(payload.get("generated_at")),
+        score=_v29_html_escape(payload.get("overall_edge_score")),
+        status=_v29_html_escape(payload.get("overall_status")),
+        decisions=_v29_html_escape(summary.get("decision_count")),
+        outcomes=_v29_html_escape(summary.get("outcome_count")),
+        capabilities="".join(capability_rows) or '<tr><td colspan="4">Sin datos.</td></tr>',
+        opportunities="".join(opportunity_rows) or '<tr><td colspan="5">Sin oportunidades rankeables.</td></tr>',
+        contracts="".join(contract_rows) or '<tr><td colspan="8">Sin contratos rankeables.</td></tr>',
     )
 
 
@@ -28116,6 +28246,16 @@ async def v32_operator_daily_cycle(force_preview: bool = False):
 @app.get("/gpt_v32_operator_daily_cycle")
 async def gpt_v32_operator_daily_cycle(force_preview: bool = False):
     return _v32_operator_daily_cycle_payload(force_preview=force_preview)
+
+
+@app.get("/v32_operational_edge")
+async def v32_operational_edge(top: int = 5, recent_days: int = 14):
+    return _v32_operational_edge_payload(top=top, recent_days=recent_days)
+
+
+@app.get("/v32_operational_edge_dashboard", response_class=_V29HTMLResponse)
+async def v32_operational_edge_dashboard(top: int = 5, recent_days: int = 14):
+    return _V29HTMLResponse(_v32_operational_edge_dashboard_html(top=top, recent_days=recent_days))
 
 
 @app.get("/v32_operator_daily_summary_email/preview")

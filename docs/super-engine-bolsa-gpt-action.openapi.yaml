@@ -337,6 +337,46 @@ paths:
           $ref: "#/components/responses/UnauthorizedRead"
         "503":
           $ref: "#/components/responses/ReadTokenNotConfigured"
+  /v32_operational_edge:
+    get:
+      operationId: getOperationalEdge
+      summary: Get the integrated V32 operational edge report
+      description: >
+        Returns the seven-front next-level readiness report: real-market
+        confirmation, score calibration, institutional opportunity ranking,
+        option-contract optimization, dynamic CANSLIM confidence, control-panel
+        health, and post-mortem readiness. This is read-only and never
+        authorizes execution.
+      parameters:
+        - name: top
+          in: query
+          required: false
+          description: Number of top opportunities/contracts/CANSLIM rows to include.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 25
+            default: 5
+        - name: recent_days
+          in: query
+          required: false
+          description: Recent window used by supporting audits.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 14
+      responses:
+        "200":
+          description: V32 operational edge report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationalEdge"
+        "401":
+          $ref: "#/components/responses/UnauthorizedRead"
+        "503":
+          $ref: "#/components/responses/ReadTokenNotConfigured"
   /v32_operator_pushover_notify/preview:
     get:
       operationId: previewOperatorPushoverNotify
@@ -682,6 +722,35 @@ components:
       properties:
         detail:
           type: string
+    OperationalEdge:
+      type: object
+      additionalProperties: true
+      properties:
+        engine:
+          type: string
+          enum: [V32_OPERATIONAL_EDGE]
+        operational_edge_version:
+          type: string
+        overall_edge_score:
+          type: number
+        overall_status:
+          type: string
+        summary:
+          type: object
+          additionalProperties: true
+        capabilities:
+          type: object
+          additionalProperties: true
+        recommended_sequence:
+          type: array
+          items:
+            type: string
+        execution_authorized:
+          type: boolean
+          enum: [false]
+        not_order_instruction:
+          type: boolean
+          enum: [true]
     SystemStatus:
       type: object
       additionalProperties: true

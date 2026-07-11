@@ -186,6 +186,31 @@ That explicit flag runs the real outcome-evaluation write while preserving
 It also refuses the real write if GPT Action health, the cloud operational
 audit, or the outcome dry-run fails first.
 
+Operational edge report:
+
+```bash
+python3 scripts/run_operational_edge_report.py --top 5 --preview 5
+```
+
+This is the integrated next-level report for the seven improvement fronts:
+real-market confirmation, outcome-based score calibration, institutional
+opportunity ranking, option-contract optimization, dynamic CANSLIM confidence,
+control-panel health, and automatic post-mortem readiness. It writes:
+
+```bash
+runtime/v32_operational_edge_latest.json
+```
+
+Production routes:
+
+- `/v32_operational_edge`
+- `/v32_operational_edge_dashboard`
+
+Interpretation: `overall_edge_score` is a maturity/readiness score, not a trade
+score. Low calibration means the system needs more complete outcomes before
+changing parameters. High contract ranking means IBKR has enough option-chain
+evidence to shortlist contracts for manual review.
+
 Preferred one-command operating-day cycle:
 
 ```bash
