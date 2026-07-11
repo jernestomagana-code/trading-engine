@@ -815,7 +815,7 @@ MAX_OPTIONS_PER_SYMBOL = _env_int(
 )
 MAX_OPTION_SYMBOLS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_OPTION_SYMBOLS_PER_RUN",
-    5 if DAILY_RADAR_FAST else 8,
+    6 if DAILY_RADAR_FAST else 10,
 ))
 MAX_TOTAL_OPTION_CONTRACTS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN",
@@ -831,7 +831,11 @@ INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES = _env_bool(
 )
 OPTION_CORE_SYMBOLS = _env_csv_list(
     "IBKR_OPTION_CORE_SYMBOLS",
-    ["QQQ", "SPY", "TLT"],
+    ["QQQ", "SPY"],
+)
+OPTION_CONTEXT_ONLY_SYMBOLS = _env_csv_list(
+    "IBKR_OPTION_CONTEXT_ONLY_SYMBOLS",
+    ["TLT"],
 )
 OPTION_PRIORITY_SYMBOLS = _env_csv_list(
     "IBKR_OPTION_PRIORITY_SYMBOLS",
@@ -839,7 +843,7 @@ OPTION_PRIORITY_SYMBOLS = _env_csv_list(
 )
 OPTION_MIN_UNDERLYING_SCORE = _env_float(
     "IBKR_OPTION_MIN_UNDERLYING_SCORE",
-    35,
+    30,
 )
 OPTION_TECHNICAL_TRIGGER_SCORE = _env_float(
     "IBKR_OPTION_TECHNICAL_TRIGGER_SCORE",
@@ -1368,6 +1372,7 @@ def option_underlying_rank(symbol, technical=None, *, held_symbols=None, origina
     technical = technical if isinstance(technical, dict) else {}
     held_symbols = held_symbols if isinstance(held_symbols, set) else set()
     core = set(_bridge_unique_symbols(OPTION_CORE_SYMBOLS))
+    context_only = set(_bridge_unique_symbols(OPTION_CONTEXT_ONLY_SYMBOLS))
     priority = set(_bridge_unique_symbols(OPTION_PRIORITY_SYMBOLS))
     tier_score = float(OPTION_UNDERLYING_TIER_SCORES.get(symbol, 0))
     tech_score = _bridge_technical_score(technical)
@@ -1388,6 +1393,9 @@ def option_underlying_rank(symbol, technical=None, *, held_symbols=None, origina
         score += 100
         triggers.append("CORE_MARKET_CONTEXT")
         reasons.append("contexto de mercado/riesgo")
+    if symbol in context_only:
+        score += 25
+        reasons.append("contexto macro, no consume chain sin detonador")
     if symbol in priority:
         score += 85
         triggers.append("OPERATOR_PRIORITY")
@@ -1438,6 +1446,14 @@ def option_underlying_rank(symbol, technical=None, *, held_symbols=None, origina
     score -= min(max(original_index, 0), 500) * 0.01
     score = round(max(0.0, score), 2)
     qualifies = bool(triggers) or score >= OPTION_MIN_UNDERLYING_SCORE
+    if symbol in context_only:
+        actionable_triggers = [
+            trigger for trigger in triggers
+            if trigger not in {"LIQUID_LARGE_CAP", "CORE_MARKET_CONTEXT"}
+        ]
+        if not actionable_triggers:
+            qualifies = False
+            blockers.append("CONTEXT_ONLY_NO_ACTION_TRIGGER")
     if not qualifies:
         blockers.append("NO_DYNAMIC_UNDERLYING_TRIGGER")
 

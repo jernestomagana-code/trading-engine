@@ -446,7 +446,9 @@ universe.
 Option-chain expansion is dynamic. The bridge first ranks the candidate
 underlyings, then opens chains only for the selected subset. The rank combines:
 
-- Core market context: `QQQ`, `SPY`, and `TLT` by default.
+- Core market context: `QQQ` and `SPY` by default.
+- Context-only market signals such as `TLT`; they inform macro/rates context
+  but do not consume option-chain budget unless another detonator is present.
 - Operator priority symbols from `IBKR_OPTION_PRIORITY_SYMBOLS`.
 - Existing portfolio positions, so covered-call/management candidates are not
   skipped just because they are outside the top growth list.
@@ -458,9 +460,13 @@ Current guardrails:
 
 - `IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=true` by default.
 - `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` limits how many underlyings get option
-  chains in one cycle.
+  chains in one cycle. Default is 10 in normal mode and 6 in fast mode.
 - `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN` limits total option contracts
   queried in one cycle.
+- `IBKR_OPTION_MIN_UNDERLYING_SCORE` defaults to 30 so liquid large-cap names
+  can enter discovery while the contract budget still caps IBKR load.
+- `IBKR_OPTION_CONTEXT_ONLY_SYMBOLS` defaults to `TLT`; these symbols need
+  priority, position, technical, or CANSLIM confirmation before opening chains.
 - `IBKR_OPTION_TECHNICAL_TRIGGER_SCORE` and
   `IBKR_OPTION_CANSLIM_TRIGGER_SCORE` define the technical/CANSLIM detonators.
 - The IBKR diagnostic file records `option_symbol_plan` with ranked, selected,
