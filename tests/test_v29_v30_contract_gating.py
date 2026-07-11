@@ -1349,6 +1349,105 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_not_called()
 
+    def test_intraday_futures_text_event_code_builds_entry_ready_review_signal(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "direction": "LONG",
+            "price": 100.0,
+            "logical_stop": 98.0,
+            "logical_target": 104.0,
+            "nlv": 100000,
+            "portfolio_status": "OK",
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "get_intraday_futures_premarket_context", return_value={
+            "found": True,
+            "context": {
+                "decision_max_state": "ENTRY_READY",
+                "macro_status": "CLEAR",
+                "volatility_status": "NORMAL",
+                "risk_daily_status": "CLEAR",
+                "portfolio_status": "CLEAR",
+                "reference_alignment": "ALIGNED",
+            },
+        }):
+            result = main.build_intraday_futures_construction(payload)
+
+        self.assertEqual(result["final_state"], "ENTRY_READY")
+        self.assertEqual(result["decision"]["final_state"], "ENTRY_READY")
+        self.assertEqual(result["construction"]["event_code"], "MNQ_ORB_BREAKOUT_LONG_5M")
+        self.assertEqual(result["construction"]["stop_points"], 2.0)
+        self.assertEqual(result["construction"]["rr_ratio"], 2.0)
+        self.assertFalse(result["decision"].get("execution_authorized", False))
+        self.assertTrue(result["not_order_instruction"])
+
+    def test_v32_intraday_futures_immediate_notify_sends_and_dedupes_entry_event(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "direction": "LONG",
+            "price": 100.0,
+            "received_at": "2026-07-13T14:35:00+00:00",
+            "final_state": "ENTRY_READY",
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "_v29_load_json_file", return_value={}), patch.object(
+            main,
+            "_v32_save_intraday_futures_immediate_state",
+            return_value=True,
+        ) as save_state, patch.object(main, "send_pushover_message", return_value={
+            "pushover_sent": True,
+            "provider": "pushover",
+            "status_code": 200,
+        }) as send_push:
+            result = main._v32_intraday_futures_immediate_notify_payload(payload)
+
+        self.assertEqual(result["engine"], "V32_INTRADAY_FUTURES_IMMEDIATE_NOTIFY")
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["trigger_kind"], "ENTRY_TRIGGER")
+        self.assertTrue(result["would_notify"])
+        self.assertTrue(result["pushover_sent"])
+        self.assertIn("futuros intradia", result["message"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
+        save_state.assert_called_once()
+
+        signature = main._v32_intraday_futures_immediate_signature(payload)
+        state = {"sent": {"2026-07-13:MNQ1!:MNQ_ORB_BREAKOUT_LONG_5M:100.0": {"signature": signature, "status": "sent"}}}
+        with patch.object(main, "_v29_load_json_file", return_value=state), patch.object(main, "send_pushover_message") as send_push:
+            deduped = main._v32_intraday_futures_immediate_notify_payload(payload)
+
+        self.assertEqual(deduped["status"], "deduped")
+        self.assertFalse(deduped["pushover_sent"])
+        send_push.assert_not_called()
+
+    def test_v32_intraday_futures_immediate_notify_suppresses_snapshots_and_validation(self):
+        snapshot = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event": "SESSION_SNAPSHOT",
+            "event_code": "MES_SESSION_SNAPSHOT_5M",
+            "not_order_instruction": True,
+        }
+        validation = {**snapshot, "event": "ORB_BREAKOUT", "event_code": "MES_ORB_BREAKOUT_LONG_5M", "is_validation": True}
+        with patch.object(main, "send_pushover_message") as send_push:
+            snapshot_result = main._v32_intraday_futures_immediate_notify_payload(snapshot)
+            validation_result = main._v32_intraday_futures_immediate_notify_payload(validation)
+
+        self.assertEqual(snapshot_result["status"], "skipped")
+        self.assertEqual(snapshot_result["reason"], "SESSION_SNAPSHOT_SUPPRESSED")
+        self.assertEqual(validation_result["status"], "skipped")
+        self.assertEqual(validation_result["reason"], "VALIDATION_EVENT_SUPPRESSED")
+        send_push.assert_not_called()
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",

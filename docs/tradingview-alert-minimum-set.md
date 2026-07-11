@@ -3,6 +3,23 @@
 This is the production futures confirmation layer for Stock Ultimus. These
 alerts provide technical evidence only; they do not authorize orders.
 
+## Real-Time Delivery Model
+
+The futures alerts are event-driven, not batch-driven:
+
+1. TradingView fires the Pine `alert()` payload from `MNQ1!` or `MES1!`.
+2. The webhook posts immediately to `/technical_snapshot`.
+3. The backend normalizes both `strategy` and `strategy_context` as
+   `INTRADAY_INDEX_FUTURES`.
+4. Entry events and risk invalidations are persisted and evaluated immediately.
+5. Pushover is attempted immediately for entry triggers and risk invalidations,
+   deduped by session date, ticker, event code, and price.
+
+The 5-minute V32 actionable-signal watcher remains a fallback/safety net for
+operator reminders. It is not the primary timing mechanism for intraday futures.
+Session snapshots, validation payloads, and non-actionable events are persisted
+or skipped as appropriate but do not create push noise.
+
 ## Production Active Alerts
 
 Keep only these two futures alerts active in TradingView:
@@ -175,3 +192,7 @@ python3 scripts/run_tradingview_production_audit.py --market-closed-ok
 The visible health summary should read `TV_OK` and `IBKR_OK` before any
 `ENTRY_READY` decision is trusted for manual review. Until then, the operational
 gate must remain in evidence collection mode.
+
+The immediate futures push can still say `MANUAL_REVIEW` when the technical
+trigger is real but risk, portfolio, or premarket context is incomplete. That is
+intentional: the push is a timing alert, not order authorization.

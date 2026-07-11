@@ -121,16 +121,27 @@ haz preflight de nudges y dame checklist del lunes
 
 Actionable V32 notifications:
 
+Intraday futures immediate path:
+
+```text
+TradingView Pine alert() -> /technical_snapshot -> immediate Pushover attempt
+```
+
+For `MNQ1!` and `MES1!`, entry triggers and risk invalidations are evaluated as
+soon as the TradingView webhook arrives. This path dedupes repeated events and
+never authorizes execution. It is the preferred timing path for intraday futures.
+
 Cloud immediate actionable-signal watch:
 
 ```text
 .github/workflows/v32-actionable-signal-watch.yml -> POST /v32_actionable_signal_watch
 ```
 
-This runs every 5 minutes during broad US market hours. It sends Pushover only
-when a new `ACTION`, `ENTRY_READY`, or `manual_review_ready=true` alert appears,
-deduped by alert id and signal signature. It prompts manual IBKR review through
-the GPT and never authorizes execution.
+This runs every 5 minutes during broad US market hours. It is the fallback
+operator reminder loop, not the primary futures timing path. It sends Pushover
+only when a new `ACTION`, `ENTRY_READY`, or `manual_review_ready=true` alert
+appears, deduped by alert id and signal signature. It prompts manual IBKR review
+through the GPT and never authorizes execution.
 
 ```bash
 python3 scripts/v32_operator_notify.py
