@@ -74,6 +74,10 @@ Next implementation target:
 - CANSLIM is now accepted as dynamic runtime input: any runtime JSON rows with
   `ticker`/`symbol` and `canslim` fields or `canslim_score`/`rating_score`
   fields are merged into the option-underlying rank before chains open.
+- A free automated CANSLIM builder now writes
+  `runtime/canslim_candidates_latest.json` from SEC companyfacts plus local
+  runtime/IBKR bars when available. It uses no paid API and no manual CSV
+  export.
 - Audit `runtime/v32_ibkr_chain_coverage.json` after the next live run. The
   `option_symbol_plan` section should show selected and skipped underlyings with
   their scores, triggers, blockers, and `canslim_candidate_count`.

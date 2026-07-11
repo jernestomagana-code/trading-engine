@@ -463,6 +463,18 @@ or fields such as `canslim_score`, `canslim_passes`, `canslim_rating`,
 before ranking. This lets a future CANSLIM screener feed candidates without
 creating extra TradingView alerts or opening option chains for every symbol.
 
+Free automated CANSLIM is available through the local SEC/runtime builder:
+
+```bash
+python3 scripts/build_canslim_free_candidates.py
+```
+
+It writes `runtime/canslim_candidates_latest.json` using free SEC companyfacts
+data plus local runtime/IBKR bars when available. It does not require a paid API,
+does not require CSV exports, and does not authorize orders. Set
+`STOCK_ULTIMUS_SEC_USER_AGENT` to a descriptive SEC user agent before scheduled
+runs.
+
 Current guardrails:
 
 - `IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=true` by default.
