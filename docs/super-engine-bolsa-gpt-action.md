@@ -186,6 +186,10 @@ explicitly requests a forced test.
 Use /v32_operator_tracking_status when the user asks how alerts are being
 tracked, which alerts remain open/closed, what is pending for backtesting, or
 what learning/outcome follow-up is missing.
+Use /v32_operational_edge when the user asks how to take the project to the
+next level, whether the system is becoming "top", what still limits alert
+quality, ranking, contract selection, CANSLIM confidence, or post-mortem
+learning.
 Use /gpt_v32_operator_event only when the user explicitly asks to record a
 workflow action, review decision, alert acknowledgement, or journal note.
 

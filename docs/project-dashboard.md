@@ -71,6 +71,9 @@ Resumen:
 - El GPT puede usar `/gpt_v32_operator_daily_cycle` como flujo unico: estado,
   Pushover, nudges, tracking y backtesting/post-cierre.
 - Hay ciclo diario `scripts/run_operating_day.py --allow-partial`.
+- Hay capa V32 Operational Edge: `/v32_operational_edge` y
+  `/v32_operational_edge_dashboard`; consolida los 7 frentes de mejora para
+  llevar el sistema al siguiente nivel sin autorizar ordenes.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
   explicita `--real-outcomes-after-close`.
@@ -154,6 +157,7 @@ aislamiento.
 | IBKR Bridge | Listo, requiere refresh | El 2026-06-26 publico snapshot fresco con 26 filas y termino `PASS`; hoy no hay snapshot maestro activo. | Reconsultar en ventana operativa. |
 | TradingView | Listo, requiere refresh | Contrato tecnico integrado; el 2026-06-26 reporto `technical_count=10`; hoy `technical_count=0` por snapshot faltante. | Mantener alertas reales hacia `/technical_snapshot`. |
 | Outcomes/Learning | OK | Operating day evaluo outcomes/manual reviews; dry-run tambien pasa. | Seguir post-cierre con snapshot fresco. |
+| Operational Edge | Nuevo | Integra confirmacion real, calibracion de score, ranking institucional, optimizador de contratos, CANSLIM dinamico, panel y post-mortem. | Acumular outcomes completos y confirmar eventos reales de mercado. |
 | Foundation/Evidencia | WARN | 140 decisiones, 69 `ENTRY_READY` locales, 106 option rows, 92.86% source attribution coverage. | Completar fuentes, ledger TradingView, datos de opciones y outcomes cerrados. |
 | Seguridad | Alineado localmente | Preflight no imprime secretos, no toca IBKR en skip-cloud, no autoriza ejecucion. | Verificar read-auth y secrets en Render. |
 | Terceros / Comercial | Bloqueado por diseño | Docs exigen aislamiento/compliance antes de terceros. | No vender/operar para terceros hasta cerrar gates comerciales. |

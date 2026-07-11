@@ -29,6 +29,13 @@ review. It is decision-support only and never authorizes order execution.
   `logical_target`, and attempt immediate Pushover delivery for entry triggers
   and risk invalidations. The 5-minute V32 watcher remains a fallback reminder,
   not the primary futures timing path.
+- Added the V32 Operational Edge layer for the seven next-level fronts:
+  live-market confirmation, outcome score calibration, institutional ranking,
+  option-contract optimization, dynamic CANSLIM confidence, control-panel
+  health, and post-mortem readiness. Local command:
+  `python3 scripts/run_operational_edge_report.py --top 5 --preview 5`.
+  Protected production routes: `/v32_operational_edge` and
+  `/v32_operational_edge_dashboard`.
 
 ## Waiting For Market Data
 
@@ -55,6 +62,8 @@ These cannot be fully closed on a closed-market day:
    - `setup_validity_pct`, `conviction_score`, and `ranking_score` must reduce
      daily noise and distinguish near-valid from fully valid setups.
    - Review after several live sessions using the opportunity audit.
+   - Operational Edge should move `score_calibration.status` from `BUILDING` to
+     `CALIBRATABLE` only after enough complete outcomes exist.
 
 ## Strategy And Universe Expansion
 
@@ -116,6 +125,7 @@ python3 scripts/run_tradingview_alert_bundle_health.py --market-closed-ok --loca
 python3 scripts/v32_nudge_preflight_check.py
 python3 scripts/v32_operator_notify.py
 python3 scripts/run_alert_opportunity_audit.py --runtime-dir runtime --preview 5
+python3 scripts/run_operational_edge_report.py --top 5 --preview 5
 ```
 
 Expected closed-market interpretation:
