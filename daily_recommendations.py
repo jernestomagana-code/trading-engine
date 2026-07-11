@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import alert_lifecycle as shared_alert_lifecycle
 import evidence_quality as shared_evidence_quality
 
 RECOMMENDATION_VERSION = "daily_recommendation_v1"
@@ -351,6 +352,15 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
             "master_source": decision.get("master_source"),
         },
     }
+    lifecycle_input = {**decision, **item}
+    lifecycle_input["selected_contract"] = decision.get("selected_contract") or _options(decision).get("contract") or {}
+    lifecycle = shared_alert_lifecycle.alert_lifecycle_state(lifecycle_input)
+    item["alert_lifecycle"] = lifecycle
+    item["performance_eligible"] = lifecycle["performance_eligible"]
+    item["paper_tracking_allowed"] = lifecycle["paper_tracking_allowed"]
+    item["ibkr_real_performance_allowed"] = lifecycle["ibkr_real_performance_allowed"]
+    item["backtesting_bucket"] = lifecycle["backtesting_bucket"]
+    item["alert_ttl_minutes"] = lifecycle["ttl_minutes"]
     return item
 
 
@@ -384,6 +394,11 @@ def build_daily_recommendations(
         "wait_account_context": sum(1 for item in sorted_items if item["final_state"] == "WAIT_ACCOUNT_CONTEXT"),
         "risk_blocked": sum(1 for item in sorted_items if item["final_state"] == "RISK_BLOCKED"),
         "no_data": sum(1 for item in sorted_items if item["final_state"] == "NO_DATA"),
+        "performance_eligible": sum(1 for item in sorted_items if item.get("performance_eligible") is True),
+        "paper_tracking_allowed": sum(1 for item in sorted_items if item.get("paper_tracking_allowed") is True),
+        "ibkr_real_performance_allowed": sum(1 for item in sorted_items if item.get("ibkr_real_performance_allowed") is True),
+        "valid_signal_backtesting_bucket": sum(1 for item in sorted_items if item.get("backtesting_bucket") == "VALID_SIGNAL"),
+        "near_valid_backtesting_bucket": sum(1 for item in sorted_items if item.get("backtesting_bucket") == "NEAR_VALID"),
     }
 
     return {

@@ -91,6 +91,8 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 {"ticker": "QQQ", "severity": "ACTION", "operator_status": "NEW"},
                 {"ticker": "SPY", "severity": "WATCH", "operator_status": "WATCHLIST"},
                 {"ticker": "TSLA", "severity": "RISK", "operator_status": "REJECTED"},
+                {"ticker": "MSFT", "severity": "ACTION", "operator_status": "PAPER_TRACKED"},
+                {"ticker": "AAPL", "severity": "ACTION", "operator_status": "IBKR_APPLIED"},
             ]
         }
 
@@ -100,7 +102,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(counts["action"], 1)
         self.assertEqual(counts["watch"], 0)
         self.assertEqual(counts["risk"], 0)
-        self.assertEqual(counts["closed"], 2)
+        self.assertEqual(counts["closed"], 4)
 
     def test_console_health_surfaces_green_and_running_process(self):
         active = {"account_scope": "primary", "account_alias": "primary"}
@@ -170,7 +172,13 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn(">Visto</button>", html)
         self.assertIn(">Revisando</button>", html)
         self.assertIn(">Watch</button>", html)
+        self.assertIn(">Paper</button>", html)
+        self.assertIn(">IBKR aplicada</button>", html)
+        self.assertIn(">No aplicada</button>", html)
+        self.assertIn(">Missed</button>", html)
         self.assertIn("Guardando revision en produccion", html)
+        self.assertIn("Vigencia:", html)
+        self.assertIn("Backtesting:", html)
         self.assertIn("why-line", html)
         self.assertIn("alert-checklist", html)
         self.assertIn("Score", html)

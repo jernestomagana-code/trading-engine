@@ -51,6 +51,7 @@ import tradingview_operational_health as shared_tradingview_operational_health
 import foundation_health as shared_foundation_health
 import evidence_quality as shared_evidence_quality
 import operational_edge as shared_operational_edge
+import alert_lifecycle as shared_alert_lifecycle
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -22760,6 +22761,10 @@ _V32_OPERATOR_ACTIONS = (
     "ACK_ALERT",
     "MARK_REVIEWING",
     "MARK_WATCHLIST",
+    "MARK_PAPER_TRACKED",
+    "MARK_IBKR_APPLIED",
+    "MARK_IBKR_NOT_APPLIED",
+    "MARK_MISSED",
     "REJECT_SETUP",
     "APPROVE_MANUAL_REVIEW",
     "MARK_EXPIRED",
@@ -22779,6 +22784,10 @@ _V32_OPERATOR_CLOSED_STATUSES = {
     "CLOSED",
     "APPROVED_FOR_MANUAL_REVIEW",
     "APPROVED_FOR_MANUAL_TRADE",
+    "PAPER_TRACKED",
+    "IBKR_APPLIED",
+    "IBKR_NOT_APPLIED",
+    "MISSED",
 }
 
 
@@ -23085,7 +23094,7 @@ def _v32_operator_alert_from_decision(item):
         severity = "RISK"
     elif state.startswith("WAIT_"):
         severity = "WATCH"
-    return {
+    alert = {
         "alert_id": _v32_operator_alert_id(item),
         "ticker": item.get("ticker"),
         "strategy": item.get("strategy"),
@@ -23120,6 +23129,10 @@ def _v32_operator_alert_from_decision(item):
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    alert["alert_lifecycle"] = shared_alert_lifecycle.alert_lifecycle_state(alert)
+    alert["performance_eligible"] = alert["alert_lifecycle"].get("performance_eligible")
+    alert["backtesting_bucket"] = alert["alert_lifecycle"].get("backtesting_bucket")
+    return alert
 
 
 def _v32_latest_operator_event_by_alert(events):
@@ -23173,7 +23186,7 @@ def _v32_operator_next_actions_from_context(command, readiness, active_alerts, m
             "kind": "MANUAL_REVIEW",
             "label": "Revisar setups ENTRY_READY",
             "detail": f"Hay {len(action_alerts)} setup(s) para revision manual: {tickers}. Valida liquidez, spread, evento, riesgo y ticket broker antes de decidir.",
-            "suggested_gpt_actions": ["MARK_REVIEWING", "MARK_WATCHLIST", "REJECT_SETUP", "APPROVE_MANUAL_REVIEW"],
+            "suggested_gpt_actions": ["MARK_REVIEWING", "MARK_WATCHLIST", "MARK_PAPER_TRACKED", "MARK_IBKR_APPLIED", "MARK_IBKR_NOT_APPLIED", "MARK_MISSED", "REJECT_SETUP"],
             "endpoint": "POST /gpt_v32_operator_event",
         })
     elif readiness_status in {"NO_DATA", "BLOCKED", "STALE_DATA"} or str(command.get("status") or "").upper() == "NO_DATA":
@@ -24824,8 +24837,13 @@ def _v32_operator_event_payload(payload):
     reason = str(payload.get("reason") or payload.get("note") or "")[:2000]
     if action not in {"ACK_ALERT", "CLOSE_ALERT", "JOURNAL_NOTE"} and not ticker:
         raise ValueError("OPERATOR_EVENT_TICKER_REQUIRED")
-    if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"} and not reason:
+    if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE", "MARK_IBKR_APPLIED", "MARK_IBKR_NOT_APPLIED", "MARK_MISSED"} and not reason:
         raise ValueError("OPERATOR_EVENT_REASON_REQUIRED")
+    ibkr_fill_price = payload.get("ibkr_fill_price") or payload.get("fill_price")
+    ibkr_fill_quantity = payload.get("ibkr_fill_quantity") or payload.get("fill_quantity")
+    ibkr_order_id = payload.get("ibkr_order_id") or payload.get("order_id")
+    if action == "MARK_IBKR_APPLIED" and (not ibkr_fill_price or not ibkr_fill_quantity):
+        raise ValueError("OPERATOR_EVENT_IBKR_FILL_REQUIRED")
     now = _v29_now()
     raw_alert = {
         "alert_id": payload.get("alert_id"),
@@ -24845,6 +24863,10 @@ def _v32_operator_event_payload(payload):
             "ACK_ALERT": "ACKNOWLEDGED",
             "MARK_REVIEWING": "REVIEWING",
             "MARK_WATCHLIST": "WATCHLIST",
+            "MARK_PAPER_TRACKED": "PAPER_TRACKED",
+            "MARK_IBKR_APPLIED": "IBKR_APPLIED",
+            "MARK_IBKR_NOT_APPLIED": "IBKR_NOT_APPLIED",
+            "MARK_MISSED": "MISSED",
             "REJECT_SETUP": "REJECTED",
             "APPROVE_MANUAL_REVIEW": "APPROVED_FOR_MANUAL_REVIEW",
             "MARK_EXPIRED": "EXPIRED",
@@ -24855,6 +24877,21 @@ def _v32_operator_event_payload(payload):
         "ticker": ticker or None,
         "strategy": payload.get("strategy"),
         "reason": reason,
+        "ibkr_fill_price": ibkr_fill_price,
+        "ibkr_fill_quantity": ibkr_fill_quantity,
+        "ibkr_order_id": ibkr_order_id,
+        "alert_lifecycle": shared_alert_lifecycle.alert_lifecycle_state({
+            **raw_alert,
+            "operator_status": {
+                "MARK_PAPER_TRACKED": "PAPER_TRACKED",
+                "MARK_IBKR_APPLIED": "IBKR_APPLIED",
+                "MARK_IBKR_NOT_APPLIED": "IBKR_NOT_APPLIED",
+                "MARK_MISSED": "MISSED",
+                "REJECT_SETUP": "REJECTED",
+            }.get(action, action),
+            "ibkr_fill_price": ibkr_fill_price,
+            "ibkr_fill_quantity": ibkr_fill_quantity,
+        }),
         "actor": str(payload.get("actor") or "gpt_operator")[:80],
         "source": str(payload.get("source") or "gpt_v32_operator_event")[:120],
         "manual_review_recorded": False,

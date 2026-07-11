@@ -23,8 +23,12 @@ from urllib.parse import parse_qs, urlparse
 import urllib.error
 import urllib.request
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import alert_lifecycle as shared_alert_lifecycle
+
 RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
 ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
@@ -64,12 +68,16 @@ CLOSED_OPERATOR_STATUSES = {
     "CLOSED",
     "APPROVED_FOR_MANUAL_REVIEW",
     "APPROVED_FOR_MANUAL_TRADE",
+    "IBKR_NOT_APPLIED",
+    "MISSED",
 }
 HANDLED_OPERATOR_STATUSES = CLOSED_OPERATOR_STATUSES | {
     "ACKNOWLEDGED",
     "REVIEWING",
     "WATCHLIST",
     "NOTE_RECORDED",
+    "PAPER_TRACKED",
+    "IBKR_APPLIED",
 }
 OPERATOR_STATUS_BY_ACTION = {
     "ACK_ALERT": "ACKNOWLEDGED",
@@ -80,6 +88,10 @@ OPERATOR_STATUS_BY_ACTION = {
     "MARK_EXPIRED": "EXPIRED",
     "CLOSE_ALERT": "CLOSED",
     "JOURNAL_NOTE": "NOTE_RECORDED",
+    "MARK_PAPER_TRACKED": "PAPER_TRACKED",
+    "MARK_IBKR_APPLIED": "IBKR_APPLIED",
+    "MARK_IBKR_NOT_APPLIED": "IBKR_NOT_APPLIED",
+    "MARK_MISSED": "MISSED",
 }
 
 
@@ -824,6 +836,9 @@ def record_local_operator_event(payload: dict[str, Any], remote_result: dict[str
         "action": action,
         "operator_status": remote_event.get("operator_status") or OPERATOR_STATUS_BY_ACTION.get(action, action or "UNKNOWN"),
         "reason": remote_event.get("reason") or payload.get("reason") or "",
+        "ibkr_fill_price": remote_event.get("ibkr_fill_price") or payload.get("ibkr_fill_price") or None,
+        "ibkr_fill_quantity": remote_event.get("ibkr_fill_quantity") or payload.get("ibkr_fill_quantity") or None,
+        "ibkr_order_id": remote_event.get("ibkr_order_id") or payload.get("ibkr_order_id") or None,
         "actor": remote_event.get("actor") or payload.get("actor") or "stock_ultimus_console",
         "source": remote_event.get("source") or "local_stock_ultimus_console",
         "remote_recorded": bool(remote_result.get("ok")),
@@ -862,6 +877,9 @@ def apply_local_operator_events(operator_payload: dict[str, Any]) -> dict[str, A
         alert["operator_status"] = event.get("operator_status") or alert.get("operator_status")
         alert["last_operator_action"] = event.get("action") or alert.get("last_operator_action")
         alert["last_operator_reason"] = event.get("reason") or alert.get("last_operator_reason")
+        alert["ibkr_fill_price"] = event.get("ibkr_fill_price") or alert.get("ibkr_fill_price")
+        alert["ibkr_fill_quantity"] = event.get("ibkr_fill_quantity") or alert.get("ibkr_fill_quantity")
+        alert["ibkr_order_id"] = event.get("ibkr_order_id") or alert.get("ibkr_order_id")
         alert["local_operator_event_applied"] = True
     data["local_operator_event_count"] = len(latest)
     return operator_payload
@@ -2156,6 +2174,27 @@ def is_handled_alert(alert: dict[str, Any]) -> bool:
     return operator_status(alert) in HANDLED_OPERATOR_STATUSES
 
 
+def render_alert_lifecycle_line(alert: dict[str, Any]) -> str:
+    lifecycle = shared_alert_lifecycle.alert_lifecycle_state(alert)
+    expires = lifecycle.get("expires_at") or "sin hora"
+    age = lifecycle.get("age_minutes")
+    age_label = "edad n/d" if age is None else f"{age} min"
+    completeness = lifecycle.get("contract_completeness") if isinstance(lifecycle.get("contract_completeness"), dict) else {}
+    return (
+        "Vigencia: {state} | TTL {ttl} min | vence {expires} | {age} | "
+        "Backtesting: {bucket} | contrato {contract_score}% | paper {paper} | IBKR real {real}"
+    ).format(
+        state=html_escape(lifecycle.get("lifecycle_state") or "UNKNOWN"),
+        ttl=html_escape(lifecycle.get("ttl_minutes")),
+        expires=html_escape(expires),
+        age=html_escape(age_label),
+        bucket=html_escape(lifecycle.get("backtesting_bucket") or "UNKNOWN"),
+        contract_score=html_escape(completeness.get("score")),
+        paper="si" if lifecycle.get("paper_tracking_allowed") else "no",
+        real="si" if lifecycle.get("ibkr_real_performance_allowed") else "no",
+    )
+
+
 def operator_alert_counts(data: dict[str, Any]) -> dict[str, int]:
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
     pending_alerts = [alert for alert in alerts if isinstance(alert, dict) and not is_handled_alert(alert)]
@@ -2198,12 +2237,20 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
                 <input name="strategy" value="{strategy}" type="hidden">
                 <input name="state" value="{state}" type="hidden">
                 <label>Nota/razon</label>
-                <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch">
-                <small>Opcional para Ack/Review/Watch/Close. Requerida para Reject y Journal.</small>
+                <input name="reason" placeholder="Ej. revisar tamano, descartar por capital, mantener watch, fill IBKR">
+                <div class="fill-grid">
+                  <input name="ibkr_fill_price" inputmode="decimal" placeholder="Fill IBKR si aplicada">
+                  <input name="ibkr_fill_quantity" inputmode="numeric" placeholder="Contratos/cantidad">
+                </div>
+                <small>Paper no cuenta como real. IBKR aplicada requiere nota, fill y cantidad; nunca autoriza orden.</small>
                 <div class="actions">
                   <button name="action" value="ACK_ALERT">Visto</button>
                   <button name="action" value="MARK_REVIEWING">Revisando</button>
                   <button name="action" value="MARK_WATCHLIST">Watch</button>
+                  <button name="action" value="MARK_PAPER_TRACKED">Paper</button>
+                  <button name="action" value="MARK_IBKR_APPLIED">IBKR aplicada</button>
+                  <button name="action" value="MARK_IBKR_NOT_APPLIED">No aplicada</button>
+                  <button name="action" value="MARK_MISSED">Missed</button>
                   <button name="action" value="REJECT_SETUP">Rechazar</button>
                   <button name="action" value="CLOSE_ALERT">Cerrar</button>
                 </div>
@@ -2222,6 +2269,7 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
               <div class="contract-line">{contract}</div>
               <div class="economics-line">{economics}</div>
               <div class="capacity-line">{capacity}</div>
+              <div class="lifecycle-line">{lifecycle}</div>
               <div class="why-line">{why}</div>
               {checklist}
               <div class="review-line">{guidance}</div>
@@ -2241,6 +2289,7 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
         contract=html_escape(render_alert_contract(alert)),
         economics=render_alert_economics(alert),
         capacity=render_alert_capacity(alert, account_capacity),
+        lifecycle=render_alert_lifecycle_line(alert),
         why=html_escape(alert_reason_plain(alert)),
         checklist=render_alert_checklist(alert, account_capacity),
         guidance=html_escape(alert_review_guidance(alert)),
@@ -2561,10 +2610,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
           .status-rejected .alert-title em,.status-risk-blocked .alert-title em {{ background:#fff1ef; color:var(--risk); }}
           .status-closed .alert-title em,.status-acknowledged .alert-title em,.status-approved-for-manual-review .alert-title em,.status-approved-for-manual-trade .alert-title em {{ background:#eef8ef; color:#1d6b4f; }}
-          .contract-line,.review-line,.economics-line,.capacity-line,.why-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
+          .contract-line,.review-line,.economics-line,.capacity-line,.lifecycle-line,.why-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
           .contract-line {{ font-weight:800; color:var(--ink); }}
           .economics-line {{ color:#1d6b4f; background:#f1fbf4; border-color:#badbcc; font-weight:800; }}
           .capacity-line {{ color:#174ea6; background:#eef5ff; border-color:#bfd7ff; font-weight:800; }}
+          .lifecycle-line {{ color:#4f3a06; background:#fff8dd; border-color:#ead48a; font-weight:800; }}
           .why-line {{ background:#f7fbff; border-color:#bfd7ff; color:#174ea6; font-weight:800; }}
           .review-line {{ color:var(--warn); background:#fff7e8; }}
           .alert-checklist {{ list-style:none; padding:0; margin:10px 0 0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }}
@@ -2579,6 +2629,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .alert-actions {{ margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }}
           .alert-actions label {{ font-size:.9rem; margin-top:0; color:var(--muted); }}
           .alert-actions input {{ width:100%; margin-bottom:10px; }}
+          .alert-actions .fill-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
           .alert-actions .actions {{ justify-content:flex-start; }}
           .alert-actions button {{ padding:8px 11px; font-size:.9rem; }}
           .severity-action {{ border-color:#d97706; }}
@@ -2651,12 +2702,22 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 const submitter = event.submitter;
                 const actionValue = submitter && submitter.name === "action" ? submitter.value : "";
                 const reasonInput = form.querySelector('input[name="reason"]');
-                const reasonRequired = ["REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"].includes(actionValue);
+                const fillPriceInput = form.querySelector('input[name="ibkr_fill_price"]');
+                const fillQuantityInput = form.querySelector('input[name="ibkr_fill_quantity"]');
+                const reasonRequired = ["REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE", "MARK_IBKR_APPLIED", "MARK_IBKR_NOT_APPLIED", "MARK_MISSED"].includes(actionValue);
                 if (reasonRequired && reasonInput && !reasonInput.value.trim()) {{
                   event.preventDefault();
                   reasonInput.setCustomValidity("Esta accion requiere nota/razon.");
                   reasonInput.reportValidity();
                   setTimeout(() => reasonInput.setCustomValidity(""), 1200);
+                  return;
+                }}
+                if (actionValue === "MARK_IBKR_APPLIED" && fillPriceInput && fillQuantityInput && (!fillPriceInput.value.trim() || !fillQuantityInput.value.trim())) {{
+                  event.preventDefault();
+                  const target = !fillPriceInput.value.trim() ? fillPriceInput : fillQuantityInput;
+                  target.setCustomValidity("IBKR aplicada requiere fill y cantidad para medir performance real.");
+                  target.reportValidity();
+                  setTimeout(() => target.setCustomValidity(""), 1600);
                   return;
                 }}
                 if (actionValue && !form.querySelector('input[name="action"][type="hidden"]')) {{
@@ -2793,8 +2854,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/operator-event":
                 action = (params.get("action") or [""])[0]
                 reason = (params.get("reason") or [""])[0].strip()
-                if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE"} and not reason:
+                ibkr_fill_price = (params.get("ibkr_fill_price") or [""])[0].strip()
+                ibkr_fill_quantity = (params.get("ibkr_fill_quantity") or [""])[0].strip()
+                if action in {"REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE", "MARK_IBKR_APPLIED", "MARK_IBKR_NOT_APPLIED", "MARK_MISSED"} and not reason:
                     self.send_html("Esta accion requiere nota/razon antes de registrarla.", status=400)
+                    return
+                if action == "MARK_IBKR_APPLIED" and (not ibkr_fill_price or not ibkr_fill_quantity):
+                    self.send_html("IBKR aplicada requiere fill y cantidad para medir performance real.", status=400)
                     return
                 payload = {
                     "action": action,
@@ -2803,6 +2869,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     "strategy": (params.get("strategy") or [""])[0],
                     "state": (params.get("state") or [""])[0],
                     "reason": reason,
+                    "ibkr_fill_price": ibkr_fill_price,
+                    "ibkr_fill_quantity": ibkr_fill_quantity,
+                    "ibkr_order_id": (params.get("ibkr_order_id") or [""])[0].strip(),
                     "actor": "stock_ultimus_console",
                     "source": "local_stock_ultimus_console",
                     "execution_authorized": False,

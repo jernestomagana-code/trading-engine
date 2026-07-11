@@ -80,6 +80,11 @@ Resumen:
 - Consola local next-level: `Modo Hoy`, semaforo por modulo, timeline
   operativo, modo mercado abierto, diagnostico completo y checklist por alerta
   para score/tecnico/opciones/capacidad/CANSLIM/riesgo.
+- Alert lifecycle/backtesting policy esta formalizada en codigo y consola:
+  intraday futures vive 30 minutos, opciones/manual-review vive 390 minutos,
+  `WAIT_*` queda como diagnostico/near-valid, y solo `VALID_SIGNAL`,
+  `PAPER_ONLY` o `IBKR_REAL` entran a medicion. `IBKR_REAL` exige marca
+  explicita de operador con fill price y cantidad.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
   explicita `--real-outcomes-after-close`.

@@ -109,6 +109,12 @@ Next implementation target:
   `runtime/canslim_candidates_latest.json` from SEC companyfacts plus local
   runtime/IBKR bars when available. It uses no paid API and no manual CSV
   export.
+- Alert lifecycle policy is now coded in `alert_lifecycle.py` and surfaced in
+  recommendations/operator console. Remaining live validation is to confirm, in
+  the next market session, that intraday futures alerts expire after 30 minutes,
+  options/manual-review alerts stay valid for the intended session, and only
+  `IBKR aplicada` events with fill price/quantity are counted as real IBKR
+  performance.
 - Audit `runtime/v32_ibkr_chain_coverage.json` after the next live run. The
   `option_symbol_plan` section should show selected and skipped underlyings with
   their scores, triggers, blockers, and `canslim_candidate_count`.
