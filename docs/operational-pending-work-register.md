@@ -66,6 +66,14 @@ Next implementation target:
   `CRM`, and `ORCL`, produced `COVERAGE_REVIEWABLE`, and published the snapshot
   remotely with status `200`.
 - Add or validate the ranking fields that promote stronger CANSLIM setups.
+- The IBKR bridge now uses a dynamic option-underlying universe before opening
+  chains. It ranks candidates by core context, operator priority, existing
+  positions, large-cap/liquidity tier, technical confirmation, and CANSLIM
+  score/pass. It then enforces `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` and
+  `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN`.
+- Audit `runtime/v32_ibkr_chain_coverage.json` after the next live run. The
+  `option_symbol_plan` section should show selected and skipped underlyings with
+  their scores, triggers, and blockers.
 - Keep single-name TradingView alerts out of scope unless a measured technical
   confirmation gap is documented.
 

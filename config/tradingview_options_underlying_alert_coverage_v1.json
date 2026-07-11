@@ -41,7 +41,7 @@
     "missing_core_alert_behavior": "WAIT_UNDERLYING_CONFIRMATION",
     "missing_snapshot_behavior": "OPTIONS_UNDERLYING_COVERAGE_DEGRADED",
     "approved_symbols": ["QQQ", "SPY", "VIX"],
-    "expansion_policy": "SPY, QQQ, and VIX are the TradingView confirmation layer. Single-name large-cap and CANSLIM opportunities should come from the backend universe, IBKR option chains, and scoring first; add new TradingView single-name alerts only after a documented coverage gap is proven."
+    "expansion_policy": "SPY, QQQ, and VIX are the TradingView confirmation layer. Single-name large-cap and CANSLIM opportunities should come from the backend dynamic underlying universe, IBKR option-chain budget, and scoring first; add new TradingView single-name alerts only after a documented coverage gap is proven."
   },
   "required_plot_names": [
     "VWAP",

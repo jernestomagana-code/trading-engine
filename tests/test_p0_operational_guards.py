@@ -88,6 +88,19 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("trading_class.endswith(symbol)", source)
         self.assertIn('x["symbol_match_rank"]', source)
 
+    def test_bridge_limits_option_chains_with_dynamic_underlying_universe(self):
+        source = BRIDGE.read_text()
+        self.assertIn("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", source)
+        self.assertIn("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", source)
+        self.assertIn("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", source)
+        self.assertIn("IBKR_OPTION_TECHNICAL_TRIGGER_SCORE", source)
+        self.assertIn("IBKR_OPTION_CANSLIM_TRIGGER_SCORE", source)
+        self.assertIn("def build_dynamic_option_symbol_plan", source)
+        self.assertIn("option_underlying_rank", source)
+        self.assertIn("OPTION_CONTRACT_BUDGET_APPLIED", source)
+        self.assertIn("underlying_rank_score", source)
+        self.assertIn("symbol_plan=symbol_plan", source)
+
     def test_bridge_account_context_is_sanitized_for_broker_checks(self):
         source = BRIDGE.read_text()
         self.assertIn("def _bridge_account_context_snapshot", source)

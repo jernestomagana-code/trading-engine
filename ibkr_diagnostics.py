@@ -115,6 +115,7 @@ def build_cycle_diagnostic(
     chain_events: list[dict[str, Any]] | None = None,
     option_rows: list[dict[str, Any]] | None = None,
     generated_at: str | None = None,
+    symbol_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     chain_events = [item for item in (chain_events or []) if isinstance(item, dict)]
     option_rows = [item for item in (option_rows or []) if isinstance(item, dict)]
@@ -149,6 +150,7 @@ def build_cycle_diagnostic(
         "diagnostic_version": DIAGNOSTIC_VERSION,
         "generated_at": generated_at or now_iso(),
         "symbols_requested": [safe_upper(symbol, "UNKNOWN") for symbol in (symbols or [])],
+        "option_symbol_plan": symbol_plan if isinstance(symbol_plan, dict) else {},
         "chain_event_count": len(chain_events),
         "option_row_count": len(option_rows),
         "rows_by_ticker": dict(sorted(rows_by_ticker.items())),

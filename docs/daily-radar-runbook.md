@@ -443,6 +443,30 @@ The default IBKR bridge universe includes the core indices/large-cap names plus
 `IBKR_WATCHLIST` and `IBKR_OPTION_SYMBOLS` when testing a narrower or broader
 universe.
 
+Option-chain expansion is dynamic. The bridge first ranks the candidate
+underlyings, then opens chains only for the selected subset. The rank combines:
+
+- Core market context: `QQQ`, `SPY`, and `TLT` by default.
+- Operator priority symbols from `IBKR_OPTION_PRIORITY_SYMBOLS`.
+- Existing portfolio positions, so covered-call/management candidates are not
+  skipped just because they are outside the top growth list.
+- Large-cap/liquidity tier score.
+- Technical score/confirmation from runtime snapshots.
+- CANSLIM pass/score when available.
+
+Current guardrails:
+
+- `IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=true` by default.
+- `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` limits how many underlyings get option
+  chains in one cycle.
+- `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN` limits total option contracts
+  queried in one cycle.
+- `IBKR_OPTION_TECHNICAL_TRIGGER_SCORE` and
+  `IBKR_OPTION_CANSLIM_TRIGGER_SCORE` define the technical/CANSLIM detonators.
+- The IBKR diagnostic file records `option_symbol_plan` with ranked, selected,
+  and skipped underlyings so the operator can audit why a symbol did or did not
+  consume option-chain budget.
+
 If a new stock or strategy repeatedly needs TradingView-specific confirmation,
 document the measured gap first, then add a versioned alert expansion. Until
 then, more TradingView alerts are noise, not more intelligence.
