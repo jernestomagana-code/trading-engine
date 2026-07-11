@@ -250,6 +250,53 @@ def ranking_score(decision: dict[str, Any]) -> float:
     return round(score, 2)
 
 
+def setup_validity_pct(decision: dict[str, Any]) -> float:
+    """Percent-style closeness to a fully valid manual-review setup."""
+    decision = decision if isinstance(decision, dict) else {}
+    state = _upper(decision.get("final_state"), "NO_DATA")
+    technical = decision.get("technical") if isinstance(decision.get("technical"), dict) else {}
+    contract = decision.get("selected_contract") if isinstance(decision.get("selected_contract"), dict) else {}
+    risk_profile = decision.get("risk_profile") if isinstance(decision.get("risk_profile"), dict) else {}
+    market = decision.get("market") if isinstance(decision.get("market"), dict) else {}
+    quality = shared_evidence_quality.evidence_quality_report(decision)
+
+    score = 0.0
+    if technical.get("confirmed") is True:
+        score += 20
+    else:
+        score += min(max(_number(technical.get("score"), 0), 0), 100) * 0.12
+
+    options_score = _number(decision.get("options_score") or contract.get("option_score"), 0)
+    score += min(max(options_score, 0), 100) * 0.18
+
+    required_contract = ["strike", "expiration", "dte", "bid", "ask", "mid", "spread_pct", "delta"]
+    present_contract = sum(1 for field in required_contract if contract.get(field) not in [None, "", "None"])
+    score += (present_contract / len(required_contract)) * 24
+
+    spread_pct = _number(contract.get("spread_pct"), None)
+    if spread_pct is not None:
+        if spread_pct <= 18:
+            score += 8
+        elif spread_pct <= 35:
+            score += 3
+
+    if risk_profile.get("status") in [None, "", "PASS"]:
+        score += 10
+    if market.get("options_bidask_expected") is True or market.get("is_regular_market_open") is True:
+        score += 8
+
+    score += min(max(_number(quality.get("score"), 0), 0), 100) * 0.12
+    score -= 4 * len(decision.get("required_missing_fields") or [])
+    score -= 3 * len(decision.get("blockers") or [])
+    if state == "ENTRY_READY" and decision.get("manual_review_ready") is True:
+        score = max(score, 90)
+    if state == "RISK_BLOCKED":
+        score = min(score, 45)
+    if state == "NO_DATA":
+        score = min(score, 10)
+    return round(max(0.0, min(100.0, score)), 2)
+
+
 def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
     state = _upper(decision.get("final_state"), "NO_DATA")
     ticker = _upper(decision.get("ticker"), "UNKNOWN")
@@ -267,6 +314,7 @@ def recommendation_item(decision: dict[str, Any], rank: int) -> dict[str, Any]:
         "recommendation_action": action_for_state(state),
         "conviction_score": score,
         "ranking_score": ranking_score(decision),
+        "setup_validity_pct": setup_validity_pct(decision),
         "evidence_quality_score": quality.get("score"),
         "evidence_quality_status": quality.get("status"),
         "evidence_quality_blockers": quality.get("blockers") or [],

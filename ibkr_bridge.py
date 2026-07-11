@@ -781,12 +781,14 @@ DAILY_RADAR_FAST = _env_bool("DAILY_RADAR_FAST", False)
 
 DEFAULT_WATCHLIST = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
-    "NFLX", "META", "AMZN", "MSFT", "TLT"
+    "NFLX", "META", "AMZN", "MSFT", "GOOGL",
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
 ]
 
 DEFAULT_OPTION_SYMBOLS = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
-    "NFLX", "META", "AMZN", "MSFT", "TLT"
+    "NFLX", "META", "AMZN", "MSFT", "GOOGL",
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
 ]
 
 FAST_WATCHLIST = list(DEFAULT_WATCHLIST)
@@ -1080,6 +1082,12 @@ PRIMARY_EXCHANGE_MAP = {
     "META": "NASDAQ",
     "AMZN": "NASDAQ",
     "MSFT": "NASDAQ",
+    "GOOGL": "NASDAQ",
+    "AVGO": "NASDAQ",
+    "AMD": "NASDAQ",
+    "COST": "NASDAQ",
+    "CRM": "NYSE",
+    "ORCL": "NYSE",
     "QQQ": "NASDAQ",
     "SPY": "ARCA",
     "TLT": "NASDAQ"

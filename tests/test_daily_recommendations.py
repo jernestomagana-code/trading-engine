@@ -49,6 +49,8 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["ticker"], "SPY")
         self.assertEqual(payload["items"][0]["recommendation_action"], "REVIEW_MANUALLY")
         self.assertGreaterEqual(payload["items"][0]["evidence_quality_score"], 70)
+        self.assertGreaterEqual(payload["items"][0]["setup_validity_pct"], 90)
+        self.assertLess(payload["items"][1]["setup_validity_pct"], payload["items"][0]["setup_validity_pct"])
         self.assertGreater(payload["items"][0]["ranking_score"], payload["items"][1]["ranking_score"])
         self.assertFalse(payload["items"][0]["can_operate"])
         self.assertTrue(payload["items"][0]["manual_review_required"])

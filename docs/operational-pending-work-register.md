@@ -1,0 +1,91 @@
+# Stock Ultimus Operational Pending Work Register
+
+Last reviewed: 2026-07-11.
+
+This register tracks the open work from the TradingView alert and strategy
+review. It is decision-support only and never authorizes order execution.
+
+## Closed In This Review
+
+- TradingView active alert model reduced to 5 consolidated production alerts.
+- Old per-condition TradingView alerts are no longer part of the active set.
+- Local validators and operator reports now separate active alerts from logical
+  event coverage:
+  - `total_production_active_alert_count=5`
+  - `total_required_logical_event_count=16`
+- TradingView alerts panel was visually verified with the 5 consolidated active
+  alerts.
+- V32 nudge preflight reached production successfully.
+- V32 operator notify handles backend timeouts without traceback.
+
+## Waiting For Market Data
+
+These cannot be fully closed on a closed-market day:
+
+1. Confirm real TradingView payloads reach `/technical_snapshot`.
+   - Current expected state: `WAITING_TV`.
+   - Target: `logical_received=16/16` after real market triggers.
+
+2. Confirm intraday futures alerts fire in real time.
+   - Active alerts: `MNQ1!` `5m` and `MES1!` `5m`.
+   - Target: accepted futures events in the TradingView ledger, no quarantine.
+
+3. Confirm actionable delivery in a real scenario.
+   - V32 nudge preflight is ready.
+   - JSON-only operator notify is healthy.
+   - Do not send test push noise unless explicitly requested.
+
+4. Observe scoring behavior over live cycles.
+   - `setup_validity_pct`, `conviction_score`, and `ranking_score` must reduce
+     daily noise and distinguish near-valid from fully valid setups.
+   - Review after several live sessions using the opportunity audit.
+
+## Strategy And Universe Expansion
+
+Do not solve universe coverage by adding many TradingView alerts. The current
+boundary is:
+
+- TradingView: technical confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`, and
+  `VIX`.
+- IBKR: option chains, strike, expiration, DTE, bid/ask, spread, delta, IV,
+  account context, and capacity.
+- Strategy registry/regime policy: score thresholds, CANSLIM minimums, delta
+  ranges, DTE ranges, and blocker logic.
+- Backend scanner/universe: large-cap and CANSLIM candidates beyond the current
+  default list.
+
+Next implementation target:
+
+- Validate the expanded backend large-cap/CANSLIM candidate universe in a live
+  IBKR refresh. The default bridge universe now includes the prior core set plus
+  `GOOGL`, `AVGO`, `AMD`, `COST`, `CRM`, and `ORCL`.
+- Latest local IBKR refresh attempt on 2026-07-11 could not connect because
+  TWS/IB Gateway was not listening on `127.0.0.1:7496`; rerun with TWS open.
+- Add or validate the ranking fields that promote stronger CANSLIM setups.
+- Keep single-name TradingView alerts out of scope unless a measured technical
+  confirmation gap is documented.
+
+## Optional Cleanup
+
+TradingView chart layout still may contain duplicate script instances or an old
+compiled-error study. This is visual clutter only if the 5 active alerts remain
+correct. Remove chart studies only after confirming that alert delivery is
+stable or during an explicit chart-cleanup session.
+
+## Verification Commands
+
+```bash
+python3 scripts/run_market_open_readiness.py --market-closed-ok --no-write
+python3 scripts/run_tradingview_alert_bundle_health.py --market-closed-ok --local-replay-validation
+python3 scripts/v32_nudge_preflight_check.py
+python3 scripts/v32_operator_notify.py
+python3 scripts/run_alert_opportunity_audit.py --runtime-dir runtime --preview 5
+```
+
+Expected closed-market interpretation:
+
+- `active_alerts=5`
+- `logical_received=0/16` until real alerts fire
+- `WAITING_TV` is acceptable
+- `execution_authorized=false`
+- `not_order_instruction=true`

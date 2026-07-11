@@ -84,6 +84,41 @@ class AlertOpportunityAuditTests(unittest.TestCase):
             self.assertEqual(coverage["NAKED_PUT"]["closed_outcomes"], 1)
             self.assertTrue(coverage["NAKED_PUT"]["sample_size_warning"])
 
+    def test_audit_dedupes_repeated_same_day_contract_decisions(self):
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            repeated = {
+                "ticker": "AAPL",
+                "strategy": "NAKED_PUT",
+                "final_state": "ENTRY_READY",
+                "selected_contract": {
+                    "strike": 180,
+                    "expiration": "2026-07-17",
+                    "dte": 39,
+                    "bid": 1.2,
+                    "ask": 1.35,
+                    "mid": 1.275,
+                    "spread_pct": 11.76,
+                    "delta": -0.28,
+                },
+            }
+            (runtime / "v32_decision_journal.json").write_text(
+                json.dumps(
+                    [
+                        {**repeated, "decision_id": "DEC-OLD", "recorded_at": "2026-06-19T19:16:00+00:00"},
+                        {**repeated, "decision_id": "DEC-NEW", "recorded_at": "2026-06-19T19:20:00+00:00"},
+                    ]
+                )
+            )
+
+            payload = alert_opportunity_audit.build_alert_opportunity_audit(
+                runtime,
+                generated_at="2026-06-28T00:00:00+00:00",
+            )
+
+            self.assertEqual(payload["summary"]["decision_count"], 1)
+            self.assertEqual(payload["summary"]["entry_ready_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

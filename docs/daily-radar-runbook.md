@@ -46,6 +46,7 @@ live in:
 ```bash
 docs/market-open-operator-runbook.md
 docs/next-market-day-checklist.md
+docs/operational-pending-work-register.md
 ```
 
 Post-open monitor:
@@ -418,6 +419,33 @@ Use the printed diagnostic:
 
 The corrective action is to refresh or enrich IBKR option-chain data, not to
 change the decision state.
+
+## TradingView Alert Boundary
+
+The production TradingView setup uses five active consolidated alerts documented
+in `docs/tradingview-production-active-alerts.md`. Those five alerts are enough
+for the current technical confirmation layer because Pine emits the required
+logical event codes internally.
+
+Do not recreate old per-condition alerts to solve missing strategy evidence.
+Use the right source for the missing field:
+
+- TradingView: technical/event confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`,
+  and `VIX`.
+- IBKR: option contract, best strike, DTE, bid/ask, spread, delta, and account
+  capacity checks.
+- Strategy registry/regime policy: score thresholds, CANSLIM minimums, delta
+  ranges, DTE ranges, and blocker logic.
+- Backend universe/scanner: additional large-cap or CANSLIM candidates.
+
+The default IBKR bridge universe includes the core indices/large-cap names plus
+`GOOGL`, `AVGO`, `AMD`, `COST`, `CRM`, and `ORCL`. Override with
+`IBKR_WATCHLIST` and `IBKR_OPTION_SYMBOLS` when testing a narrower or broader
+universe.
+
+If a new stock or strategy repeatedly needs TradingView-specific confirmation,
+document the measured gap first, then add a versioned alert expansion. Until
+then, more TradingView alerts are noise, not more intelligence.
 
 ## Command Center
 

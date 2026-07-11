@@ -36,11 +36,12 @@ def print_human(report: dict, checklist: dict) -> None:
     print(f"Siguiente accion: {report.get('next_required_action')}")
     tv = report.get("tradingview_bundle") or {}
     print(
-        "TradingView: coverage={coverage} e2e={e2e} received={received}/{required} quarantine={quarantine}".format(
+        "TradingView: coverage={coverage} e2e={e2e} active_alerts={active} logical_received={received}/{required} quarantine={quarantine}".format(
             coverage=tv.get("coverage_valid"),
             e2e=tv.get("real_e2e_confirmed"),
+            active=tv.get("total_production_active_alert_count"),
             received=tv.get("total_received_required_event_count"),
-            required=tv.get("total_required_alert_count"),
+            required=tv.get("total_required_logical_event_count") or tv.get("total_required_alert_count"),
             quarantine=tv.get("total_quarantine_event_count"),
         )
     )

@@ -1,4 +1,4 @@
-//@version=5
+//@version=6
 indicator("Stock Ultimus Intraday Futures Alerts v1", overlay=true, max_labels_count=200)
 
 // This script is technical evidence only. It does not authorize orders.
@@ -31,32 +31,31 @@ var int lastSignalDirection = 0
 var float logicalStop = na
 var float logicalTarget = na
 
-if newDay
-    premarketHigh := na
-    premarketLow := na
-    openingRangeHigh := na
-    openingRangeLow := na
-    lastSignalDirection := 0
-    logicalStop := na
-    logicalTarget := na
-
-if inPremarket
-    premarketHigh := na(premarketHigh) ? high : math.max(premarketHigh, high)
-    premarketLow := na(premarketLow) ? low : math.min(premarketLow, low)
-
-if newRegularSession
-    openingRangeHigh := high
-    openingRangeLow := low
-
-if inOpeningRange
-    openingRangeHigh := na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)
-    openingRangeLow := na(openingRangeLow) ? low : math.min(openingRangeLow, low)
+premarketHigh := newDay ? na : inPremarket ? (na(premarketHigh) ? high : math.max(premarketHigh, high)) : premarketHigh
+premarketLow := newDay ? na : inPremarket ? (na(premarketLow) ? low : math.min(premarketLow, low)) : premarketLow
+openingRangeHigh := newDay ? na : newRegularSession ? high : inOpeningRange ? (na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)) : openingRangeHigh
+openingRangeLow := newDay ? na : newRegularSession ? low : inOpeningRange ? (na(openingRangeLow) ? low : math.min(openingRangeLow, low)) : openingRangeLow
 
 vwapValue = ta.vwap(hlc3)
 [plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxSmoothing)
 atrValue = ta.atr(atrLength)
 avgVolume = ta.sma(volume, rvolLength)
 rvolValue = avgVolume > 0 ? volume / avgVolume : na
+
+jsonNumber(value) =>
+    na(value) ? "0" : str.tostring(value, format.mintick)
+
+jsonStringPair(key, value) =>
+    "\"" + key + "\":\"" + value + "\""
+
+jsonNumberPair(key, value) =>
+    "\"" + key + "\":" + jsonNumber(value)
+
+symbolCode = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
+timeframeCode = timeframe.period == "D" ? "D" : timeframe.period + "M"
+
+buildPayload(eventName, eventCode, direction, sessionState, vwapPosition, invalidationText) =>
+    "{" + jsonStringPair("action", "ALERT_ONLY") + "," + jsonNumberPair("adx", adxValue) + "," + jsonNumberPair("atr", atrValue) + "," + jsonStringPair("breakout_direction", direction) + "," + jsonStringPair("event", eventName) + "," + jsonStringPair("event_code", eventCode) + "," + jsonStringPair("invalidation", invalidationText) + "," + jsonNumberPair("logical_stop", logicalStop) + "," + jsonNumberPair("logical_target", logicalTarget) + "," + jsonStringPair("major_event_window", "NONE") + "," + jsonNumberPair("opening_range_high", openingRangeHigh) + "," + jsonNumberPair("opening_range_low", openingRangeLow) + "," + jsonStringPair("portfolio_status", "OK") + "," + jsonNumberPair("premarket_high", premarketHigh) + "," + jsonNumberPair("premarket_low", premarketLow) + "," + jsonNumberPair("price", close) + "," + jsonStringPair("risk_daily_status", "OK") + "," + jsonStringPair("session_state", sessionState) + "," + jsonStringPair("source", "TRADINGVIEW") + "," + jsonStringPair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + jsonStringPair("ticker", syminfo.ticker) + "," + jsonStringPair("timeframe", timeframe.period) + "," + jsonNumberPair("volume_relative", rvolValue) + "," + jsonNumberPair("vwap", vwapValue) + "," + jsonStringPair("vwap_position", vwapPosition) + "}"
 
 hasOpeningRange = not na(openingRangeHigh) and not na(openingRangeLow)
 qualityOk = adxValue >= minAdx and rvolValue >= minRvol
@@ -70,24 +69,33 @@ vwapRejectShort = barstate.isconfirmed and inRegular and ta.crossunder(close, vw
 longSignal = orbBreakoutLong or vwapReclaimLong
 shortSignal = orbBreakoutShort or vwapRejectShort
 
-if longSignal
-    lastSignalDirection := 1
-    logicalStop := math.min(vwapValue, close - atrValue * stopAtrMultiple)
-    logicalTarget := close + atrValue * targetAtrMultiple
-
-if shortSignal
-    lastSignalDirection := -1
-    logicalStop := math.max(vwapValue, close + atrValue * stopAtrMultiple)
-    logicalTarget := close - atrValue * targetAtrMultiple
-
 longInvalidation = lastSignalDirection == 1 and (ta.crossunder(close, vwapValue) or (hasOpeningRange and close < openingRangeHigh))
 shortInvalidation = lastSignalDirection == -1 and (ta.crossover(close, vwapValue) or (hasOpeningRange and close > openingRangeLow))
 riskInvalidation = barstate.isconfirmed and inRegular and (longInvalidation or shortInvalidation)
 
-if riskInvalidation
-    lastSignalDirection := 0
+lastSignalDirection := newDay ? 0 : longSignal ? 1 : shortSignal ? -1 : riskInvalidation ? 0 : lastSignalDirection
+logicalStop := newDay ? na : longSignal ? math.min(vwapValue, close - atrValue * stopAtrMultiple) : shortSignal ? math.max(vwapValue, close + atrValue * stopAtrMultiple) : logicalStop
+logicalTarget := newDay ? na : longSignal ? close + atrValue * targetAtrMultiple : shortSignal ? close - atrValue * targetAtrMultiple : logicalTarget
 
 sessionSnapshot = barstate.isconfirmed and inRegular and bar_index % snapshotEveryBars == 0
+
+if orbBreakoutLong
+    alert(buildPayload("ORB_BREAKOUT", symbolCode + "_ORB_BREAKOUT_LONG_" + timeframeCode, "LONG", "OPENING_RANGE", "ABOVE", "VWAP_LOST_OR_BACK_INSIDE_ORB"), alert.freq_once_per_bar_close)
+
+if orbBreakoutShort
+    alert(buildPayload("ORB_BREAKOUT", symbolCode + "_ORB_BREAKOUT_SHORT_" + timeframeCode, "SHORT", "OPENING_RANGE", "BELOW", "VWAP_RECLAIMED_OR_BACK_INSIDE_ORB"), alert.freq_once_per_bar_close)
+
+if vwapReclaimLong
+    alert(buildPayload("VWAP_RECLAIM", symbolCode + "_VWAP_RECLAIM_LONG_" + timeframeCode, "LONG", "REGULAR", "ABOVE", "VWAP_LOST"), alert.freq_once_per_bar_close)
+
+if vwapRejectShort
+    alert(buildPayload("VWAP_REJECT", symbolCode + "_VWAP_REJECT_SHORT_" + timeframeCode, "SHORT", "REGULAR", "BELOW", "VWAP_RECLAIMED"), alert.freq_once_per_bar_close)
+
+if riskInvalidation
+    alert(buildPayload("RISK_INVALIDATION", symbolCode + "_RISK_INVALIDATION_" + timeframeCode, "NONE", "REGULAR", "UNKNOWN", "TECHNICAL_OR_RISK_INVALIDATED"), alert.freq_once_per_bar_close)
+
+if sessionSnapshot
+    alert(buildPayload("SESSION_SNAPSHOT", symbolCode + "_SESSION_SNAPSHOT_" + timeframeCode, "NONE", "REGULAR", "UNKNOWN", "NONE"), alert.freq_once_per_bar_close)
 
 plot(vwapValue, title="VWAP", color=color.new(color.blue, 0), linewidth=2)
 plot(openingRangeHigh, title="ORH", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)

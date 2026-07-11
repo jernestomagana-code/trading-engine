@@ -190,6 +190,30 @@ def normalize_outcome(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def logical_decision_key(item: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    recorded = safe_text(item.get("recorded_at"))
+    day = recorded[:10] if len(recorded) >= 10 else ""
+    contract = item.get("contract") if isinstance(item.get("contract"), dict) else {}
+    return (
+        day,
+        safe_upper(item.get("ticker")),
+        safe_upper(item.get("strategy")),
+        safe_upper(item.get("final_state")),
+        safe_text(contract.get("expiration") or "NOEXP"),
+        safe_text(contract.get("strike") if contract.get("strike") is not None else "NOSTRIKE"),
+    )
+
+
+def dedupe_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
+    for item in decisions:
+        key = logical_decision_key(item)
+        current = latest.get(key)
+        if current is None or safe_text(item.get("recorded_at")) >= safe_text(current.get("recorded_at")):
+            latest[key] = item
+    return sorted(latest.values(), key=lambda row: safe_text(row.get("recorded_at")))
+
+
 def counter_dict(counter: Counter[str], limit: int | None = None) -> dict[str, int]:
     items = counter.most_common(limit)
     return {key: value for key, value in items}
@@ -327,6 +351,7 @@ def load_runtime_inputs(runtime_dir: Path) -> tuple[list[dict[str, Any]], list[d
     ]
     radar_items = list_from_payload(radar_payload, ["items", "all_ranked", "top_recommendations", "blocked_or_waiting"])
     decisions.extend(normalize_decision(item, "daily_radar_latest") for item in radar_items)
+    decisions = dedupe_decisions(decisions)
 
     outcomes = [
         normalize_outcome(item)

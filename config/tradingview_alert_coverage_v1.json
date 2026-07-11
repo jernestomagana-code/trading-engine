@@ -6,6 +6,22 @@
   "webhook_url_template": "https://trading-engine-p097.onrender.com/technical_snapshot",
   "timeframes": ["5"],
   "symbols": ["MNQ1!", "MES1!"],
+  "production_active_alerts": [
+    {
+      "symbol": "MNQ1!",
+      "timeframe": "5",
+      "pine_script": "tradingview/stock_ultimus_intraday_futures_alerts_v1.pine",
+      "tradingview_condition": "Stock Ultimus Intraday Futures Alerts v1 / Any alert() function call",
+      "active_alert_slots": 1
+    },
+    {
+      "symbol": "MES1!",
+      "timeframe": "5",
+      "pine_script": "tradingview/stock_ultimus_intraday_futures_alerts_v1.pine",
+      "tradingview_condition": "Stock Ultimus Intraday Futures Alerts v1 / Any alert() function call",
+      "active_alert_slots": 1
+    }
+  ],
   "global_policy": {
     "manual_review_required": true,
     "execution_authorized": false,

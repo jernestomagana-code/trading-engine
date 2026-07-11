@@ -1,31 +1,50 @@
-# TradingView Minimum Alert Set
+# TradingView Futures Alert Set
 
-This is the first production coverage matrix for Stock Ultimus TradingView
-alerts. These alerts provide technical evidence only; they do not authorize
-orders.
+This is the production futures confirmation layer for Stock Ultimus. These
+alerts provide technical evidence only; they do not authorize orders.
 
-## Phase 1 Core Alerts
+## Production Active Alerts
 
-Create these ten alerts first, all on 5 minute charts:
+Keep only these two futures alerts active in TradingView:
 
-| Alert name | Symbol | Condition hint | Role |
-| --- | --- | --- | --- |
-| `MNQ_ORB_BREAKOUT_LONG_5M` | `MNQ1!` | ORB Breakout Long | Entry confirmation |
-| `MNQ_ORB_BREAKOUT_SHORT_5M` | `MNQ1!` | ORB Breakout Short | Entry confirmation |
-| `MNQ_VWAP_RECLAIM_LONG_5M` | `MNQ1!` | VWAP Reclaim Long | Entry confirmation |
-| `MNQ_VWAP_REJECT_SHORT_5M` | `MNQ1!` | VWAP Reject Short | Entry confirmation |
-| `MNQ_RISK_INVALIDATION_5M` | `MNQ1!` | Risk Invalidation | Invalidation |
-| `MES_ORB_BREAKOUT_LONG_5M` | `MES1!` | ORB Breakout Long | Entry confirmation |
-| `MES_ORB_BREAKOUT_SHORT_5M` | `MES1!` | ORB Breakout Short | Entry confirmation |
-| `MES_VWAP_RECLAIM_LONG_5M` | `MES1!` | VWAP Reclaim Long | Entry confirmation |
-| `MES_VWAP_REJECT_SHORT_5M` | `MES1!` | VWAP Reject Short | Entry confirmation |
-| `MES_RISK_INVALIDATION_5M` | `MES1!` | Risk Invalidation | Invalidation |
+| Active alert | Symbol | Timeframe | TradingView condition | Role |
+| --- | --- | --- | --- | --- |
+| `Stock Ultimus Intraday Futures Alerts v1` | `MNQ1!` | `5m` | `Any alert() function call` | Consolidated MNQ futures evidence |
+| `Stock Ultimus Intraday Futures Alerts v1` | `MES1!` | `5m` | `Any alert() function call` | Consolidated MES futures evidence |
+
+Use the deployed webhook URL:
+
+```text
+https://trading-engine-p097.onrender.com/technical_snapshot
+```
+
+Leave the TradingView message field at the default value for alert-function
+alerts. The Pine script sends the JSON payload itself.
+
+## Logical Event Coverage
+
+The two active alerts above dynamically emit these ten event codes. Do not
+create these as separate active alerts unless the consolidated alert-function
+setup is unavailable:
+
+| Event code | Symbol | Role |
+| --- | --- | --- |
+| `MNQ_ORB_BREAKOUT_LONG_5M` | `MNQ1!` | Entry confirmation |
+| `MNQ_ORB_BREAKOUT_SHORT_5M` | `MNQ1!` | Entry confirmation |
+| `MNQ_VWAP_RECLAIM_LONG_5M` | `MNQ1!` | Entry confirmation |
+| `MNQ_VWAP_REJECT_SHORT_5M` | `MNQ1!` | Entry confirmation |
+| `MNQ_RISK_INVALIDATION_5M` | `MNQ1!` | Invalidation |
+| `MES_ORB_BREAKOUT_LONG_5M` | `MES1!` | Entry confirmation |
+| `MES_ORB_BREAKOUT_SHORT_5M` | `MES1!` | Entry confirmation |
+| `MES_VWAP_RECLAIM_LONG_5M` | `MES1!` | Entry confirmation |
+| `MES_VWAP_REJECT_SHORT_5M` | `MES1!` | Entry confirmation |
+| `MES_RISK_INVALIDATION_5M` | `MES1!` | Invalidation |
 
 ## Optional Health Alerts
 
 Keep these paused unless the plan has spare active alert capacity. They are
 heartbeat/context signals, not decision-making alerts, so operational health no
-longer requires them while the active TradingView plan is capped at 20 alerts:
+longer requires them while TradingView active-alert capacity is limited:
 
 | Alert name | Symbol | Condition hint | Role |
 | --- | --- | --- | --- |
@@ -55,13 +74,13 @@ The Pine script used by these alerts must expose plots with these exact names:
 
 ## Generate Setup Messages
 
-Validate the matrix:
+Validate the logical event matrix:
 
 ```bash
 python3 scripts/print_tradingview_alert_setup.py --validate
 ```
 
-Print every setup record:
+Print every fallback setup record:
 
 ```bash
 python3 scripts/print_tradingview_alert_setup.py
@@ -75,24 +94,30 @@ python3 scripts/print_tradingview_alert_setup.py --event-code MNQ_ORB_BREAKOUT_L
 
 ## TradingView Fields
 
-Use the deployed webhook URL:
+Recommended setup:
 
-```text
-https://trading-engine-p097.onrender.com/technical_snapshot
-```
+- Add `tradingview/stock_ultimus_intraday_futures_alerts_v1.pine` to `MNQ1!`
+  on the `5m` chart.
+- Create one TradingView alert with condition `Stock Ultimus Intraday Futures Alerts v1`
+  / `Any alert() function call`.
+- Use the webhook URL above.
+- Leave the message box as TradingView's default for alert-function alerts; the
+  script sends the JSON payload itself.
+- Repeat the same setup on `MES1!` `5m`.
 
-For each alert:
+Fallback setup if alert-function alerts are not available in the plan:
 
 - Choose the matching chart symbol and `5m` timeframe.
 - Choose the matching Pine alert condition from `condition_hint`.
 - Name the alert exactly as `alert_name`.
 - Paste the generated JSON message.
 - Keep the alert active.
+- This fallback consumes ten active-alert slots instead of two, so it is not the
+  preferred production setup.
 
-Legacy, duplicate, RSI, crossing-price, or old `Any alert() function call`
-alerts should remain paused. If one fires anyway, the backend persists it in the
-TradingView ledger but marks it `QUARANTINED` and does not feed it into the
-decision engine.
+Legacy, duplicate, RSI, crossing-price, or generic text-message alerts should
+remain paused. If one fires anyway, the backend persists it in the TradingView
+ledger but marks it `QUARANTINED` and does not feed it into the decision engine.
 
 If an alert condition title differs in TradingView, use the Pine condition that
 matches the same event semantics and keep the Stock Ultimus alert name/event code

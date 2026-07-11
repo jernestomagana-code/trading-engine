@@ -137,6 +137,9 @@ def build_go_no_go(
             "status": tv_bundle.get("status"),
             "coverage_valid": tv_bundle.get("coverage_valid"),
             "real_e2e_confirmed": tv_bundle.get("real_e2e_confirmed"),
+            "total_production_active_alert_count": tv_bundle.get("total_production_active_alert_count"),
+            "total_required_logical_event_count": tv_bundle.get("total_required_logical_event_count"),
+            "total_logical_event_count": tv_bundle.get("total_logical_event_count"),
             "total_expected_alert_count": tv_bundle.get("total_expected_alert_count"),
             "total_required_alert_count": tv_bundle.get("total_required_alert_count"),
             "total_received_required_event_count": tv_bundle.get("total_received_required_event_count"),
@@ -166,8 +169,8 @@ def build_market_open_checklist(
     steps = [
         {
             "name": "tradingview_alerts_visible",
-            "command": "Open TradingView alerts panel and confirm 20 expected alerts are active.",
-            "expected": "12 MNQ/MES futures alerts plus 8 SPY/QQQ/VIX options-underlying alerts.",
+            "command": "Open TradingView alerts panel and confirm 5 consolidated production alerts are active.",
+            "expected": "2 MNQ/MES futures alerts plus 3 QQQ/SPY/VIX options-underlying alerts; old per-condition alerts remain paused.",
             "status": "PASS" if readiness["tradingview_bundle"]["coverage_valid"] else "OPEN",
         },
         {
@@ -251,6 +254,8 @@ def build_post_open_monitor(
             "watch_count": watch_count,
             "info_count": sum(1 for item in findings if item["severity"] == "INFO"),
             "tradingview_real_e2e_confirmed": tv.get("real_e2e_confirmed"),
+            "tradingview_total_production_active_alert_count": tv.get("total_production_active_alert_count"),
+            "tradingview_total_required_logical_event_count": tv.get("total_required_logical_event_count"),
             "tradingview_total_received_required_event_count": tv.get("total_received_required_event_count"),
             "tradingview_total_required_alert_count": tv.get("total_required_alert_count"),
             "ibkr_primary_gap": readiness.get("ibkr_primary_gap"),

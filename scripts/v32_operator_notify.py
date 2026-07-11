@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -124,6 +125,8 @@ def request_operator(base_url: str, token: str, timeout: int, limit: int) -> tup
         except Exception:
             payload = {"raw": body[:500]}
         return exc.code, payload
+    except (TimeoutError, socket.timeout) as exc:
+        return 0, {"detail": f"TIMEOUT: {exc}"}
     except urllib.error.URLError as exc:
         return 0, {"detail": str(exc)}
 
@@ -151,6 +154,8 @@ def post_json(base_url: str, path: str, token: str, payload: dict[str, Any], tim
         except Exception:
             payload = {"raw": raw[:500]}
         return exc.code, payload
+    except (TimeoutError, socket.timeout) as exc:
+        return 0, {"detail": f"TIMEOUT: {exc}"}
     except urllib.error.URLError as exc:
         return 0, {"detail": str(exc)}
 
@@ -274,6 +279,8 @@ def send_webhook_notification(report: dict[str, Any], webhook_url: str, timeout:
             return {"sent": 200 <= response.status < 300, "provider": "webhook", "status_code": response.status}
     except urllib.error.HTTPError as exc:
         return {"sent": False, "provider": "webhook", "status_code": exc.code, "error": exc.read().decode("utf-8", errors="replace")[:500]}
+    except (TimeoutError, socket.timeout) as exc:
+        return {"sent": False, "provider": "webhook", "error": f"TIMEOUT: {exc}"}
     except urllib.error.URLError as exc:
         return {"sent": False, "provider": "webhook", "error": str(exc)}
 
