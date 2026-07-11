@@ -104,6 +104,10 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("OPTION_CONTRACT_BUDGET_APPLIED", source)
         self.assertIn("underlying_rank_score", source)
         self.assertIn("symbol_plan=symbol_plan", source)
+        self.assertIn("def _bridge_extract_canslim_candidates", source)
+        self.assertIn("def _bridge_merge_canslim_candidates_into_technical", source)
+        self.assertIn("canslim_candidate_count", source)
+        self.assertIn("canslim_score", source)
 
     def test_bridge_account_context_is_sanitized_for_broker_checks(self):
         source = BRIDGE.read_text()

@@ -1336,6 +1336,116 @@ def _bridge_canslim_snapshot(technical):
     }
 
 
+def _bridge_canslim_candidate_from_row(row, source_name="runtime"):
+    row = row if isinstance(row, dict) else {}
+    symbol = str(row.get("ticker") or row.get("symbol") or row.get("underlying") or "").upper().strip()
+    if not symbol:
+        return None
+
+    nested = row.get("canslim") if isinstance(row.get("canslim"), dict) else {}
+    has_canslim_signal = bool(nested) or any(
+        key in row for key in [
+            "canslim_score",
+            "canslim_passes",
+            "canslim_rating",
+            "rating_score",
+            "composite_score",
+            "composite_rating",
+        ]
+    )
+    if not has_canslim_signal:
+        return None
+
+    score = _v283_float(
+        nested.get("score")
+        or nested.get("rating_score")
+        or nested.get("composite_score")
+        or row.get("canslim_score")
+        or row.get("rating_score")
+        or row.get("composite_score")
+        or row.get("composite_rating"),
+        None,
+    )
+    passes = _bridge_bool(
+        nested.get("passes")
+        if nested
+        else row.get("canslim_passes")
+    )
+    if passes is None and score is not None:
+        passes = score >= OPTION_CANSLIM_TRIGGER_SCORE
+
+    fundamental = row.get("fundamental") if isinstance(row.get("fundamental"), dict) else {}
+    for key in ["eps_growth", "sales_growth", "roe", "debt_to_equity", "institutional_ownership"]:
+        if key in row and key not in fundamental:
+            fundamental[key] = row.get(key)
+
+    return {
+        "ticker": symbol,
+        "canslim": {
+            "available": True,
+            "passes": passes,
+            "score": score,
+            "rating": nested.get("rating") or row.get("canslim_rating") or row.get("rating"),
+            "source": row.get("source") or source_name,
+        },
+        "fundamental": fundamental,
+        "source": row.get("source") or source_name,
+        "not_order_instruction": True,
+    }
+
+
+def _bridge_extract_canslim_candidates(runtime_data):
+    runtime_data = runtime_data if isinstance(runtime_data, dict) else {}
+    candidates = {}
+
+    def scan(obj, source_name):
+        if isinstance(obj, dict):
+            candidate = _bridge_canslim_candidate_from_row(obj, source_name)
+            if candidate:
+                symbol = candidate["ticker"]
+                current = candidates.get(symbol)
+                current_score = _v283_float((current or {}).get("canslim", {}).get("score"), -1)
+                candidate_score = _v283_float(candidate.get("canslim", {}).get("score"), -1)
+                if current is None or candidate_score >= current_score:
+                    candidates[symbol] = candidate
+            for value in obj.values():
+                if isinstance(value, (dict, list)):
+                    scan(value, source_name)
+        elif isinstance(obj, list):
+            for value in obj:
+                scan(value, source_name)
+
+    for source_name, payload in runtime_data.items():
+        scan(payload, source_name)
+
+    return candidates
+
+
+def _bridge_merge_canslim_candidates_into_technical(technical, canslim_candidates):
+    technical = technical if isinstance(technical, dict) else {}
+    merged = {str(symbol).upper(): dict(value) for symbol, value in technical.items() if isinstance(value, dict)}
+    for symbol, candidate in (canslim_candidates or {}).items():
+        symbol = str(symbol or "").upper().strip()
+        if not symbol:
+            continue
+        target = dict(merged.get(symbol) or {"ticker": symbol, "symbol": symbol})
+        candidate_canslim = candidate.get("canslim") if isinstance(candidate.get("canslim"), dict) else {}
+        existing_canslim = target.get("canslim") if isinstance(target.get("canslim"), dict) else {}
+        existing_score = _v283_float(existing_canslim.get("score") or existing_canslim.get("rating_score"), None)
+        candidate_score = _v283_float(candidate_canslim.get("score") or candidate_canslim.get("rating_score"), None)
+        if not existing_canslim or existing_score is None or (candidate_score is not None and candidate_score >= existing_score):
+            target["canslim"] = dict(candidate_canslim)
+            target["canslim_score"] = candidate_canslim.get("score")
+            target["canslim_passes"] = candidate_canslim.get("passes")
+            target["canslim_rating"] = candidate_canslim.get("rating")
+            target["canslim_source"] = candidate_canslim.get("source")
+        if isinstance(candidate.get("fundamental"), dict):
+            existing_fundamental = target.get("fundamental") if isinstance(target.get("fundamental"), dict) else {}
+            target["fundamental"] = {**existing_fundamental, **candidate["fundamental"]}
+        merged[symbol] = target
+    return merged
+
+
 def _bridge_held_underlying_symbols():
     held = []
     for row in _bridge_cycle_position_rows():
@@ -1355,6 +1465,7 @@ def _bridge_option_universe_runtime_context():
     runtime_data = _v283_load_runtime_jsons()
     option_rows = _v283_extract_options_rows(runtime_data)
     technical = _v283_extract_technical(runtime_data)
+    canslim_candidates = _bridge_extract_canslim_candidates(runtime_data)
     try:
         technical = runtime_local_technical.merge_local_technical_snapshot(
             technical,
@@ -1364,6 +1475,7 @@ def _bridge_option_universe_runtime_context():
         )
     except Exception:
         pass
+    technical = _bridge_merge_canslim_candidates_into_technical(technical, canslim_candidates)
     return runtime_data, technical if isinstance(technical, dict) else {}, option_rows
 
 
@@ -1546,6 +1658,10 @@ def build_dynamic_option_symbol_plan(symbols, technical_snapshot=None):
         "enabled": True,
         "input_symbols": base_symbols,
         "candidate_count": len(candidate_symbols),
+        "canslim_candidate_count": len([
+            symbol for symbol in candidate_symbols
+            if _bridge_canslim_snapshot(technical_snapshot.get(symbol) or {}).get("available")
+        ]),
         "runtime_technical_candidate_count": len([
             symbol for symbol in candidate_symbols
             if symbol not in base_symbols and symbol in technical_snapshot

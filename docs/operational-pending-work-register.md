@@ -71,9 +71,12 @@ Next implementation target:
   positions, large-cap/liquidity tier, technical confirmation, and CANSLIM
   score/pass. It then enforces `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` and
   `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN`.
+- CANSLIM is now accepted as dynamic runtime input: any runtime JSON rows with
+  `ticker`/`symbol` and `canslim` fields or `canslim_score`/`rating_score`
+  fields are merged into the option-underlying rank before chains open.
 - Audit `runtime/v32_ibkr_chain_coverage.json` after the next live run. The
   `option_symbol_plan` section should show selected and skipped underlyings with
-  their scores, triggers, and blockers.
+  their scores, triggers, blockers, and `canslim_candidate_count`.
 - Keep single-name TradingView alerts out of scope unless a measured technical
   confirmation gap is documented.
 
