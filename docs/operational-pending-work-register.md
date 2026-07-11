@@ -17,6 +17,8 @@ review. It is decision-support only and never authorizes order execution.
   alerts.
 - V32 nudge preflight reached production successfully.
 - V32 operator notify handles backend timeouts without traceback.
+- After the targeted IBKR refresh, production operator notify moved from
+  `NO_DATA` to `WAIT_MARKET`, with `WAIT_MARKET_SUPPRESSED` and no push sent.
 
 ## Waiting For Market Data
 
@@ -32,7 +34,7 @@ These cannot be fully closed on a closed-market day:
 
 3. Confirm actionable delivery in a real scenario.
    - V32 nudge preflight is ready.
-   - JSON-only operator notify is healthy.
+   - JSON-only operator notify is healthy and suppresses closed-market noise.
    - Do not send test push noise unless explicitly requested.
 
 4. Observe scoring behavior over live cycles.
@@ -59,8 +61,10 @@ Next implementation target:
 - Validate the expanded backend large-cap/CANSLIM candidate universe in a live
   IBKR refresh. The default bridge universe now includes the prior core set plus
   `GOOGL`, `AVGO`, `AMD`, `COST`, `CRM`, and `ORCL`.
-- Latest local IBKR refresh attempt on 2026-07-11 could not connect because
-  TWS/IB Gateway was not listening on `127.0.0.1:7496`; rerun with TWS open.
+- Latest local IBKR refresh attempt on 2026-07-11 connected successfully with
+  TWS open. A targeted run validated `QQQ`, `GOOGL`, `AVGO`, `AMD`, `COST`,
+  `CRM`, and `ORCL`, produced `COVERAGE_REVIEWABLE`, and published the snapshot
+  remotely with status `200`.
 - Add or validate the ranking fields that promote stronger CANSLIM setups.
 - Keep single-name TradingView alerts out of scope unless a measured technical
   confirmation gap is documented.
