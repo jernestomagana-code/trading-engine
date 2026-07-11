@@ -24,6 +24,11 @@ review. It is decision-support only and never authorizes order execution.
   `runtime/ibkr_account_capacity_latest.json`, publishes the capacity context
   into the V31 snapshot, and shows per-alert capital/capacity comparisons
   without exposing real account identifiers.
+- Intraday futures TradingView payloads now normalize `strategy_context` and
+  `strategy` consistently, derive stop/target/RR from Pine `logical_stop` and
+  `logical_target`, and attempt immediate Pushover delivery for entry triggers
+  and risk invalidations. The 5-minute V32 watcher remains a fallback reminder,
+  not the primary futures timing path.
 
 ## Waiting For Market Data
 
@@ -35,11 +40,15 @@ These cannot be fully closed on a closed-market day:
 
 2. Confirm intraday futures alerts fire in real time.
    - Active alerts: `MNQ1!` `5m` and `MES1!` `5m`.
-   - Target: accepted futures events in the TradingView ledger, no quarantine.
+   - Target: accepted futures events in the TradingView ledger, no quarantine,
+     and immediate notify status of `sent`, `deduped`, or provider-level
+     `not_sent` without ingest failure.
 
 3. Confirm actionable delivery in a real scenario.
    - V32 nudge preflight is ready.
    - JSON-only operator notify is healthy and suppresses closed-market noise.
+   - Futures entry/risk events should arrive through the immediate
+     `/technical_snapshot` path before the 5-minute watcher would run.
    - Do not send test push noise unless explicitly requested.
 
 4. Observe scoring behavior over live cycles.

@@ -1555,6 +1555,8 @@ def attach_intraday_futures_outcomes(events, outcome_rows):
 def normalize_intraday_futures_status(value, default="NEEDS_REVIEW"):
     value = str(value or default).upper().strip()
     value = re.sub(r"[^A-Z0-9_]+", "_", value)
+    if value in {"OK", "PASS", "PASSED", "READY"}:
+        return "CLEAR"
     return value or default
 
 
@@ -2116,7 +2118,13 @@ def supabase_persist_intraday_outcome(event, outcome, evaluation_type):
 
 
 def is_intraday_futures_signal(payload):
-    return str((payload or {}).get("strategy") or "").upper() == "INTRADAY_INDEX_FUTURES"
+    payload = payload or {}
+    strategy = str(
+        payload.get("strategy")
+        or payload.get("strategy_context")
+        or ""
+    ).upper().strip()
+    return strategy == "INTRADAY_INDEX_FUTURES"
 
 
 def build_intraday_futures_price_point(payload):
@@ -9051,6 +9059,13 @@ def normalize_vwap_position_code(value):
 def normalize_technical_snapshot_payload(payload):
     payload = dict(payload or {})
 
+    strategy_context = str(payload.get("strategy_context") or "").upper().strip()
+    strategy = str(payload.get("strategy") or "").upper().strip()
+    if not strategy and strategy_context:
+        payload["strategy"] = strategy_context
+    if not strategy_context and strategy:
+        payload["strategy_context"] = strategy
+
     for key in NUMERIC_FIELDS_V15_1:
         if key in payload:
             payload[key] = normalize_number_or_none(payload.get(key))
@@ -9292,10 +9307,79 @@ def intraday_futures_bool(value, default=False):
     return safe_bool(value, default=default)
 
 
+def intraday_futures_event_text(value):
+    return str(value or "").upper().strip()
+
+
+def intraday_futures_is_entry_event(event_code, event=None):
+    code = intraday_futures_event_text(event_code)
+    name = intraday_futures_event_text(event)
+    if event_code in [201, 202]:
+        return True
+    if any(part in code for part in [
+        "ORB_BREAKOUT_LONG",
+        "ORB_BREAKOUT_SHORT",
+        "VWAP_RECLAIM_LONG",
+        "VWAP_REJECT_SHORT",
+    ]):
+        return True
+    return name in {"BREAK_BOUNCE_LONG", "BREAK_BOUNCE_SHORT", "ORB_BREAKOUT", "VWAP_RECLAIM", "VWAP_REJECT"}
+
+
+def intraday_futures_is_setup_wait_event(event_code, event=None):
+    code = intraday_futures_event_text(event_code)
+    name = intraday_futures_event_text(event)
+    if event_code in [101, 102]:
+        return True
+    return "SETUP" in code or name.endswith("_SETUP")
+
+
+def intraday_futures_is_risk_invalidation_event(event_code, event=None):
+    code = intraday_futures_event_text(event_code)
+    name = intraday_futures_event_text(event)
+    return event_code in [701, 801, 802, 901] or "RISK_INVALIDATION" in code or name in {
+        "RISK_INVALIDATION",
+        "MACRO_LOCKOUT",
+        "VOLATILITY_EXTREME",
+        "RANGE_70_USED",
+        "RANGE_90_USED",
+    }
+
+
+def intraday_futures_is_session_snapshot_event(event_code, event=None):
+    code = intraday_futures_event_text(event_code)
+    name = intraday_futures_event_text(event)
+    return "SESSION_SNAPSHOT" in code or name == "SESSION_SNAPSHOT"
+
+
+def intraday_futures_entry_risk_fields(payload):
+    payload = dict(payload or {})
+    price = first_present_float(payload.get("entry_price"), payload.get("price"))
+    stop_price = first_present_float(payload.get("stop_price"), payload.get("logical_stop"))
+    target_price = first_present_float(payload.get("tp1_price"), payload.get("logical_target"))
+    stop_points = first_present_float(payload.get("stop_points"))
+    if stop_points is None and price is not None and stop_price is not None:
+        stop_points = abs(price - stop_price)
+    rr_ratio = first_present_float(payload.get("rr_ratio"))
+    if rr_ratio is None and price is not None and stop_price is not None and target_price is not None:
+        risk_points = abs(price - stop_price)
+        reward_points = abs(target_price - price)
+        if risk_points:
+            rr_ratio = round(reward_points / risk_points, 4)
+    return {
+        "entry_price": price,
+        "stop_price": stop_price,
+        "stop_points": stop_points,
+        "tp1_price": target_price,
+        "tp2_price": first_present_float(payload.get("tp2_price"), target_price),
+        "rr_ratio": rr_ratio,
+    }
+
+
 def apply_intraday_futures_risk_engine(payload):
     payload = dict(payload or {})
 
-    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+    if not is_intraday_futures_signal(payload):
         return payload
 
     construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
@@ -9561,7 +9645,7 @@ def intraday_futures_position_direction(position):
 def apply_intraday_futures_portfolio_engine(payload):
     payload = dict(payload or {})
 
-    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+    if not is_intraday_futures_signal(payload):
         return payload
 
     construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
@@ -9730,7 +9814,7 @@ def apply_intraday_futures_portfolio_engine(payload):
 def apply_premarket_context_to_intraday_futures_payload(payload):
     payload = dict(payload or {})
 
-    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+    if not is_intraday_futures_signal(payload):
         return payload
 
     session_date = intraday_futures_current_session_date(payload)
@@ -9818,7 +9902,7 @@ def apply_premarket_context_to_intraday_futures_payload(payload):
 def apply_intraday_futures_decision_engine(payload):
     payload = dict(payload or {})
 
-    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+    if not is_intraday_futures_signal(payload):
         return payload
 
     construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
@@ -9857,10 +9941,10 @@ def apply_intraday_futures_decision_engine(payload):
         if blocker in hard_premarket_blockers and blocker not in blockers:
             blockers.append(blocker)
 
-    if event_code in [101, 102]:
+    if intraday_futures_is_setup_wait_event(event_code, payload.get("event")):
         wait_reasons.append("SETUP_WAITING_TRIGGER_CONFIRMATION")
-    elif event_code in [701]:
-        wait_reasons.append("RANGE_USED_WARNING_ONLY")
+    elif intraday_futures_is_risk_invalidation_event(event_code, payload.get("event")):
+        wait_reasons.append("RISK_OR_INVALIDATION_EVENT")
     elif event_code in [None, "", 0, "0"]:
         wait_reasons.append("NO_INTRADAY_EVENT")
 
@@ -9879,7 +9963,7 @@ def apply_intraday_futures_decision_engine(payload):
         manual_review_reasons.append("MANUAL_REVIEW_REQUIRED")
 
     entry_ready_conditions = [
-        event_code in [201, 202],
+        intraday_futures_is_entry_event(event_code, payload.get("event")),
         construction_status == "REVIEW_READY",
         risk_status == "CLEAR",
         portfolio_status == "CLEAR",
@@ -9974,8 +10058,10 @@ def apply_intraday_futures_decision_engine(payload):
 def build_intraday_futures_construction(payload):
     payload = dict(payload or {})
 
-    if str(payload.get("strategy") or "").upper() != "INTRADAY_INDEX_FUTURES":
+    if not is_intraday_futures_signal(payload):
         return None
+    payload.setdefault("strategy", "INTRADAY_INDEX_FUTURES")
+    payload.setdefault("strategy_context", "INTRADAY_INDEX_FUTURES")
 
     event_code = payload.get("event_code")
     event = payload.get("event")
@@ -9983,6 +10069,10 @@ def build_intraday_futures_construction(payload):
     warnings = normalize_warning_list(payload.get("warnings"))
     missing_fields = []
     risk_notes = []
+    entry_fields = intraday_futures_entry_risk_fields(payload)
+    for key, value in entry_fields.items():
+        if payload.get(key) in [None, "", "null", "None"] and value is not None:
+            payload[key] = value
 
     def has_value(key):
         value = payload.get(key)
@@ -10007,7 +10097,7 @@ def build_intraday_futures_construction(payload):
         if "MANUAL_REVIEW_REQUIRED" not in warnings:
             warnings.append("MANUAL_REVIEW_REQUIRED")
 
-    if event_code in [801, 802, 901]:
+    if intraday_futures_is_risk_invalidation_event(event_code, event):
         construction_status = "REJECTED"
         decision_max_state = "RISK_BLOCKED"
 
@@ -10015,7 +10105,7 @@ def build_intraday_futures_construction(payload):
         construction_status = "MANUAL_REVIEW"
         decision_max_state = "MANUAL_REVIEW"
 
-    elif event_code in [101, 102]:
+    elif intraday_futures_is_setup_wait_event(event_code, event):
         construction_status = "NEEDS_REVIEW"
         decision_max_state = "NEEDS_REVIEW"
         missing_fields.extend([
@@ -10026,18 +10116,13 @@ def build_intraday_futures_construction(payload):
             "portfolio_engine_result",
         ])
 
-    elif event_code in [201, 202]:
+    elif intraday_futures_is_entry_event(event_code, event):
         required_for_actionable = [
             "stop_price",
             "stop_points",
             "tp1_price",
             "tp2_price",
             "rr_ratio",
-            "risk_per_trade",
-            "max_daily_loss",
-            "trades_taken_today",
-            "risk_engine_result",
-            "portfolio_engine_result",
         ]
 
         for key in required_for_actionable:
@@ -10177,6 +10262,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
     storage_result, unified = safe_persist_and_context(ticker, parsed)
     outcome_event_storage = save_intraday_futures_alert_event(parsed)
     price_point_storage = save_intraday_futures_price_point(parsed)
+    immediate_notify = _v32_intraday_futures_immediate_notify_payload(parsed)
 
     return {
         "status": "ok",
@@ -10205,6 +10291,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
+        "immediate_notify": immediate_notify,
         "accepted": True,
     }
 
@@ -10298,11 +10385,12 @@ _STRATEGY_SIGNAL_CONTEXTS = {
     "COVERED_CALL",
     "IRON_CONDOR",
     "FUTURES",
+    "INTRADAY_INDEX_FUTURES",
     "CANSLIM_FILTER",
     "GENERAL_TECHNICAL",
 }
 _STRATEGY_SIGNAL_SAFE_FIELDS = {
-    "ticker", "chart_ticker", "timeframe", "strategy_context", "trend", "score",
+    "ticker", "chart_ticker", "timeframe", "strategy", "strategy_context", "trend", "score",
     "rsi", "adx", "support_near", "resistance_near", "range_20d", "range_breakout",
     "vwap_position", "volume_relative", "iv_rank", "iv_percentile", "earnings_soon",
     "event_risk", "ex_dividend_soon", "assignment_acceptable", "market_regime", "vix", "atr_pct", "opening_range_high",
@@ -10496,6 +10584,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     storage_result, unified = safe_persist_and_context(ticker, parsed)
     outcome_event_storage = save_intraday_futures_alert_event(parsed)
     price_point_storage = save_intraday_futures_price_point(parsed)
+    immediate_notify = _v32_intraday_futures_immediate_notify_payload(parsed)
 
     return {
         "status": "ok",
@@ -10529,6 +10618,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "construction": parsed.get("construction"),
         "outcome_event_storage": outcome_event_storage,
         "price_point_storage": price_point_storage,
+        "immediate_notify": immediate_notify,
         "accepted": True,
     }
 
@@ -23568,6 +23658,163 @@ def send_pushover_message(title, message):
             "provider": "pushover",
             "error": str(e),
         }
+
+
+def _v32_intraday_futures_immediate_state_file():
+    return _V29_RUNTIME_DIR / "v32_intraday_futures_immediate_notify_state.json"
+
+
+def _v32_intraday_futures_immediate_signature(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    ticker = _v29_safe_upper(payload.get("ticker") or payload.get("symbol"), "UNKNOWN")
+    event_code = str(payload.get("event_code") or payload.get("event") or "UNKNOWN").upper()
+    session_date = payload.get("session_date") or session_date_from_iso(payload.get("received_at")) or datetime.now(MARKET_TZ).date().isoformat()
+    price = payload.get("price") or payload.get("entry_price")
+    try:
+        price = round(float(price), 2)
+    except Exception:
+        price = str(price or "")
+    return {
+        "version": "v32_intraday_futures_immediate_notify_v1",
+        "session_date": session_date,
+        "ticker": ticker,
+        "timeframe": str(payload.get("timeframe") or "").upper(),
+        "event_code": event_code,
+        "event": str(payload.get("event") or "").upper(),
+        "direction": str(payload.get("direction") or payload.get("breakout_direction") or "").upper(),
+        "price": price,
+        "final_state": _v29_safe_upper(payload.get("final_state") or payload.get("decision_max_state"), "UNKNOWN"),
+        "main_blocker": payload.get("main_blocker"),
+    }
+
+
+def _v32_intraday_futures_immediate_dedupe(payload, force=False):
+    signature = _v32_intraday_futures_immediate_signature(payload)
+    key = "{session_date}:{ticker}:{event_code}:{price}".format(**signature)
+    state = _v29_load_json_file(_v32_intraday_futures_immediate_state_file())
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    last = sent.get(key) if isinstance(sent.get(key), dict) else {}
+    return {
+        "dedupe_version": "v32_intraday_futures_immediate_notify_v1",
+        "key": key,
+        "signature": signature,
+        "deduped": bool(not force and last.get("signature") == signature),
+        "last_sent_at": last.get("sent_at"),
+        "last_status": last.get("status"),
+        "force": bool(force),
+        "state_file": str(_v32_intraday_futures_immediate_state_file()),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_save_intraday_futures_immediate_state(dedupe, status):
+    path = _v32_intraday_futures_immediate_state_file()
+    state = _v29_load_json_file(path)
+    state = state if isinstance(state, dict) else {}
+    sent = state.get("sent") if isinstance(state.get("sent"), dict) else {}
+    key = (dedupe or {}).get("key")
+    if key:
+        sent[key] = {
+            "sent_at": _v29_now(),
+            "status": status,
+            "signature": (dedupe or {}).get("signature"),
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump({
+            "state_version": "v32_intraday_futures_immediate_notify_v1",
+            "updated_at": _v29_now(),
+            "sent": sent,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }, f, indent=2)
+    return True
+
+
+def _v32_intraday_futures_immediate_message(payload, trigger_kind):
+    payload = payload if isinstance(payload, dict) else {}
+    lines = [
+        "Stock Ultimus: futuros intradia",
+        "Trigger: {} | {} | {}".format(
+            trigger_kind,
+            payload.get("ticker") or payload.get("symbol") or "?",
+            payload.get("event_code") or payload.get("event") or "?",
+        ),
+        "Estado: {} | blocker: {}".format(
+            payload.get("final_state") or payload.get("decision_max_state") or "UNKNOWN",
+            payload.get("main_blocker") or "NONE",
+        ),
+        "Precio: {} | direccion: {} | timeframe: {}".format(
+            payload.get("price") or payload.get("entry_price") or "N/D",
+            payload.get("direction") or payload.get("breakout_direction") or "N/D",
+            payload.get("timeframe") or "N/D",
+        ),
+    ]
+    if payload.get("stop_price") or payload.get("logical_stop"):
+        lines.append("Stop: {} | target: {} | RR: {}".format(
+            payload.get("stop_price") or payload.get("logical_stop"),
+            payload.get("tp1_price") or payload.get("logical_target"),
+            payload.get("rr_ratio") or "N/D",
+        ))
+    lines.append('Abre el GPT y di: "revisa futuros intradia ahora".')
+    lines.append("Decision support solamente. No autoriza ordenes.")
+    return "\n".join(lines)
+
+
+def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run=False):
+    payload = payload if isinstance(payload, dict) else {}
+    event_code = payload.get("event_code")
+    event = payload.get("event")
+    trigger_kind = None
+    if not is_intraday_futures_signal(payload):
+        reason = "NOT_INTRADAY_INDEX_FUTURES"
+    elif payload.get("is_validation"):
+        reason = "VALIDATION_EVENT_SUPPRESSED"
+    elif intraday_futures_is_session_snapshot_event(event_code, event):
+        reason = "SESSION_SNAPSHOT_SUPPRESSED"
+    elif intraday_futures_is_entry_event(event_code, event):
+        trigger_kind = "ENTRY_TRIGGER"
+        reason = None
+    elif intraday_futures_is_risk_invalidation_event(event_code, event):
+        trigger_kind = "RISK_INVALIDATION"
+        reason = None
+    else:
+        reason = "NON_ACTIONABLE_INTRADAY_EVENT"
+
+    dedupe = _v32_intraday_futures_immediate_dedupe(payload, force=force)
+    title = "Stock Ultimus: futuros intradia"
+    message = _v32_intraday_futures_immediate_message(payload, trigger_kind or reason)
+    base_payload = {
+        "engine": "V32_INTRADAY_FUTURES_IMMEDIATE_NOTIFY",
+        "generated_at": _v29_now(),
+        "trigger_kind": trigger_kind,
+        "would_notify": bool(trigger_kind),
+        "dedupe": dedupe,
+        "title": title,
+        "message": message,
+        "notification_channel": "pushover",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if dry_run:
+        return {**base_payload, "status": "preview", "pushover_sent": False, "reason": reason}
+    if not trigger_kind:
+        return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": reason}
+    if dedupe.get("deduped"):
+        return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_INTRADAY_FUTURES_EVENT"}
+    result = send_pushover_message(title, message)
+    if result.get("pushover_sent"):
+        _v32_save_intraday_futures_immediate_state(dedupe, "sent")
+    return {
+        **base_payload,
+        "status": "sent" if result.get("pushover_sent") else "not_sent",
+        "pushover_sent": bool(result.get("pushover_sent")),
+        "pushover_result": result,
+    }
 
 
 def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
