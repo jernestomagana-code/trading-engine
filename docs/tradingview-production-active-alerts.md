@@ -72,6 +72,12 @@ engine:
   universe, data refresh, IBKR chains, and scoring. Do not add one TradingView
   alert per stock unless a measured coverage gap proves the five-alert layer is
   insufficient.
+- The IBKR option layer ranks underlyings dynamically before opening chains.
+  It should select only the highest-priority subset per cycle using core
+  context, operator priority, positions, large-cap/liquidity tier, technical
+  score/confirmation, and CANSLIM pass/score. Chain usage is capped by
+  `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` and
+  `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN`.
 - `ENTRY_READY` requires the complete backend gate, not merely a TradingView
   event.
 

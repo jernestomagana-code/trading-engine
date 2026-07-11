@@ -813,6 +813,42 @@ MAX_OPTIONS_PER_SYMBOL = _env_int(
     "IBKR_MAX_OPTIONS_PER_SYMBOL",
     2 if DAILY_RADAR_FAST else 8,
 )
+MAX_OPTION_SYMBOLS_PER_RUN = max(1, _env_int(
+    "IBKR_MAX_OPTION_SYMBOLS_PER_RUN",
+    5 if DAILY_RADAR_FAST else 8,
+))
+MAX_TOTAL_OPTION_CONTRACTS_PER_RUN = max(1, _env_int(
+    "IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN",
+    12 if DAILY_RADAR_FAST else 48,
+))
+DYNAMIC_OPTION_UNIVERSE_ENABLED = _env_bool(
+    "IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED",
+    True,
+)
+INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES = _env_bool(
+    "IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES",
+    True,
+)
+OPTION_CORE_SYMBOLS = _env_csv_list(
+    "IBKR_OPTION_CORE_SYMBOLS",
+    ["QQQ", "SPY", "TLT"],
+)
+OPTION_PRIORITY_SYMBOLS = _env_csv_list(
+    "IBKR_OPTION_PRIORITY_SYMBOLS",
+    [],
+)
+OPTION_MIN_UNDERLYING_SCORE = _env_float(
+    "IBKR_OPTION_MIN_UNDERLYING_SCORE",
+    35,
+)
+OPTION_TECHNICAL_TRIGGER_SCORE = _env_float(
+    "IBKR_OPTION_TECHNICAL_TRIGGER_SCORE",
+    65,
+)
+OPTION_CANSLIM_TRIGGER_SCORE = _env_float(
+    "IBKR_OPTION_CANSLIM_TRIGGER_SCORE",
+    70,
+)
 
 # 1 = live, 2 = frozen, 3 = delayed, 4 = delayed frozen
 MARKET_DATA_TYPE = int(_v283_os.environ.get("IBKR_MARKET_DATA_TYPE", "1"))
@@ -1093,6 +1129,25 @@ PRIMARY_EXCHANGE_MAP = {
     "TLT": "NASDAQ"
 }
 
+OPTION_UNDERLYING_TIER_SCORES = {
+    "QQQ": 55,
+    "SPY": 55,
+    "TLT": 38,
+    "AAPL": 34,
+    "MSFT": 34,
+    "NVDA": 34,
+    "AMZN": 32,
+    "META": 32,
+    "GOOGL": 32,
+    "TSLA": 30,
+    "AVGO": 30,
+    "AMD": 28,
+    "COST": 28,
+    "CRM": 24,
+    "ORCL": 24,
+    "NFLX": 22,
+}
+
 
 # ============================================================
 # UTILITIES
@@ -1190,6 +1245,307 @@ def tradingview_context_stub(symbol):
         "tradingview_last_score": None,
         "tradingview_last_timeframe": None,
         "tradingview_last_signal_time": None
+    }
+
+
+def _bridge_unique_symbols(values):
+    out = []
+    seen = set()
+    for value in values or []:
+        symbol = str(value or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
+def _bridge_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().upper()
+    if text in {"TRUE", "YES", "Y", "1", "PASS", "PASSES"}:
+        return True
+    if text in {"FALSE", "NO", "N", "0", "FAIL", "BLOCKED"}:
+        return False
+    return None
+
+
+def _bridge_find_named_dict(obj, name, depth=0):
+    if depth > 5:
+        return None
+    if isinstance(obj, dict):
+        direct = obj.get(name)
+        if isinstance(direct, dict):
+            return direct
+        for value in obj.values():
+            found = _bridge_find_named_dict(value, name, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _bridge_find_named_dict(value, name, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def _bridge_technical_score(technical):
+    technical = technical if isinstance(technical, dict) else {}
+    return _v283_float(
+        technical.get("technical_score")
+        or technical.get("score")
+        or technical.get("trend_score"),
+        None,
+    )
+
+
+def _bridge_technical_confirmed(technical):
+    technical = technical if isinstance(technical, dict) else {}
+    for key in ["confirmed", "technical_confirmed", "passes", "pass"]:
+        value = _bridge_bool(technical.get(key))
+        if value is not None:
+            return value
+    score = _bridge_technical_score(technical)
+    if score is not None:
+        return score >= OPTION_TECHNICAL_TRIGGER_SCORE
+    return False
+
+
+def _bridge_canslim_snapshot(technical):
+    technical = technical if isinstance(technical, dict) else {}
+    canslim = _bridge_find_named_dict(technical, "canslim") or {}
+    score = _v283_float(
+        canslim.get("score")
+        or canslim.get("rating_score")
+        or canslim.get("composite_score"),
+        None,
+    )
+    passes = _bridge_bool(canslim.get("passes") if canslim else None)
+    if passes is None and score is not None:
+        passes = score >= OPTION_CANSLIM_TRIGGER_SCORE
+    return {
+        "available": bool(canslim),
+        "passes": passes,
+        "score": score,
+        "rating": canslim.get("rating") if isinstance(canslim, dict) else None,
+    }
+
+
+def _bridge_held_underlying_symbols():
+    held = []
+    for row in _bridge_cycle_position_rows():
+        symbol = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+        try:
+            size = float(row.get("position_size") or row.get("position") or 0)
+        except Exception:
+            size = 0
+        if abs(size) > 0:
+            held.append(symbol)
+    return set(_bridge_unique_symbols(held))
+
+
+def _bridge_option_universe_runtime_context():
+    runtime_data = _v283_load_runtime_jsons()
+    option_rows = _v283_extract_options_rows(runtime_data)
+    technical = _v283_extract_technical(runtime_data)
+    try:
+        technical = runtime_local_technical.merge_local_technical_snapshot(
+            technical,
+            runtime_data,
+            options_rows=option_rows,
+            timeframe="1d",
+        )
+    except Exception:
+        pass
+    return runtime_data, technical if isinstance(technical, dict) else {}, option_rows
+
+
+def option_underlying_rank(symbol, technical=None, *, held_symbols=None, original_index=0):
+    symbol = str(symbol or "").upper().strip()
+    technical = technical if isinstance(technical, dict) else {}
+    held_symbols = held_symbols if isinstance(held_symbols, set) else set()
+    core = set(_bridge_unique_symbols(OPTION_CORE_SYMBOLS))
+    priority = set(_bridge_unique_symbols(OPTION_PRIORITY_SYMBOLS))
+    tier_score = float(OPTION_UNDERLYING_TIER_SCORES.get(symbol, 0))
+    tech_score = _bridge_technical_score(technical)
+    canslim = _bridge_canslim_snapshot(technical)
+    trend = str(
+        technical.get("trend")
+        or technical.get("bias")
+        or technical.get("technical_bias")
+        or ""
+    ).upper()
+
+    score = 0.0
+    triggers = []
+    reasons = []
+    blockers = []
+
+    if symbol in core:
+        score += 100
+        triggers.append("CORE_MARKET_CONTEXT")
+        reasons.append("contexto de mercado/riesgo")
+    if symbol in priority:
+        score += 85
+        triggers.append("OPERATOR_PRIORITY")
+        reasons.append("prioridad configurada por operador")
+    if symbol in held_symbols:
+        score += 75
+        triggers.append("EXISTING_POSITION")
+        reasons.append("posicion existente puede requerir manejo")
+    if tier_score:
+        score += tier_score
+        if tier_score >= 28:
+            triggers.append("LIQUID_LARGE_CAP")
+        reasons.append(f"liquidez/large-cap tier {tier_score:.0f}")
+
+    if tech_score is not None:
+        score += min(max(tech_score, 0), 100) * 0.35
+        reasons.append(f"score tecnico {tech_score:.1f}")
+        if tech_score >= OPTION_TECHNICAL_TRIGGER_SCORE:
+            triggers.append("TECHNICAL_TRIGGER")
+
+    if _bridge_technical_confirmed(technical):
+        score += 20
+        triggers.append("TECHNICAL_CONFIRMED")
+        reasons.append("tecnico confirmado")
+
+    if any(token in trend for token in ["BULL", "UP", "LONG", "BREAKOUT", "MOMENTUM"]):
+        score += 10
+        reasons.append("sesgo tecnico positivo")
+    elif any(token in trend for token in ["BEAR", "DOWN", "SHORT", "RISK_OFF"]):
+        score += 5
+        reasons.append("sesgo tecnico defensivo")
+
+    if canslim["available"]:
+        if canslim["passes"] is True:
+            score += 40
+            triggers.append("CANSLIM_PASS")
+            reasons.append("CANSLIM pasa")
+        elif canslim["passes"] is False:
+            score -= 35
+            blockers.append("CANSLIM_FAIL")
+            reasons.append("CANSLIM falla")
+        if canslim["score"] is not None:
+            score += min(max(canslim["score"], 0), 100) * 0.20
+            reasons.append(f"CANSLIM score {canslim['score']:.1f}")
+            if canslim["score"] >= OPTION_CANSLIM_TRIGGER_SCORE:
+                triggers.append("CANSLIM_SCORE_TRIGGER")
+
+    score -= min(max(original_index, 0), 500) * 0.01
+    score = round(max(0.0, score), 2)
+    qualifies = bool(triggers) or score >= OPTION_MIN_UNDERLYING_SCORE
+    if not qualifies:
+        blockers.append("NO_DYNAMIC_UNDERLYING_TRIGGER")
+
+    return {
+        "symbol": symbol,
+        "score": score,
+        "qualifies": qualifies,
+        "triggers": _bridge_unique_symbols(triggers),
+        "reasons": reasons,
+        "blockers": _bridge_unique_symbols(blockers),
+        "technical_score": tech_score,
+        "technical_confirmed": _bridge_technical_confirmed(technical),
+        "canslim": canslim,
+        "tier_score": tier_score,
+        "not_order_instruction": True,
+    }
+
+
+def build_dynamic_option_symbol_plan(symbols, technical_snapshot=None):
+    base_symbols = _bridge_unique_symbols(symbols)
+    technical_snapshot = technical_snapshot if isinstance(technical_snapshot, dict) else {}
+    candidate_symbols = list(base_symbols)
+    if INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES:
+        candidate_symbols.extend(str(symbol).upper() for symbol in technical_snapshot.keys())
+    candidate_symbols = _bridge_unique_symbols(candidate_symbols)
+
+    if not DYNAMIC_OPTION_UNIVERSE_ENABLED:
+        selected = candidate_symbols[:]
+        return {
+            "plan_version": "dynamic_option_underlying_universe_v1",
+            "enabled": False,
+            "reason": "IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=false",
+            "input_symbols": base_symbols,
+            "candidate_count": len(candidate_symbols),
+            "selected_symbols": selected,
+            "selected_count": len(selected),
+            "max_symbols_per_run": None,
+            "max_total_option_contracts_per_run": MAX_TOTAL_OPTION_CONTRACTS_PER_RUN,
+            "ranked": [
+                {"rank": idx + 1, "symbol": symbol, "score": None, "qualifies": True}
+                for idx, symbol in enumerate(selected)
+            ],
+            "skipped": [],
+            "not_order_instruction": True,
+        }
+
+    held_symbols = _bridge_held_underlying_symbols()
+    ranked = []
+    for idx, symbol in enumerate(candidate_symbols):
+        ranked.append(
+            option_underlying_rank(
+                symbol,
+                technical_snapshot.get(symbol) or {},
+                held_symbols=held_symbols,
+                original_index=idx,
+            )
+        )
+
+    ranked = sorted(
+        ranked,
+        key=lambda item: (
+            1 if item.get("qualifies") else 0,
+            item.get("score") or 0,
+            -candidate_symbols.index(item["symbol"]),
+        ),
+        reverse=True,
+    )
+    for idx, item in enumerate(ranked, start=1):
+        item["rank"] = idx
+
+    selected_rows = [
+        item for item in ranked
+        if item.get("qualifies") and (item.get("score") or 0) >= OPTION_MIN_UNDERLYING_SCORE
+    ][:MAX_OPTION_SYMBOLS_PER_RUN]
+    selected_symbols = [item["symbol"] for item in selected_rows]
+    skipped = [
+        {
+            "symbol": item["symbol"],
+            "score": item.get("score"),
+            "rank": item.get("rank"),
+            "blockers": item.get("blockers") or ["OUTSIDE_SYMBOL_BUDGET"],
+            "triggers": item.get("triggers") or [],
+        }
+        for item in ranked
+        if item["symbol"] not in selected_symbols
+    ]
+
+    return {
+        "plan_version": "dynamic_option_underlying_universe_v1",
+        "enabled": True,
+        "input_symbols": base_symbols,
+        "candidate_count": len(candidate_symbols),
+        "runtime_technical_candidate_count": len([
+            symbol for symbol in candidate_symbols
+            if symbol not in base_symbols and symbol in technical_snapshot
+        ]),
+        "selected_symbols": selected_symbols,
+        "selected_count": len(selected_symbols),
+        "max_symbols_per_run": MAX_OPTION_SYMBOLS_PER_RUN,
+        "max_total_option_contracts_per_run": MAX_TOTAL_OPTION_CONTRACTS_PER_RUN,
+        "min_underlying_score": OPTION_MIN_UNDERLYING_SCORE,
+        "technical_trigger_score": OPTION_TECHNICAL_TRIGGER_SCORE,
+        "canslim_trigger_score": OPTION_CANSLIM_TRIGGER_SCORE,
+        "ranked": ranked,
+        "skipped": skipped,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -2818,9 +3174,37 @@ def send_options_intelligence():
     print("\n=== OPTIONS INTELLIGENCE V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
     IBKR_CHAIN_DIAGNOSTIC_EVENTS.clear()
     cycle_option_rows = []
+    _, technical_snapshot, _ = _bridge_option_universe_runtime_context()
+    symbol_plan = build_dynamic_option_symbol_plan(OPTION_SYMBOLS, technical_snapshot)
+    selected_symbols = symbol_plan.get("selected_symbols") or []
+    plan_by_symbol = {
+        item.get("symbol"): item
+        for item in symbol_plan.get("ranked") or []
+        if isinstance(item, dict) and item.get("symbol")
+    }
+    remaining_contract_budget = MAX_TOTAL_OPTION_CONTRACTS_PER_RUN
 
-    for symbol in OPTION_SYMBOLS:
+    print(
+        "OPTION UNDERLYING UNIVERSE"
+        f" | dynamic:{symbol_plan.get('enabled')}"
+        f" | candidates:{symbol_plan.get('candidate_count')}"
+        f" | selected:{','.join(selected_symbols) if selected_symbols else 'NONE'}"
+        f" | max_symbols:{symbol_plan.get('max_symbols_per_run')}"
+        f" | max_contracts:{MAX_TOTAL_OPTION_CONTRACTS_PER_RUN}"
+    )
+
+    for symbol in selected_symbols:
         try:
+            if remaining_contract_budget <= 0:
+                IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                    "ticker": symbol,
+                    "status": "OPTION_CONTRACT_BUDGET_EXHAUSTED",
+                    "max_total_option_contracts_per_run": MAX_TOTAL_OPTION_CONTRACTS_PER_RUN,
+                    "generated_at": now_iso(),
+                    "not_order_instruction": True,
+                })
+                break
+
             snap = get_price_snapshot(symbol)
 
             if not snap or not snap.get("price"):
@@ -2834,6 +3218,21 @@ def send_options_intelligence():
             if not candidates:
                 print(symbol, "sin opciones candidatas")
                 continue
+
+            if len(candidates) > remaining_contract_budget:
+                IBKR_CHAIN_DIAGNOSTIC_EVENTS.append({
+                    "ticker": symbol,
+                    "status": "OPTION_CONTRACT_BUDGET_APPLIED",
+                    "candidate_contract_count": len(candidates),
+                    "contracts_allowed": remaining_contract_budget,
+                    "max_total_option_contracts_per_run": MAX_TOTAL_OPTION_CONTRACTS_PER_RUN,
+                    "generated_at": now_iso(),
+                    "not_order_instruction": True,
+                })
+                candidates = candidates[:remaining_contract_budget]
+
+            remaining_contract_budget -= len(candidates)
+            rank_entry = plan_by_symbol.get(symbol) or {}
 
             for item in candidates:
                 try:
@@ -2960,6 +3359,10 @@ def send_options_intelligence():
                         "option_market_data_attempts": option_market_data_attempts,
                         "option_discard_reasons": option_discard_reasons,
                         "discarded_for_manual_review": bool(option_discard_reasons),
+                        "underlying_universe_rank": rank_entry.get("rank"),
+                        "underlying_rank_score": rank_entry.get("score"),
+                        "underlying_rank_triggers": rank_entry.get("triggers") or [],
+                        "underlying_rank_reasons": rank_entry.get("reasons") or [],
                         "can_operate": False,
                         "manual_review_ready": manual_review_ready,
                         "not_order_instruction": True,
@@ -3006,10 +3409,11 @@ def send_options_intelligence():
                 "not_order_instruction": True,
             })
     diagnostic = ibkr_diagnostics.build_cycle_diagnostic(
-        symbols=list(OPTION_SYMBOLS),
+        symbols=list(selected_symbols),
         chain_events=list(IBKR_CHAIN_DIAGNOSTIC_EVENTS),
         option_rows=cycle_option_rows,
         generated_at=now_iso(),
+        symbol_plan=symbol_plan,
     )
     saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
     print(
@@ -4008,6 +4412,9 @@ print(
     f" | watchlist:{','.join(WATCHLIST)}"
     f" | option_symbols:{','.join(OPTION_SYMBOLS)}"
     f" | max_options_per_symbol:{MAX_OPTIONS_PER_SYMBOL}"
+    f" | dynamic_option_universe:{DYNAMIC_OPTION_UNIVERSE_ENABLED}"
+    f" | max_option_symbols_per_run:{MAX_OPTION_SYMBOLS_PER_RUN}"
+    f" | max_total_option_contracts_per_run:{MAX_TOTAL_OPTION_CONTRACTS_PER_RUN}"
     f" | option_wait:{OPTION_MARKET_DATA_WAIT_SECONDS}s"
 )
 print("")
