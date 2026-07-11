@@ -325,9 +325,12 @@ Control-console contract:
   plus a RUNNING/DONE detail link. Do not press another refresh button until the
   process finishes.
 - Alert buttons are workflow marks only: `Visto`, `Revisando`, `Watch`,
-  `Rechazar`, and `Cerrar`. After clicking, the alert receives a visible status
-  badge and the event is saved for tracking/backtesting. These marks never
-  authorize orders.
+  `Paper`, `IBKR aplicada`, `No aplicada`, `Missed`, `Rechazar`, and `Cerrar`.
+  After clicking, the alert receives a visible status badge and the event is
+  saved for tracking/backtesting. These marks never authorize orders.
+- `IBKR aplicada` requires note, fill price, and quantity. Without those fill
+  details, a signal can be followed as paper/diagnostic only; it is not real
+  IBKR performance.
 - Already handled alerts move out of first review into the reviewed/cerradas
   section, so the operator can see what has truly been touched.
 
@@ -344,8 +347,29 @@ Next-level console surfaces:
   visually separate from the slower reminder loop.
 - `Diagnostico completo` runs the safe daily-open checklist from the console and
   reports RUNNING/DONE without authorizing execution.
-- Each alert card includes a plain-language "why" line plus checklist for score,
-  technical confirmation, options data, capacity, CANSLIM, and risk.
+- Each alert card includes vigencia/backtesting, a plain-language "why" line,
+  and checklist for score, technical confirmation, options data, capacity,
+  CANSLIM, and risk.
+
+Alert lifecycle and backtesting policy:
+
+- Intraday futures alerts live for 30 minutes. Options/manual-review alerts live
+  for one regular session (`390` minutes). `WAIT_*` context lives for diagnosis,
+  but is not treated as valid performance.
+- Lifecycle states are `LIVE`, `STALE`, `EXPIRED`, and `CLOSED`. Expired,
+  rejected, missed, no-applied, risk-blocked, and no-data alerts do not count as
+  valid signal performance.
+- Backtesting buckets are `VALID_SIGNAL`, `PAPER_ONLY`, `IBKR_REAL`,
+  `NEAR_VALID`, `RISK_BLOCKED`, `REJECTED`, and `NOISE`.
+- `VALID_SIGNAL`/`PAPER_ONLY` can feed paper outcome tracking when the state is
+  `ENTRY_READY`/`MANUAL_REVIEW`, risk is not blocked, and the contract has
+  enough strike/expiration/DTE/delta/price evidence.
+- `IBKR_REAL` is only allowed when the operator explicitly marks `IBKR aplicada`
+  and records fill price plus quantity. The system never infers execution from
+  an alert alone.
+- Learning uses completed closed outcomes by strategy/regime. Parameter changes
+  should wait for enough complete outcomes, currently 30 per strategy/regime,
+  so the engine learns from measured evidence rather than isolated anecdotes.
 
 No-terminal launcher:
 

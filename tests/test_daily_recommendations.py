@@ -36,6 +36,7 @@ class DailyRecommendationTests(unittest.TestCase):
                         "dte": 33,
                         "bid": 1.2,
                         "ask": 1.35,
+                        "mid": 1.275,
                         "spread_pct": 11.76,
                         "delta": 0.2,
                     },
@@ -53,10 +54,15 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertLess(payload["items"][1]["setup_validity_pct"], payload["items"][0]["setup_validity_pct"])
         self.assertGreater(payload["items"][0]["ranking_score"], payload["items"][1]["ranking_score"])
         self.assertFalse(payload["items"][0]["can_operate"])
+        self.assertEqual(payload["items"][0]["backtesting_bucket"], "VALID_SIGNAL")
+        self.assertTrue(payload["items"][0]["performance_eligible"])
+        self.assertEqual(payload["items"][0]["alert_lifecycle"]["lifecycle_state"], "LIVE")
         self.assertTrue(payload["items"][0]["manual_review_required"])
         self.assertTrue(payload["not_order_instruction"])
         self.assertEqual(payload["summary"]["entry_ready"], 1)
         self.assertEqual(payload["summary"]["wait_options_data"], 1)
+        self.assertEqual(payload["summary"]["performance_eligible"], 1)
+        self.assertEqual(payload["summary"]["near_valid_backtesting_bucket"], 1)
 
     def test_risk_blocked_is_no_trade(self):
         payload = daily.build_daily_recommendations(
@@ -82,6 +88,8 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertEqual(payload["no_trade"][0]["ticker"], "TSLA")
         self.assertEqual(payload["items"][0]["evidence"]["fundamental"]["canslim"]["passes"], False)
         self.assertFalse(payload["items"][0]["can_operate"])
+        self.assertFalse(payload["items"][0]["performance_eligible"])
+        self.assertEqual(payload["items"][0]["backtesting_bucket"], "RISK_BLOCKED")
 
     def test_risk_blocked_preserves_profile_details(self):
         payload = daily.build_daily_recommendations(
