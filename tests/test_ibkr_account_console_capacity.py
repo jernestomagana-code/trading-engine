@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -223,6 +224,14 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Alinear cuenta + Refresh IBKR", html)
         self.assertIn("Avanzado", html)
         self.assertIn("Solo usar cuenta", html)
+
+    def test_profile_cards_tolerate_missing_macos_keychain_command(self):
+        profiles = {"remanente": {"alias": "remanente", "account_scope": "remanente"}}
+        with patch.object(account_console.subprocess, "run", side_effect=FileNotFoundError("security")):
+            html = account_console.render_profile_cards(profiles, {"account_alias": "remanente"})
+
+        self.assertIn("Falta Keychain", html)
+        self.assertIn("Alinear cuenta + Refresh IBKR", html)
 
     def test_render_alert_card_shows_status_badge_and_friendly_actions(self):
         alert = {
