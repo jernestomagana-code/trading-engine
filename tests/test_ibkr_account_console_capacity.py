@@ -147,6 +147,74 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             with account_console.WEB_JOBS_LOCK:
                 account_console.WEB_JOBS.clear()
 
+    def test_console_health_keeps_fresh_remote_cache_green(self):
+        active = {"account_scope": "primary", "account_alias": "primary"}
+        snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary"}
+        operator_payload = {
+            "ok": True,
+            "cached": True,
+            "stale_cache": False,
+            "token_present": True,
+            "cache_age_label": "45s ago",
+            "data": {
+                "account_context": {"account_scope": "primary", "account_alias": "primary"},
+                "account_capacity": {"available_capacity": 50000, "capacity_source": "available_funds"},
+            },
+        }
+
+        health = account_console.console_health(active, snapshot, operator_payload)
+        rendered = account_console.render_console_health(active, snapshot, operator_payload)
+
+        self.assertEqual(health["level"], "green")
+        self.assertEqual(health["warnings"], [])
+        self.assertIn("REMOTE_CACHE_FRESH", health["info"])
+        self.assertIn("health-green", rendered)
+
+    def test_console_capacity_prefers_newer_remote_over_stale_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_runtime = account_console.RUNTIME
+            original_capacity_path = account_console.ACCOUNT_CAPACITY_PATH
+            original_active_path = account_console.ACTIVE_PATH
+            account_console.RUNTIME = Path(tmp)
+            account_console.ACCOUNT_CAPACITY_PATH = Path(tmp) / "ibkr_account_capacity_latest.json"
+            account_console.ACTIVE_PATH = Path(tmp) / "ibkr_account_active_profile.json"
+            account_console.ACTIVE_PATH.write_text(json.dumps({
+                "account_scope": "primary",
+                "account_alias": "primary",
+            }))
+            account_console.ACCOUNT_CAPACITY_PATH.write_text(json.dumps({
+                "available": True,
+                "account_scope": "primary",
+                "account_alias": "primary",
+                "available_capacity": 1000,
+                "capacity_source": "local_old",
+                "generated_at": "2026-07-10T00:00:00+00:00",
+            }))
+            try:
+                capacity = account_console.console_account_capacity(
+                    {
+                        "data": {
+                            "account_scope": "primary",
+                            "account_capacity": {
+                                "available": True,
+                                "account_scope": "primary",
+                                "account_alias": "primary",
+                                "available_capacity": 5000,
+                                "capacity_source": "remote_new",
+                                "generated_at": "2026-07-13T19:00:00+00:00",
+                            },
+                        }
+                    },
+                    {"available": True},
+                )
+            finally:
+                account_console.RUNTIME = original_runtime
+                account_console.ACCOUNT_CAPACITY_PATH = original_capacity_path
+                account_console.ACTIVE_PATH = original_active_path
+
+        self.assertEqual(capacity["available_capacity"], 5000)
+        self.assertEqual(capacity["capacity_source"], "remote_new")
+
     def test_profile_cards_promote_one_click_account_refresh(self):
         profiles = {"remanente": {"alias": "remanente", "account_scope": "remanente"}}
         html = account_console.render_profile_cards(profiles, {"account_alias": "remanente"})
