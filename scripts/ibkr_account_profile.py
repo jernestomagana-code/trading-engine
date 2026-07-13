@@ -139,40 +139,46 @@ def save_keychain_value(service: str, value: str) -> None:
 
 
 def read_keychain_value(service: str, timeout: float = FAST_KEYCHAIN_TIMEOUT_SECONDS) -> str:
-    result = subprocess.run(
-        [
-            "security",
-            "find-generic-password",
-            "-a",
-            keychain_account(),
-            "-s",
-            service,
-            "-w",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                keychain_account(),
+                "-s",
+                service,
+                "-w",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
 
 
 def read_keychain_value_any_account(service: str, timeout: float = FAST_KEYCHAIN_TIMEOUT_SECONDS) -> str:
-    result = subprocess.run(
-        [
-            "security",
-            "find-generic-password",
-            "-s",
-            service,
-            "-w",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                service,
+                "-w",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
