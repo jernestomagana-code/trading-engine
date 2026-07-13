@@ -318,9 +318,11 @@ Control-console contract:
 
 - The top status strip is the first thing to read. Green means production,
   selected account context, snapshot, and account capacity are aligned for
-  manual review. Amber means the console is usable but stale, partial, cached,
-  or currently running a local process. Red means do not operate the console
-  flow until token/production access is restored.
+  manual review. A fresh remote cache can still be green; it is shown as
+  `REMOTE_CACHE_FRESH` because it is informational, not a blocker. Amber means
+  the console is usable but stale, partial, missing a refreshable input, or
+  currently running a local process. Red means do not operate the console flow
+  until token/production access is restored.
 - When a long process is running, the console shows `La consola esta trabajando`
   plus a RUNNING/DONE detail link. Do not press another refresh button until the
   process finishes.

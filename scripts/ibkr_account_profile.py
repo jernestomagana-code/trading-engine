@@ -947,6 +947,15 @@ def parse_iso_datetime(value: Any) -> datetime | None:
         return None
 
 
+def timestamp_sort_value(value: Any) -> float:
+    dt = parse_iso_datetime(value)
+    if not dt:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 def age_label(value: Any) -> str:
     dt = parse_iso_datetime(value)
     if not dt:
@@ -1227,17 +1236,21 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     token_present = bool(operator_payload.get("token_present") or read_access_token())
     remote_ok = bool(operator_payload.get("ok"))
     cached = bool(operator_payload.get("cached"))
+    stale_cache = bool(operator_payload.get("stale_cache"))
     capacity = console_account_capacity(operator_payload, snapshot)
     blockers = []
     warnings = []
+    info = []
     if not token_present:
         blockers.append("READ_TOKEN_MISSING")
     if not remote_ok:
         blockers.append("PRODUCTION_UNREACHABLE")
     if comparison.get("needs_refresh"):
         warnings.append("GPT_CONTEXT_REFRESH_REQUIRED")
-    if cached:
-        warnings.append("USING_REMOTE_CACHE")
+    if cached and stale_cache:
+        warnings.append("REMOTE_CACHE_STALE")
+    elif cached:
+        info.append("REMOTE_CACHE_FRESH")
     if not snapshot.get("available"):
         warnings.append("SNAPSHOT_MISSING")
     if not capacity.get("available"):
@@ -1268,9 +1281,11 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
         "detail": detail,
         "blockers": blockers,
         "warnings": warnings,
+        "info": info,
         "running_jobs": running,
         "remote_ok": remote_ok,
         "cached": cached,
+        "stale_cache": stale_cache,
         "token_present": token_present,
         "context_status": comparison.get("status"),
         "snapshot_available": bool(snapshot.get("available")),
@@ -1294,6 +1309,7 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
     details = []
     details.extend(health.get("blockers") or [])
     details.extend(health.get("warnings") or [])
+    details.extend(health.get("info") or [])
     detail_text = ", ".join(details) if details else "sin bloqueos visibles"
     return """
     <section class="control-strip health-{level}">
@@ -1470,12 +1486,14 @@ def module_health_items(active: dict[str, Any], snapshot: dict[str, Any], operat
     readiness = reports.get("readiness") or {}
     notify = reports.get("notify") or {}
     edge = reports.get("edge") or {}
+    ibkr_available = bool(capacity.get("available") or snapshot.get("available"))
+    ibkr_detail_time = capacity.get("generated_at") or snapshot.get("mtime") or snapshot.get("generated_at")
     return [
         {
             "name": "TWS/IBKR",
-            "level": status_level("OK" if snapshot.get("available") else "WAITING"),
-            "status": "snapshot OK" if snapshot.get("available") else "sin snapshot",
-            "detail": age_label(snapshot.get("generated_at") or snapshot.get("mtime")),
+            "level": status_level("OK" if ibkr_available else "WAITING"),
+            "status": "capacidad/snapshot OK" if ibkr_available else "sin snapshot",
+            "detail": age_label(ibkr_detail_time),
         },
         {
             "name": "TradingView",
@@ -1849,8 +1867,15 @@ def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[st
         local_alias = local_capacity.get("account_alias")
         local_scope = local_capacity.get("account_scope")
         if not active or local_alias == active.get("account_alias") or local_scope == active.get("account_scope"):
-            capacity = {**capacity, **local_capacity}
-            context = {**context, **local_capacity}
+            remote_time = max(timestamp_sort_value(capacity.get("generated_at")), timestamp_sort_value(context.get("generated_at")))
+            local_time = timestamp_sort_value(local_capacity.get("generated_at"))
+            local_is_newer = local_time >= remote_time
+            if local_is_newer or not capacity:
+                capacity = {**capacity, **local_capacity}
+                context = {**context, **local_capacity}
+            else:
+                capacity = {**local_capacity, **capacity}
+                context = {**local_capacity, **context}
     available_funds = console_float_or_none(capacity.get("available_funds", context.get("available_funds")))
     excess_liquidity = console_float_or_none(capacity.get("excess_liquidity", context.get("excess_liquidity")))
     buying_power = console_float_or_none(capacity.get("buying_power", context.get("buying_power")))
