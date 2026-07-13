@@ -2629,6 +2629,15 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.url, "/read_auth_login?next=%2Fv32_project_command_center")
 
+    def test_read_auth_browser_cookie_is_long_lived_and_auditable(self):
+        html = main._read_auth_login_html(next_path="/v32_project_command_center")
+        summary = main._read_auth_summary()
+
+        self.assertEqual(main.READ_AUTH_COOKIE_MAX_AGE_SECONDS, 60 * 60 * 24 * 30)
+        self.assertIn("30 días", html)
+        self.assertEqual(summary["browser_cookie_max_age_seconds"], 60 * 60 * 24 * 30)
+        self.assertEqual(summary["browser_cookie_max_age_days"], 30)
+
     def test_read_auth_gpt_endpoint_does_not_redirect_to_login(self):
         request = _FakeBrowserRequest("/gpt_v31_daily_answer")
 

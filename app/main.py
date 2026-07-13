@@ -228,6 +228,22 @@ SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISIO
 REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 READ_ACCESS_TOKEN = os.getenv("READ_ACCESS_TOKEN", "")
+READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+READ_AUTH_COOKIE_MAX_AGE_SECONDS_RAW = os.getenv(
+    "READ_AUTH_COOKIE_MAX_AGE_SECONDS",
+    str(READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS),
+)
+
+
+def _read_auth_cookie_max_age_seconds():
+    try:
+        value = int(READ_AUTH_COOKIE_MAX_AGE_SECONDS_RAW or READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS)
+    except (TypeError, ValueError):
+        value = READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS
+    return min(max(value, 60 * 60), 60 * 60 * 24 * 90)
+
+
+READ_AUTH_COOKIE_MAX_AGE_SECONDS = _read_auth_cookie_max_age_seconds()
 _REQUIRE_READ_AUTH_RAW = os.getenv("REQUIRE_READ_AUTH", "").strip().lower()
 REQUIRE_READ_AUTH = (
     _REQUIRE_READ_AUTH_RAW == "true"
@@ -347,6 +363,7 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
         '<div class="error">{}</div>'.format(_v29_html_escape(error))
         if error else ""
     )
+    remembered_days = max(1, round(READ_AUTH_COOKIE_MAX_AGE_SECONDS / (60 * 60 * 24)))
     return """
     <!doctype html>
     <html>
@@ -368,7 +385,7 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
     <body>
       <div class="wrap">
         <h1>Stock Ultimus</h1>
-        <p class="note">Ingresa el READ_ACCESS_TOKEN para abrir la consola protegida en este navegador. No autoriza operaciones; solo permite ver y registrar revisión manual.</p>
+        <p class="note">Ingresa el READ_ACCESS_TOKEN una vez para recordar este navegador por hasta {remembered_days} días. No autoriza operaciones; solo permite ver y registrar revisión manual.</p>
         {error_html}
         <form method="post" action="/read_auth_login">
           <input type="hidden" name="next" value="{next_path}">
@@ -379,7 +396,11 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
       </div>
     </body>
     </html>
-    """.format(error_html=error_html, next_path=_v29_html_escape(next_path))
+    """.format(
+        error_html=error_html,
+        next_path=_v29_html_escape(next_path),
+        remembered_days=_v29_html_escape(remembered_days),
+    )
 
 
 @app.get("/read_auth_login", response_class=HTMLResponse)
@@ -401,7 +422,7 @@ async def read_auth_login_post(request: Request):
     response.set_cookie(
         "stock_ultimus_read_token",
         token,
-        max_age=60 * 60 * 10,
+        max_age=READ_AUTH_COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         secure=True,
         samesite="lax",
@@ -425,6 +446,8 @@ def _read_auth_summary():
         "deployment_scope": DEPLOYMENT_SCOPE,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
+        "browser_cookie_max_age_seconds": READ_AUTH_COOKIE_MAX_AGE_SECONDS,
+        "browser_cookie_max_age_days": round(READ_AUTH_COOKIE_MAX_AGE_SECONDS / (60 * 60 * 24), 2),
         "protected_prefixes": list(READ_AUTH_SENSITIVE_PREFIXES),
         "critical_endpoints": list(READ_AUTH_CRITICAL_ENDPOINTS),
         "critical_endpoints_protected": all(_path_requires_read_auth(path) for path in READ_AUTH_CRITICAL_ENDPOINTS),
