@@ -184,6 +184,51 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Score", html)
         self.assertIn("CANSLIM", html)
 
+    def test_operator_alerts_hide_wait_and_no_data_from_operable_lane(self):
+        operator_payload = {
+            "ok": True,
+            "data": {
+                "active_alerts": [
+                    {
+                        "alert_id": "wait-1",
+                        "ticker": "MSFT",
+                        "strategy": "NAKED_PUT",
+                        "state": "WAIT_TECHNICAL",
+                        "severity": "WATCH",
+                        "setup_validity_pct": 99,
+                        "operator_status": "NEW",
+                    },
+                    {
+                        "alert_id": "entry-1",
+                        "ticker": "QQQ",
+                        "strategy": "NAKED_PUT",
+                        "state": "ENTRY_READY",
+                        "severity": "ACTION",
+                        "manual_review_ready": True,
+                        "setup_validity_pct": 92,
+                        "operator_status": "NEW",
+                        "selected_contract": {
+                            "strike": 520,
+                            "expiration": "20260821",
+                            "dte": 39,
+                            "delta": -0.2,
+                            "bid": 4.1,
+                        },
+                    },
+                ],
+                "next_actions": [],
+            },
+        }
+
+        html = account_console.render_operator_alerts(operator_payload)
+
+        self.assertIn("Alertas Operables", html)
+        self.assertIn("1 operable(s)", html)
+        self.assertIn("1 diagnostico(s) ocultos", html)
+        self.assertIn("<strong>QQQ</strong>", html)
+        self.assertNotIn("<strong>MSFT</strong><em>NEW</em>", html)
+        self.assertIn("MSFT | WAIT_TECHNICAL", html)
+
     def test_next_level_console_panels_render_daily_control_surfaces(self):
         active = {"account_scope": "primary", "account_alias": "primary"}
         snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary", "generated_at": account_console.now_iso()}

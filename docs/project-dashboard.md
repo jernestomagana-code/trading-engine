@@ -85,6 +85,9 @@ Resumen:
   `WAIT_*` queda como diagnostico/near-valid, y solo `VALID_SIGNAL`,
   `PAPER_ONLY` o `IBKR_REAL` entran a medicion. `IBKR_REAL` exige marca
   explicita de operador con fill price y cantidad.
+- Consola simplificada: la primera pantalla muestra solo estado, alertas
+  operables, futuros intradia y acciones. `WAIT_*`, `NO_DATA` y `RISK_BLOCKED`
+  quedan colapsados como diagnostico para no parecer oportunidades.
 - Manual review tiene inbox, historial, learning y performance dashboards.
 - Outcome real queda bloqueado hasta post-cierre con snapshot fresco y bandera
   explicita `--real-outcomes-after-close`.

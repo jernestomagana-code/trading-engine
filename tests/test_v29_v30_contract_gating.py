@@ -798,7 +798,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "top_recommendations": [{
                 "ticker": "QQQ",
                 "strategy": "NAKED_PUT",
-                "generated_at": "2026-07-08T13:45:00+00:00",
+                "generated_at": "2026-07-13T13:45:00+00:00",
                 "final_state": "ENTRY_READY",
                 "manual_review_ready": True,
                 "selected_contract": {
@@ -833,7 +833,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(payload["engine"], "V32_OPERATOR_ASSISTANT")
         self.assertEqual(payload["active_alerts"][0]["severity"], "ACTION")
-        self.assertEqual(payload["active_alerts"][0]["alert_date"], "2026-07-08")
+        self.assertEqual(payload["active_alerts"][0]["alert_date"], "2026-07-13")
         self.assertEqual(payload["active_alerts"][0]["economics"]["capital_required"], 63890.0)
         self.assertEqual(payload["active_alerts"][0]["economics"]["capital_source"], "estimated_cash_secured_put")
         self.assertEqual(payload["active_alerts"][0]["economics"]["probability_success_pct"], 80.0)
@@ -893,7 +893,16 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "strategy": "NAKED_PUT",
                 "final_state": "ENTRY_READY",
                 "manual_review_ready": True,
-                "selected_contract": {"strike": 645, "expiration": "20260731", "bid": 6.1, "ask": 6.2},
+                "generated_at": "2026-07-13T13:45:00+00:00",
+                "selected_contract": {
+                    "strike": 645,
+                    "expiration": "20260731",
+                    "dte": 18,
+                    "bid": 6.1,
+                    "ask": 6.2,
+                    "mid": 6.15,
+                    "delta": -0.2,
+                },
                 "next_required_action": "Validar spread, liquidez y ticket broker.",
             }],
             "blocked_or_waiting": [],

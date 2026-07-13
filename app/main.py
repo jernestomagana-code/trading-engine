@@ -23132,7 +23132,55 @@ def _v32_operator_alert_from_decision(item):
     alert["alert_lifecycle"] = shared_alert_lifecycle.alert_lifecycle_state(alert)
     alert["performance_eligible"] = alert["alert_lifecycle"].get("performance_eligible")
     alert["backtesting_bucket"] = alert["alert_lifecycle"].get("backtesting_bucket")
+    alert["quality_score"] = _v32_alert_quality_score(alert)
+    alert["operator_visibility"] = _v32_operator_visibility(alert)
     return alert
+
+
+def _v32_alert_quality_score(alert):
+    alert = alert if isinstance(alert, dict) else {}
+    lifecycle = alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}
+    completeness = lifecycle.get("contract_completeness") if isinstance(lifecycle.get("contract_completeness"), dict) else {}
+    values = [
+        _v32_float_or_none(alert.get("setup_validity_pct")),
+        _v32_float_or_none(alert.get("conviction_score")),
+        _v32_float_or_none(alert.get("ranking_score")),
+        _v32_float_or_none(alert.get("evidence_quality_score")),
+        _v32_float_or_none(completeness.get("score")),
+    ]
+    clean = [min(max(value, 0.0), 100.0) for value in values if value is not None]
+    return round(max(clean), 2) if clean else 0.0
+
+
+def _v32_is_intraday_futures_alert(alert):
+    return (
+        _v29_safe_upper(alert.get("strategy"), "") == "INTRADAY_INDEX_FUTURES"
+        or _v29_safe_upper(alert.get("ticker"), "") in {"MNQ", "MNQ1!", "NQ", "MES", "MES1!", "ES"}
+    )
+
+
+def _v32_operator_visibility(alert):
+    alert = alert if isinstance(alert, dict) else {}
+    state = _v29_safe_upper(alert.get("state"), "")
+    severity = _v29_safe_upper(alert.get("severity"), "")
+    lifecycle = alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}
+    bucket = _v29_safe_upper(alert.get("backtesting_bucket") or lifecycle.get("backtesting_bucket"), "")
+    quality = _v32_alert_quality_score(alert)
+    if _v32_is_intraday_futures_alert(alert):
+        return "INTRADAY"
+    if state in {"NO_DATA", "WAIT_ACCOUNT_CONTEXT"} or severity == "INFO" or bucket in {"NOISE", ""}:
+        return "DIAGNOSTIC"
+    if state.startswith("WAIT_"):
+        return "DIAGNOSTIC"
+    if severity == "RISK" or state == "RISK_BLOCKED" or bucket == "RISK_BLOCKED":
+        return "DIAGNOSTIC"
+    if (severity == "ACTION" or state in {"ENTRY_READY", "MANUAL_REVIEW"}) and quality >= 80:
+        return "HIGH_PROBABILITY"
+    if (severity == "ACTION" or state in {"ENTRY_READY", "MANUAL_REVIEW"}) and alert.get("manual_review_ready") is True:
+        return "RADAR"
+    if quality >= 65 and state in {"ENTRY_READY", "MANUAL_REVIEW"}:
+        return "RADAR"
+    return "DIAGNOSTIC"
 
 
 def _v32_latest_operator_event_by_alert(events):
@@ -23144,7 +23192,7 @@ def _v32_latest_operator_event_by_alert(events):
     return latest
 
 
-def _v32_operator_active_alerts(command, events=None, limit=12):
+def _v32_operator_alerts_from_context(command, events=None):
     events = events or []
     source_items = []
     for key in ("top_recommendations", "top_manual_review", "blocked_or_waiting", "watchlist"):
@@ -23167,8 +23215,23 @@ def _v32_operator_active_alerts(command, events=None, limit=12):
         if str(alert["operator_status"] or "").upper() in _V32_OPERATOR_CLOSED_STATUSES:
             continue
         alerts.append(alert)
-    severity_rank = {"ACTION": 0, "RISK": 1, "WATCH": 2, "INFO": 3}
-    return sorted(alerts, key=lambda item: severity_rank.get(item.get("severity"), 9))[:limit]
+    return alerts
+
+
+def _v32_operator_active_alerts(command, events=None, limit=12):
+    alerts = _v32_operator_alerts_from_context(command, events=events)
+    visible = [
+        alert for alert in alerts
+        if _v29_safe_upper(alert.get("operator_visibility"), "DIAGNOSTIC") in {"HIGH_PROBABILITY", "RADAR", "INTRADAY"}
+    ]
+    visibility_rank = {"HIGH_PROBABILITY": 0, "INTRADAY": 1, "RADAR": 2}
+    return sorted(
+        visible,
+        key=lambda item: (
+            visibility_rank.get(item.get("operator_visibility"), 9),
+            -float(item.get("quality_score") or 0),
+        ),
+    )[:limit]
 
 
 def _v32_operator_next_actions_from_context(command, readiness, active_alerts, manual_reviews, learning):
@@ -23342,7 +23405,14 @@ def _v32_operator_today_payload(limit=12):
         item for item in tracked if str(item.get("outcome") or "").upper() == "PENDING"
     ])
     events = _v32_load_operator_events()
+    all_operator_alerts = _v32_operator_alerts_from_context(command, events=events)
     active_alerts = _v32_operator_active_alerts(command, events=events, limit=limit)
+    active_ids = {alert.get("alert_id") for alert in active_alerts}
+    diagnostic_alerts = [
+        alert for alert in all_operator_alerts
+        if alert.get("alert_id") not in active_ids
+        and _v29_safe_upper(alert.get("operator_visibility"), "") == "DIAGNOSTIC"
+    ]
     account_context = command.get("account_context") if isinstance(command.get("account_context"), dict) else {}
     account_capacity = _v32_account_capacity_from_context(account_context)
     for alert in active_alerts:
@@ -23377,6 +23447,7 @@ def _v32_operator_today_payload(limit=12):
             "data_readiness": command.get("data_readiness") or {},
         },
         "active_alerts": active_alerts,
+        "diagnostic_alerts": diagnostic_alerts[:25],
         "intraday_futures": {
             "active_alert_count": len(intraday_futures_alerts),
             "status": "ACTIVE_ALERTS" if intraday_futures_alerts else "NO_ACTIVE_INTRADAY_FUTURES_ALERTS",
@@ -23403,6 +23474,13 @@ def _v32_operator_today_payload(limit=12):
             "avg_paper_pnl_r": learning.get("avg_paper_pnl_r"),
         },
         "operator_event_count": len(events),
+        "operator_visibility_counts": {
+            "active": len(active_alerts),
+            "diagnostic": len(diagnostic_alerts),
+            "high_probability": len([alert for alert in active_alerts if alert.get("operator_visibility") == "HIGH_PROBABILITY"]),
+            "radar": len([alert for alert in active_alerts if alert.get("operator_visibility") == "RADAR"]),
+            "intraday": len([alert for alert in active_alerts if alert.get("operator_visibility") == "INTRADAY"]),
+        },
         "recent_operator_events": events[-20:],
         "allowed_operator_actions": list(_V32_OPERATOR_ACTIONS),
         "gpt_usage": {

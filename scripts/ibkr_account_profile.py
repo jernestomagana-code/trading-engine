@@ -856,7 +856,9 @@ def apply_local_operator_events(operator_payload: dict[str, Any]) -> dict[str, A
     if not isinstance(operator_payload, dict):
         return operator_payload
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
-    alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    active_alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    diagnostic_alerts = data.get("diagnostic_alerts") if isinstance(data.get("diagnostic_alerts"), list) else []
+    alerts = active_alerts + diagnostic_alerts
     if not alerts:
         return operator_payload
     latest: dict[str, dict[str, Any]] = {}
@@ -2195,6 +2197,71 @@ def render_alert_lifecycle_line(alert: dict[str, Any]) -> str:
     )
 
 
+def alert_quality_score(alert: dict[str, Any]) -> float:
+    values = [
+        console_float_or_none(alert.get("setup_validity_pct")),
+        console_float_or_none(alert.get("conviction_score")),
+        console_float_or_none(alert.get("ranking_score")),
+        console_float_or_none(alert.get("evidence_quality_score")),
+        console_float_or_none((alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}).get("contract_completeness", {}).get("score") if isinstance((alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}).get("contract_completeness"), dict) else None),
+    ]
+    clean = [value for value in values if value is not None]
+    if not clean:
+        return 0.0
+    normalized = [min(max(value, 0.0), 100.0) for value in clean]
+    return round(max(normalized), 2)
+
+
+def is_intraday_futures_alert(alert: dict[str, Any]) -> bool:
+    strategy = str(alert.get("strategy") or "").upper()
+    ticker = str(alert.get("ticker") or alert.get("symbol") or "").upper()
+    return strategy == "INTRADAY_INDEX_FUTURES" or ticker in {"MNQ", "MNQ1!", "NQ", "MES", "MES1!", "ES"}
+
+
+def alert_operator_visibility(alert: dict[str, Any]) -> str:
+    state = str(alert.get("state") or alert.get("final_state") or "").upper()
+    severity = str(alert.get("severity") or "").upper()
+    lifecycle = alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}
+    bucket = str(alert.get("backtesting_bucket") or lifecycle.get("backtesting_bucket") or "").upper()
+    quality = alert_quality_score(alert)
+    if is_intraday_futures_alert(alert):
+        return "INTRADAY"
+    if state in {"NO_DATA", "WAIT_ACCOUNT_CONTEXT"} or severity == "INFO" or bucket == "NOISE":
+        return "DIAGNOSTIC"
+    if state.startswith("WAIT_"):
+        return "DIAGNOSTIC"
+    if severity == "RISK" or state == "RISK_BLOCKED" or bucket == "RISK_BLOCKED":
+        return "DIAGNOSTIC"
+    if (severity == "ACTION" or state in {"ENTRY_READY", "MANUAL_REVIEW"}) and quality >= 80:
+        return "HIGH_PROBABILITY"
+    if (severity == "ACTION" or state in {"ENTRY_READY", "MANUAL_REVIEW"}) and alert.get("manual_review_ready") is True:
+        return "RADAR"
+    if quality >= 65 and state in {"ENTRY_READY", "MANUAL_REVIEW"}:
+        return "RADAR"
+    return "DIAGNOSTIC"
+
+
+def alert_success_label(alert: dict[str, Any]) -> str:
+    quality = alert_quality_score(alert)
+    visibility = alert_operator_visibility(alert)
+    if visibility == "HIGH_PROBABILITY":
+        return f"Alta probabilidad ({quality:.0f}%)"
+    if visibility == "RADAR":
+        return f"Radar ({quality:.0f}%)"
+    if visibility == "INTRADAY":
+        return f"Futuros intradia ({quality:.0f}%)"
+    return f"Diagnostico ({quality:.0f}%)"
+
+
+def compact_alert_summary(alert: dict[str, Any]) -> str:
+    return "{ticker} | {state} | {quality} | blocker {blocker}".format(
+        ticker=alert.get("ticker") or "UNKNOWN",
+        state=alert.get("state") or "UNKNOWN",
+        quality=alert_success_label(alert),
+        blocker=alert.get("main_blocker") or "NONE",
+    )
+
+
 def operator_alert_counts(data: dict[str, Any]) -> dict[str, int]:
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
     pending_alerts = [alert for alert in alerts if isinstance(alert, dict) and not is_handled_alert(alert)]
@@ -2264,6 +2331,7 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
     return """
             <article class="alert-card severity-{severity} status-{status_class}{closed_class}">
               <div class="alert-title"><strong>{ticker}</strong><em>{status}</em></div>
+              <div class="success-line">{success_label}</div>
               <span>{date_label}</span>
               <span>{strategy} | {severity_label} | {state}</span>
               <div class="contract-line">{contract}</div>
@@ -2282,6 +2350,7 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
         closed_class=" closed-alert" if readonly else "",
         ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
         status=html_escape(status),
+        success_label=html_escape(alert_success_label(alert)),
         date_label=html_escape(alert_date_label(alert)),
         severity_label=html_escape(alert.get("severity") or "UNKNOWN"),
         state=html_escape(alert.get("state") or "UNKNOWN"),
@@ -2298,8 +2367,59 @@ def render_alert_card(alert: dict[str, Any], readonly: bool = False, account_cap
     )
 
 
-def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str, Any] | None = None) -> str:
+def render_diagnostic_alert_list(alerts: list[dict[str, Any]]) -> str:
+    if not alerts:
+        return ""
+    rows = "".join(
+        "<li>{summary}</li>".format(summary=html_escape(compact_alert_summary(alert)))
+        for alert in alerts[:25]
+        if isinstance(alert, dict)
+    )
+    return """
+      <details class="diagnostic-alerts">
+        <summary>{count} alerta(s) ocultas por baja calidad/datos insuficientes</summary>
+        <p class="muted">No se muestran como decision principal porque son `NO_DATA`, riesgo bloqueado, WAIT sin evidencia suficiente o score bajo.</p>
+        <ul>{rows}</ul>
+      </details>
+    """.format(count=html_escape(len(alerts)), rows=rows)
+
+
+def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]] | None = None) -> str:
+    reports = reports if isinstance(reports, dict) else {}
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
+    tradingview = reports.get("tradingview") or {}
+    if futures_alerts:
+        cards = "".join(render_alert_card(alert, account_capacity=console_account_capacity(operator_payload, {})) for alert in futures_alerts[:4])
+        body = '<div class="alert-grid">{}</div>'.format(cards)
+        status = "Hay futuros intradia para revisar ahora."
+    else:
+        body = """
+        <div class="tiles">
+          <div class="tile">Sin senal intradia viva<span>No hay ENTRY/RISK de futuros en el payload actual.</span></div>
+          <div class="tile">TradingView<span>{received}/{required} eventos requeridos recibidos.</span></div>
+          <div class="tile">Estado<span>{status}</span></div>
+        </div>
+        """.format(
+            received=html_escape(tradingview.get("total_received_required_event_count", 0)),
+            required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))),
+            status=html_escape(intraday.get("status") or tradingview.get("status") or "sin reporte"),
+        )
+        status = intraday.get("message") or "Sin alertas intradia de futuros en este momento."
+    return """
+    <section class="panel intraday-panel">
+      <div class="section-head">
+        <h2>Futuros Intradia</h2>
+        <p>{status}</p>
+      </div>
+      {body}
+    </section>
+    """.format(status=html_escape(status), body=body)
+
+
+def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str, Any] | None = None, reports: dict[str, dict[str, Any]] | None = None) -> str:
     snapshot = snapshot if isinstance(snapshot, dict) else {}
+    reports = reports if isinstance(reports, dict) else {}
     if not operator_payload.get("ok"):
         return """
         <section class="panel">
@@ -2309,14 +2429,38 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
         """.format(error=html_escape(operator_payload.get("error") or "unknown"))
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
+    remote_diagnostic_alerts = data.get("diagnostic_alerts") if isinstance(data.get("diagnostic_alerts"), list) else []
     next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
     account_capacity = console_account_capacity(operator_payload, snapshot)
     pending_alerts = [alert for alert in alerts if not is_handled_alert(alert)]
     handled_alerts = [alert for alert in alerts if is_handled_alert(alert)]
-    if not pending_alerts:
-        alert_html = '<p class="empty">Sin alertas pendientes de primera revision en el payload V32 actual.</p>'
+    futures_alerts = [alert for alert in pending_alerts if is_intraday_futures_alert(alert)]
+    decision_alerts = [
+        alert for alert in pending_alerts
+        if alert not in futures_alerts and alert_operator_visibility(alert) in {"HIGH_PROBABILITY", "RADAR"}
+    ]
+    diagnostic_alerts = [
+        alert for alert in pending_alerts
+        if alert not in futures_alerts and alert not in decision_alerts
+    ]
+    diagnostic_ids = {str(alert.get("alert_id") or "") for alert in diagnostic_alerts if isinstance(alert, dict)}
+    for alert in remote_diagnostic_alerts:
+        if not isinstance(alert, dict):
+            continue
+        alert_id = str(alert.get("alert_id") or "")
+        if alert_id and alert_id in diagnostic_ids:
+            continue
+        diagnostic_alerts.append(alert)
+        if alert_id:
+            diagnostic_ids.add(alert_id)
+    decision_alerts = sorted(
+        decision_alerts,
+        key=lambda alert: (alert_operator_visibility(alert) != "HIGH_PROBABILITY", -alert_quality_score(alert)),
+    )
+    if not decision_alerts:
+        alert_html = '<p class="empty">Sin alertas operables de alta probabilidad ahora. Datos insuficientes quedan abajo como diagnostico, no como decision.</p>'
     else:
-        alert_html = "".join(render_alert_card(alert, account_capacity=account_capacity) for alert in pending_alerts[:12])
+        alert_html = "".join(render_alert_card(alert, account_capacity=account_capacity) for alert in decision_alerts[:6])
     closed_html = ""
     if handled_alerts:
         closed_html = """
@@ -2330,33 +2474,37 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
         )
     action = next_actions[0] if next_actions else {}
     local_counts = {
-        "action": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "ACTION"),
-        "risk": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "RISK"),
-        "watch": sum(1 for alert in pending_alerts if str(alert.get("severity") or "").upper() == "WATCH"),
+        "decision": len(decision_alerts),
+        "futures": len(futures_alerts),
+        "diagnostic": len(diagnostic_alerts),
         "closed": len(handled_alerts),
     }
     next_action = (
-        "Pendientes de primera revision: {risk} riesgo, {watch} watch, {action} action. Ya atendidas: {closed}. Siguiente: {label}."
+        "{decision} operable(s), {futures} futuro(s) intradia, {diagnostic} diagnostico(s) ocultos. Ya atendidas: {closed}. Siguiente: {label}."
     ).format(
-        risk=local_counts["risk"],
-        watch=local_counts["watch"],
-        action=local_counts["action"],
+        decision=local_counts["decision"],
+        futures=local_counts["futures"],
+        diagnostic=local_counts["diagnostic"],
         closed=local_counts["closed"],
         label=action.get("label") or "Sin accion inmediata",
     )
     return """
     <section class="panel">
       <div class="section-head">
-        <h2>Alertas V32</h2>
+        <h2>Alertas Operables</h2>
         <p>{next_action}</p>
       </div>
       <div class="alert-grid">{alerts}</div>
+      {diagnostic_alerts}
       {closed_alerts}
     </section>
+    {intraday_alerts}
     """.format(
         next_action=html_escape(next_action),
         alerts=alert_html,
+        diagnostic_alerts=render_diagnostic_alert_list(diagnostic_alerts),
         closed_alerts=closed_html,
+        intraday_alerts=render_intraday_futures_alerts(futures_alerts, operator_payload, reports),
     )
 
 
@@ -2583,7 +2731,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .timeline strong,.timeline small {{ display:block; }}
           .timeline small {{ color:var(--muted); margin-top:3px; }}
           .market-panel {{ border-color:#bfd7ff; background:#f5f9ff; }}
+          .intraday-panel {{ border-color:#8ecae6; background:#f5fbff; }}
           .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
+          .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
+          .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
+          .support-details .panel {{ box-shadow:none; margin-top:12px; }}
+          .diagnostic-alerts {{ margin-top:14px; border:1px dashed var(--line); border-radius:14px; padding:12px; background:#fffdf6; }}
+          .diagnostic-alerts ul {{ margin:10px 0 0; padding-left:18px; color:var(--muted); }}
           .process-panel {{ border-color:#d97706; background:#fff8e7; }}
           .process-list {{ display:grid; gap:10px; margin-top:12px; }}
           .process-row {{ display:flex; align-items:center; gap:12px; border:1px solid #efc99d; border-radius:16px; background:#fffdf6; padding:12px; color:var(--ink); text-decoration:none; }}
@@ -2606,6 +2760,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .alert-card strong {{ font-size:1.35rem; }}
           .alert-title {{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }}
           .alert-title em {{ font-style:normal; border-radius:999px; padding:5px 8px; background:#e8efe7; color:#1d6b4f; font-size:.78rem; font-weight:900; white-space:nowrap; }}
+          .success-line {{ display:inline-block; margin-top:8px; border-radius:999px; padding:6px 10px; background:#e8f7ee; color:#1d6b4f; font-weight:900; font-size:.9rem; }}
           .status-new .alert-title em {{ background:#fff4d6; color:#9f4b1b; }}
           .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
           .status-rejected .alert-title em,.status-risk-blocked .alert-title em {{ background:#fff1ef; color:var(--risk); }}
@@ -2659,35 +2814,41 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {health}
           {active_process}
           {today}
-          {modules}
-          {market_mode}
-          {timeline}
-          {context}
-          {capacity}
-          {diagnostic}
           {message}
           {job_panel}
-          <section class="panel">
-            <div class="section-head">
-              <h2>Cuentas</h2>
-              <p>Escoge la cuenta que quieres revisar. <strong>Usar cuenta</strong> publica contexto para GPT; <strong>Refresh IBKR</strong> solo trae datos frescos del broker.</p>
-            </div>
-          </section>
-          <section class="grid">{profile_cards}</section>
           {alerts}
           {actions}
-          <section class="panel">
-            <h2>Crear o actualizar perfil</h2>
-            <form method="post" action="/setup" autocomplete="off" data-busy="Guardando perfil local">
-              <label>Alias amigable</label>
-              <input name="alias" placeholder="primary" required>
-              <label>Scope publicado</label>
-              <input name="scope" placeholder="primary">
-              <label>ID real IBKR</label>
-              <input name="account" placeholder="Se guarda en Keychain; no se imprime" required>
-              <p><button class="secondary">Guardar perfil local</button></p>
-            </form>
-          </section>
+          {context}
+          {capacity}
+          <details class="panel support-details">
+            <summary>Ver diagnostico tecnico y salud de modulos</summary>
+            {modules}
+            {market_mode}
+            {timeline}
+            {diagnostic}
+          </details>
+          <details class="panel support-details">
+            <summary>Administrar cuentas y perfiles</summary>
+            <section>
+              <div class="section-head">
+                <h2>Cuentas</h2>
+                <p>Escoge la cuenta que quieres revisar. <strong>Usar cuenta</strong> publica contexto para GPT; <strong>Refresh IBKR</strong> solo trae datos frescos del broker.</p>
+              </div>
+            </section>
+            <section class="grid">{profile_cards}</section>
+            <section>
+              <h2>Crear o actualizar perfil</h2>
+              <form method="post" action="/setup" autocomplete="off" data-busy="Guardando perfil local">
+                <label>Alias amigable</label>
+                <input name="alias" placeholder="primary" required>
+                <label>Scope publicado</label>
+                <input name="scope" placeholder="primary">
+                <label>ID real IBKR</label>
+                <input name="account" placeholder="Se guarda en Keychain; no se imprime" required>
+                <p><button class="secondary">Guardar perfil local</button></p>
+              </form>
+            </section>
+          </details>
           {output}
           <footer>Decision support solamente. Esta pantalla no autoriza ordenes ni ejecuciones automaticas.</footer>
         </main>
