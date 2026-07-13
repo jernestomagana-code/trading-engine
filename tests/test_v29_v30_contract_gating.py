@@ -2584,6 +2584,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.url, "/read_auth_login?next=%2Fv31_manual_review_inbox")
 
+    def test_read_auth_v32_command_center_redirects_to_login(self):
+        request = _FakeBrowserRequest("/v32_project_command_center")
+
+        response = main._read_auth_login_redirect(request)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.url, "/read_auth_login?next=%2Fv32_project_command_center")
+
     def test_read_auth_gpt_endpoint_does_not_redirect_to_login(self):
         request = _FakeBrowserRequest("/gpt_v31_daily_answer")
 

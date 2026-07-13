@@ -173,6 +173,10 @@ READ_AUTH_BROWSER_LOGIN_PREFIXES = (
     "/v31_manual_review_console",
     "/v31_manual_review_inbox",
     "/v31_operating_suite",
+    "/v32_operator_dashboard",
+    "/v32_operational_edge_dashboard",
+    "/v32_project_command_center",
+    "/v32_project_command_center_static",
     "/v32_strategy_performance_dashboard",
 )
 
