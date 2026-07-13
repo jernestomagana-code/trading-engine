@@ -1690,15 +1690,15 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     warning = ""
     if not comparison["remote_ok"]:
         warning = """
-        <div class="warning">No pude verificar que cuenta ve GPT porque produccion no respondio a tiempo. <strong>Actualizar estado</strong> solo relee GPT/alertas; <strong>Usar cuenta</strong> publica la cuenta seleccionada para GPT; <strong>Refresh IBKR</strong> trae datos frescos del broker.</div>
+        <div class="warning">No pude verificar que cuenta ve GPT porque produccion no respondio a tiempo. Usa <strong>Alinear cuenta + Refresh IBKR</strong> para publicar cuenta y traer datos frescos en un solo paso.</div>
         """
     elif comparison["needs_refresh"]:
         warning = """
-        <div class="warning">La seleccion local no coincide con lo que GPT ve. Usa <strong>Usar cuenta</strong> y espera DONE en el trabajo local; usa <strong>Refresh IBKR</strong> solo si necesitas datos nuevos del broker/opciones.</div>
+        <div class="warning">La seleccion local no coincide con lo que GPT ve. Usa <strong>Alinear cuenta + Refresh IBKR</strong>; la consola publica la cuenta, refresca broker/opciones y luego verifica produccion.</div>
         """
     elif not comparison["published_scope"]:
         warning = """
-        <div class="warning">No hay contexto publicado para GPT. Selecciona una cuenta con <strong>Usar cuenta</strong>; no necesitas tocar IBKR para publicar el contexto.</div>
+        <div class="warning">No hay contexto publicado para GPT. Usa <strong>Alinear cuenta + Refresh IBKR</strong>. Si IBKR no responde, la consola intenta publicar la cuenta como fallback.</div>
         """
     remote_status = "cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "timeout" if "timed out" in str(operator_payload.get("error") or "").lower() else "blocked")
     published_value = comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
@@ -2522,13 +2522,16 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
                 <h3>{alias}</h3>
                 <p>scope: <strong>{scope}</strong></p>
                 <p class="muted">{status}. ID real oculto.</p>
-                <p class="muted">Usar cuenta publica este scope para GPT; Refresh IBKR solo si necesitas datos frescos del broker.</p>
+                <p class="muted">Boton recomendado: alinea la cuenta local con GPT y refresca IBKR en un solo proceso.</p>
               </div>
               <div class="actions">
-                <form method="post" action="/select" data-busy="Publicando cuenta para GPT" data-busy-detail="La cuenta se selecciona localmente y se abre un trabajo RUNNING/DONE para verificar produccion."><input name="alias" value="{alias}" type="hidden"><button>Usar cuenta</button></form>
-                <form method="post" action="/account-capacity" data-busy="Leyendo capacidad IBKR" data-busy-detail="Lee solo AccountSummary de la cuenta seleccionada y publica margen/capital disponible."><input name="alias" value="{alias}" type="hidden"><button>Refresh cuenta</button></form>
-                <form method="post" action="/bridge" data-busy="Refresh IBKR en curso" data-busy-detail="Conecta con IBKR para traer datos frescos. Puede tardar y no autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Refresh IBKR</button></form>
-                <form method="post" action="/daily-open" data-busy="Daily open en curso" data-busy-detail="Ejecutando checklist local de apertura."><input name="alias" value="{alias}" type="hidden"><button>Daily open</button></form>
+                <form method="post" action="/select-refresh" data-busy="Alineando cuenta + Refresh IBKR" data-busy-detail="Selecciona la cuenta, publica contexto para GPT, conecta con IBKR y refresca broker/opciones. Puede tardar; no autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Alinear cuenta + Refresh IBKR</button></form>
+                <details class="advanced-actions">
+                  <summary>Avanzado</summary>
+                  <form method="post" action="/select" data-busy="Publicando cuenta para GPT" data-busy-detail="Solo publica la cuenta para GPT; no conecta con IBKR."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Solo usar cuenta</button></form>
+                  <form method="post" action="/account-capacity" data-busy="Leyendo capacidad IBKR" data-busy-detail="Lee solo AccountSummary de la cuenta seleccionada y publica margen/capital disponible."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Solo capacidad</button></form>
+                  <form method="post" action="/daily-open" data-busy="Daily open en curso" data-busy-detail="Ejecutando checklist local de apertura."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Daily open</button></form>
+                </details>
               </div>
             </article>
             """.format(
@@ -2709,6 +2712,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .card p {{ margin:5px 0; }}
           .muted,.empty {{ color:var(--muted); }}
           .actions {{ display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }}
+          .advanced-actions {{ width:100%; text-align:right; color:var(--muted); }}
+          .advanced-actions summary {{ cursor:pointer; font-weight:800; }}
+          .advanced-actions form {{ display:inline-block; margin:8px 0 0 6px; }}
           button {{ border:0; border-radius:999px; padding:10px 14px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }}
           button:disabled {{ opacity:.62; cursor:wait; }}
           button.secondary {{ background:#6c5f45; }}
@@ -2982,6 +2988,16 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(alias, account_publish_command(), "Publicar cuenta a GPT")
                 self.send_html(
                     "Cuenta seleccionada localmente: alias={alias}. Publicando contexto para GPT; espera DONE y revisa Verificacion GPT.".format(
+                        alias=normalize_alias(alias)
+                    ),
+                    job_id=job_id,
+                )
+            elif self.path == "/select-refresh":
+                args = argparse.Namespace(alias=alias)
+                cmd_select(args)
+                job_id = start_web_job(alias, console_bridge_command(), "Alinear cuenta + Refresh IBKR")
+                self.send_html(
+                    "Alineacion iniciada: alias={alias}. La consola publicara contexto, refrescara IBKR/opciones y verificara produccion. Si IBKR falla, intenta publicar cuenta como fallback.".format(
                         alias=normalize_alias(alias)
                     ),
                     job_id=job_id,
