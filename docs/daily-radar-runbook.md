@@ -371,6 +371,19 @@ Alert lifecycle and backtesting policy:
   should wait for enough complete outcomes, currently 30 per strategy/regime,
   so the engine learns from measured evidence rather than isolated anecdotes.
 
+Simplified console alert lanes:
+
+- `Alertas Operables` only shows `ENTRY_READY`/`MANUAL_REVIEW` ideas that are
+  high-probability/radar candidates. `WAIT_*`, `NO_DATA`, `RISK_BLOCKED`, and
+  low-quality ideas are collapsed under diagnostics and should not be treated as
+  decisions.
+- `Futuros Intradia` is always separate from stock/options alerts. If there is
+  no live intraday futures trigger, the console says so directly instead of
+  mixing it with the regular radar.
+- `Ver diagnostico tecnico y salud de modulos` and `Administrar cuentas y
+  perfiles` are collapsed by default. The first-screen workflow is state,
+  operable alerts, intraday futures, and actions.
+
 No-terminal launcher:
 
 ```text
