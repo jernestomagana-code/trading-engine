@@ -383,6 +383,10 @@ Simplified console alert lanes:
 - `Ver diagnostico tecnico y salud de modulos` and `Administrar cuentas y
   perfiles` are collapsed by default. The first-screen workflow is state,
   operable alerts, intraday futures, and actions.
+- In `Administrar cuentas y perfiles`, the recommended button is
+  `Alinear cuenta + Refresh IBKR`. It selects the account, publishes GPT
+  context, refreshes IBKR/broker data, and verifies production in one RUNNING/DONE
+  job. The old single-purpose actions remain under `Avanzado` for fallback use.
 
 No-terminal launcher:
 
