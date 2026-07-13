@@ -21,7 +21,10 @@
         "abs_delta_min": 0.14,
         "abs_delta_max": 0.22,
         "max_spread_pct": 18.0,
-        "min_bid": 0.05
+        "min_bid": 0.05,
+        "min_iv_for_premium_selling": 0.18,
+        "min_iv_rank_for_premium_selling": 35.0,
+        "min_iv_hv_spread_for_premium_selling": 0.02
       },
       "review_conditions": {
         "dte_min": 25,
@@ -34,12 +37,14 @@
         "WAIT_OPTIONS_DATA",
         "WAIT_TECHNICAL",
         "CANSLIM_BLOCKED",
+        "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
+        "RISK_PROFILE_VOLATILITY_PREMIUM_MISSING",
         "RISK_PROFILE_DELTA_TOO_HIGH",
         "ASSIGNMENT_UNACCEPTABLE",
         "EVENT_RISK_ACTIVE",
         "EARNINGS_SOON"
       ],
-      "recommendation_text": "Vender put garantizado por efectivo solo si ticker, tecnico, CANSLIM, contrato ejecutable y riesgo pasan; siempre requiere revision manual."
+      "recommendation_text": "Vender put garantizado por efectivo solo si ticker, tecnico, CANSLIM, contrato ejecutable, volatilidad/prima y riesgo pasan; siempre requiere revision manual."
     },
     {
       "id": "COVERED_CALL",

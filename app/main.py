@@ -19388,6 +19388,11 @@ _V29_MIN_BID = 0.05
 _V29_MIN_ASK = 0.05
 _V29_MIN_OPTION_SCORE = 70
 _V29_MIN_TECH_SCORE = 65
+_V29_MIN_SELL_PREMIUM_IV = 0.18
+_V29_IDEAL_SELL_PREMIUM_IV = 0.25
+_V29_MIN_SELL_PREMIUM_IV_RANK = 35.0
+_V29_IDEAL_SELL_PREMIUM_IV_RANK = 50.0
+_V29_MIN_SELL_PREMIUM_IV_HV_SPREAD = 0.02
 _CANSLIM_MIN_SCORE = 70
 
 
@@ -19590,6 +19595,9 @@ def _v29_extract_options_rows_from_obj(obj):
         r["theta"] = _v29_safe_float(r.get("theta"), None)
         r["vega"] = _v29_safe_float(r.get("vega"), None)
         r["iv"] = _v29_safe_float(r.get("iv") or r.get("implied_volatility"), None)
+        r["iv_rank"] = _v29_safe_float(r.get("iv_rank") or r.get("ivr") or r.get("iv_percentile") or r.get("iv_pct"), None)
+        r["historical_volatility"] = _v29_safe_float(r.get("historical_volatility") or r.get("realized_volatility") or r.get("hv"), None)
+        r["iv_hv_spread"] = _v29_safe_float(r.get("iv_hv_spread") or r.get("iv_minus_hv"), None)
         r["volume"] = _v29_safe_float(r.get("volume"), None)
         r["open_interest"] = _v29_safe_float(r.get("open_interest") or r.get("oi"), None)
         r["strike"] = _v29_safe_float(r.get("strike"), None)
@@ -19695,6 +19703,112 @@ def _v29_spread_metrics(row):
     return spread, mid, spread_pct
 
 
+def _v29_volatility_value(row, *keys):
+    for key in keys:
+        value = _v29_safe_float(row.get(key), None)
+        if value is not None:
+            return value
+    return None
+
+
+def _v29_sell_premium_volatility_context(row, strategy="UNKNOWN"):
+    row = row if isinstance(row, dict) else {}
+    strategy = _v29_safe_upper(strategy or row.get("strategy"), "UNKNOWN")
+    iv = _v29_volatility_value(row, "iv", "implied_volatility")
+    iv_rank = _v29_volatility_value(row, "iv_rank", "ivr", "iv_percentile", "iv_pct")
+    hv = _v29_volatility_value(row, "historical_volatility", "realized_volatility", "hv")
+    iv_hv_spread = _v29_volatility_value(row, "iv_hv_spread", "iv_minus_hv")
+    if iv_hv_spread is None and iv is not None and hv is not None:
+        iv_hv_spread = round(iv - hv, 6)
+
+    premium_selling_strategy = strategy in {
+        "NAKED_PUT",
+        "CASH_SECURED_PUT",
+        "SHORT_PUT",
+        "PUT_SELL",
+    }
+    if not premium_selling_strategy:
+        return {
+            "status": "NOT_APPLICABLE",
+            "premium_state": "N/A",
+            "score_adjustment": 0,
+            "blocker": None,
+            "note": "Volatility richness gate applies to premium-selling strategies.",
+        }
+
+    if iv_rank is not None:
+        if iv_rank >= _V29_IDEAL_SELL_PREMIUM_IV_RANK:
+            state = "RICH"
+            adjustment = 12
+            blocker = None
+            note = "IV rank/percentile is attractive for premium selling."
+        elif iv_rank >= _V29_MIN_SELL_PREMIUM_IV_RANK:
+            state = "FAIR"
+            adjustment = 5
+            blocker = None
+            note = "IV rank/percentile is acceptable for premium selling."
+        else:
+            state = "CHEAP"
+            adjustment = -18
+            blocker = "VOLATILITY_PREMIUM_TOO_LOW"
+            note = "IV rank/percentile is low; premium is not rich enough."
+    elif iv_hv_spread is not None:
+        if iv_hv_spread >= _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD:
+            state = "RICH"
+            adjustment = 10
+            blocker = None
+            note = "Implied volatility is above realized/historical volatility."
+        elif iv_hv_spread >= 0:
+            state = "FAIR"
+            adjustment = 2
+            blocker = None
+            note = "Implied volatility is only slightly above realized/historical volatility."
+        else:
+            state = "CHEAP"
+            adjustment = -15
+            blocker = "VOLATILITY_PREMIUM_TOO_LOW"
+            note = "Implied volatility is below realized/historical volatility."
+    elif iv is not None:
+        if iv >= _V29_IDEAL_SELL_PREMIUM_IV:
+            state = "RICH"
+            adjustment = 10
+            blocker = None
+            note = "Absolute IV is attractive for premium selling."
+        elif iv >= _V29_MIN_SELL_PREMIUM_IV:
+            state = "FAIR"
+            adjustment = 4
+            blocker = None
+            note = "Absolute IV is acceptable, but not especially rich."
+        else:
+            state = "CHEAP"
+            adjustment = -15
+            blocker = "VOLATILITY_PREMIUM_TOO_LOW"
+            note = "Absolute IV is low; premium may be too cheap to sell."
+    else:
+        state = "UNKNOWN"
+        adjustment = -8
+        blocker = "VOLATILITY_PREMIUM_MISSING"
+        note = "IV/volatility context is missing; cannot confirm premium richness."
+
+    return {
+        "status": "PASS" if blocker is None else "BLOCKED",
+        "premium_state": state,
+        "iv": iv,
+        "iv_rank": iv_rank,
+        "historical_volatility": hv,
+        "iv_hv_spread": iv_hv_spread,
+        "score_adjustment": adjustment,
+        "blocker": blocker,
+        "min_iv": _V29_MIN_SELL_PREMIUM_IV,
+        "ideal_iv": _V29_IDEAL_SELL_PREMIUM_IV,
+        "min_iv_rank": _V29_MIN_SELL_PREMIUM_IV_RANK,
+        "ideal_iv_rank": _V29_IDEAL_SELL_PREMIUM_IV_RANK,
+        "min_iv_hv_spread": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
+        "note": note,
+        "not_order_instruction": True,
+    }
+
+
 def _v29_derived_option_score(row, bid, ask, mid, spread_pct, delta, strike, dte, expiration):
     explicit = _v29_safe_float(
         row.get("score") or row.get("options_score") or row.get("option_score"),
@@ -19733,6 +19847,9 @@ def _v29_derived_option_score(row, bid, ask, mid, spread_pct, delta, strike, dte
     elif mid < 0.2:
         score -= 10
 
+    volatility_context = _v29_sell_premium_volatility_context(row)
+    score += _v29_safe_float(volatility_context.get("score_adjustment"), 0)
+
     return round(max(0, min(score, 100)), 2), "DERIVED_FROM_CONTRACT_FIELDS"
 
 
@@ -19749,6 +19866,8 @@ def _v29_quality_gate(row):
 
     spread, mid, spread_pct = _v29_spread_metrics(row)
     score, score_source = _v29_derived_option_score(row, bid, ask, mid, spread_pct, delta, strike, dte, expiration)
+    strategy = _v29_safe_upper(row.get("strategy"), "UNKNOWN")
+    volatility_context = _v29_sell_premium_volatility_context(row, strategy)
 
     if bid is None or bid < _V29_MIN_BID:
         missing.append("bid")
@@ -19770,7 +19889,6 @@ def _v29_quality_gate(row):
         missing.append("price_or_mid")
     if score < _V29_MIN_OPTION_SCORE:
         missing.append("option_score")
-
     spread_ok = False
     if spread is not None and spread_pct is not None:
         spread_ok = spread <= _V29_MAX_ABS_SPREAD or spread_pct <= _V29_MAX_SPREAD_PCT
@@ -19798,6 +19916,10 @@ def _v29_quality_gate(row):
         "theta": _v29_safe_float(row.get("theta"), None),
         "vega": _v29_safe_float(row.get("vega"), None),
         "iv": _v29_safe_float(row.get("iv") or row.get("implied_volatility"), None),
+        "iv_rank": _v29_safe_float(row.get("iv_rank") or row.get("ivr") or row.get("iv_percentile") or row.get("iv_pct"), None),
+        "historical_volatility": _v29_safe_float(row.get("historical_volatility") or row.get("realized_volatility") or row.get("hv"), None),
+        "iv_hv_spread": _v29_safe_float(row.get("iv_hv_spread") or row.get("iv_minus_hv"), None),
+        "volatility_context": volatility_context,
         "volume": _v29_safe_float(row.get("volume"), None),
         "open_interest": _v29_safe_float(row.get("open_interest") or row.get("oi"), None),
         "option_score": score,
@@ -20109,6 +20231,10 @@ def _v29_decide_ticker(ticker):
         "theta": q.get("theta"),
         "vega": q.get("vega"),
         "iv": q.get("iv"),
+        "iv_rank": q.get("iv_rank"),
+        "historical_volatility": q.get("historical_volatility"),
+        "iv_hv_spread": q.get("iv_hv_spread"),
+        "volatility_context": q.get("volatility_context"),
         "volume": q.get("volume"),
         "open_interest": q.get("open_interest"),
         "option_score": q.get("option_score"),
@@ -20181,6 +20307,8 @@ def _v29_decide_ticker(ticker):
         f"Técnico {tech_state['trend']} score {tech_state['score']}. "
         f"Opciones score {options_score}. "
         f"Spread {q.get('spread')} / {q.get('spread_pct')}%. "
+        f"Volatilidad {q.get('volatility_context', {}).get('premium_state', 'UNKNOWN')} "
+        f"IV {q.get('iv')}. "
         f"Bloqueador: {blocker or 'None'}."
     )
 
@@ -20199,6 +20327,7 @@ def _v29_decide_ticker(ticker):
         "technical_bias": tech_state["trend"],
         "technical_score": tech_state["score"],
         "options_score": options_score,
+        "volatility_context": q.get("volatility_context"),
         "options_fit": "EXECUTABLE_CONTRACT_CONFIRMED" if options_ok else "OPTIONS_DATA_INCOMPLETE_BID_ASK_SPREAD_STRIKE_EXPIRATION_DTE_DELTA",
         "technical_fit": "TECHNICAL_CONFIRMED_BY_SCORE" if technical_ok else "TECHNICAL_NOT_CONFIRMED",
         "risk_status": "RISK_BLOCKED" if not canslim_gate["ok"] else "PASS",
@@ -20541,6 +20670,9 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_bid": 0.10,
         "min_option_score": 78,
         "min_technical_score": 70,
+        "min_iv_for_premium_selling": 0.20,
+        "min_iv_rank_for_premium_selling": 40.0,
+        "min_iv_hv_spread_for_premium_selling": 0.02,
     },
     "balanced": {
         "profile_name": "balanced_manual_review",
@@ -20553,6 +20685,9 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_bid": 0.05,
         "min_option_score": _V29_MIN_OPTION_SCORE,
         "min_technical_score": _V29_MIN_TECH_SCORE,
+        "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
+        "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
+        "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
     },
     "aggressive": {
         "profile_name": "aggressive_manual_review",
@@ -20565,6 +20700,9 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_bid": 0.03,
         "min_option_score": 60,
         "min_technical_score": 55,
+        "min_iv_for_premium_selling": 0.15,
+        "min_iv_rank_for_premium_selling": 25.0,
+        "min_iv_hv_spread_for_premium_selling": 0.0,
     },
     "paper": {
         "profile_name": "paper_forward_test",
@@ -20577,6 +20715,9 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_bid": 0.01,
         "min_option_score": 40,
         "min_technical_score": 40,
+        "min_iv_for_premium_selling": 0.0,
+        "min_iv_rank_for_premium_selling": 0.0,
+        "min_iv_hv_spread_for_premium_selling": -1.0,
     },
 }
 
@@ -20588,6 +20729,9 @@ _V31_STRATEGY_RISK_GUARDS = {
         "max_abs_delta": 0.22,
         "max_spread_pct": 18.0,
         "min_bid": 0.05,
+        "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
+        "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
+        "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
     },
     "NAKED_PUT": {
         "min_dte": 30,
@@ -20596,6 +20740,9 @@ _V31_STRATEGY_RISK_GUARDS = {
         "max_abs_delta": 0.22,
         "max_spread_pct": 18.0,
         "min_bid": 0.05,
+        "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
+        "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
+        "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
     },
     "COVERED_CALL": {
         "min_dte": 25,
@@ -20803,6 +20950,9 @@ def _v31_risk_profile(name=None):
         "min_bid": _v31_env_float("V31_MIN_BID", preset["min_bid"]),
         "min_option_score": _v31_env_float("V31_MIN_OPTION_SCORE", preset["min_option_score"]),
         "min_technical_score": _v31_env_float("V31_MIN_TECH_SCORE", preset["min_technical_score"]),
+        "min_iv_for_premium_selling": _v31_env_float("V31_MIN_IV_FOR_PREMIUM_SELLING", preset["min_iv_for_premium_selling"]),
+        "min_iv_rank_for_premium_selling": _v31_env_float("V31_MIN_IV_RANK_FOR_PREMIUM_SELLING", preset["min_iv_rank_for_premium_selling"]),
+        "min_iv_hv_spread_for_premium_selling": _v31_env_float("V31_MIN_IV_HV_SPREAD_FOR_PREMIUM_SELLING", preset["min_iv_hv_spread_for_premium_selling"]),
         "allowed_strategies": allowed_strategies,
         "blocked_tickers": blocked_tickers,
         "not_order_instruction": True,
@@ -20945,6 +21095,69 @@ def _v31_evaluate_risk_profile(decision, profile=None):
             True,
             "Bid is below the minimum executable premium threshold.",
         ))
+
+    premium_selling_strategy = strategy in {"NAKED_PUT", "CASH_SECURED_PUT", "SHORT_PUT", "PUT_SELL"}
+    volatility_context = contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {}
+    iv = _v31_profile_value(contract.get("iv") or contract.get("implied_volatility") or volatility_context.get("iv"))
+    iv_rank = _v31_profile_value(
+        contract.get("iv_rank")
+        or contract.get("ivr")
+        or contract.get("iv_percentile")
+        or volatility_context.get("iv_rank")
+    )
+    iv_hv_spread = _v31_profile_value(
+        contract.get("iv_hv_spread")
+        or contract.get("iv_minus_hv")
+        or volatility_context.get("iv_hv_spread")
+    )
+    if premium_selling_strategy:
+        if iv_rank is not None:
+            if iv_rank < profile["min_iv_rank_for_premium_selling"]:
+                blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
+                    "selected_contract.iv_rank",
+                    iv_rank,
+                    ">=",
+                    profile["min_iv_rank_for_premium_selling"],
+                    True,
+                    "IV rank/percentile is too low for premium selling.",
+                ))
+        elif iv_hv_spread is not None:
+            if iv_hv_spread < profile["min_iv_hv_spread_for_premium_selling"]:
+                blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
+                    "selected_contract.iv_hv_spread",
+                    iv_hv_spread,
+                    ">=",
+                    profile["min_iv_hv_spread_for_premium_selling"],
+                    True,
+                    "Implied volatility is not sufficiently above realized/historical volatility.",
+                ))
+        elif iv is not None:
+            if iv < profile["min_iv_for_premium_selling"]:
+                blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
+                checks.append(_v31_risk_check(
+                    "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
+                    "selected_contract.iv",
+                    iv,
+                    ">=",
+                    profile["min_iv_for_premium_selling"],
+                    True,
+                    "Absolute IV is too low; option premium may be cheap for selling.",
+                ))
+        else:
+            blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_MISSING")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_VOLATILITY_PREMIUM_MISSING",
+                "selected_contract.iv",
+                None,
+                "present",
+                profile["min_iv_for_premium_selling"],
+                True,
+                "No IV, IV rank, or IV/HV spread is available to confirm premium richness.",
+            ))
 
     option_score = _v31_profile_value(decision.get("source_decision", {}).get("options_score") or decision.get("options_score"))
     if option_score is not None and option_score < profile["min_option_score"]:
@@ -21366,6 +21579,10 @@ def _v31_entry_ready_signal_seed(decision):
             "spread_pct": contract.get("spread_pct"),
             "delta": contract.get("delta"),
             "iv": contract.get("iv") or contract.get("implied_volatility"),
+            "iv_rank": contract.get("iv_rank"),
+            "historical_volatility": contract.get("historical_volatility"),
+            "iv_hv_spread": contract.get("iv_hv_spread"),
+            "volatility_context": contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {},
             "volume": contract.get("volume"),
             "open_interest": contract.get("open_interest"),
             "option_market_data_source": contract.get("option_market_data_source") or contract.get("market_data_source"),
@@ -23122,6 +23339,10 @@ def _v32_operator_alert_from_decision(item):
             "mid": contract.get("mid"),
             "spread_pct": contract.get("spread_pct"),
             "delta": contract.get("delta"),
+            "iv": contract.get("iv"),
+            "iv_rank": contract.get("iv_rank"),
+            "iv_hv_spread": contract.get("iv_hv_spread"),
+            "volatility_context": contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {},
             "underlying_price": contract.get("underlying_price"),
             "capital_required": economics.get("capital_required"),
             "gross_credit": economics.get("gross_credit"),
@@ -25878,6 +26099,10 @@ def _v31_gpt_compact_contract(item):
         "spread_pct",
         "delta",
         "iv",
+        "iv_rank",
+        "historical_volatility",
+        "iv_hv_spread",
+        "volatility_context",
         "volume",
         "open_interest",
         "underlying_price",

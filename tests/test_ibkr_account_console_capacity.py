@@ -239,6 +239,8 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 "dte": 42,
                 "delta": -0.18,
                 "bid": 4.2,
+                "iv": 0.32,
+                "volatility_context": {"premium_state": "RICH", "iv": 0.32},
             },
         }
 
@@ -260,6 +262,9 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("alert-checklist", html)
         self.assertIn("Score", html)
         self.assertIn("CANSLIM", html)
+        self.assertIn("IV 32%", html)
+        self.assertIn("prima RICH", html)
+        self.assertIn("Volatilidad", html)
 
     def test_operator_alerts_hide_wait_and_no_data_from_operable_lane(self):
         operator_payload = {

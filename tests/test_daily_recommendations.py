@@ -64,6 +64,46 @@ class DailyRecommendationTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["performance_eligible"], 1)
         self.assertEqual(payload["summary"]["near_valid_backtesting_bucket"], 1)
 
+    def test_setup_validity_rewards_rich_naked_put_volatility(self):
+        base = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "final_state": "MANUAL_REVIEW",
+            "manual_review_ready": True,
+            "technical": {"confirmed": True, "score": 82, "trend": "BULLISH"},
+            "options_score": 88,
+            "risk_profile": {"status": "PASS"},
+            "market": {"options_bidask_expected": True},
+            "selected_contract": {
+                "strike": 700,
+                "expiration": "20260717",
+                "dte": 33,
+                "bid": 1.2,
+                "ask": 1.35,
+                "mid": 1.275,
+                "spread_pct": 11.76,
+                "delta": -0.2,
+            },
+        }
+        rich = {
+            **base,
+            "selected_contract": {
+                **base["selected_contract"],
+                "iv": 0.32,
+                "volatility_context": {"premium_state": "RICH", "iv": 0.32},
+            },
+        }
+        cheap = {
+            **base,
+            "selected_contract": {
+                **base["selected_contract"],
+                "iv": 0.12,
+                "volatility_context": {"premium_state": "CHEAP", "iv": 0.12},
+            },
+        }
+
+        self.assertGreater(daily.setup_validity_pct(rich), daily.setup_validity_pct(cheap))
+
     def test_risk_blocked_is_no_trade(self):
         payload = daily.build_daily_recommendations(
             [

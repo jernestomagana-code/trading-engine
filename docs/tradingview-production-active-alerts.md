@@ -63,8 +63,11 @@ TradingView is not the scanner for every possible ticker. In this project it is
 the market/technical confirmation layer. Other strategy requirements live in the
 engine:
 
-- Best strike, delta, DTE, bid/ask, spread, and executable option-contract
-  quality come from IBKR option-chain data and strategy-regime rules.
+- Best strike, delta, DTE, bid/ask, spread, IV/volatility richness, and
+  executable option-contract quality come from IBKR option-chain data and
+  strategy-regime rules. For naked puts, the backend must avoid promoting
+  contracts where the option premium is cheap versus IV Rank/Percentile,
+  IV/HV spread, or absolute IV thresholds.
 - CANSLIM quality is a filter/scoring input for equities and cash-secured-put
   candidates; it should improve ranking or block weak setups without requiring
   extra TradingView alerts.
