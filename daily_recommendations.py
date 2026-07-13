@@ -89,6 +89,10 @@ def _options(decision: dict[str, Any]) -> dict[str, Any]:
             "spread_pct": contract.get("spread_pct"),
             "delta": contract.get("delta"),
             "iv": contract.get("iv"),
+            "iv_rank": contract.get("iv_rank"),
+            "historical_volatility": contract.get("historical_volatility"),
+            "iv_hv_spread": contract.get("iv_hv_spread"),
+            "volatility_context": contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {},
             "volume": contract.get("volume"),
             "open_interest": contract.get("open_interest"),
             "quality": contract.get("quality"),
@@ -140,6 +144,10 @@ def _compact_contract_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "spread_pct",
         "delta",
         "iv",
+        "iv_rank",
+        "historical_volatility",
+        "iv_hv_spread",
+        "volatility_context",
         "volume",
         "open_interest",
         "option_score",
@@ -280,6 +288,20 @@ def setup_validity_pct(decision: dict[str, Any]) -> float:
             score += 8
         elif spread_pct <= 35:
             score += 3
+
+    volatility_context = contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {}
+    premium_state = _upper(volatility_context.get("premium_state"), "")
+    iv = _number(contract.get("iv") or volatility_context.get("iv"), None)
+    iv_rank = _number(contract.get("iv_rank") or volatility_context.get("iv_rank"), None)
+    iv_hv_spread = _number(contract.get("iv_hv_spread") or volatility_context.get("iv_hv_spread"), None)
+    if premium_state == "RICH" or (iv_rank is not None and iv_rank >= 50) or (iv is not None and iv >= 0.25):
+        score += 8
+    elif premium_state == "FAIR" or (iv_rank is not None and iv_rank >= 35) or (iv_hv_spread is not None and iv_hv_spread >= 0.02) or (iv is not None and iv >= 0.18):
+        score += 4
+    elif premium_state == "CHEAP" or (iv is not None and iv < 0.18):
+        score -= 8
+    else:
+        score -= 3
 
     if risk_profile.get("status") in [None, "", "PASS"]:
         score += 10

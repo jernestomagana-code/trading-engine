@@ -533,6 +533,12 @@ Use the printed diagnostic:
   they do not override blocker priority or authorize a trade.
 - Required option fields remain `strike`, `expiration`, `dte`, `bid`, `ask`,
   `mid`, `spread`, `spread_pct`, and `delta`.
+- For `NAKED_PUT`/cash-secured-put review, volatility richness is also part of
+  the risk gate. The engine uses IV Rank/Percentile when present, then IV/HV
+  spread, then absolute IV. Balanced mode requires roughly IV >= 18%, IV Rank
+  >= 35, or IV/HV spread >= 2 percentage points. Low or missing volatility
+  context blocks `ENTRY_READY` as `RISK_PROFILE_VOLATILITY_PREMIUM_*` because
+  the system cannot confirm that the option is being sold at a fair/rich premium.
 
 The corrective action is to refresh or enrich IBKR option-chain data, not to
 change the decision state.
@@ -549,8 +555,8 @@ Use the right source for the missing field:
 
 - TradingView: technical/event confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`,
   and `VIX`.
-- IBKR: option contract, best strike, DTE, bid/ask, spread, delta, and account
-  capacity checks.
+- IBKR: option contract, best strike, DTE, bid/ask, spread, delta, IV/volatility
+  richness, and account capacity checks.
 - Strategy registry/regime policy: score thresholds, CANSLIM minimums, delta
   ranges, DTE ranges, and blocker logic.
 - Backend universe/scanner: additional large-cap or CANSLIM candidates.

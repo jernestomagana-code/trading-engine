@@ -122,9 +122,15 @@ class _FakeBrowserRequest:
 
 
 def _master_snapshot(rows):
+    normalized_rows = []
+    for row in rows:
+        item = dict(row)
+        if "PUT" in str(item.get("strategy") or "").upper() and "iv" not in item:
+            item["iv"] = 0.30
+        normalized_rows.append(item)
     return {
         "path": "unit-test-master.json",
-        "rows": rows,
+        "rows": normalized_rows,
         "technical": {
             "QQQ": {
                 "ticker": "QQQ",
@@ -2010,6 +2016,37 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertNotIn("risk_blocker", wait_options)
         self.assertFalse(wait_options["manual_review_ready"])
         self.assertFalse(wait_options["can_operate"])
+
+    def test_v31_risk_profile_blocks_naked_put_when_iv_is_too_low(self):
+        cheap_premium_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260717",
+            "dte": 33,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+            "iv": 0.12,
+        }
+
+        with patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([cheap_premium_row]),
+        ):
+            blocked = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(blocked["final_state"], "RISK_BLOCKED")
+        self.assertEqual(blocked["risk_blocker"], "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
+        self.assertIn("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW", blocked["blockers"])
+        self.assertEqual(blocked["selected_contract"]["volatility_context"]["premium_state"], "CHEAP")
+        self.assertEqual(blocked["risk_profile"]["blocked_checks"][0]["field"], "selected_contract.iv")
 
     def test_v31_balanced_profile_is_not_looser_than_strategy_specific_put_guard(self):
         complete_row = {

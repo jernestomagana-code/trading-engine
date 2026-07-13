@@ -1830,6 +1830,15 @@ def compact_contract_value(value: Any, suffix: str = "") -> str:
     return text + suffix
 
 
+def compact_volatility_value(value: Any) -> str:
+    number = console_float_or_none(value)
+    if number is None:
+        return "-"
+    if abs(number) <= 1:
+        number *= 100.0
+    return ("{:.2f}".format(number)).rstrip("0").rstrip(".") + "%"
+
+
 def compact_money(value: Any) -> str:
     try:
         number = float(value)
@@ -1974,11 +1983,15 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
     mid = contract.get("mid") or alert.get("price")
     spread = contract.get("spread_pct")
     delta = contract.get("delta")
-    has_contract = any(value not in [None, "", "None"] for value in [strike, expiration, dte, bid, ask, mid, spread, delta])
+    iv = contract.get("iv")
+    iv_rank = contract.get("iv_rank")
+    vol_context = contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {}
+    premium_state = vol_context.get("premium_state") or "N/D"
+    has_contract = any(value not in [None, "", "None"] for value in [strike, expiration, dte, bid, ask, mid, spread, delta, iv, iv_rank])
     if not has_contract:
         return "Contrato: pendiente de datos"
     return (
-        "Contrato: strike {strike} | exp {expiration} | DTE {dte} | bid/ask {bid}/{ask} | mid {mid} | spread {spread} | delta {delta}"
+        "Contrato: strike {strike} | exp {expiration} | DTE {dte} | bid/ask {bid}/{ask} | mid {mid} | spread {spread} | delta {delta} | IV {iv} | IVR {iv_rank} | prima {premium_state}"
     ).format(
         strike=compact_contract_value(strike),
         expiration=compact_contract_value(expiration),
@@ -1988,6 +2001,9 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
         mid=compact_contract_value(mid),
         spread=compact_contract_value(spread, "%"),
         delta=compact_contract_value(delta),
+        iv=compact_volatility_value(iv),
+        iv_rank=compact_contract_value(iv_rank),
+        premium_state=compact_contract_value(premium_state),
     )
 
 
@@ -2164,12 +2180,23 @@ def alert_checklist_items(alert: dict[str, Any], account_capacity: dict[str, Any
     capacity_ok = capital is not None and available is not None and capital <= available
     canslim_value = alert.get("canslim_score") or alert.get("canslim_confidence")
     canslim_ok = canslim_value not in [None, "", "None"]
+    vol_context = contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {}
+    premium_state = str(vol_context.get("premium_state") or "").upper()
+    iv = console_float_or_none(contract.get("iv") or vol_context.get("iv"))
+    iv_rank = console_float_or_none(contract.get("iv_rank") or vol_context.get("iv_rank"))
+    volatility_ok = premium_state in {"FAIR", "RICH"} or (iv_rank is not None and iv_rank >= 35) or (iv is not None and iv >= 0.18)
+    volatility_note = (
+        "prima " + premium_state.lower()
+        if premium_state
+        else ("IV/IVR presente" if iv is not None or iv_rank is not None else "falta IV/IV rank")
+    )
     risk_ok = severity != "RISK" and state != "RISK_BLOCKED" and not str(alert.get("risk_blocker") or "")
     score_ok = any(alert.get(field) not in [None, "", "None"] for field in ["setup_validity_pct", "conviction_score", "ranking_score", "raw_score"])
     return [
         ("Score", score_ok, "score/conviccion visible" if score_ok else "falta score visible"),
         ("Tecnico", technical_ok, "confirmado o esperando mercado" if technical_ok else "falta confirmacion tecnica"),
         ("Opciones", options_ok, "strike/DTE/delta presentes" if options_ok else "contrato incompleto"),
+        ("Volatilidad", volatility_ok, volatility_note),
         ("Capacidad", capacity_ok, "capital dentro de cuenta" if capacity_ok else "requiere validar capital"),
         ("CANSLIM", canslim_ok, "contexto dinamico presente" if canslim_ok else "sin dato CANSLIM en alerta"),
         ("Riesgo", risk_ok, "sin bloqueo de riesgo" if risk_ok else "bloqueo/riesgo activo"),

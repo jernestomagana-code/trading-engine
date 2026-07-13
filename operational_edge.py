@@ -353,6 +353,22 @@ def option_contract_score(row: dict[str, Any]) -> float:
     dte = safe_float(row.get("dte"))
     if dte is not None:
         score += max(0, 15 - abs(dte - 42) * 0.8)
+    iv_rank = safe_float(row.get("iv_rank") or row.get("ivr") or row.get("iv_percentile"))
+    iv = safe_float(row.get("iv") or row.get("implied_volatility"))
+    if iv_rank is not None:
+        if iv_rank >= 50:
+            score += 10
+        elif iv_rank >= 35:
+            score += 5
+        else:
+            score -= 8
+    elif iv is not None:
+        if iv >= 0.25:
+            score += 8
+        elif iv >= 0.18:
+            score += 4
+        else:
+            score -= 8
     oi = safe_float(row.get("open_interest"), 0) or 0
     volume = safe_float(row.get("volume"), 0) or 0
     if oi >= 1000:
@@ -386,6 +402,7 @@ def build_option_optimizer(runtime: dict[str, Any], top_limit: int) -> dict[str,
             "mid": row.get("mid"),
             "spread_pct": row.get("spread_pct"),
             "iv": row.get("iv"),
+            "iv_rank": row.get("iv_rank") or row.get("ivr") or row.get("iv_percentile"),
             "volume": row.get("volume"),
             "open_interest": row.get("open_interest"),
             "data_quality": row.get("data_quality"),
