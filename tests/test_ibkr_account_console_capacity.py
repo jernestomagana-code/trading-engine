@@ -119,8 +119,15 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
 
         with account_console.WEB_JOBS_LOCK:
             account_console.WEB_JOBS.clear()
-        health = account_console.console_health(active, snapshot, operator_payload)
-        rendered = account_console.render_console_health(active, snapshot, operator_payload)
+        with patch.object(account_console, "latest_ibkr_connection_status", return_value={
+            "available": True,
+            "connected": True,
+            "account_matches": True,
+            "status": "CONNECTED",
+            "published": True,
+        }):
+            health = account_console.console_health(active, snapshot, operator_payload)
+            rendered = account_console.render_console_health(active, snapshot, operator_payload)
 
         self.assertEqual(health["level"], "green")
         self.assertIn("health-green", rendered)
@@ -136,8 +143,15 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                     "status": "RUNNING",
                     "started_at": account_console.now_iso(),
                 }
-            running_health = account_console.console_health(active, snapshot, operator_payload)
-            process_panel = account_console.render_active_process_panel()
+            with patch.object(account_console, "latest_ibkr_connection_status", return_value={
+                "available": True,
+                "connected": True,
+                "account_matches": True,
+                "status": "CONNECTED",
+                "published": True,
+            }):
+                running_health = account_console.console_health(active, snapshot, operator_payload)
+                process_panel = account_console.render_active_process_panel()
 
             self.assertEqual(running_health["level"], "amber")
             self.assertIn("PROCESS_RUNNING", running_health["warnings"])
@@ -163,13 +177,76 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             },
         }
 
-        health = account_console.console_health(active, snapshot, operator_payload)
-        rendered = account_console.render_console_health(active, snapshot, operator_payload)
+        with patch.object(account_console, "latest_ibkr_connection_status", return_value={
+            "available": True,
+            "connected": True,
+            "account_matches": True,
+            "status": "CONNECTED",
+            "published": True,
+        }):
+            health = account_console.console_health(active, snapshot, operator_payload)
+            rendered = account_console.render_console_health(active, snapshot, operator_payload)
 
         self.assertEqual(health["level"], "green")
         self.assertEqual(health["warnings"], [])
         self.assertIn("REMOTE_CACHE_FRESH", health["info"])
         self.assertIn("health-green", rendered)
+
+    def test_console_health_keeps_local_core_green_when_remote_cache_context_is_stale(self):
+        active = {"account_scope": "remanente", "account_alias": "remanente"}
+        snapshot = {"available": True, "account_scope": "", "account_alias": "", "generated_at": "2026-07-13T19:00:00+00:00"}
+        operator_payload = {
+            "ok": True,
+            "cached": True,
+            "stale_cache": True,
+            "token_present": True,
+            "cache_age_label": "33m ago",
+            "data": {
+                "account_context": {"account_scope": "unknown", "account_alias": "unknown"},
+                "account_capacity": {"available_capacity": 20570.57, "capacity_source": "available_funds"},
+            },
+        }
+
+        with patch.object(account_console, "latest_ibkr_connection_status", return_value={
+            "available": True,
+            "connected": True,
+            "account_matches": True,
+            "status": "CONNECTED",
+            "published": True,
+        }):
+            health = account_console.console_health(active, snapshot, operator_payload)
+            rendered = account_console.render_console_health(active, snapshot, operator_payload)
+
+        self.assertEqual(health["level"], "green")
+        self.assertTrue(health["local_core_ready"])
+        self.assertNotIn("GPT_CONTEXT_REFRESH_REQUIRED", health["warnings"])
+        self.assertNotIn("REMOTE_CACHE_STALE", health["warnings"])
+        self.assertIn("REMOTE_CACHE_STALE_LOCAL_CORE_READY", health["info"])
+        self.assertIn("IBKR: OK", rendered)
+
+    def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_runtime = account_console.RUNTIME
+            account_console.RUNTIME = Path(tmp)
+            old = account_console.RUNTIME / "v25_master_snapshot.json"
+            fresh = account_console.RUNTIME / "decision_desk_snapshot.json"
+            old.write_text(json.dumps({
+                "generated_at": "2026-06-11T00:00:00+00:00",
+                "options_rows": [{"ticker": "OLD"}],
+            }))
+            fresh.write_text(json.dumps({
+                "generated_at": "2026-07-13T19:00:51+00:00",
+                "health": {"snapshot_available": True, "rows_captured": 16},
+                "top": [{"ticker": "QQQ"}, {"ticker": "NVDA"}],
+            }))
+            try:
+                snapshot = account_console.latest_master_snapshot()
+            finally:
+                account_console.RUNTIME = original_runtime
+
+        self.assertTrue(snapshot["available"])
+        self.assertTrue(snapshot["path"].endswith("decision_desk_snapshot.json"))
+        self.assertEqual(snapshot["rows_found"], 2)
 
     def test_console_capacity_prefers_newer_remote_over_stale_local(self):
         with tempfile.TemporaryDirectory() as tmp:

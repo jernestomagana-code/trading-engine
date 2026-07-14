@@ -786,6 +786,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(suite["execution_authorized"])
 
     def test_v32_operator_today_guides_manual_review_without_execution(self):
+        fresh_generated_at = datetime.now(timezone.utc).isoformat()
         with patch.object(main, "_v31_command_center_payload", return_value={
             "status": "READY_FOR_DECISION_REVIEW",
             "operational_readiness": "READY_FOR_MANUAL_REVIEW",
@@ -804,7 +805,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "top_recommendations": [{
                 "ticker": "QQQ",
                 "strategy": "NAKED_PUT",
-                "generated_at": "2026-07-13T13:45:00+00:00",
+                "generated_at": fresh_generated_at,
                 "final_state": "ENTRY_READY",
                 "manual_review_ready": True,
                 "selected_contract": {
@@ -839,7 +840,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(payload["engine"], "V32_OPERATOR_ASSISTANT")
         self.assertEqual(payload["active_alerts"][0]["severity"], "ACTION")
-        self.assertEqual(payload["active_alerts"][0]["alert_date"], "2026-07-13")
+        self.assertEqual(payload["active_alerts"][0]["alert_date"], fresh_generated_at[:10])
         self.assertEqual(payload["active_alerts"][0]["economics"]["capital_required"], 63890.0)
         self.assertEqual(payload["active_alerts"][0]["economics"]["capital_source"], "estimated_cash_secured_put")
         self.assertEqual(payload["active_alerts"][0]["economics"]["probability_success_pct"], 80.0)
@@ -890,6 +891,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertIn("REASON_REQUIRED", str(ctx.exception))
 
     def test_v32_operator_daily_summary_and_tracking_are_read_only(self):
+        fresh_generated_at = datetime.now(timezone.utc).isoformat()
         with patch.object(main, "_v31_command_center_payload", return_value={
             "status": "READY_FOR_DECISION_REVIEW",
             "operational_readiness": "READY_FOR_MANUAL_REVIEW",
@@ -899,7 +901,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "strategy": "NAKED_PUT",
                 "final_state": "ENTRY_READY",
                 "manual_review_ready": True,
-                "generated_at": "2026-07-13T13:45:00+00:00",
+                "generated_at": fresh_generated_at,
                 "selected_contract": {
                     "strike": 645,
                     "expiration": "20260731",
