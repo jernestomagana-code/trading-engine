@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -30,8 +31,16 @@ DEFAULT_UNIVERSE = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
     "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT",
+    "ADBE", "NOW", "PANW", "CRWD", "SNOW", "DDOG",
+    "NET", "MDB", "SHOP", "UBER", "ABNB", "COIN",
+    "HOOD", "PLTR", "APP", "TTD", "ROKU", "ZS",
+    "TEAM", "WDAY", "INTU", "ISRG", "LRCX", "KLAC",
+    "ASML", "ARM", "MU", "SMCI", "DELL", "VRT",
+    "ANET", "MRVL", "MELI", "ELF", "CELH", "DECK",
+    "LULU", "AXON", "HUBS", "DASH", "RBLX",
 ]
 NON_COMPANY_SYMBOLS = {"QQQ", "SPY", "TLT", "VIX", "DIA", "IWM"}
+TICKER_RE = re.compile(r"^[A-Z][A-Z0-9]{0,4}$")
 
 REVENUE_TAGS = [
     "Revenues",
@@ -105,12 +114,12 @@ def cik10(value: Any) -> str:
 
 
 def parse_universe(raw: str | None = None) -> list[str]:
-    if not raw:
-        return list(DEFAULT_UNIVERSE)
-    values = [upper(item) for item in raw.split(",") if upper(item)]
+    values = list(DEFAULT_UNIVERSE) if not raw else [upper(item) for item in raw.split(",") if upper(item)]
     seen = set()
     out = []
     for value in values:
+        if not TICKER_RE.match(value):
+            continue
         if value in seen:
             continue
         seen.add(value)

@@ -29,6 +29,7 @@ from pathlib import Path as _v283_Path
 from datetime import datetime as _v283_datetime, timezone as _v283_timezone
 import os as _v283_os
 import json as _v283_json
+import re as _v283_re
 
 try:
     from strategy_rules import (
@@ -782,13 +783,27 @@ DAILY_RADAR_FAST = _env_bool("DAILY_RADAR_FAST", False)
 DEFAULT_WATCHLIST = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
-    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT",
+    "ADBE", "NOW", "PANW", "CRWD", "SNOW", "DDOG",
+    "NET", "MDB", "SHOP", "UBER", "ABNB", "COIN",
+    "HOOD", "PLTR", "APP", "TTD", "ROKU", "ZS",
+    "TEAM", "WDAY", "INTU", "ISRG", "LRCX", "KLAC",
+    "ASML", "ARM", "MU", "SMCI", "DELL", "VRT",
+    "ANET", "MRVL", "MELI", "ELF", "CELH", "DECK",
+    "LULU", "AXON", "HUBS", "DASH", "RBLX"
 ]
 
 DEFAULT_OPTION_SYMBOLS = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
-    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT",
+    "ADBE", "NOW", "PANW", "CRWD", "SNOW", "DDOG",
+    "NET", "MDB", "SHOP", "UBER", "ABNB", "COIN",
+    "HOOD", "PLTR", "APP", "TTD", "ROKU", "ZS",
+    "TEAM", "WDAY", "INTU", "ISRG", "LRCX", "KLAC",
+    "ASML", "ARM", "MU", "SMCI", "DELL", "VRT",
+    "ANET", "MRVL", "MELI", "ELF", "CELH", "DECK",
+    "LULU", "AXON", "HUBS", "DASH", "RBLX"
 ]
 
 FAST_WATCHLIST = list(DEFAULT_WATCHLIST)
@@ -815,11 +830,11 @@ MAX_OPTIONS_PER_SYMBOL = _env_int(
 )
 MAX_OPTION_SYMBOLS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_OPTION_SYMBOLS_PER_RUN",
-    6 if DAILY_RADAR_FAST else 10,
+    8 if DAILY_RADAR_FAST else 14,
 ))
 MAX_TOTAL_OPTION_CONTRACTS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN",
-    12 if DAILY_RADAR_FAST else 48,
+    16 if DAILY_RADAR_FAST else 64,
 ))
 DYNAMIC_OPTION_UNIVERSE_ENABLED = _env_bool(
     "IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED",
@@ -1150,6 +1165,65 @@ OPTION_UNDERLYING_TIER_SCORES = {
     "CRM": 24,
     "ORCL": 24,
     "NFLX": 22,
+    "ADBE": 24,
+    "NOW": 24,
+    "PANW": 22,
+    "CRWD": 22,
+    "SNOW": 18,
+    "DDOG": 18,
+    "NET": 18,
+    "MDB": 16,
+    "SHOP": 20,
+    "UBER": 22,
+    "ABNB": 18,
+    "COIN": 16,
+    "HOOD": 14,
+    "PLTR": 18,
+    "APP": 14,
+    "TTD": 16,
+    "ROKU": 12,
+    "ZS": 14,
+    "TEAM": 16,
+    "WDAY": 18,
+    "INTU": 24,
+    "ISRG": 22,
+    "LRCX": 22,
+    "KLAC": 22,
+    "ASML": 22,
+    "ARM": 18,
+    "MU": 22,
+    "SMCI": 14,
+    "DELL": 20,
+    "VRT": 16,
+    "ANET": 22,
+    "MRVL": 20,
+    "MELI": 18,
+    "ELF": 12,
+    "CELH": 12,
+    "DECK": 14,
+    "LULU": 16,
+    "AXON": 14,
+    "HUBS": 14,
+    "DASH": 18,
+    "RBLX": 12,
+}
+
+TRADABLE_EQUITY_SYMBOL_RE = _v283_re.compile(r"^[A-Z][A-Z0-9]{0,4}$")
+NON_OPTION_UNDERLYING_SYMBOLS = {
+    "RAW",
+    "GATE",
+    "TOP",
+    "TECHNICAL",
+    "OPTIONS_ROWS",
+    "POST_MORTEM",
+    "CONTROL_PANEL",
+    "OPTION_OPTIMIZER",
+    "SCORE_CALIBRATION",
+    "CANSLIM",
+    "CANSLIM_CONFIDENCE",
+    "CONTRACT_COMPLETENESS",
+    "MARKET_CONFIRMATION",
+    "INSTITUTIONAL_RANKING",
 }
 
 
@@ -1264,6 +1338,20 @@ def _bridge_unique_symbols(values):
     return out
 
 
+def _bridge_is_tradable_equity_symbol(symbol):
+    symbol = str(symbol or "").strip().upper()
+    if not TRADABLE_EQUITY_SYMBOL_RE.match(symbol):
+        return False
+    return symbol not in NON_OPTION_UNDERLYING_SYMBOLS
+
+
+def _bridge_unique_tradable_symbols(values):
+    return [
+        symbol for symbol in _bridge_unique_symbols(values)
+        if _bridge_is_tradable_equity_symbol(symbol)
+    ]
+
+
 def _bridge_bool(value):
     if isinstance(value, bool):
         return value
@@ -1339,7 +1427,7 @@ def _bridge_canslim_snapshot(technical):
 def _bridge_canslim_candidate_from_row(row, source_name="runtime"):
     row = row if isinstance(row, dict) else {}
     symbol = str(row.get("ticker") or row.get("symbol") or row.get("underlying") or "").upper().strip()
-    if not symbol:
+    if not _bridge_is_tradable_equity_symbol(symbol):
         return None
 
     nested = row.get("canslim") if isinstance(row.get("canslim"), dict) else {}
@@ -1423,10 +1511,14 @@ def _bridge_extract_canslim_candidates(runtime_data):
 
 def _bridge_merge_canslim_candidates_into_technical(technical, canslim_candidates):
     technical = technical if isinstance(technical, dict) else {}
-    merged = {str(symbol).upper(): dict(value) for symbol, value in technical.items() if isinstance(value, dict)}
+    merged = {
+        str(symbol).upper(): dict(value)
+        for symbol, value in technical.items()
+        if isinstance(value, dict) and _bridge_is_tradable_equity_symbol(symbol)
+    }
     for symbol, candidate in (canslim_candidates or {}).items():
         symbol = str(symbol or "").upper().strip()
-        if not symbol:
+        if not _bridge_is_tradable_equity_symbol(symbol):
             continue
         target = dict(merged.get(symbol) or {"ticker": symbol, "symbol": symbol})
         candidate_canslim = candidate.get("canslim") if isinstance(candidate.get("canslim"), dict) else {}
@@ -1481,6 +1573,20 @@ def _bridge_option_universe_runtime_context():
 
 def option_underlying_rank(symbol, technical=None, *, held_symbols=None, original_index=0):
     symbol = str(symbol or "").upper().strip()
+    if not _bridge_is_tradable_equity_symbol(symbol):
+        return {
+            "symbol": symbol,
+            "score": 0.0,
+            "qualifies": False,
+            "triggers": [],
+            "reasons": ["simbolo no valido para universo de opciones"],
+            "blockers": ["INVALID_OPTION_UNDERLYING_SYMBOL"],
+            "technical_score": None,
+            "technical_confirmed": False,
+            "canslim": {"available": False, "passes": None, "score": None, "rating": None},
+            "tier_score": 0,
+            "not_order_instruction": True,
+        }
     technical = technical if isinstance(technical, dict) else {}
     held_symbols = held_symbols if isinstance(held_symbols, set) else set()
     core = set(_bridge_unique_symbols(OPTION_CORE_SYMBOLS))
@@ -1585,12 +1691,17 @@ def option_underlying_rank(symbol, technical=None, *, held_symbols=None, origina
 
 
 def build_dynamic_option_symbol_plan(symbols, technical_snapshot=None):
-    base_symbols = _bridge_unique_symbols(symbols)
+    base_symbols = _bridge_unique_tradable_symbols(symbols)
     technical_snapshot = technical_snapshot if isinstance(technical_snapshot, dict) else {}
     candidate_symbols = list(base_symbols)
     if INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES:
         candidate_symbols.extend(str(symbol).upper() for symbol in technical_snapshot.keys())
-    candidate_symbols = _bridge_unique_symbols(candidate_symbols)
+    invalid_candidate_symbols = [
+        str(symbol or "").upper().strip()
+        for symbol in _bridge_unique_symbols(candidate_symbols)
+        if not _bridge_is_tradable_equity_symbol(symbol)
+    ]
+    candidate_symbols = _bridge_unique_tradable_symbols(candidate_symbols)
 
     if not DYNAMIC_OPTION_UNIVERSE_ENABLED:
         selected = candidate_symbols[:]
@@ -1658,6 +1769,7 @@ def build_dynamic_option_symbol_plan(symbols, technical_snapshot=None):
         "enabled": True,
         "input_symbols": base_symbols,
         "candidate_count": len(candidate_symbols),
+        "invalid_candidate_symbols": invalid_candidate_symbols,
         "canslim_candidate_count": len([
             symbol for symbol in candidate_symbols
             if _bridge_canslim_snapshot(technical_snapshot.get(symbol) or {}).get("available")

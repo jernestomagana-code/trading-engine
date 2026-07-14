@@ -152,6 +152,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_nudge_preflight",
     "/v32_actionable_signal_watch",
     "/v32_signal_events",
+    "/v32_tradingview_webhook_status",
     "/v32_parameter_review_report",
     "/v32_foundation_health",
     "/gpt_v32_operator_daily_cycle",
@@ -12981,10 +12982,24 @@ async def technical_snapshot_ingest(request: Request):
         except Exception:
             payload = {}
     try:
-        shared_tradingview_signal_ledger.append_signal_event(
+        signal_ledger_result = shared_tradingview_signal_ledger.append_signal_event(
             payload if isinstance(payload, dict) else {"raw_text": str(payload or "")[:1000]},
             raw_text=str(payload or "")[:1000],
             endpoint="/technical_snapshot_legacy_ingest",
+        )
+        _record_audit_event(
+            "tradingview_webhook_received",
+            {
+                "event_id": signal_ledger_result.get("event_id"),
+                "status": signal_ledger_result.get("status"),
+                "accepted_for_engine": signal_ledger_result.get("accepted_for_engine"),
+                "quarantine_reasons": signal_ledger_result.get("quarantine_reasons") or [],
+                "event_count": signal_ledger_result.get("event_count"),
+                "path": signal_ledger_result.get("path"),
+                "status_path": signal_ledger_result.get("status_path"),
+                "not_order_instruction": True,
+            },
+            source="technical_snapshot",
         )
     except Exception:
         pass
@@ -28837,6 +28852,22 @@ async def v32_signal_events(limit: int = 1000):
         "generated_at": _v29_now(),
         "event_count": len(events),
         "events": events,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v32_tradingview_webhook_status")
+async def v32_tradingview_webhook_status():
+    status = shared_tradingview_signal_ledger.load_webhook_status()
+    events = shared_tradingview_signal_ledger.load_signal_events(limit=1)
+    return {
+        "engine": "TRADINGVIEW_WEBHOOK_STATUS",
+        "generated_at": _v29_now(),
+        "status": "RECEIVED" if status.get("last_webhook") else "NO_WEBHOOK_RECEIVED",
+        "webhook_status": status,
+        "latest_event": events[-1] if events else None,
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,

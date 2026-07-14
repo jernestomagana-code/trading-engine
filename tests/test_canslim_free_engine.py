@@ -71,6 +71,15 @@ def bars(start=100.0, step=1.0, count=80):
 
 
 class CanslimFreeEngineTests(unittest.TestCase):
+    def test_default_universe_is_broader_and_filters_invalid_symbols(self):
+        default_universe = canslim_free_engine.parse_universe()
+        custom = canslim_free_engine.parse_universe("NVDA,POST_MORTEM,BRK.B,PLTR,QQQ,NVDA")
+
+        self.assertGreaterEqual(len(default_universe), 40)
+        self.assertIn("PLTR", default_universe)
+        self.assertIn("CRWD", default_universe)
+        self.assertEqual(custom, ["NVDA", "PLTR", "QQQ"])
+
     def test_scores_companyfacts_and_runtime_relative_strength(self):
         runtime_data = {
             "bars.json": {
@@ -144,4 +153,3 @@ class CanslimFreeEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
