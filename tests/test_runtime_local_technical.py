@@ -49,6 +49,25 @@ class RuntimeLocalTechnicalTests(unittest.TestCase):
         self.assertIn("SPY", bars)
         self.assertGreaterEqual(len(bars["QQQ"]), 60)
 
+    def test_ignores_internal_runtime_keys_as_tickers(self):
+        runtime_data = {
+            "diagnostic.json": {
+                "historical_bars": {
+                    "TOP": bullish_bars(),
+                    "CANSLIM": bullish_bars(),
+                    "NAKED_PUT": bullish_bars(),
+                    "PLTR": bullish_bars(),
+                }
+            }
+        }
+
+        bars = runtime_local_technical.extract_local_bar_sets(runtime_data)
+
+        self.assertIn("PLTR", bars)
+        self.assertNotIn("TOP", bars)
+        self.assertNotIn("CANSLIM", bars)
+        self.assertNotIn("NAKED_PUT", bars)
+
     def test_builds_local_technical_only_for_missing_ticker(self):
         runtime_data = {
             "sample.json": {

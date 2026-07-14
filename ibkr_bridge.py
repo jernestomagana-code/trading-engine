@@ -246,7 +246,7 @@ def _v283_extract_technical(data):
                 "score"
             ])
 
-            if ticker and looks_technical:
+            if _bridge_is_tradable_equity_symbol(ticker) and looks_technical:
                 item = dict(obj)
                 item["ticker"] = ticker
                 item["trend"] = str(
@@ -5007,7 +5007,7 @@ def _v28_bridge_extract_technical_snapshot(runtime_data):
         if not isinstance(v, dict):
             return
         ticker = str(v.get("ticker") or k or "").upper().strip()
-        if not ticker:
+        if not _bridge_is_tradable_equity_symbol(ticker):
             return
         # only accept objects that look technical
         looks = any(x in v for x in ["trend", "rsi", "adx", "vwap_position", "volume_relative", "support_near", "resistance_near", "score"])
