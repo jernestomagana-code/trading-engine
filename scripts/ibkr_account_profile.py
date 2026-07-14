@@ -36,6 +36,8 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
 ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
+IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
+CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
 MARKET_OPEN_READINESS_PATH = RUNTIME / "market_open_readiness_latest.json"
 POST_OPEN_MONITOR_PATH = RUNTIME / "post_open_monitor_latest.json"
@@ -896,6 +898,8 @@ def apply_local_operator_events(operator_payload: dict[str, Any]) -> dict[str, A
 def latest_master_snapshot() -> dict[str, Any]:
     candidates = []
     fixed_names = [
+        "decision_desk_snapshot.json",
+        "v32_ibkr_chain_coverage.json",
         "v31_master_snapshot.json",
         "v28_master_snapshot.json",
         "v26_master_snapshot.json",
@@ -921,14 +925,25 @@ def latest_master_snapshot() -> dict[str, Any]:
         }
     path = unique[0]
     data = load_json_file(path)
-    rows = data.get("options_rows") if isinstance(data.get("options_rows"), list) else []
+    rows = []
+    for key in ["options_rows", "option_rows", "rows", "top"]:
+        if isinstance(data.get(key), list):
+            rows = data.get(key)
+            break
+    health = data.get("health") if isinstance(data.get("health"), dict) else {}
+    if not rows and health.get("rows_captured") is not None:
+        rows = [{}] * int(health.get("rows_captured") or 0)
     broker_summary = data.get("broker_check_summary") if isinstance(data.get("broker_check_summary"), dict) else {}
     account_context = data.get("account_context") if isinstance(data.get("account_context"), dict) else {}
     scope = data.get("account_scope") or broker_summary.get("account_scope") or account_context.get("account_scope") or ""
     alias = data.get("account_alias") or broker_summary.get("account_alias") or account_context.get("account_alias") or scope
+    try:
+        path_label = str(path.relative_to(ROOT))
+    except ValueError:
+        path_label = str(path)
     return {
         "available": True,
-        "path": str(path.relative_to(ROOT)),
+        "path": path_label,
         "mtime": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
         "data": data,
         "account_context": account_context,
@@ -1244,6 +1259,7 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     cached = bool(operator_payload.get("cached"))
     stale_cache = bool(operator_payload.get("stale_cache"))
     capacity = console_account_capacity(operator_payload, snapshot)
+    local_core = console_local_core_status(active, snapshot, capacity)
     blockers = []
     warnings = []
     info = []
@@ -1251,16 +1267,29 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
         blockers.append("READ_TOKEN_MISSING")
     if not remote_ok:
         blockers.append("PRODUCTION_UNREACHABLE")
-    if comparison.get("needs_refresh"):
+    remote_context_is_stale = bool(cached and stale_cache and comparison.get("needs_refresh"))
+    remote_context_pending_after_publish = bool(
+        local_core.get("ready")
+        and local_core.get("bridge_published")
+        and comparison.get("missing_published_context")
+    )
+    if comparison.get("needs_refresh") and not (
+        (local_core.get("ready") and remote_context_is_stale)
+        or remote_context_pending_after_publish
+    ):
         warnings.append("GPT_CONTEXT_REFRESH_REQUIRED")
+    elif remote_context_pending_after_publish:
+        info.append("GPT_CONTEXT_REMOTE_PENDING_LOCAL_CORE_READY")
     if cached and stale_cache:
-        warnings.append("REMOTE_CACHE_STALE")
+        if local_core.get("ready"):
+            info.append("REMOTE_CACHE_STALE_LOCAL_CORE_READY")
+        else:
+            warnings.append("REMOTE_CACHE_STALE")
     elif cached:
         info.append("REMOTE_CACHE_FRESH")
-    if not snapshot.get("available"):
-        warnings.append("SNAPSHOT_MISSING")
-    if not capacity.get("available"):
-        warnings.append("IBKR_CAPACITY_NOT_REFRESHED")
+    for missing in local_core.get("missing") or []:
+        if missing not in warnings:
+            warnings.append(missing)
     if running:
         warnings.append("PROCESS_RUNNING")
 
@@ -1279,7 +1308,10 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     else:
         level = "green"
         label = "Conectado"
-        detail = "Produccion, cuenta, snapshot y capacidad estan alineados para revision manual."
+        if local_core.get("ready"):
+            detail = "IBKR, cuenta, snapshot y capacidad locales listos para revision manual."
+        else:
+            detail = "Produccion, cuenta, snapshot y capacidad estan alineados para revision manual."
 
     return {
         "level": level,
@@ -1293,9 +1325,12 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
         "cached": cached,
         "stale_cache": stale_cache,
         "token_present": token_present,
-        "context_status": comparison.get("status"),
+        "context_status": "LOCAL_READY_REMOTE_PENDING" if remote_context_pending_after_publish else comparison.get("status"),
         "snapshot_available": bool(snapshot.get("available")),
         "capacity_available": bool(capacity.get("available")),
+        "ibkr_connected": bool(local_core.get("ibkr_connected")),
+        "bridge_published": bool(local_core.get("bridge_published")),
+        "local_core_ready": bool(local_core.get("ready")),
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -1328,6 +1363,7 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
       </div>
       <div class="control-facts">
         <span>Produccion: {production}</span>
+        <span>IBKR: {ibkr}</span>
         <span>Contexto GPT: {context}</span>
         <span>Snapshot: {snapshot}</span>
         <span>Capacidad: {capacity}</span>
@@ -1342,6 +1378,7 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
         label=html_escape(health.get("label")),
         detail=html_escape(health.get("detail")),
         production="OK" if health.get("remote_ok") else "NO",
+        ibkr="OK" if health.get("ibkr_connected") else "NO",
         context=html_escape(health.get("context_status")),
         snapshot="OK" if health.get("snapshot_available") else "NO",
         capacity="OK" if health.get("capacity_available") else "NO",
@@ -1923,6 +1960,61 @@ def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[st
         "account_alias": data.get("account_alias") or context.get("account_alias") or snapshot.get("account_alias"),
         "account_scope": data.get("account_scope") or context.get("account_scope") or snapshot.get("account_scope"),
         "sensitive_identifiers_excluded": True,
+    }
+
+
+def latest_ibkr_connection_status(active: dict[str, Any]) -> dict[str, Any]:
+    health = load_json_file(IBKR_BRIDGE_HEALTH_PATH)
+    session = load_json_file(CONSOLE_BRIDGE_SESSION_PATH)
+    runs = session.get("runs") if isinstance(session.get("runs"), list) else []
+    latest_run = runs[-1] if runs and isinstance(runs[-1], dict) else {}
+    active_scope = active.get("account_scope") or ""
+    active_alias = active.get("account_alias") or ""
+    health_scope = health.get("account_scope") or ""
+    health_alias = health.get("account_alias") or ""
+    account_matches = True
+    if active_scope and health_scope:
+        account_matches = active_scope == health_scope
+    elif active_alias and health_alias:
+        account_matches = active_alias == health_alias
+    connected = bool(
+        health.get("connected")
+        or str(health.get("status") or "").upper() == "CONNECTED"
+        or latest_run.get("ok")
+    )
+    published = bool(
+        latest_run.get("published")
+        or any(bool(run.get("published")) for run in runs if isinstance(run, dict))
+    )
+    return {
+        "available": bool(connected and account_matches),
+        "connected": connected,
+        "account_matches": account_matches,
+        "status": health.get("status") or latest_run.get("status") or "",
+        "generated_at": health.get("generated_at") or latest_run.get("finished_at") or session.get("finished_at") or "",
+        "published": published,
+    }
+
+
+def console_local_core_status(active: dict[str, Any], snapshot: dict[str, Any], capacity: dict[str, Any]) -> dict[str, Any]:
+    bridge = latest_ibkr_connection_status(active)
+    account_selected = bool(active.get("account_scope") or active.get("account_alias"))
+    missing = []
+    if not account_selected:
+        missing.append("ACCOUNT_NOT_SELECTED")
+    if not bridge.get("available"):
+        missing.append("IBKR_NOT_CONNECTED")
+    if not snapshot.get("available"):
+        missing.append("SNAPSHOT_MISSING")
+    if not capacity.get("available"):
+        missing.append("IBKR_CAPACITY_NOT_REFRESHED")
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "ibkr_connected": bool(bridge.get("available")),
+        "bridge_published": bool(bridge.get("published")),
+        "bridge_status": bridge.get("status") or "",
+        "bridge_generated_at": bridge.get("generated_at") or "",
     }
 
 
