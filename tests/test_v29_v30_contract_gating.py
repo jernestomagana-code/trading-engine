@@ -1037,7 +1037,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["reason"], "NO_ACTIONABLE_V32_ALERTS")
         send_push.assert_not_called()
 
-    def test_v32_operator_pushover_notifies_data_refresh_issue(self):
+    def test_v32_operator_pushover_suppresses_data_refresh_issue(self):
         summary = {
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
             "status": "WAIT_MARKET",
@@ -1067,21 +1067,22 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             main,
             "_v29_load_json_file",
             return_value={},
-        ), patch.object(main, "send_pushover_message", return_value={
-            "pushover_sent": True,
-            "provider": "pushover",
-            "status_code": 200,
-        }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True) as save_state:
+        ), patch.object(main, "send_pushover_message") as send_push, patch.object(
+            main,
+            "_v32_save_pushover_dedupe_state",
+            return_value=True,
+        ) as save_state:
             result = main._v32_operator_pushover_notify_payload(dry_run=False)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertTrue(result["would_notify"])
-        self.assertTrue(result["pushover_sent"])
-        self.assertEqual(result["notify_reason"], "DATA_REFRESH_REQUIRED")
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(result["would_notify"])
+        self.assertFalse(result["pushover_sent"])
+        self.assertEqual(result["notify_reason"], "DATA_REFRESH_SUPPRESSED")
+        self.assertEqual(result["reason"], "DATA_REFRESH_SUPPRESSED")
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
-        send_push.assert_called_once()
-        save_state.assert_called_once()
+        send_push.assert_not_called()
+        save_state.assert_not_called()
 
     def test_v32_operator_pushover_force_sends_decision_support_only(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={

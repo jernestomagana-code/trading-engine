@@ -190,13 +190,13 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
         elif state == "NO_DATA":
             no_data.append(compact)
 
-    should_notify = force or bool(actionable) or bool(no_data)
+    should_notify = force or bool(actionable)
     if actionable:
         reason = "ACTIONABLE_OPERATOR_ALERT"
     elif force:
         reason = "FORCED"
     elif no_data:
-        reason = "DATA_REFRESH_REQUIRED"
+        reason = "DATA_REFRESH_SUPPRESSED"
     elif wait_market:
         reason = "WAIT_MARKET_SUPPRESSED"
     else:

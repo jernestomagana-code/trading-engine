@@ -24342,13 +24342,13 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     counts = summary.get("counts") or {}
     data_issue = _v32_summary_data_issue(summary)
     has_action_or_risk = bool(counts.get("action") or counts.get("risk"))
-    should_notify = bool(force or has_action_or_risk or data_issue)
+    should_notify = bool(force or has_action_or_risk)
     notify_reason = (
         "FORCED"
         if force else
         "ACTION_OR_RISK_ALERT"
         if has_action_or_risk else
-        "DATA_REFRESH_REQUIRED"
+        "DATA_REFRESH_SUPPRESSED"
         if data_issue else
         "NO_ACTIONABLE_V32_ALERTS"
     )
