@@ -10358,6 +10358,8 @@ def build_intraday_futures_construction(payload):
 
 def enrich_stock_ultimus_technical_payload(payload):
     payload = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(payload))
+    if str(payload.get("strategy_context") or "").upper().strip() == "CHRIS_IA_REVERSAL_PRO":
+        return payload
     constructed = build_intraday_futures_construction(payload)
     return constructed if constructed is not None else payload
 
@@ -10545,6 +10547,7 @@ _STRATEGY_SIGNAL_CONTEXTS = {
     "IRON_CONDOR",
     "FUTURES",
     "INTRADAY_INDEX_FUTURES",
+    "CHRIS_IA_REVERSAL_PRO",
     "CANSLIM_FILTER",
     "GENERAL_TECHNICAL",
 }
@@ -10561,6 +10564,9 @@ _STRATEGY_SIGNAL_SAFE_FIELDS = {
     "decision_max_state", "decision_engine_version", "final_state", "main_blocker",
     "blockers", "required_missing_fields", "decision_explanation", "decision",
     "construction_status", "risk_status", "portfolio_status",
+    "score_long", "score_short", "macd_z", "stoch_k", "stoch_d", "mtf_votes",
+    "mtf_long_votes", "mtf_short_votes", "setup_quality", "counter_trend",
+    "rebound",
 }
 
 
