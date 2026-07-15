@@ -48,17 +48,48 @@ class SignalLedgerTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["production_active_alert_count"], 3)
-        self.assertEqual(validation["logical_event_count"], 8)
+        self.assertEqual(validation["logical_event_count"], 9)
         self.assertEqual(validation["required_logical_event_count"], 6)
         self.assertEqual(validation["required_alert_count"], 6)
         self.assertEqual(validation["health_alert_count"], 2)
         self.assertEqual(len(required_records), 6)
-        self.assertEqual(len(all_records), 8)
+        self.assertEqual(len(all_records), 9)
         self.assertEqual(message["strategy_context"], "OPTIONS_UNDERLYING_CONFIRMATION")
         self.assertEqual(message["event_code"], "QQQ_TECH_CONFIRM_LONG_15M")
         self.assertIn("rsi", message)
         self.assertTrue(payload_validation["valid"])
         self.assertIn("rsi", payload_validation["placeholder_fields"])
+
+    def test_options_underlying_ledger_accepts_intraday_vix_risk_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signals.json"
+            coverage_path = ROOT / "config" / "tradingview_options_underlying_alert_coverage_v1.json"
+            payload = tradingview_operational_health.concrete_payload_for_event_code(
+                "VIX_RISK_ELEVATED_15M",
+                coverage_path=coverage_path,
+            )
+            payload.update(
+                {
+                    "ticker": "SPY",
+                    "timeframe": "15",
+                    "price": 755.0,
+                    "source": "TRADINGVIEW",
+                }
+            )
+
+            result = tradingview_signal_ledger.append_signal_event(
+                payload,
+                raw_text=json.dumps(payload),
+                endpoint="/technical_snapshot",
+                path=path,
+            )
+            events = tradingview_signal_ledger.load_signal_events(path)
+
+        self.assertEqual(result["status"], "RECEIVED")
+        self.assertTrue(result["accepted_for_engine"])
+        self.assertEqual(events[0]["strategy_context"], "OPTIONS_UNDERLYING_CONFIRMATION")
+        self.assertEqual(events[0]["event_code"], "VIX_RISK_ELEVATED_15M")
+        self.assertEqual(events[0]["alert_contract_status"], "ACCEPTED")
 
     def test_chris_ia_alert_coverage_and_ledger_accept_structured_reversal_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
