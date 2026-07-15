@@ -27,28 +27,52 @@ JOBS = {
         "label": "com.stockultimus.environment-auth-preflight",
         "program": "scripts/run_environment_auth_check.py",
         "args": [],
-        "calendar": {"Hour": 7, "Minute": 0},
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 0}
+            for day in range(1, 6)
+        ],
         "description": "Checks read/ingest/Pushover auth before the market workflow.",
+    },
+    "daily-snapshot-refresh": {
+        "label": "com.stockultimus.daily-snapshot-refresh",
+        "program": "scripts/daily_open_checklist.py",
+        "args": ["--refresh", "--publish"],
+        "calendar": [
+            {"Weekday": day, "Hour": hour, "Minute": minute}
+            for day in range(1, 6)
+            for hour, minute in [(8, 35), (9, 5), (9, 35)]
+        ],
+        "description": "Builds CANSLIM, refreshes IBKR, publishes V31 snapshot, and validates V32 after market open.",
     },
     "market-open-readiness": {
         "label": "com.stockultimus.market-open-readiness",
         "program": "scripts/run_market_open_readiness.py",
         "args": ["--market-closed-ok"],
-        "calendar": {"Hour": 7, "Minute": 20},
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 20}
+            for day in range(1, 6)
+        ],
         "description": "Builds the market-open go/no-go and checklist.",
     },
     "post-open-monitor": {
         "label": "com.stockultimus.post-open-monitor",
         "program": "scripts/run_post_open_monitor.py",
         "args": ["--watch", "--cycles", "18", "--interval-seconds", "300"],
-        "calendar": {"Hour": 8, "Minute": 35},
+        "calendar": [
+            {"Weekday": day, "Hour": 8, "Minute": 35}
+            for day in range(1, 6)
+        ],
         "description": "Runs a 90-minute post-open monitor window.",
     },
     "environment-alerts": {
         "label": "com.stockultimus.environment-alerts",
         "program": "scripts/run_environment_alerts.py",
         "args": ["--notify-watch", "--pushover"],
-        "calendar": {"Hour": 8, "Minute": 40},
+        "calendar": [
+            {"Weekday": day, "Hour": hour, "Minute": minute}
+            for day in range(1, 6)
+            for hour, minute in [(8, 40), (9, 10), (9, 40)]
+        ],
         "description": "Sends environment Pushover alerts when monitor state needs attention.",
     },
     "local-dashboard": {
@@ -67,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--jobs", default="auth-preflight,market-open-readiness,post-open-monitor,environment-alerts,local-dashboard")
+    parser.add_argument("--jobs", default="auth-preflight,daily-snapshot-refresh,market-open-readiness,post-open-monitor,environment-alerts,local-dashboard")
     return parser
 
 
@@ -91,7 +115,12 @@ def plist_payload(job: dict[str, Any]) -> dict[str, Any]:
         "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
     }
     if "calendar" in job:
-        payload["StartCalendarInterval"] = dict(job["calendar"])
+        calendar = job["calendar"]
+        payload["StartCalendarInterval"] = (
+            [dict(item) for item in calendar]
+            if isinstance(calendar, list)
+            else dict(calendar)
+        )
     if "start_interval" in job:
         payload["StartInterval"] = int(job["start_interval"])
     return payload
