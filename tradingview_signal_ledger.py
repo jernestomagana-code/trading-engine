@@ -39,12 +39,24 @@ OPTIONS_CONTEXT_FIELDS = [
     "market_regime",
     "underlying_signal",
 ]
+CHRIS_IA_CONTEXT_FIELDS = [
+    "breakout_direction",
+    "score",
+    "macd_z",
+    "stoch_k",
+    "stoch_d",
+    "rsi",
+    "mtf_votes",
+    "atr_pct",
+    "trend_state",
+]
 DEFAULT_LEDGER_PATH = Path("runtime/v32_signal_events.json")
 DEFAULT_WEBHOOK_STATUS_PATH = Path("runtime/v32_tradingview_webhook_status.json")
 MAX_EVENTS = 20000
 DEFAULT_COVERAGE_PATH = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH
 DEFAULT_EXTRA_COVERAGE_PATHS = [
     Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
+    Path("config/tradingview_chris_ia_alert_coverage_v1.json"),
 ]
 
 
@@ -160,8 +172,11 @@ def _write_webhook_status(
 
 
 def _required_context_fields(strategy_context: str) -> list[str]:
+    context = safe_upper(strategy_context)
+    if context == tradingview_payload_contract.CHRIS_IA_CONTEXT:
+        return list(CHRIS_IA_CONTEXT_FIELDS)
     fields = list(REQUIRED_CONTEXT_FIELDS)
-    if safe_upper(strategy_context) == tradingview_payload_contract.OPTIONS_UNDERLYING_CONTEXT:
+    if context == tradingview_payload_contract.OPTIONS_UNDERLYING_CONTEXT:
         fields.extend(field for field in OPTIONS_CONTEXT_FIELDS if field not in fields)
     return fields
 
@@ -252,6 +267,19 @@ def normalize_signal_event(
         "underlying_signal": normalized_payload.get("underlying_signal"),
         "volatility_state": normalized_payload.get("volatility_state"),
         "confirmation_bias": normalized_payload.get("confirmation_bias"),
+        "score": normalized_payload.get("score"),
+        "score_long": normalized_payload.get("score_long"),
+        "score_short": normalized_payload.get("score_short"),
+        "macd_z": normalized_payload.get("macd_z"),
+        "stoch_k": normalized_payload.get("stoch_k"),
+        "stoch_d": normalized_payload.get("stoch_d"),
+        "mtf_votes": normalized_payload.get("mtf_votes"),
+        "mtf_long_votes": normalized_payload.get("mtf_long_votes"),
+        "mtf_short_votes": normalized_payload.get("mtf_short_votes"),
+        "atr_pct": normalized_payload.get("atr_pct"),
+        "setup_quality": normalized_payload.get("setup_quality"),
+        "counter_trend": normalized_payload.get("counter_trend"),
+        "rebound": normalized_payload.get("rebound"),
         "payload_hash": _hash_payload(payload),
         "idempotency_key": event_id,
         "raw_payload": payload,

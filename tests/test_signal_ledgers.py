@@ -60,6 +60,40 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(payload_validation["valid"])
         self.assertIn("rsi", payload_validation["placeholder_fields"])
 
+    def test_chris_ia_alert_coverage_and_ledger_accept_structured_reversal_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signals.json"
+            coverage_path = ROOT / "config" / "tradingview_chris_ia_alert_coverage_v1.json"
+            coverage = tradingview_alert_coverage.load_coverage(coverage_path)
+            validation = tradingview_alert_coverage.validate_coverage(coverage)
+            payload = tradingview_operational_health.concrete_payload_for_event_code(
+                "CHRIS_IA_USTECF_LONG_ENTRY_15",
+                coverage_path=coverage_path,
+            )
+            payload_validation = tradingview_payload_contract.validate_payload(payload)
+
+            result = tradingview_signal_ledger.append_signal_event(
+                payload,
+                raw_text=json.dumps(payload),
+                endpoint="/technical_snapshot",
+                path=path,
+            )
+            events = tradingview_signal_ledger.load_signal_events(path)
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["production_active_alert_count"], 2)
+        self.assertEqual(validation["required_logical_event_count"], 4)
+        self.assertTrue(payload_validation["valid"])
+        self.assertEqual(payload_validation["base_required_fields"], ["ticker", "timeframe", "strategy_context", "price"])
+        self.assertEqual(result["status"], "RECEIVED")
+        self.assertTrue(result["accepted_for_engine"])
+        self.assertEqual(events[0]["strategy_context"], "CHRIS_IA_REVERSAL_PRO")
+        self.assertEqual(events[0]["event_code"], "CHRIS_IA_USTECF_LONG_ENTRY_15")
+        self.assertEqual(events[0]["breakout_direction"], "LONG")
+        self.assertEqual(events[0]["score"], 82.0)
+        self.assertEqual(events[0]["macd_z"], -1.25)
+        self.assertEqual(events[0]["missing_context_fields"], [])
+
     def test_tradingview_payload_contract_validates_sample_and_missing_fields(self):
         valid = tradingview_payload_contract.validate_payload(
             tradingview_payload_contract.sample_payload()

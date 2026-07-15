@@ -10722,6 +10722,33 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     trade_store[ticker][timeframe] = parsed
     trade_store[ticker]["technical_snapshot"] = parsed
 
+    is_structured_tradingview_alert = (
+        str(parsed.get("action") or "").upper() == "ALERT_ONLY"
+        and bool(parsed.get("event_code"))
+        and str(original_source or parsed.get("original_source") or "").upper() == "TRADINGVIEW"
+    )
+    if is_structured_tradingview_alert:
+        return {
+            "status": "ok",
+            "engine": "v15.2_technical_snapshot_fast_ack",
+            "message": f"Structured TradingView alert received for {ticker} {timeframe}",
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "strategy_context": parsed.get("strategy_context"),
+            "signal_ledger": signal_ledger,
+            "event": parsed.get("event"),
+            "event_code": parsed.get("event_code"),
+            "decision_max_state": parsed.get("decision_max_state"),
+            "final_state": parsed.get("final_state"),
+            "main_blocker": parsed.get("main_blocker"),
+            "accepted": signal_ledger.get("accepted_for_engine") is True,
+            "fast_ack": True,
+            "storage": {"mode": "ledger_only_fast_ack"},
+            "manual_review_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
     classification = classify_asset(trade_store[ticker])
 
     parsed.update({

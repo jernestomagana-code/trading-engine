@@ -453,6 +453,16 @@ def concrete_payload_for_event_code(
         "ema_fast": 100.25,
         "ema_slow": 99.75,
         "trend_strength": 0.5,
+        "score": 82.0,
+        "score_long": 82.0,
+        "score_short": 18.0,
+        "macd_z": -1.25,
+        "stoch_k": 18.0,
+        "stoch_d": 21.0,
+        "mtf_votes": 2.0,
+        "mtf_long_votes": 2.0,
+        "mtf_short_votes": 1.0,
+        "atr_pct": 0.12,
     }
     payload.update(replacements)
     return payload
@@ -478,6 +488,8 @@ def _coverage_label(coverage_path: Path | str) -> str:
     path = str(coverage_path)
     if "options_underlying" in path:
         return "SPY/QQQ/VIX options-underlying"
+    if "chris_ia" in path:
+        return "USTEC.F/US500F Chris IA"
     return "MNQ/MES futures"
 
 
