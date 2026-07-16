@@ -425,7 +425,7 @@ def build_production_audit(
         "raw_payload_and_hash_present": not persistence_failures,
         "payload_contract_valid": not payload_failures,
         "no_unknown_or_quarantined_tv_payloads": health["quarantine_event_count"] == 0,
-        "visible_health_reviewable": visible_health["state"] == "OK",
+        "visible_health_reviewable": visible_health.get("tv") == "TV_OK",
     }
     open_items = [name for name, passed in checks.items() if not passed]
     return {
