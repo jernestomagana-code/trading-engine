@@ -269,12 +269,13 @@ def build_alert_health(
     coverage_path: Path | str = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH,
     generated_at: str | None = None,
     market_closed_ok: bool = False,
+    events_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     coverage = tradingview_alert_coverage.load_coverage(coverage_path)
     coverage_validation = tradingview_alert_coverage.validate_coverage(coverage)
     generated_dt = _parse_iso(generated_at) or datetime.now(timezone.utc)
     generated = generated_dt.isoformat()
-    events = load_runtime_events(runtime_dir)
+    events = events_override if events_override is not None else load_runtime_events(runtime_dir)
     latest_by_code = latest_events_by_code(events)
     expected = _expected_alerts(coverage, include_optional=_include_optional_alerts_in_health(coverage))
     rows = [
@@ -374,6 +375,7 @@ def build_production_audit(
     coverage_path: Path | str = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH,
     generated_at: str | None = None,
     market_closed_ok: bool = False,
+    events_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     coverage = tradingview_alert_coverage.load_coverage(coverage_path)
     health = build_alert_health(
@@ -381,6 +383,7 @@ def build_production_audit(
         coverage_path=coverage_path,
         generated_at=generated_at,
         market_closed_ok=market_closed_ok,
+        events_override=events_override,
     )
     policy = coverage.get("global_policy") if isinstance(coverage.get("global_policy"), dict) else {}
     minimum_core = int(policy.get("minimum_core_alert_count") or 0)
@@ -533,12 +536,14 @@ def build_e2e_readiness(
     generated_at: str | None = None,
     market_closed_ok: bool = False,
     allow_local_replay_validation: bool = False,
+    events_override: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     health = build_alert_health(
         runtime_dir,
         coverage_path=coverage_path,
         generated_at=generated_at,
         market_closed_ok=market_closed_ok,
+        events_override=events_override,
     )
     local_replay_validation = None
     if allow_local_replay_validation:
