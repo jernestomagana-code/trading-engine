@@ -5015,7 +5015,11 @@ def root():
 def health():
     signals = load_signals(limit=100)
     try:
-        tv_health = shared_tradingview_operational_health.build_alert_health(Path("runtime"), market_closed_ok=True)
+        tv_health = shared_tradingview_operational_health.build_alert_health(
+            Path("runtime"),
+            market_closed_ok=True,
+            events_override=_v32_load_tradingview_signal_events(limit=20000),
+        )
         tradingview_visible_health = tv_health.get("visible_health") or {}
     except Exception as exc:
         tradingview_visible_health = {
@@ -5071,6 +5075,7 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
             "quarantine_reasons": ["NON_DICT_PAYLOAD"],
         }
     )
+    durable_signal_event = _v32_persist_tradingview_signal_event(ledger_result, route="/webhook/tradingview")
     if ledger_result.get("accepted_for_engine") is False:
         event = ledger_result.get("event") if isinstance(ledger_result.get("event"), dict) else {}
         return {
@@ -5081,6 +5086,7 @@ async def tradingview_webhook(request: Request, x_webhook_secret: Optional[str] 
             "timeframe": event.get("timeframe"),
             "event_code": event.get("event_code"),
             "signal_ledger": ledger_result,
+            "durable_signal_event": durable_signal_event,
             "accepted": False,
             "quarantine_reasons": ledger_result.get("quarantine_reasons") or [],
             "manual_review_required": True,
@@ -10671,6 +10677,55 @@ def _strategy_signal_store_snapshot(payload):
     }
 
 
+def _v32_persist_tradingview_signal_event(signal_ledger, *, route):
+    event = signal_ledger.get("event") if isinstance(signal_ledger, dict) else {}
+    if not isinstance(event, dict) or not event:
+        return {"saved": False, "status": "SKIPPED", "reason": "NO_LEDGER_EVENT"}
+    payload = {
+        "audit_type": "tradingview_signal_event",
+        "event_id": event.get("event_id") or event.get("id"),
+        "route": route,
+        "received_at": event.get("received_at"),
+        "ticker": event.get("ticker"),
+        "event_code": event.get("event_code"),
+        "accepted_for_engine": event.get("accepted_for_engine"),
+        "signal_event": event,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    return _durable_supabase_persist("audit", payload)
+
+
+def _v32_load_tradingview_signal_events(limit=1000):
+    try:
+        bounded_limit = max(1, min(int(limit or 1000), shared_tradingview_signal_ledger.MAX_EVENTS))
+    except Exception:
+        bounded_limit = 1000
+    local_events = shared_tradingview_signal_ledger.load_signal_events(limit=bounded_limit)
+    durable_rows = _durable_supabase_fetch("audit", limit=max(500, bounded_limit))
+    durable_events = []
+    if isinstance(durable_rows, list):
+        for row in durable_rows:
+            if not isinstance(row, dict) or row.get("audit_type") != "tradingview_signal_event":
+                continue
+            event = row.get("signal_event")
+            if isinstance(event, dict):
+                durable_events.append(event)
+    merged = {}
+    for event in durable_events + local_events:
+        if not isinstance(event, dict):
+            continue
+        key = event.get("event_id") or event.get("id")
+        if key:
+            merged[str(key)] = event
+    rows = sorted(
+        merged.values(),
+        key=lambda item: str(item.get("received_at") or item.get("saved_at") or ""),
+    )
+    return rows[-bounded_limit:]
+
+
 async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
     verify_webhook_secret(x_webhook_secret)
 
@@ -10711,6 +10766,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         raw_text=raw_text,
         endpoint="/technical_snapshot",
     )
+    durable_signal_event = _v32_persist_tradingview_signal_event(signal_ledger, route="/technical_snapshot")
 
     trade_store.setdefault(ticker, {})
     trade_store[ticker][timeframe] = parsed
@@ -10730,6 +10786,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "timeframe": timeframe,
             "strategy_context": parsed.get("strategy_context"),
             "signal_ledger": signal_ledger,
+            "durable_signal_event": durable_signal_event,
             "event": parsed.get("event"),
             "event_code": parsed.get("event_code"),
             "decision_max_state": parsed.get("decision_max_state"),
@@ -10737,7 +10794,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "main_blocker": parsed.get("main_blocker"),
             "accepted": signal_ledger.get("accepted_for_engine") is True,
             "fast_ack": True,
-            "storage": {"mode": "ledger_only_fast_ack"},
+            "storage": {"mode": "ledger_and_durable_fast_ack"},
             "manual_review_required": True,
             "execution_authorized": False,
             "not_order_instruction": True,
@@ -10777,6 +10834,7 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         "context_storage_version": "strategy_context_store_v1",
         "canonical_context_sync": context_storage.get("canonical"),
         "signal_ledger": signal_ledger,
+        "durable_signal_event": durable_signal_event,
         "storage": storage_result,
         "classification_state": parsed.get("state"),
         "final_decision": parsed.get("final_decision"),
@@ -29045,7 +29103,7 @@ async def v32_parameter_review_report(limit: int = 1000):
 
 @app.get("/v32_signal_events")
 async def v32_signal_events(limit: int = 1000):
-    events = shared_tradingview_signal_ledger.load_signal_events(limit=limit)
+    events = _v32_load_tradingview_signal_events(limit=limit)
     return {
         "engine": "TRADINGVIEW_SIGNAL_LEDGER",
         "ledger_version": shared_tradingview_signal_ledger.LEDGER_VERSION,
@@ -29063,6 +29121,7 @@ async def v32_tradingview_alert_health(market_closed_ok: bool = False):
     return shared_tradingview_operational_health.build_alert_health(
         Path("runtime"),
         market_closed_ok=market_closed_ok,
+        events_override=_v32_load_tradingview_signal_events(limit=20000),
     )
 
 
@@ -29075,6 +29134,7 @@ async def v32_tradingview_e2e_readiness(
         Path("runtime"),
         market_closed_ok=market_closed_ok,
         allow_local_replay_validation=local_replay_validation,
+        events_override=_v32_load_tradingview_signal_events(limit=20000),
     )
 
 
@@ -29083,6 +29143,7 @@ async def v32_tradingview_production_audit(market_closed_ok: bool = False):
     return shared_tradingview_operational_health.build_production_audit(
         Path("runtime"),
         market_closed_ok=market_closed_ok,
+        events_override=_v32_load_tradingview_signal_events(limit=20000),
     )
 
 
