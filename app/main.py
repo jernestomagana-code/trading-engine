@@ -52,6 +52,7 @@ import foundation_health as shared_foundation_health
 import evidence_quality as shared_evidence_quality
 import operational_edge as shared_operational_edge
 import alert_lifecycle as shared_alert_lifecycle
+import coberturas_engine as shared_coberturas_engine
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -95,6 +96,7 @@ READ_AUTH_PUBLIC_PREFIXES = (
 READ_AUTH_SENSITIVE_PREFIXES = (
     "/after_action_review",
     "/audit_log",
+    "/coberturas",
     "/dashboard",
     "/debug",
     "/decision",
@@ -178,6 +180,7 @@ READ_AUTH_BROWSER_LOGIN_PREFIXES = (
     "/v32_project_command_center",
     "/v32_project_command_center_static",
     "/v32_strategy_performance_dashboard",
+    "/coberturas",
 )
 
 
@@ -9201,6 +9204,12 @@ def normalize_technical_snapshot_payload(payload):
     if not strategy_context and strategy:
         payload["strategy_context"] = strategy
 
+    source = str(payload.get("source") or payload.get("original_source") or "").upper().strip()
+    action = str(payload.get("action") or "").upper().strip()
+    if source == "TRADINGVIEW" and action == "ALERT_ONLY":
+        payload["not_order_instruction"] = True
+        payload["execution_authorized"] = False
+
     for key in NUMERIC_FIELDS_V15_1:
         if key in payload:
             payload[key] = normalize_number_or_none(payload.get(key))
@@ -10334,6 +10343,8 @@ def build_intraday_futures_construction(payload):
 
 def enrich_stock_ultimus_technical_payload(payload):
     payload = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(payload))
+    if str(payload.get("strategy_context") or "").upper().strip() == "CHRIS_IA_REVERSAL_PRO":
+        return payload
     constructed = build_intraday_futures_construction(payload)
     return constructed if constructed is not None else payload
 
@@ -10521,6 +10532,8 @@ _STRATEGY_SIGNAL_CONTEXTS = {
     "IRON_CONDOR",
     "FUTURES",
     "INTRADAY_INDEX_FUTURES",
+    "OPTIONS_UNDERLYING_CONFIRMATION",
+    "CHRIS_IA_REVERSAL_PRO",
     "CANSLIM_FILTER",
     "GENERAL_TECHNICAL",
 }
@@ -10537,6 +10550,11 @@ _STRATEGY_SIGNAL_SAFE_FIELDS = {
     "decision_max_state", "decision_engine_version", "final_state", "main_blocker",
     "blockers", "required_missing_fields", "decision_explanation", "decision",
     "construction_status", "risk_status", "portfolio_status",
+    "ema_fast", "ema_slow", "trend_state", "trend_strength", "rsi_state",
+    "rsi_divergence", "underlying_signal", "volatility_state", "confirmation_bias",
+    "score_long", "score_short", "macd_z", "stoch_k", "stoch_d", "mtf_votes",
+    "mtf_long_votes", "mtf_short_votes", "setup_quality", "counter_trend",
+    "rebound",
 }
 
 
@@ -10697,6 +10715,33 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
     trade_store.setdefault(ticker, {})
     trade_store[ticker][timeframe] = parsed
     trade_store[ticker]["technical_snapshot"] = parsed
+
+    is_structured_tradingview_alert = (
+        str(parsed.get("action") or "").upper() == "ALERT_ONLY"
+        and bool(parsed.get("event_code"))
+        and str(original_source or parsed.get("original_source") or "").upper() == "TRADINGVIEW"
+    )
+    if is_structured_tradingview_alert:
+        return {
+            "status": "ok",
+            "engine": "v15.2_technical_snapshot_fast_ack",
+            "message": f"Structured TradingView alert received for {ticker} {timeframe}",
+            "ticker": ticker,
+            "timeframe": timeframe,
+            "strategy_context": parsed.get("strategy_context"),
+            "signal_ledger": signal_ledger,
+            "event": parsed.get("event"),
+            "event_code": parsed.get("event_code"),
+            "decision_max_state": parsed.get("decision_max_state"),
+            "final_state": parsed.get("final_state"),
+            "main_blocker": parsed.get("main_blocker"),
+            "accepted": signal_ledger.get("accepted_for_engine") is True,
+            "fast_ack": True,
+            "storage": {"mode": "ledger_only_fast_ack"},
+            "manual_review_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
 
     classification = classify_asset(trade_store[ticker])
 
@@ -28592,9 +28637,202 @@ async def gpt_v32_operator_daily_cycle(force_preview: bool = False):
     return _v32_operator_daily_cycle_payload(force_preview=force_preview)
 
 
+
+
+def _coberturas_rsp_payload():
+    payload = shared_coberturas_engine.build_recommendation(Path("runtime"))
+    payload["manual_review_required"] = True
+    payload["execution_authorized"] = False
+    payload["not_order_instruction"] = True
+    return payload
+
+
+def _coberturas_form_value(context, key):
+    value = context.get(key)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def _coberturas_badge(value):
+    state = str(value or "UNKNOWN").upper()
+    color = "#64748b"
+    if state.startswith("REVIEW"):
+        color = "#047857"
+    elif state in {"WAIT_DATA", "WAIT_MARKET", "UNKNOWN"}:
+        color = "#ca8a04"
+    elif "MANAGE" in state:
+        color = "#2563eb"
+    elif "BLOCK" in state:
+        color = "#dc2626"
+    return '<span class="pill" style="background:{};color:white;">{}</span>'.format(color, _v29_html_escape(state))
+
+
+def _coberturas_rsp_dashboard_html():
+    payload = _coberturas_rsp_payload()
+    context = payload.get("manual_context") if isinstance(payload.get("manual_context"), dict) else {}
+    candidates = payload.get("top_candidates") or []
+    candidate_rows = []
+    for item in candidates:
+        candidate_rows.append("""
+        <tr>
+          <td>{side}</td><td>{exp}</td><td>{dte}</td><td>{strike}</td><td>{delta}</td>
+          <td>{bid}</td><td>{ask}</td><td>{mid}</td><td>{premium}</td><td>{score}</td><td>{why}</td>
+        </tr>
+        """.format(
+            side=_v29_html_escape(item.get("side")),
+            exp=_v29_html_escape(item.get("expiration")),
+            dte=_v29_html_escape(item.get("dte")),
+            strike=_v29_html_escape(item.get("strike")),
+            delta=_v29_html_escape(item.get("delta")),
+            bid=_v29_html_escape(item.get("bid")),
+            ask=_v29_html_escape(item.get("ask")),
+            mid=_v29_html_escape(item.get("mid")),
+            premium=_v29_html_escape(item.get("premium_100")),
+            score=_v29_html_escape(item.get("coberturas_score")),
+            why=_v29_html_escape("; ".join(item.get("coberturas_reasons") or item.get("coberturas_blockers") or [])),
+        ))
+    blocker_items = "".join("<li>{}</li>".format(_v29_html_escape(item)) for item in payload.get("blockers") or [])
+    if not blocker_items:
+        blocker_items = "<li>Sin bloqueadores criticos detectados en V0.</li>"
+    return """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Coberturas RSP</title>
+      <style>
+        body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#f6f7fb; color:#111827; }}
+        header {{ background:#111827; color:white; padding:24px 30px; }}
+        h1 {{ margin:0 0 6px; font-size:28px; letter-spacing:0; }}
+        h2 {{ margin:0 0 12px; font-size:20px; }}
+        main {{ padding:22px 30px 46px; max-width:1280px; }}
+        .guardrail {{ background:#fff7ed; border-left:5px solid #f97316; border-radius:8px; padding:13px 15px; margin-bottom:18px; line-height:1.45; }}
+        .grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:16px; }}
+        .metric, .card {{ background:white; border:1px solid #e2e8f0; border-radius:8px; padding:16px; }}
+        .metric span {{ display:block; color:#64748b; font-size:12px; font-weight:800; text-transform:uppercase; }}
+        .metric strong {{ display:block; font-size:22px; margin-top:6px; }}
+        .layout {{ display:grid; grid-template-columns:minmax(0,1.1fr) minmax(360px,.9fr); gap:16px; align-items:start; }}
+        label {{ display:block; color:#475569; font-size:12px; font-weight:800; text-transform:uppercase; margin:10px 0 5px; }}
+        input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid #cbd5e1; border-radius:8px; padding:10px; font-size:14px; }}
+        textarea {{ min-height:78px; resize:vertical; }}
+        button {{ margin-top:13px; background:#047857; color:white; border:0; border-radius:8px; padding:10px 13px; font-weight:800; cursor:pointer; }}
+        table {{ width:100%; border-collapse:collapse; min-width:900px; }}
+        th, td {{ padding:10px 11px; border-bottom:1px solid #e2e8f0; text-align:left; font-size:13px; vertical-align:top; }}
+        th {{ background:#f1f5f9; color:#475569; font-size:11px; text-transform:uppercase; }}
+        .tablewrap {{ overflow:auto; }}
+        .pill {{ display:inline-flex; border-radius:999px; padding:5px 9px; font-size:12px; font-weight:800; }}
+        .small {{ color:#64748b; font-size:13px; line-height:1.45; }}
+        .links a {{ color:#2563eb; font-weight:800; margin-right:12px; }}
+        @media (max-width: 940px) {{ .grid, .layout {{ grid-template-columns:1fr; }} main {{ padding:16px; }} }}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>Coberturas RSP</h1>
+        <div>Modulo independiente dentro de Stock Ultimus. Recomendacion real con IBKR, ejecucion manual solamente.</div>
+      </header>
+      <main>
+        <div class="guardrail"><b>Guardrail:</b> no coloca ordenes, no autoriza ejecucion y limita V0 a RSP con maximo 1 contrato. Cualquier orden debe revisarse y enviarse manualmente en IBKR.</div>
+        <section class="grid">
+          <div class="metric"><span>Decision</span><strong>{decision}</strong></div>
+          <div class="metric"><span>Modo</span><strong>{mode}</strong></div>
+          <div class="metric"><span>Spot RSP</span><strong>{spot}</strong></div>
+          <div class="metric"><span>Candidatos</span><strong>{candidate_count}</strong></div>
+        </section>
+        <section class="layout">
+          <div class="card">
+            <h2>Contexto gamma / niveles</h2>
+            <form method="post" action="/coberturas/rsp/manual_context">
+              <label>Modo posicion</label>
+              <select name="position_mode">
+                <option value="AUTO">Auto desde IBKR</option>
+                <option value="NO_SHARES">Sin acciones</option>
+                <option value="WITH_SHARES">Con acciones</option>
+                <option value="SHORT_PUT_OPEN">Put abierta</option>
+                <option value="SHORT_CALL_OPEN">Call abierta</option>
+              </select>
+              <label>Spot RSP</label><input name="spot" value="{spot_value}">
+              <label>Soportes, separados por coma</label><input name="support_levels" value="{supports}">
+              <label>Resistencias, separadas por coma</label><input name="resistance_levels" value="{resistances}">
+              <label>Expected move bajo</label><input name="expected_move_low" value="{expected_low}">
+              <label>Expected move alto</label><input name="expected_move_high" value="{expected_high}">
+              <label>Call wall</label><input name="call_wall" value="{call_wall}">
+              <label>Put wall</label><input name="put_wall" value="{put_wall}">
+              <label>Sesgo gamma</label><input name="gamma_bias" value="{gamma_bias}">
+              <label>Notas gamma / captura</label><textarea name="gamma_notes">{gamma_notes}</textarea>
+              <label>Notas grafico</label><textarea name="chart_notes">{chart_notes}</textarea>
+              <button type="submit">Guardar contexto RSP</button>
+            </form>
+            <p class="small">Puedes capturar la pantalla de gamma y copiar aqui los valores clave: expected move, call wall, put wall y niveles institucionales.</p>
+          </div>
+          <div class="card">
+            <h2>Lectura actual</h2>
+            <p><b>Estado posicion:</b> {position_state}</p>
+            <p><b>Razon:</b> {mode_reason}</p>
+            <p><b>Siguiente paso:</b> {next_action}</p>
+            <h2 style="margin-top:18px;">Bloqueadores</h2>
+            <ul>{blockers}</ul>
+            <div class="links"><a href="/coberturas/rsp">JSON</a><a href="/v32_operator_dashboard">Operador V32</a><a href="/v31_operating_suite">Operating Suite</a></div>
+          </div>
+        </section>
+        <section class="card" style="margin-top:16px;">
+          <h2>Strikes candidatos</h2>
+          <div class="tablewrap"><table>
+            <thead><tr><th>Lado</th><th>Exp</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Prima x100</th><th>Score</th><th>Lectura</th></tr></thead>
+            <tbody>{candidate_rows}</tbody>
+          </table></div>
+        </section>
+      </main>
+    </body>
+    </html>
+    """.format(
+        decision=_coberturas_badge(payload.get("decision")),
+        mode=_v29_html_escape(payload.get("mode")),
+        spot=_v29_html_escape(payload.get("spot")),
+        candidate_count=_v29_html_escape(payload.get("candidate_count")),
+        spot_value=_v29_html_escape(_coberturas_form_value(context, "spot")),
+        supports=_v29_html_escape(_coberturas_form_value(context, "support_levels")),
+        resistances=_v29_html_escape(_coberturas_form_value(context, "resistance_levels")),
+        expected_low=_v29_html_escape(_coberturas_form_value(context, "expected_move_low")),
+        expected_high=_v29_html_escape(_coberturas_form_value(context, "expected_move_high")),
+        call_wall=_v29_html_escape(_coberturas_form_value(context, "call_wall")),
+        put_wall=_v29_html_escape(_coberturas_form_value(context, "put_wall")),
+        gamma_bias=_v29_html_escape(_coberturas_form_value(context, "gamma_bias")),
+        gamma_notes=_v29_html_escape(_coberturas_form_value(context, "gamma_notes")),
+        chart_notes=_v29_html_escape(_coberturas_form_value(context, "chart_notes")),
+        position_state=_coberturas_badge((payload.get("position") or {}).get("state")),
+        mode_reason=_v29_html_escape(payload.get("mode_reason")),
+        next_action=_v29_html_escape(payload.get("next_action")),
+        blockers=blocker_items,
+        candidate_rows="".join(candidate_rows) or '<tr><td colspan="11">Sin candidatos RSP todavia. Refresca IBKR con RSP y carga contexto gamma.</td></tr>',
+    )
+
 @app.get("/v32_operational_edge")
 async def v32_operational_edge(top: int = 5, recent_days: int = 14):
     return _v32_operational_edge_payload(top=top, recent_days=recent_days)
+
+
+
+
+@app.get("/coberturas/rsp")
+async def coberturas_rsp():
+    return _coberturas_rsp_payload()
+
+
+@app.get("/coberturas", response_class=_V29HTMLResponse)
+async def coberturas_dashboard():
+    return _V29HTMLResponse(_coberturas_rsp_dashboard_html())
+
+
+@app.post("/coberturas/rsp/manual_context")
+async def coberturas_rsp_manual_context(request: Request):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    form = urllib.parse.parse_qs(raw)
+    payload = {key: (values[0] if values else "") for key, values in form.items()}
+    shared_coberturas_engine.write_manual_context(payload)
+    return RedirectResponse(url="/coberturas", status_code=303)
 
 
 @app.get("/v32_operational_edge_dashboard", response_class=_V29HTMLResponse)

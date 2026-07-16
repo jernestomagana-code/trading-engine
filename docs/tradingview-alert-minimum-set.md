@@ -20,6 +20,19 @@ operator reminders. It is not the primary timing mechanism for intraday futures.
 Session snapshots, validation payloads, and non-actionable events are persisted
 or skipped as appropriate but do not create push noise.
 
+Operational interpretation:
+
+- A `SESSION_SNAPSHOT` confirms that TradingView, webhook, and ledger are alive.
+  It is not an opportunity and should not enter manual review.
+- ORB/VWAP entry triggers and risk invalidations are the only intraday futures
+  events that should create immediate operator attention.
+- If an entry trigger is technically valid but account risk, portfolio, NLV, or
+  premarket context is incomplete, the backend should still send the timing
+  alert as `MANUAL_REVIEW` with the blocker shown. That alert is evidence to
+  inspect manually, not permission to trade.
+- `ENTRY_READY` is reserved for a clean technical trigger plus clear risk,
+  portfolio, premarket context, and explicit no-order guardrails.
+
 ## Production Active Alerts
 
 Keep only these two futures alerts active in TradingView:

@@ -48,17 +48,82 @@ class SignalLedgerTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["production_active_alert_count"], 3)
-        self.assertEqual(validation["logical_event_count"], 8)
+        self.assertEqual(validation["logical_event_count"], 9)
         self.assertEqual(validation["required_logical_event_count"], 6)
         self.assertEqual(validation["required_alert_count"], 6)
         self.assertEqual(validation["health_alert_count"], 2)
         self.assertEqual(len(required_records), 6)
-        self.assertEqual(len(all_records), 8)
+        self.assertEqual(len(all_records), 9)
         self.assertEqual(message["strategy_context"], "OPTIONS_UNDERLYING_CONFIRMATION")
         self.assertEqual(message["event_code"], "QQQ_TECH_CONFIRM_LONG_15M")
         self.assertIn("rsi", message)
         self.assertTrue(payload_validation["valid"])
         self.assertIn("rsi", payload_validation["placeholder_fields"])
+
+    def test_options_underlying_ledger_accepts_intraday_vix_risk_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signals.json"
+            coverage_path = ROOT / "config" / "tradingview_options_underlying_alert_coverage_v1.json"
+            payload = tradingview_operational_health.concrete_payload_for_event_code(
+                "VIX_RISK_ELEVATED_15M",
+                coverage_path=coverage_path,
+            )
+            payload.update(
+                {
+                    "ticker": "SPY",
+                    "timeframe": "15",
+                    "price": 755.0,
+                    "source": "TRADINGVIEW",
+                }
+            )
+
+            result = tradingview_signal_ledger.append_signal_event(
+                payload,
+                raw_text=json.dumps(payload),
+                endpoint="/technical_snapshot",
+                path=path,
+            )
+            events = tradingview_signal_ledger.load_signal_events(path)
+
+        self.assertEqual(result["status"], "RECEIVED")
+        self.assertTrue(result["accepted_for_engine"])
+        self.assertEqual(events[0]["strategy_context"], "OPTIONS_UNDERLYING_CONFIRMATION")
+        self.assertEqual(events[0]["event_code"], "VIX_RISK_ELEVATED_15M")
+        self.assertEqual(events[0]["alert_contract_status"], "ACCEPTED")
+
+    def test_chris_ia_alert_coverage_and_ledger_accept_structured_reversal_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "signals.json"
+            coverage_path = ROOT / "config" / "tradingview_chris_ia_alert_coverage_v1.json"
+            coverage = tradingview_alert_coverage.load_coverage(coverage_path)
+            validation = tradingview_alert_coverage.validate_coverage(coverage)
+            payload = tradingview_operational_health.concrete_payload_for_event_code(
+                "CHRIS_IA_USTECF_LONG_ENTRY_15",
+                coverage_path=coverage_path,
+            )
+            payload_validation = tradingview_payload_contract.validate_payload(payload)
+
+            result = tradingview_signal_ledger.append_signal_event(
+                payload,
+                raw_text=json.dumps(payload),
+                endpoint="/technical_snapshot",
+                path=path,
+            )
+            events = tradingview_signal_ledger.load_signal_events(path)
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["production_active_alert_count"], 2)
+        self.assertEqual(validation["required_logical_event_count"], 4)
+        self.assertTrue(payload_validation["valid"])
+        self.assertEqual(payload_validation["base_required_fields"], ["ticker", "timeframe", "strategy_context", "price"])
+        self.assertEqual(result["status"], "RECEIVED")
+        self.assertTrue(result["accepted_for_engine"])
+        self.assertEqual(events[0]["strategy_context"], "CHRIS_IA_REVERSAL_PRO")
+        self.assertEqual(events[0]["event_code"], "CHRIS_IA_USTECF_LONG_ENTRY_15")
+        self.assertEqual(events[0]["breakout_direction"], "LONG")
+        self.assertEqual(events[0]["score"], 82.0)
+        self.assertEqual(events[0]["macd_z"], -1.25)
+        self.assertEqual(events[0]["missing_context_fields"], [])
 
     def test_tradingview_payload_contract_validates_sample_and_missing_fields(self):
         valid = tradingview_payload_contract.validate_payload(
@@ -183,12 +248,28 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(health["required_alert_count"], 10)
         self.assertEqual(health["health_alert_count"], 0)
         self.assertEqual(health["received_health_event_count"], 0)
+        self.assertFalse(health["required_real_events_required"])
         self.assertEqual(health["missing_health_event_codes"], [])
-        self.assertFalse(e2e["real_e2e_confirmed"])
+        self.assertEqual(health["missing_required_event_codes"], [])
+        self.assertIn("MES_VWAP_REJECT_SHORT_5M", health["missing_opportunistic_event_codes"])
+        self.assertTrue(e2e["real_e2e_confirmed"])
         self.assertEqual(e2e["local_replay_validation"]["candidate_source"], "TRADINGVIEW_ALERT")
         self.assertTrue(audit["checks"]["no_nq_es_expansion"])
         self.assertTrue(audit["checks"]["only_mnq_mes_in_scope"])
-        self.assertIn("required_real_events_observed", audit["open_items"])
+        self.assertNotIn("required_real_events_observed", audit["open_items"])
+
+    def test_tradingview_operational_health_requires_some_real_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            health = tradingview_operational_health.build_alert_health(
+                runtime,
+                generated_at="2026-07-05T14:00:00+00:00",
+                market_closed_ok=True,
+            )
+
+        self.assertEqual(health["status"], "DEGRADED")
+        self.assertIn("NO_REAL_TRADINGVIEW_EVENT", health["blockers"])
+        self.assertEqual(health["visible_health"]["tv"], "TV_MISSING")
 
     def test_options_underlying_e2e_local_replay_uses_options_coverage_event(self):
         with tempfile.TemporaryDirectory() as tmp:

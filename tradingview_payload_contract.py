@@ -10,6 +10,7 @@ from typing import Any
 
 PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2"
 OPTIONS_UNDERLYING_CONTEXT = "OPTIONS_UNDERLYING_CONFIRMATION"
+CHRIS_IA_CONTEXT = "CHRIS_IA_REVERSAL_PRO"
 REQUIRED_FIELDS = [
     "ticker",
     "timeframe",
@@ -37,6 +38,29 @@ CONTEXT_REQUIRED_FIELDS = {
         "market_regime",
         "underlying_signal",
     ],
+    CHRIS_IA_CONTEXT: [
+        "event",
+        "event_code",
+        "action",
+        "breakout_direction",
+        "score",
+        "macd_z",
+        "stoch_k",
+        "stoch_d",
+        "rsi",
+        "mtf_votes",
+        "atr_pct",
+        "trend_state",
+        "source",
+    ],
+}
+CONTEXT_BASE_REQUIRED_FIELDS = {
+    CHRIS_IA_CONTEXT: [
+        "ticker",
+        "timeframe",
+        "strategy_context",
+        "price",
+    ],
 }
 OPTIONAL_FIELDS = [
     "event",
@@ -57,6 +81,19 @@ OPTIONAL_FIELDS = [
     "underlying_signal",
     "volatility_state",
     "confirmation_bias",
+    "score",
+    "score_long",
+    "score_short",
+    "macd_z",
+    "stoch_k",
+    "stoch_d",
+    "mtf_votes",
+    "mtf_long_votes",
+    "mtf_short_votes",
+    "atr_pct",
+    "setup_quality",
+    "counter_trend",
+    "rebound",
     "source",
 ]
 NUMERIC_FIELDS = [
@@ -75,6 +112,16 @@ NUMERIC_FIELDS = [
     "ema_fast",
     "ema_slow",
     "trend_strength",
+    "score",
+    "score_long",
+    "score_short",
+    "macd_z",
+    "stoch_k",
+    "stoch_d",
+    "mtf_votes",
+    "mtf_long_votes",
+    "mtf_short_votes",
+    "atr_pct",
 ]
 ALLOWED_DIRECTIONS = {"LONG", "SHORT", "NONE", "RANGE", "BULLISH", "BEARISH", "NEUTRAL"}
 ALLOWED_SESSION_STATES = {
@@ -152,8 +199,9 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_payload(payload: dict[str, Any], *, allow_placeholders: bool = True) -> dict[str, Any]:
     normalized = normalize_payload(payload)
     strategy_context = safe_upper(normalized.get("strategy_context"))
+    base_required_fields = CONTEXT_BASE_REQUIRED_FIELDS.get(strategy_context, REQUIRED_FIELDS)
     context_required_fields = CONTEXT_REQUIRED_FIELDS.get(strategy_context, [])
-    required_fields = REQUIRED_FIELDS + [field for field in context_required_fields if field not in REQUIRED_FIELDS]
+    required_fields = list(base_required_fields) + [field for field in context_required_fields if field not in base_required_fields]
     missing_fields = [field for field in required_fields if not has_value(normalized.get(field))]
     invalid_numeric_fields = [
         field
@@ -190,7 +238,7 @@ def validate_payload(payload: dict[str, Any], *, allow_placeholders: bool = True
         "valid": valid,
         "context_completeness_pct": completeness,
         "required_fields": required_fields,
-        "base_required_fields": REQUIRED_FIELDS,
+        "base_required_fields": base_required_fields,
         "context_required_fields": context_required_fields,
         "optional_fields": OPTIONAL_FIELDS,
         "missing_fields": missing_fields,
@@ -280,6 +328,32 @@ def tradingview_placeholder_template(strategy_context: str | None = None) -> dic
                 "ema_fast": "{{plot(\"EMA_FAST\")}}",
                 "ema_slow": "{{plot(\"EMA_SLOW\")}}",
                 "trend_strength": "{{plot(\"TREND_STRENGTH\")}}",
+            }
+        )
+    if safe_upper(strategy_context) == CHRIS_IA_CONTEXT:
+        payload.update(
+            {
+                "strategy_context": CHRIS_IA_CONTEXT,
+                "event": "ENTRY",
+                "event_code": "CHRIS_IA_USTECF_LONG_ENTRY_15",
+                "action": "ALERT_ONLY",
+                "breakout_direction": "LONG",
+                "score": "{{plot(\"Score LONG\")}}",
+                "score_long": "{{plot(\"Score LONG\")}}",
+                "score_short": "{{plot(\"Score SHORT\")}}",
+                "macd_z": "{{plot(\"MACD Z escalado\")}}",
+                "stoch_k": "{{plot(\"Stoch K\")}}",
+                "stoch_d": "{{plot(\"Stoch D\")}}",
+                "rsi": "{{plot(\"RSI\")}}",
+                "mtf_votes": "2",
+                "mtf_long_votes": "2",
+                "mtf_short_votes": "1",
+                "atr_pct": "0.12",
+                "trend_state": "BULLISH",
+                "setup_quality": "CONFIRMED_ENTRY",
+                "counter_trend": False,
+                "rebound": False,
+                "source": "TRADINGVIEW",
             }
         )
     return payload

@@ -131,6 +131,19 @@ def payload_for_alert(alert: dict[str, Any]) -> dict[str, Any]:
         "underlying_signal",
         "volatility_state",
         "confirmation_bias",
+        "score",
+        "score_long",
+        "score_short",
+        "macd_z",
+        "stoch_k",
+        "stoch_d",
+        "mtf_votes",
+        "mtf_long_votes",
+        "mtf_short_votes",
+        "atr_pct",
+        "setup_quality",
+        "counter_trend",
+        "rebound",
     ]:
         if alert.get(key) is not None:
             payload[key] = alert.get(key)
