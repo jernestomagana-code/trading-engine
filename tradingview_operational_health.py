@@ -149,10 +149,13 @@ def _visible_status_from_health(health: dict[str, Any], *, ibkr_primary_gap: str
     quarantine_count = int(health.get("quarantine_event_count") or 0)
     stale_or_invalid = sum(
         int((health.get("status_counts") or {}).get(status) or 0)
-        for status in ["STALE", "INVALID_PAYLOAD", "NEVER_RECEIVED"]
+        for status in ["STALE", "INVALID_PAYLOAD"]
     )
     tv_state = "TV_OK"
     tv_blockers = []
+    if "NO_REAL_TRADINGVIEW_EVENT" in (health.get("blockers") or []):
+        tv_state = "TV_MISSING"
+        tv_blockers.append("NO_REAL_TRADINGVIEW_EVENT")
     if quarantine_count:
         tv_state = "TV_UNKNOWN_PAYLOAD"
         tv_blockers.append("UNKNOWN_OR_QUARANTINED_TRADINGVIEW_PAYLOADS")
@@ -195,6 +198,14 @@ def _expected_alerts(coverage: dict[str, Any], *, include_optional: bool = True)
 def _include_optional_alerts_in_health(coverage: dict[str, Any]) -> bool:
     policy = coverage.get("global_policy") if isinstance(coverage.get("global_policy"), dict) else {}
     value = policy.get("include_optional_alerts_in_health")
+    if value is None:
+        return True
+    return value is True
+
+
+def _require_required_real_events_in_health(coverage: dict[str, Any]) -> bool:
+    policy = coverage.get("global_policy") if isinstance(coverage.get("global_policy"), dict) else {}
+    value = policy.get("require_required_real_events_in_health")
     if value is None:
         return True
     return value is True
@@ -277,6 +288,7 @@ def build_alert_health(
     ]
     required_rows = [row for row in rows if row["required"]]
     health_rows = [row for row in rows if row["alert_role"] == "HEARTBEAT_SNAPSHOT"]
+    require_required_real_events = _require_required_real_events_in_health(coverage)
     status_counts: dict[str, int] = {}
     for row in rows:
         status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
@@ -293,13 +305,19 @@ def build_alert_health(
         }
     )
     unknown_or_quarantined = _unknown_or_quarantined_events(events, coverage)
-    blockers = sorted({row["blocker"] for row in rows if row.get("blocker")})
+    blocker_rows = rows if require_required_real_events else health_rows
+    blockers = sorted({row["blocker"] for row in blocker_rows if row.get("blocker")})
+    if not events:
+        blockers.append("NO_REAL_TRADINGVIEW_EVENT")
     if unknown_or_quarantined:
         blockers.append("UNKNOWN_OR_QUARANTINED_TRADINGVIEW_PAYLOADS")
     ok = coverage_validation["valid"] and not [
         row for row in rows
-        if row["required"] and row["status"] not in {"OK", "WAIT_MARKET"}
-    ] and not unknown_or_quarantined
+        if require_required_real_events and row["required"] and row["status"] not in {"OK", "WAIT_MARKET"}
+    ] and not [
+        row for row in health_rows
+        if row["status"] not in {"OK", "WAIT_MARKET"}
+    ] and bool(events) and not unknown_or_quarantined
     report = {
         "health_version": HEALTH_VERSION,
         "generated_at": generated,
@@ -324,8 +342,16 @@ def build_alert_health(
             1 for row in unknown_or_quarantined if "UNKNOWN_EVENT_CODE" in row.get("quarantine_reasons", [])
         ),
         "unknown_or_quarantined_events": unknown_or_quarantined[-25:],
+        "required_real_events_required": require_required_real_events,
         "missing_required_event_codes": [
-            row["event_code"] for row in required_rows if row["status"] == "NEVER_RECEIVED"
+            row["event_code"]
+            for row in required_rows
+            if require_required_real_events and row["status"] == "NEVER_RECEIVED"
+        ],
+        "missing_opportunistic_event_codes": [
+            row["event_code"]
+            for row in required_rows
+            if not require_required_real_events and row["status"] == "NEVER_RECEIVED"
         ],
         "missing_health_event_codes": [
             row["event_code"] for row in health_rows if row["status"] == "NEVER_RECEIVED"
@@ -367,6 +393,7 @@ def build_production_audit(
     ibkr_primary_gap = str((ibkr_payload if isinstance(ibkr_payload, dict) else {}).get("primary_gap") or "NO_IBKR_OPTION_DIAGNOSTICS")
     visible_health = _visible_status_from_health(health, ibkr_primary_gap=ibkr_primary_gap)
     rows = health["alerts"]
+    require_required_real_events = health.get("required_real_events_required") is True
     source_failures = [
         row["event_code"] for row in rows
         if row["latest_event_id"]
@@ -388,7 +415,11 @@ def build_production_audit(
         "only_mnq_mes_in_scope": approved_symbols == ["MNQ1!", "MES1!"] if futures_equivalent_policy else True,
         "no_nq_es_expansion": ("NQ1!" in disallowed and "ES1!" in disallowed) if futures_equivalent_policy else True,
         "ledger_present": health["ledger_event_count"] > 0,
-        "required_real_events_observed": health["received_required_event_count"] == health["required_alert_count"],
+        "required_real_events_observed": (
+            health["received_required_event_count"] == health["required_alert_count"]
+            if require_required_real_events
+            else True
+        ),
         "session_snapshot_real_events_observed": health["received_health_event_count"] == health["health_alert_count"],
         "source_attribution_present": not source_failures,
         "raw_payload_and_hash_present": not persistence_failures,
@@ -412,10 +443,12 @@ def build_production_audit(
         "disallowed_equivalent_futures_expansion": disallowed,
         "health_summary": {
             "status": health["status"],
+            "required_real_events_required": require_required_real_events,
             "ledger_event_count": health["ledger_event_count"],
             "received_required_event_count": health["received_required_event_count"],
             "received_health_event_count": health["received_health_event_count"],
             "missing_required_event_codes": health["missing_required_event_codes"],
+            "missing_opportunistic_event_codes": health.get("missing_opportunistic_event_codes") or [],
             "missing_health_event_codes": health["missing_health_event_codes"],
             "blockers": health["blockers"],
         },
@@ -526,9 +559,15 @@ def build_e2e_readiness(
             "raw_payload_present": isinstance(event.get("raw_payload"), dict),
             "payload_hash_present": bool(event.get("payload_hash")),
         }
+    require_required_real_events = health.get("required_real_events_required") is True
+    required_real_events_ready = (
+        health["received_required_event_count"] == health["required_alert_count"]
+        if require_required_real_events
+        else health["ledger_event_count"] > 0 and health["quarantine_event_count"] == 0
+    )
     ready = (
         health["coverage_valid"]
-        and health["received_required_event_count"] == health["required_alert_count"]
+        and required_real_events_ready
         and health["received_health_event_count"] == health["health_alert_count"]
     )
     return {
@@ -537,11 +576,13 @@ def build_e2e_readiness(
         "status": "REAL_E2E_CONFIRMED" if ready else "WAITING_FOR_REAL_TRADINGVIEW_EVENTS",
         "real_e2e_confirmed": ready,
         "coverage_valid": health["coverage_valid"],
+        "required_real_events_required": require_required_real_events,
         "required_real_events_observed": health["received_required_event_count"],
         "required_real_events_expected": health["required_alert_count"],
         "session_snapshot_real_events_observed": health["received_health_event_count"],
         "session_snapshot_real_events_expected": health["health_alert_count"],
         "missing_required_event_codes": health["missing_required_event_codes"],
+        "missing_opportunistic_event_codes": health.get("missing_opportunistic_event_codes") or [],
         "missing_health_event_codes": health["missing_health_event_codes"],
         "local_replay_validation": local_replay_validation,
         "synthetic_runtime_write_performed": False,

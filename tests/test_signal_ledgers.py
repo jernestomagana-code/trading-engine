@@ -255,12 +255,28 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(health["required_alert_count"], 10)
         self.assertEqual(health["health_alert_count"], 0)
         self.assertEqual(health["received_health_event_count"], 0)
+        self.assertFalse(health["required_real_events_required"])
         self.assertEqual(health["missing_health_event_codes"], [])
-        self.assertFalse(e2e["real_e2e_confirmed"])
+        self.assertEqual(health["missing_required_event_codes"], [])
+        self.assertIn("MES_VWAP_REJECT_SHORT_5M", health["missing_opportunistic_event_codes"])
+        self.assertTrue(e2e["real_e2e_confirmed"])
         self.assertEqual(e2e["local_replay_validation"]["candidate_source"], "TRADINGVIEW_ALERT")
         self.assertTrue(audit["checks"]["no_nq_es_expansion"])
         self.assertTrue(audit["checks"]["only_mnq_mes_in_scope"])
-        self.assertIn("required_real_events_observed", audit["open_items"])
+        self.assertNotIn("required_real_events_observed", audit["open_items"])
+
+    def test_tradingview_operational_health_requires_some_real_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            health = tradingview_operational_health.build_alert_health(
+                runtime,
+                generated_at="2026-07-05T14:00:00+00:00",
+                market_closed_ok=True,
+            )
+
+        self.assertEqual(health["status"], "DEGRADED")
+        self.assertIn("NO_REAL_TRADINGVIEW_EVENT", health["blockers"])
+        self.assertEqual(health["visible_health"]["tv"], "TV_MISSING")
 
     def test_options_underlying_e2e_local_replay_uses_options_coverage_event(self):
         with tempfile.TemporaryDirectory() as tmp:

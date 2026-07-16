@@ -27,6 +27,7 @@
     "execution_authorized": false,
     "not_order_instruction": true,
     "include_optional_alerts_in_health": false,
+    "require_required_real_events_in_health": false,
     "minimum_core_alert_count": 10,
     "minimum_health_alert_count": 0,
     "core_freshness_minutes": 2,

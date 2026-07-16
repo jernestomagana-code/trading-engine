@@ -1403,6 +1403,23 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(result["decision"].get("execution_authorized", False))
         self.assertTrue(result["not_order_instruction"])
 
+    def test_tradingview_alert_only_defaults_to_no_order_guardrail(self):
+        payload = {
+            "source": "TRADINGVIEW",
+            "action": "ALERT_ONLY",
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "price": 100.0,
+        }
+
+        result = main.normalize_technical_snapshot_payload(payload)
+
+        self.assertTrue(result["not_order_instruction"])
+        self.assertFalse(result["execution_authorized"])
+
     def test_v32_intraday_futures_immediate_notify_sends_and_dedupes_entry_event(self):
         payload = {
             "strategy_context": "INTRADAY_INDEX_FUTURES",
@@ -1446,6 +1463,41 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(deduped["status"], "deduped")
         self.assertFalse(deduped["pushover_sent"])
         send_push.assert_not_called()
+
+    def test_v32_intraday_futures_immediate_notify_sends_manual_review_entry_trigger(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "VWAP_RECLAIM",
+            "event_code": "MNQ_VWAP_RECLAIM_LONG_5M",
+            "direction": "LONG",
+            "price": 100.0,
+            "received_at": "2026-07-13T14:35:00+00:00",
+            "final_state": "MANUAL_REVIEW",
+            "main_blocker": "RISK_ENGINE_NEEDS_REVIEW",
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "_v29_load_json_file", return_value={}), patch.object(
+            main,
+            "_v32_save_intraday_futures_immediate_state",
+            return_value=True,
+        ), patch.object(main, "send_pushover_message", return_value={
+            "pushover_sent": True,
+            "provider": "pushover",
+            "status_code": 200,
+        }) as send_push:
+            result = main._v32_intraday_futures_immediate_notify_payload(payload)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["trigger_kind"], "ENTRY_TRIGGER")
+        self.assertTrue(result["would_notify"])
+        self.assertTrue(result["pushover_sent"])
+        self.assertIn("MANUAL_REVIEW", result["message"])
+        self.assertIn("RISK_ENGINE_NEEDS_REVIEW", result["message"])
+        self.assertFalse(result["execution_authorized"])
+        self.assertTrue(result["not_order_instruction"])
+        send_push.assert_called_once()
 
     def test_v32_intraday_futures_immediate_notify_suppresses_snapshots_and_validation(self):
         snapshot = {
