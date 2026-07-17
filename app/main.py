@@ -10712,10 +10712,13 @@ def _v32_persist_tradingview_signal_event(signal_ledger, *, route):
     event = signal_ledger.get("event") if isinstance(signal_ledger, dict) else {}
     if not isinstance(event, dict) or not event:
         return {"saved": False, "status": "SKIPPED", "reason": "NO_LEDGER_EVENT"}
+    event_type = "tradingview_signal_event"
     payload = {
-        "audit_type": "tradingview_signal_event",
+        "audit_type": event_type,
+        "event_type": event_type,
         "event_id": event.get("event_id") or event.get("id"),
         "route": route,
+        "recorded_at": event.get("received_at") or event.get("saved_at"),
         "received_at": event.get("received_at"),
         "ticker": event.get("ticker"),
         "event_code": event.get("event_code"),
