@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path("/private/tmp")
 PYTHON = sys.executable
+RUNNER_DIR = Path.home() / "Library" / "Application Support" / "Stock Ultimus" / "Launchd"
+RUNNER_PATH = RUNNER_DIR / "stock_ultimus_launchd_console_runner.py"
+RUNNER_SOURCE = ROOT / "scripts" / "stock_ultimus_launchd_console_runner.py"
 
 
 JOBS = {
@@ -27,29 +30,72 @@ JOBS = {
         "label": "com.stockultimus.environment-auth-preflight",
         "program": "scripts/run_environment_auth_check.py",
         "args": [],
-        "calendar": {"Hour": 7, "Minute": 0},
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 0}
+            for day in range(1, 6)
+        ],
         "description": "Checks read/ingest/Pushover auth before the market workflow.",
+    },
+    "daily-snapshot-refresh": {
+        "label": "com.stockultimus.daily-snapshot-refresh",
+        "program": "scripts/daily_open_checklist.py",
+        "args": ["--refresh", "--publish"],
+        "calendar": [
+            {"Weekday": day, "Hour": hour, "Minute": minute}
+            for day in range(1, 6)
+            for hour, minute in [(8, 35), (9, 5), (9, 35)]
+        ],
+        "description": "Builds CANSLIM, refreshes IBKR, publishes V31 snapshot, and validates V32 after market open.",
     },
     "market-open-readiness": {
         "label": "com.stockultimus.market-open-readiness",
         "program": "scripts/run_market_open_readiness.py",
         "args": ["--market-closed-ok"],
-        "calendar": {"Hour": 7, "Minute": 20},
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 20}
+            for day in range(1, 6)
+        ],
         "description": "Builds the market-open go/no-go and checklist.",
     },
     "post-open-monitor": {
         "label": "com.stockultimus.post-open-monitor",
         "program": "scripts/run_post_open_monitor.py",
         "args": ["--watch", "--cycles", "18", "--interval-seconds", "300"],
-        "calendar": {"Hour": 8, "Minute": 35},
+        "calendar": [
+            {"Weekday": day, "Hour": 8, "Minute": 35}
+            for day in range(1, 6)
+        ],
         "description": "Runs a 90-minute post-open monitor window.",
     },
     "environment-alerts": {
         "label": "com.stockultimus.environment-alerts",
         "program": "scripts/run_environment_alerts.py",
         "args": ["--notify-watch", "--pushover"],
-        "calendar": {"Hour": 8, "Minute": 40},
+        "calendar": [
+            {"Weekday": day, "Hour": hour, "Minute": minute}
+            for day in range(1, 6)
+            for hour, minute in [(8, 40), (9, 10), (9, 40)]
+        ],
         "description": "Sends environment Pushover alerts when monitor state needs attention.",
+    },
+    "security-audit": {
+        "label": "com.stockultimus.security-audit",
+        "program": "scripts/run_security_audit.py",
+        "args": ["--pushover"],
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 10}
+            for day in range(1, 6)
+        ],
+        "description": "Runs local information-security checks and notifies only on ACTION findings.",
+    },
+    "dependency-audit": {
+        "label": "com.stockultimus.dependency-audit",
+        "program": "scripts/run_dependency_audit.py",
+        "args": ["--pushover"],
+        "calendar": [
+            {"Weekday": 5, "Hour": 7, "Minute": 30}
+        ],
+        "description": "Runs weekly dependency vulnerability audit and notifies only on vulnerable packages.",
     },
     "local-dashboard": {
         "label": "com.stockultimus.local-environment-dashboard",
@@ -67,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--jobs", default="auth-preflight,market-open-readiness,post-open-monitor,environment-alerts,local-dashboard")
+    parser.add_argument("--jobs", default="auth-preflight,daily-snapshot-refresh,market-open-readiness,post-open-monitor,environment-alerts,security-audit,dependency-audit,local-dashboard")
     return parser
 
 
@@ -83,18 +129,41 @@ def plist_path(job: dict[str, Any]) -> Path:
 def plist_payload(job: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "Label": job["label"],
-        "ProgramArguments": [PYTHON, str(ROOT / job["program"]), *job.get("args", [])],
-        "WorkingDirectory": str(ROOT),
+        "ProgramArguments": [PYTHON, str(RUNNER_PATH), job["label"].replace("com.stockultimus.", "")],
+        "WorkingDirectory": str(RUNNER_DIR),
         "StandardOutPath": str(LOG_DIR / f"{job['label']}.out"),
         "StandardErrorPath": str(LOG_DIR / f"{job['label']}.err"),
         "RunAtLoad": False,
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "STOCK_ULTIMUS_CONSOLE_URL": "http://127.0.0.1:8765",
+        },
     }
     if "calendar" in job:
-        payload["StartCalendarInterval"] = dict(job["calendar"])
+        calendar = job["calendar"]
+        payload["StartCalendarInterval"] = (
+            [dict(item) for item in calendar]
+            if isinstance(calendar, list)
+            else dict(calendar)
+        )
     if "start_interval" in job:
         payload["StartInterval"] = int(job["start_interval"])
     return payload
+
+
+def install_runner(dry_run: bool) -> dict[str, Any]:
+    result = {
+        "runner_path": str(RUNNER_PATH),
+        "source": str(RUNNER_SOURCE),
+        "installed": False,
+    }
+    if dry_run:
+        return result
+    RUNNER_DIR.mkdir(parents=True, exist_ok=True)
+    RUNNER_PATH.write_text(RUNNER_SOURCE.read_text())
+    RUNNER_PATH.chmod(0o755)
+    result["installed"] = True
+    return result
 
 
 def user_domain() -> str:
@@ -113,6 +182,7 @@ def launchctl(command: list[str]) -> dict[str, Any]:
 
 
 def install(jobs: dict[str, dict[str, Any]], dry_run: bool) -> dict[str, Any]:
+    runner = install_runner(dry_run)
     results = []
     for name, job in jobs.items():
         path = plist_path(job)
@@ -133,7 +203,7 @@ def install(jobs: dict[str, dict[str, Any]], dry_run: bool) -> dict[str, Any]:
             result["bootstrap"] = launchctl(["launchctl", "bootstrap", user_domain(), str(path)])
             result["enable"] = launchctl(["launchctl", "enable", f"{user_domain()}/{job['label']}"])
         results.append(result)
-    return {"action": "install", "dry_run": dry_run, "results": results}
+    return {"action": "install", "dry_run": dry_run, "runner": runner, "results": results}
 
 
 def uninstall(jobs: dict[str, dict[str, Any]], dry_run: bool) -> dict[str, Any]:

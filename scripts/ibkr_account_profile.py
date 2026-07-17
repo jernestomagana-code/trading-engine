@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 import urllib.error
 import urllib.request
 
@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import alert_lifecycle as shared_alert_lifecycle
+import coberturas_engine as shared_coberturas_engine
 
 RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
@@ -53,11 +54,18 @@ REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIME
 REMOTE_VERIFY_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_VERIFY_TIMEOUT_SECONDS", "20"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
 LOCAL_JOB_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", "90"))
+CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS", "420"))
 CONSOLE_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", "75")))
 CONSOLE_HISTORICAL_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_HISTORICAL_TIMEOUT_SECONDS", "4")))
-CONSOLE_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "73")))
-CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,SPY,AAPL,NVDA,TSLA")
+CONSOLE_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "75")))
+CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,SPY,AAPL,NVDA,TSLA,RSP")
 CONSOLE_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", "1")
+CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_OPTION_SYMBOLS", "RSP")
+CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL", "4")
+CONSOLE_COBERTURAS_RSP_TARGET_DTE_MIN = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MIN", "7")
+CONSOLE_COBERTURAS_RSP_TARGET_DTE_MAX = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MAX", "14")
+CONSOLE_COBERTURAS_RSP_TARGET_DTE_IDEAL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_IDEAL", "8")
+CONSOLE_COBERTURAS_RSP_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_BRIDGE_TIMEOUT_SECONDS", "90")))
 CONSOLE_OPTION_MARKET_DATA_TYPES = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_MARKET_DATA_TYPES", "1,2")
 CONSOLE_OPTION_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_WAIT_SECONDS", "1")
 CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS", "1")
@@ -303,6 +311,16 @@ def command_label(command: list[str]) -> str:
     return " ".join(str(part) for part in command)
 
 
+def resolve_job_alias(alias: str) -> str:
+    requested = str(alias or "").strip()
+    if requested:
+        return normalize_alias(requested)
+    active_alias = str(active_profile().get("account_alias") or "").strip()
+    if active_alias:
+        return normalize_alias(active_alias)
+    raise ValueError("Selecciona una cuenta en la consola antes de correr este proceso.")
+
+
 def sanitize_output(text: str, env: dict[str, str] | None = None) -> str:
     clean = str(text or "")
     account = (env or {}).get("IBKR_ACCOUNT_ID") or ""
@@ -358,12 +376,31 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     profile = profile_for(alias)
     write_active_profile(profile)
     env = environment_for(profile)
+    if is_daily_open_command(command):
+        env.setdefault("IBKR_CLIENT_ID", str(CONSOLE_IBKR_CLIENT_ID))
     if any(str(part).endswith("run_market_bridge_session.py") for part in command):
-        env.setdefault("IBKR_OPTION_SYMBOLS", CONSOLE_OPTION_SYMBOLS)
-        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", CONSOLE_MAX_OPTIONS_PER_SYMBOL)
+        is_coberturas_rsp = "--coberturas-rsp-weekly" in command
+        env.setdefault("IBKR_OPTION_SYMBOLS", CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS if is_coberturas_rsp else CONSOLE_OPTION_SYMBOLS)
+        env.setdefault("IBKR_WATCHLIST", CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS if is_coberturas_rsp else CONSOLE_OPTION_SYMBOLS)
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL if is_coberturas_rsp else CONSOLE_MAX_OPTIONS_PER_SYMBOL)
+        if is_coberturas_rsp:
+            env.setdefault("COBERTURAS_RSP_WEEKLY", "1")
+            env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "1")
+            env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL)
+            env.setdefault("IBKR_TARGET_DTE_MIN", CONSOLE_COBERTURAS_RSP_TARGET_DTE_MIN)
+            env.setdefault("IBKR_TARGET_DTE_MAX", CONSOLE_COBERTURAS_RSP_TARGET_DTE_MAX)
+            env.setdefault("IBKR_TARGET_DTE_IDEAL", CONSOLE_COBERTURAS_RSP_TARGET_DTE_IDEAL)
+            env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "0")
+            env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "0")
         env.setdefault("IBKR_OPTION_MARKET_DATA_TYPE_SEQUENCE", CONSOLE_OPTION_MARKET_DATA_TYPES)
         env.setdefault("IBKR_OPTION_MARKET_DATA_WAIT_SECONDS", CONSOLE_OPTION_WAIT_SECONDS)
         env.setdefault("IBKR_OPTION_SNAPSHOT_WAIT_SECONDS", CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS)
+        env.setdefault("IBKR_ENGINE_POST_TIMEOUT_SECONDS", "5")
+        env.setdefault("IBKR_POSITION_REQUEST_TIMEOUT_SECONDS", "12")
+        env.setdefault("IBKR_STOCK_PRICE_SNAPSHOT_TIMEOUT_SECONDS", "8")
+        env.setdefault("IBKR_POSITION_PRICE_SNAPSHOT_TIMEOUT_SECONDS", "5")
+        env.setdefault("IBKR_OPTION_CONTRACT_MARKET_DATA_TIMEOUT_SECONDS", "10")
+    timeout_seconds = command_timeout_seconds(command)
     timed_out = False
     try:
         result = subprocess.run(
@@ -373,16 +410,16 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
             check=False,
             capture_output=True,
             text=True,
-            timeout=LOCAL_JOB_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
         returncode = int(result.returncode)
-        stdout = enrich_console_bridge_output(result.stdout)
+        stdout = enrich_console_bridge_output(result.stdout) if is_console_bridge_command(command) else result.stdout
         stderr = result.stderr
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         returncode = 124
         stdout = process_output_text(exc.stdout)
-        stderr = process_output_text(exc.stderr) + f"\nTIMEOUT: comando detenido despues de {LOCAL_JOB_TIMEOUT_SECONDS:.0f}s. Revisa TWS/IBKR Gateway y vuelve a intentar."
+        stderr = process_output_text(exc.stderr) + f"\nTIMEOUT: comando detenido despues de {timeout_seconds:.0f}s. Revisa TWS/IBKR Gateway y vuelve a intentar."
     payload = {
         "result_version": "ibkr_account_profile_web_result_v1",
         "generated_at": now_iso(),
@@ -391,7 +428,7 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
         "command": command_label(command),
         "returncode": returncode,
         "timed_out": timed_out,
-        "timeout_seconds": LOCAL_JOB_TIMEOUT_SECONDS,
+        "timeout_seconds": timeout_seconds,
         "stdout_tail": sanitize_output(stdout, env),
         "stderr_tail": sanitize_output(stderr, env),
         "account_id_printed": False,
@@ -404,13 +441,14 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
 
 
 def start_web_job(alias: str, command: list[str], label: str) -> str:
+    job_alias = resolve_job_alias(alias)
     job_id = uuid.uuid4().hex[:12]
     job = {
         "job_id": job_id,
         "job_version": "stock_ultimus_console_job_v1",
         "status": "RUNNING",
         "label": label,
-        "alias": normalize_alias(alias),
+        "alias": job_alias,
         "command": command_label(command),
         "started_at": now_iso(),
         "finished_at": None,
@@ -424,9 +462,44 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
 
     def worker() -> None:
         try:
-            result = run_with_profile_capture(alias, command)
+            result = run_with_profile_capture(job_alias, command)
             returncode = int(result.get("returncode") or 0)
             if returncode == 0:
+                if is_main_console_bridge_command(command):
+                    latest_run = latest_console_bridge_run()
+                    bridge_published = bool(latest_run.get("published"))
+                    result["bridge_local_refresh_ok"] = bool(latest_run.get("ok", True))
+                    result["bridge_publish_required"] = True
+                    result["bridge_published"] = bridge_published
+                    result["bridge_session_status"] = latest_run.get("status") or ""
+                    if not bridge_published:
+                        fallback = publish_account_context_fallback()
+                        fallback_ok = bool(fallback.get("ok"))
+                        result["account_context_fallback"] = fallback
+                        result["bridge_publish_retry_ok"] = fallback_ok
+                        result["bridge_published"] = fallback_ok
+                        result["operator_status"] = (
+                            "BRIDGE_OK_PUBLISH_RETRIED"
+                            if fallback_ok
+                            else "BRIDGE_OK_PUBLISH_PENDING"
+                        )
+                        result["partial_refresh_ok"] = fallback_ok
+                        result["stdout_tail"] = (
+                            str(result.get("stdout_tail") or "")
+                            + "\n\n--- V31 publish retry ---\n"
+                            + "status: {status}\nok: {ok}\nreturncode: {returncode}\n".format(
+                                status=fallback.get("status"),
+                                ok=fallback.get("ok"),
+                                returncode=fallback.get("returncode"),
+                            )
+                            + str(fallback.get("stdout_tail") or "")
+                        )[-6000:]
+                        if fallback.get("stderr_tail"):
+                            result["stderr_tail"] = (
+                                str(result.get("stderr_tail") or "")
+                                + "\nPUBLISH RETRY STDERR:\n"
+                                + str(fallback.get("stderr_tail") or "")
+                            )[-6000:]
                 verification = fetch_remote_json(
                     "/gpt_v32_operator_today?limit=12",
                     timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
@@ -449,6 +522,8 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
             elif is_console_bridge_command(command):
                 fallback = publish_account_context_fallback()
                 result["account_context_fallback"] = fallback
+                result["partial_refresh_ok"] = bool(fallback.get("ok"))
+                result["operator_status"] = "PARTIAL_REFRESH_OK" if fallback.get("ok") else "BRIDGE_REFRESH_FAILED"
                 result["stdout_tail"] = (
                     str(result.get("stdout_tail") or "")
                     + "\n\n--- account context fallback ---\n"
@@ -466,10 +541,13 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
                         + str(fallback.get("stderr_tail") or "")
                     )[-6000:]
                 WEB_LAST_RESULT_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+            effective_ok = returncode == 0 or bool(result.get("partial_refresh_ok"))
+            if is_main_console_bridge_command(command) and returncode == 0 and result.get("bridge_publish_required"):
+                effective_ok = bool(result.get("bridge_published"))
             with WEB_JOBS_LOCK:
                 WEB_JOBS[job_id] = {
                     **WEB_JOBS.get(job_id, job),
-                    "status": "DONE" if returncode == 0 else "ERROR",
+                    "status": "DONE" if effective_ok else "ERROR",
                     "finished_at": now_iso(),
                     "result": result,
                     "error": "",
@@ -486,6 +564,14 @@ def start_web_job(alias: str, command: list[str], label: str) -> str:
 
     threading.Thread(target=worker, name=f"stock-ultimus-console-{job_id}", daemon=True).start()
     return job_id
+
+
+def running_web_job_by_label(label: str) -> dict[str, Any] | None:
+    with WEB_JOBS_LOCK:
+        for job in WEB_JOBS.values():
+            if job.get("label") == label and job.get("status") == "RUNNING":
+                return dict(job)
+    return None
 
 
 def web_job(job_id: str) -> dict[str, Any]:
@@ -520,6 +606,41 @@ def console_bridge_command() -> list[str]:
     ]
 
 
+def console_rsp_weekly_bridge_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_market_bridge_session.py",
+        "--max-runs",
+        "1",
+        "--bridge-timeout",
+        str(max(45, CONSOLE_COBERTURAS_RSP_BRIDGE_TIMEOUT_SECONDS)),
+        "--historical-data-timeout",
+        str(max(CONSOLE_HISTORICAL_TIMEOUT_SECONDS, 8)),
+        "--ibkr-client-id",
+        str(CONSOLE_IBKR_CLIENT_ID),
+        "--coberturas-rsp-weekly",
+        "--json-out",
+        str(RUNTIME / "stock_ultimus_coberturas_rsp_weekly_bridge_latest.json"),
+    ]
+
+
+def console_deep_bridge_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_market_bridge_session.py",
+        "--max-runs",
+        "1",
+        "--bridge-timeout",
+        str(max(120, int(LOCAL_JOB_TIMEOUT_SECONDS) * 3)),
+        "--historical-data-timeout",
+        str(max(CONSOLE_HISTORICAL_TIMEOUT_SECONDS, 8)),
+        "--ibkr-client-id",
+        str(CONSOLE_IBKR_CLIENT_ID),
+        "--json-out",
+        str(RUNTIME / "stock_ultimus_console_bridge_latest.json"),
+    ]
+
+
 def account_publish_command() -> list[str]:
     return [
         sys.executable,
@@ -534,6 +655,94 @@ def account_capacity_command() -> list[str]:
         "scripts/ibkr_account_profile.py",
         "refresh-account-capacity",
         "--publish",
+    ]
+
+
+def ibkr_quick_check_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/ibkr_account_profile.py",
+        "refresh-account-capacity",
+        "--client-id",
+        str(CONSOLE_IBKR_CLIENT_ID),
+        "--timeout",
+        "12",
+    ]
+
+
+def daily_open_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/daily_open_checklist.py",
+        "--refresh",
+        "--publish",
+        "--allow-stale-publish",
+        "--soft-exit",
+        "--bridge-timeout",
+        "90",
+        "--read-timeout",
+        "10",
+    ]
+
+
+def market_open_readiness_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_market_open_readiness.py",
+        "--market-closed-ok",
+    ]
+
+
+def post_open_monitor_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_post_open_monitor.py",
+        "--watch",
+        "--cycles",
+        "18",
+        "--interval-seconds",
+        "300",
+    ]
+
+
+def environment_alerts_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_environment_alerts.py",
+        "--notify-watch",
+        "--pushover",
+    ]
+
+
+def security_audit_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_security_audit.py",
+        "--pushover",
+    ]
+
+
+def dependency_audit_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_dependency_audit.py",
+        "--pushover",
+    ]
+
+
+def local_dashboard_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/build_local_environment_dashboard.py",
+    ]
+
+
+def v32_pushover_automation_command(mode: str) -> list[str]:
+    return [
+        sys.executable,
+        "scripts/v32_pushover_automation.py",
+        "--mode",
+        mode,
     ]
 
 
@@ -606,6 +815,45 @@ def is_console_bridge_command(command: list[str]) -> bool:
     return any(str(part).endswith("run_market_bridge_session.py") for part in command)
 
 
+def is_main_console_bridge_command(command: list[str]) -> bool:
+    return is_console_bridge_command(command) and str(CONSOLE_BRIDGE_SESSION_PATH) in {str(part) for part in command}
+
+
+def latest_console_bridge_run() -> dict[str, Any]:
+    session = load_json_file(CONSOLE_BRIDGE_SESSION_PATH)
+    runs = session.get("runs") if isinstance(session.get("runs"), list) else []
+    latest = runs[-1] if runs and isinstance(runs[-1], dict) else {}
+    return latest if isinstance(latest, dict) else {}
+
+
+def is_daily_open_command(command: list[str]) -> bool:
+    return any(str(part).endswith("daily_open_checklist.py") for part in command)
+
+
+def command_timeout_seconds(command: list[str]) -> float:
+    if is_daily_open_command(command):
+        return max(CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS, LOCAL_JOB_TIMEOUT_SECONDS)
+    if any(str(part).endswith("run_post_open_monitor.py") for part in command):
+        return max(5700.0, LOCAL_JOB_TIMEOUT_SECONDS)
+    if any(str(part).endswith(name) for part in command for name in [
+        "run_market_open_readiness.py",
+        "run_environment_alerts.py",
+        "run_security_audit.py",
+        "run_dependency_audit.py",
+        "build_local_environment_dashboard.py",
+        "v32_pushover_automation.py",
+    ]):
+        return max(180.0, LOCAL_JOB_TIMEOUT_SECONDS)
+    if is_console_bridge_command(command) and "--bridge-timeout" in command:
+        try:
+            bridge_timeout = int(command[command.index("--bridge-timeout") + 1])
+        except Exception:
+            bridge_timeout = 0
+        if bridge_timeout > CONSOLE_BRIDGE_TIMEOUT_SECONDS:
+            return max(float(bridge_timeout + 45), LOCAL_JOB_TIMEOUT_SECONDS * 3)
+    return LOCAL_JOB_TIMEOUT_SECONDS
+
+
 def publish_account_context_fallback() -> dict[str, Any]:
     token = snapshot_ingest_token()
     if not token:
@@ -616,6 +864,9 @@ def publish_account_context_fallback() -> dict[str, Any]:
         }
     env = os.environ.copy()
     env["TRADING_ENGINE_INGEST_TOKEN"] = token
+    env.setdefault("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "60")
+    env.setdefault("TRADING_ENGINE_PUBLISH_RETRIES", "3")
+    env.setdefault("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "4")
     result = subprocess.run(
         [
             sys.executable,
@@ -623,14 +874,18 @@ def publish_account_context_fallback() -> dict[str, Any]:
             "--publish",
             "--allow-stale",
             "--timeout",
-            "30",
+            "60",
+            "--retries",
+            "3",
+            "--retry-sleep",
+            "4",
         ],
         cwd=str(ROOT),
         env=env,
         check=False,
         capture_output=True,
         text=True,
-        timeout=40,
+        timeout=210,
     )
     stdout = sanitize_output(result.stdout, {})
     stderr = sanitize_output(result.stderr, {})
@@ -1091,10 +1346,10 @@ def cache_age_seconds(cached_at: Any) -> float | None:
 def write_remote_cache(path: str, result: dict[str, Any]) -> None:
     if not result.get("ok"):
         return
-    payload = {
-        "cache_version": "stock_ultimus_console_remote_cache_v1",
+    cache = load_json_file(REMOTE_CACHE_PATH)
+    entries = cache.get("entries") if isinstance(cache.get("entries"), dict) else {}
+    entries[path] = {
         "cached_at": now_iso(),
-        "path": path,
         "result": {
             "ok": True,
             "error": "",
@@ -1102,6 +1357,11 @@ def write_remote_cache(path: str, result: dict[str, Any]) -> None:
             "url": result.get("url"),
             "data": result.get("data") if isinstance(result.get("data"), dict) else {},
         },
+    }
+    payload = {
+        "cache_version": "stock_ultimus_console_remote_cache_v2",
+        "cached_at": now_iso(),
+        "entries": entries,
         "secrets_printed": False,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -1111,21 +1371,27 @@ def write_remote_cache(path: str, result: dict[str, Any]) -> None:
 
 def read_remote_cache(path: str, live_error: str = "", allow_stale: bool = False) -> dict[str, Any] | None:
     cache = load_json_file(REMOTE_CACHE_PATH)
-    if cache.get("path") != path:
+    if isinstance(cache.get("entries"), dict):
+        entry = cache["entries"].get(path) if isinstance(cache["entries"].get(path), dict) else {}
+        cached_at = entry.get("cached_at")
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+    elif cache.get("path") == path:
+        cached_at = cache.get("cached_at")
+        result = cache.get("result") if isinstance(cache.get("result"), dict) else {}
+    else:
         return None
-    age_seconds = cache_age_seconds(cache.get("cached_at"))
+    age_seconds = cache_age_seconds(cached_at)
     if age_seconds is None:
         return None
     if not allow_stale and age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS:
         return None
-    result = cache.get("result") if isinstance(cache.get("result"), dict) else {}
     if not result.get("ok"):
         return None
     out = dict(result)
     out["cached"] = True
     out["stale_cache"] = bool(age_seconds > REMOTE_CACHE_MAX_AGE_SECONDS)
-    out["cached_at"] = cache.get("cached_at")
-    out["cache_age_label"] = age_label(cache.get("cached_at"))
+    out["cached_at"] = cached_at
+    out["cache_age_label"] = age_label(cached_at)
     out["live_error"] = live_error
     return out
 
@@ -1193,8 +1459,55 @@ def post_remote_json(path: str, payload: dict[str, Any], timeout: float = 15) ->
         return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
 
 
+def post_remote_form(path: str, payload: dict[str, Any], timeout: float = 15) -> dict[str, Any]:
+    token = read_access_token()
+    if not token:
+        return {"ok": False, "error": "MISSING_READ_ACCESS_TOKEN", "token_present": False, "data": {}}
+    url = public_base_url() + path
+    body = urlencode(payload, doseq=True).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Accept": "text/html,application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Stock-Ultimus-Read-Token": token,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+        return {
+            "ok": True,
+            "error": "",
+            "token_present": True,
+            "url": url,
+            "status_code": getattr(response, "status", 200),
+            "final_url": response.geturl(),
+            "text": text[:1000],
+            "data": {},
+        }
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "error": f"HTTP_{exc.code}", "token_present": True, "url": url, "text": text[:1000], "data": {}}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "token_present": True, "url": url, "data": {}}
+
+
 def console_operator_payload(prefer_cache: bool = False) -> dict[str, Any]:
     return apply_local_operator_events(fetch_remote_json("/gpt_v32_operator_today?limit=12", prefer_cache=prefer_cache))
+
+
+def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]]:
+    return {
+        "executive": fetch_remote_json("/gpt_v31_executive_status?limit=8", prefer_cache=prefer_cache),
+        "rankings": fetch_remote_json("/gpt_v31_daily_rankings", prefer_cache=prefer_cache),
+        "monitor": fetch_remote_json("/v31_monitor_status", prefer_cache=prefer_cache),
+        "reviews": fetch_remote_json("/v31_manual_reviews?limit=250", prefer_cache=prefer_cache),
+        "learning": fetch_remote_json("/v31_manual_review_learning?limit=250", prefer_cache=prefer_cache),
+        "performance": fetch_remote_json("/v32_strategy_performance?limit=500", prefer_cache=prefer_cache),
+    }
 
 
 def published_context_value(value: Any) -> str:
@@ -1204,31 +1517,41 @@ def published_context_value(value: Any) -> str:
     return text
 
 
+def first_published_context_value(*values: Any) -> str:
+    for value in values:
+        text = published_context_value(value)
+        if text:
+            return text
+    return ""
+
+
 def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
     operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     operator_context = operator_data.get("account_context") if isinstance(operator_data.get("account_context"), dict) else {}
     remote_ok = bool(operator_payload.get("ok"))
     selected_scope = active.get("account_scope") or ""
     selected_alias = active.get("account_alias") or ""
-    published_scope = published_context_value(
-        operator_data.get("account_scope")
-        or operator_context.get("account_scope")
-        or snapshot.get("account_scope")
-        or ""
+    published_scope = first_published_context_value(
+        operator_data.get("account_scope"),
+        operator_context.get("account_scope"),
+        snapshot.get("account_scope"),
     )
-    published_alias = published_context_value(
-        operator_data.get("account_alias")
-        or operator_context.get("account_alias")
-        or snapshot.get("account_alias")
-        or ""
+    published_alias = first_published_context_value(
+        operator_data.get("account_alias"),
+        operator_context.get("account_alias"),
+        snapshot.get("account_alias"),
     )
     matches = bool(selected_scope and published_scope and selected_scope == published_scope)
     missing_published_context = bool(remote_ok and selected_scope and not published_scope)
+    inferred_from_local = bool(missing_published_context and selected_scope)
     return {
         "selected_scope": selected_scope,
         "selected_alias": selected_alias,
         "published_scope": published_scope,
         "published_alias": published_alias,
+        "display_scope": published_scope or (selected_scope if inferred_from_local else ""),
+        "display_alias": published_alias or (selected_alias if inferred_from_local else ""),
+        "inferred_from_local": inferred_from_local,
         "missing_published_context": missing_published_context,
         "remote_ok": remote_ok,
         "remote_error": operator_payload.get("error") or "",
@@ -1236,17 +1559,17 @@ def selected_vs_published(active: dict[str, Any], snapshot: dict[str, Any], oper
         "cache_age_label": operator_payload.get("cache_age_label") or "",
         "live_error": operator_payload.get("live_error") or "",
         "matches": matches,
-        "needs_refresh": bool(missing_published_context or (remote_ok and selected_scope and published_scope and not matches)),
-        "status": "MATCH" if matches else ("REMOTE_UNAVAILABLE" if not remote_ok else "REFRESH_REQUIRED"),
+        "needs_refresh": bool((remote_ok and selected_scope and published_scope and not matches)),
+        "status": "MATCH" if matches else ("LOCAL_CONTEXT_INFERRED" if inferred_from_local else "REMOTE_UNAVAILABLE" if not remote_ok else "REFRESH_REQUIRED"),
     }
 
 
 def render_metric(title: str, value: Any, note: str = "") -> str:
     return """
     <article class="metric">
-      <span>{title}</span>
+      <span class="label-text">{title}</span>
       <strong>{value}</strong>
-      <small>{note}</small>
+      <small class="body-text">{note}</small>
     </article>
     """.format(title=html_escape(title), value=html_escape(value), note=html_escape(note))
 
@@ -1336,8 +1659,26 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     }
 
 
-def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> str:
+def next_step_level(mode: str, health_level: str) -> str:
+    mode_norm = str(mode or "").lower()
+    if str(health_level or "").lower() == "red" or mode_norm in {"bloqueado", "riesgo"}:
+        return "red"
+    if mode_norm in {"procesando", "revision"}:
+        return "amber"
+    return "green"
+
+
+def render_console_health(
+    active: dict[str, Any],
+    snapshot: dict[str, Any],
+    operator_payload: dict[str, Any],
+    reports: dict[str, dict[str, Any]] | None = None,
+) -> str:
     health = console_health(active, snapshot, operator_payload)
+    reports = reports if isinstance(reports, dict) else {}
+    today = console_today_summary(active, snapshot, operator_payload, reports)
+    active_alias = active.get("account_alias") or ""
+    refresh_all_disabled = "" if active_alias else " disabled"
     running = health.get("running_jobs") or []
     running_text = "sin procesos activos"
     if running:
@@ -1352,6 +1693,12 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
     details.extend(health.get("warnings") or [])
     details.extend(health.get("info") or [])
     detail_text = ", ".join(details) if details else "sin bloqueos visibles"
+    snapshot_label = "disponible" if health.get("snapshot_available") else "pendiente"
+    snapshot_hint = (
+        "hay paquete maestro local para evaluar"
+        if health.get("snapshot_available")
+        else "falta generar/publicar datos frescos"
+    )
     return """
     <section class="control-strip health-{level}">
       <div class="signal">
@@ -1362,15 +1709,41 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
         </div>
       </div>
       <div class="control-facts">
-        <span>Produccion: {production}</span>
-        <span>IBKR: {ibkr}</span>
-        <span>Contexto GPT: {context}</span>
-        <span>Snapshot: {snapshot}</span>
-        <span>Capacidad: {capacity}</span>
+        <span><b>Produccion</b>{production}</span>
+        <span><b>IBKR</b>{ibkr}</span>
+        <span><b>Contexto GPT</b>{context}</span>
+        <span title="{snapshot_hint}"><b>Datos snapshot</b>{snapshot}</span>
+        <span><b>Capacidad</b>{capacity}</span>
       </div>
       <div class="thinking-now">
         <strong>{running_text}</strong>
         <small>{detail_text}</small>
+      </div>
+      <div class="operator-next next-{next_level}">
+        <span>Siguiente paso recomendado</span>
+        <strong>{next_action}</strong>
+        <small>Modo: {today_mode}</small>
+      </div>
+      <div class="top-quick-actions">
+        <form method="post" action="/refresh-remote" data-busy="Actualizando estado remoto" data-busy-detail="Leyendo GPT/alertas desde produccion. No cambia cuenta ni conecta con IBKR.">
+          <button>Actualizar estado</button>
+          <span>Relee produccion sin cambiar cuenta.</span>
+        </form>
+        <form method="post" action="/daily-open" data-busy="Corriendo apertura diaria" data-busy-detail="Construye CANSLIM, valida IBKR, intenta refresh/publicacion y deja reporte operativo. No autoriza ordenes.">
+          <input name="alias" value="{active_alias}" type="hidden">
+          <button{refresh_all_disabled}>Apertura diaria</button>
+          <span>CANSLIM + validaciones + reporte.</span>
+        </form>
+        <form method="post" action="/ibkr-quick-check" data-busy="Validando IBKR/TWS" data-busy-detail="Lee conexion API y AccountSummary/capacidad. No escanea opciones ni autoriza ordenes.">
+          <input name="alias" value="{active_alias}" type="hidden">
+          <button class="secondary"{refresh_all_disabled}>Validar IBKR</button>
+          <span>Prueba rapida TWS/API y cuenta.</span>
+        </form>
+        <form method="post" action="/refresh-all" data-busy="Alineando/Publicando rapido" data-busy-detail="Publica cuenta/contexto para GPT sin escaneo profundo de opciones. No autoriza ordenes.">
+          <input name="alias" value="{active_alias}" type="hidden">
+          <button{refresh_all_disabled}>Alinear/Publicar rapido</button>
+          <span>Corrige contexto GPT rapido.</span>
+        </form>
       </div>
     </section>
     """.format(
@@ -1380,10 +1753,16 @@ def render_console_health(active: dict[str, Any], snapshot: dict[str, Any], oper
         production="OK" if health.get("remote_ok") else "NO",
         ibkr="OK" if health.get("ibkr_connected") else "NO",
         context=html_escape(health.get("context_status")),
-        snapshot="OK" if health.get("snapshot_available") else "NO",
+        snapshot=html_escape(snapshot_label),
+        snapshot_hint=html_escape(snapshot_hint),
         capacity="OK" if health.get("capacity_available") else "NO",
         running_text=html_escape(running_text),
         detail_text=html_escape(detail_text),
+        next_level=html_escape(next_step_level(today.get("mode"), health.get("level"))),
+        next_action=html_escape(today.get("action") or "Revisar estado y alertas operables."),
+        today_mode=html_escape(today.get("mode") or "N/D"),
+        active_alias=html_escape(active_alias),
+        refresh_all_disabled=refresh_all_disabled,
     )
 
 
@@ -1503,7 +1882,7 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
         </div>
         <p>{action}</p>
       </div>
-      <div class="today-grid">
+      <div class="today-grid compact-metrics">
         {status}
         {waiting}
         {alert}
@@ -1518,6 +1897,380 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
         alert=render_metric("Ultima alerta viva", today["last_alert"], "notify=" + str(today.get("notify_reason"))),
         market=render_metric("Mercado", today["market_session"], "edge=" + edge_text),
     )
+
+
+def v31_payload_data(payloads: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
+    payload = payloads.get(key) if isinstance(payloads, dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return data
+
+
+def v31_latest_reviews_by_ticker(payloads: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    data = v31_payload_data(payloads, "reviews")
+    recent = data.get("recent_reviews") if isinstance(data.get("recent_reviews"), list) else []
+    latest: dict[str, dict[str, Any]] = {}
+    for review in recent:
+        if not isinstance(review, dict):
+            continue
+        ticker = str(review.get("ticker") or "").upper()
+        if ticker:
+            latest[ticker] = review
+    return latest
+
+
+def v31_items_from_payloads(payloads: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rankings = v31_payload_data(payloads, "rankings")
+    top = rankings.get("top_recommendations") if isinstance(rankings.get("top_recommendations"), list) else []
+    blocked = rankings.get("blocked_or_waiting") if isinstance(rankings.get("blocked_or_waiting"), list) else []
+    seen: set[tuple[str, str]] = set()
+    items: list[dict[str, Any]] = []
+    for item in top + blocked:
+        if not isinstance(item, dict):
+            continue
+        key = (str(item.get("ticker") or ""), str(item.get("final_state") or item.get("state") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    return items
+
+
+def render_v31_cause_groups(groups: list[dict[str, Any]]) -> str:
+    if not groups:
+        return '<p class="empty">Sin grupos de bloqueo disponibles.</p>'
+    rows = []
+    for group in groups[:8]:
+        examples = group.get("examples") if isinstance(group.get("examples"), list) else []
+        first = examples[0] if examples and isinstance(examples[0], dict) else {}
+        rows.append("""
+        <article class="module-card module-{level}">
+          <span class="module-dot"></span>
+          <div>
+            <strong>{cause}</strong>
+            <span>{count} setup(s): {tickers}</span>
+            <small>{example}</small>
+          </div>
+        </article>
+        """.format(
+            level="amber" if str(group.get("cause") or group.get("bucket") or "").lower() != "other" else "neutral",
+            cause=html_escape(group.get("cause") or group.get("bucket") or "unknown"),
+            count=html_escape(group.get("count") or 0),
+            tickers=html_escape(", ".join(str(ticker) for ticker in (group.get("tickers") or [])[:8])),
+            example=html_escape(first.get("reason") or first.get("primary_block_reason") or ""),
+        ))
+    return '<div class="module-grid">{}</div>'.format("".join(rows))
+
+
+def render_v31_executive_panel(payloads: dict[str, dict[str, Any]]) -> str:
+    executive = payloads.get("executive") if isinstance(payloads.get("executive"), dict) else {}
+    data = v31_payload_data(payloads, "executive")
+    if not executive.get("ok"):
+        return """
+        <section class="panel today-panel">
+          <h2>Estado Ejecutivo V31</h2>
+          <p class="muted">No pude leer /gpt_v31_executive_status: {error}</p>
+        </section>
+        """.format(error=html_escape(executive.get("error") or "unknown"))
+    summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    causes = data.get("blocked_cause_groups") if isinstance(data.get("blocked_cause_groups"), list) else []
+    answer = data.get("answer_to_user") or data.get("first_line") or "Sin respuesta ejecutiva."
+    return """
+    <section class="panel today-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Estado Ejecutivo V31</p>
+          <h2>{status}</h2>
+        </div>
+        <p>{answer}</p>
+      </div>
+      <div class="today-grid">
+        {entry}
+        {risk}
+        {wait_options}
+        {wait_technical}
+      </div>
+      <h3>Bloqueos principales</h3>
+      {causes}
+    </section>
+    """.format(
+        status=html_escape(data.get("operational_readiness") or data.get("status") or "UNKNOWN"),
+        answer=html_escape(answer),
+        entry=render_metric("ENTRY_READY", summary.get("entry_ready", 0), "requiere revision manual"),
+        risk=render_metric("RISK_BLOCKED", summary.get("risk_blocked", 0), "no accionable"),
+        wait_options=render_metric("WAIT_OPTIONS", summary.get("wait_options_data", 0), "datos/contrato pendiente"),
+        wait_technical=render_metric("WAIT_TECHNICAL", summary.get("wait_technical", 0), "tecnico pendiente"),
+        causes=render_v31_cause_groups(causes),
+    )
+
+
+def v31_contract_line(item: dict[str, Any]) -> str:
+    contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+    return "strike={strike} exp={exp} dte={dte} bid/ask={bid}/{ask} mid={mid} delta={delta} spread%={spread_pct}".format(
+        strike=contract.get("strike", ""),
+        exp=contract.get("expiration", ""),
+        dte=contract.get("dte", ""),
+        bid=contract.get("bid", ""),
+        ask=contract.get("ask", ""),
+        mid=contract.get("mid", ""),
+        delta=contract.get("delta", ""),
+        spread_pct=contract.get("spread_pct", ""),
+    )
+
+
+def v31_review_actions_html(item: dict[str, Any], latest: dict[str, Any]) -> str:
+    ticker = str(item.get("ticker") or "UNKNOWN").upper()
+    state = str(item.get("final_state") or item.get("state") or "UNKNOWN").upper()
+    strategy = str(item.get("strategy") or "")
+    allowed = ["REVIEWING", "WATCHLIST", "REJECTED", "EXPIRED"]
+    if state == "ENTRY_READY" and item.get("manual_review_ready") is True:
+        allowed.insert(1, "APPROVED_FOR_MANUAL_TRADE")
+    labels = {
+        "APPROVED_FOR_MANUAL_TRADE": "Approve manual",
+        "REVIEWING": "Revisando",
+        "WATCHLIST": "Watchlist",
+        "REJECTED": "Rechazar",
+        "EXPIRED": "Expired",
+    }
+    reasons = {
+        "APPROVED_FOR_MANUAL_TRADE": "Validé manualmente contrato, liquidez, spread, eventos, riesgo de cuenta y ticket en broker/TWS. Ejecución será manual.",
+        "REVIEWING": "Iniciando revisión manual desde consola local.",
+        "WATCHLIST": "Mantener en watchlist; falta mejor precio, confirmación o timing.",
+        "REJECTED": "Descartada tras revisión manual desde consola local.",
+        "EXPIRED": "Setup expirado o ya no aplica.",
+    }
+    buttons = []
+    for status in allowed:
+        override = '<input type="hidden" name="manual_broker_validation_override" value="true">' if status == "APPROVED_FOR_MANUAL_TRADE" else ""
+        buttons.append("""
+        <button name="status" value="{status}" class="{css}" data-reason="{reason}">{label}</button>
+        {override}
+        """.format(
+            status=html_escape(status),
+            css=html_escape(status.lower().replace("_", "-")),
+            label=html_escape(labels.get(status, status)),
+            reason=html_escape(reasons.get(status, "")),
+            override=override,
+        ))
+    latest_line = ""
+    if latest:
+        latest_line = '<small>Ultima revision: {} · {}</small>'.format(
+            html_escape(latest.get("status") or ""),
+            html_escape(age_label(latest.get("reviewed_at"))),
+        )
+    return """
+    <form method="post" action="/manual-review-event" class="alert-actions manual-review-actions" data-busy="Registrando revision manual V31" data-busy-detail="Guardando en backend Render y releyendo estado. No autoriza ordenes.">
+      <input name="ticker" value="{ticker}" type="hidden">
+      <input name="strategy" value="{strategy}" type="hidden">
+      <input name="state" value="{state}" type="hidden">
+      <input name="reason" value="{reason}" type="hidden">
+      {latest_line}
+      <div class="actions">{buttons}</div>
+    </form>
+    """.format(
+        ticker=html_escape(ticker),
+        strategy=html_escape(strategy),
+        state=html_escape(state),
+        reason=html_escape(reasons.get("REVIEWING", "")),
+        latest_line=latest_line,
+        buttons="".join(buttons),
+    )
+
+
+def v31_manual_review_has_actionable(payloads: dict[str, dict[str, Any]]) -> bool:
+    rankings = payloads.get("rankings") if isinstance(payloads.get("rankings"), dict) else {}
+    if not rankings.get("ok"):
+        return False
+    for item in v31_items_from_payloads(payloads):
+        state = str(item.get("final_state") or item.get("state") or "").upper()
+        if state == "ENTRY_READY" and item.get("manual_review_ready") is True:
+            return True
+    return False
+
+
+def render_v31_manual_review_panel(payloads: dict[str, dict[str, Any]]) -> str:
+    rankings = payloads.get("rankings") if isinstance(payloads.get("rankings"), dict) else {}
+    if not rankings.get("ok"):
+        return """
+        <details class="panel support-details">
+          <summary>Revision Manual V31 (sin datos)</summary>
+          <p class="muted">No pude leer rankings V31: {error}</p>
+        </details>
+        """.format(error=html_escape(rankings.get("error") or "unknown"))
+    items = v31_items_from_payloads(payloads)
+    actionable = [
+        item
+        for item in items
+        if str(item.get("final_state") or item.get("state") or "").upper() == "ENTRY_READY"
+        and item.get("manual_review_ready") is True
+    ]
+    non_actionable = [item for item in items if item not in actionable]
+    latest_by_ticker = v31_latest_reviews_by_ticker(payloads)
+    cards = []
+    for item in actionable[:16]:
+        ticker = str(item.get("ticker") or "UNKNOWN").upper()
+        state = str(item.get("final_state") or item.get("state") or "UNKNOWN").upper()
+        latest = latest_by_ticker.get(ticker, {})
+        cards.append("""
+        <article class="alert-card severity-{severity} status-{status_class}">
+          <div class="alert-title"><strong>{ticker}</strong><em>{state}</em></div>
+          <span>{strategy} | score={score}</span>
+          <div class="contract-line">{contract}</div>
+          <div class="why-line">{reason}</div>
+          <div class="review-line">{review_note}</div>
+          {actions}
+        </article>
+        """.format(
+            severity="action" if state == "ENTRY_READY" else "risk" if state == "RISK_BLOCKED" else "watch",
+            status_class=html_escape(state.lower().replace("_", "-")),
+            ticker=html_escape(ticker),
+            state=html_escape(state),
+            strategy=html_escape(item.get("strategy") or ""),
+            score=html_escape(item.get("score") or item.get("ranking_score") or ""),
+            contract=html_escape(v31_contract_line(item)),
+            reason=html_escape(item.get("primary_block_reason") or item.get("main_blocker") or item.get("explanation") or "Sin razon primaria."),
+            review_note=html_escape(
+                "ENTRY_READY: revisar contrato, liquidez, spread, eventos, riesgo y ticket TWS."
+                if state == "ENTRY_READY"
+                else "Diagnostico: no accionable hasta resolver bloqueo."
+            ),
+            actions=v31_review_actions_html(item, latest),
+        ))
+    if not cards:
+        cards.append('<p class="empty">Sin setups accionables para revision manual. Lo bloqueado o sin data suficiente no requiere revision.</p>')
+    blocked_rows = []
+    for item in non_actionable[:20]:
+        ticker = str(item.get("ticker") or "UNKNOWN").upper()
+        state = str(item.get("final_state") or item.get("state") or "UNKNOWN").upper()
+        reason = item.get("primary_block_reason") or item.get("main_blocker") or item.get("explanation") or "Sin razon primaria."
+        blocked_rows.append("""
+        <li>
+          <strong>{ticker}</strong>
+          <small>{state} · {reason}</small>
+        </li>
+        """.format(ticker=html_escape(ticker), state=html_escape(state), reason=html_escape(reason)))
+    blocked_html = ""
+    if blocked_rows:
+        blocked_html = """
+        <details class="diagnostic-alerts">
+          <summary>No accionables descartadas del inbox ({count})</summary>
+          <ul>{rows}</ul>
+        </details>
+        """.format(count=html_escape(len(non_actionable)), rows="".join(blocked_rows))
+    if not actionable:
+        return """
+    <details class="panel support-details">
+      <summary>Revision Manual V31 (sin ENTRY_READY)</summary>
+      <div class="section-head">
+        <h2>Revision Manual V31</h2>
+        <p>Solo muestra ENTRY_READY con datos suficientes. Lo bloqueado, WAIT o sin contrato completo queda fuera de revision.</p>
+      </div>
+      <div class="alert-grid">{cards}</div>
+      {blocked}
+    </details>
+    """.format(cards="".join(cards), blocked=blocked_html)
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Revision Manual V31</h2>
+        <p>Solo muestra ENTRY_READY con datos suficientes. Lo bloqueado, WAIT o sin contrato completo queda fuera de revision.</p>
+      </div>
+      <div class="alert-grid">{cards}</div>
+      {blocked}
+    </section>
+    """.format(cards="".join(cards), blocked=blocked_html)
+
+
+def render_v31_learning_panel(payloads: dict[str, dict[str, Any]]) -> str:
+    learning = v31_payload_data(payloads, "learning")
+    performance = v31_payload_data(payloads, "performance")
+    learning_groups = learning.get("by_manual_status") if isinstance(learning.get("by_manual_status"), dict) else {}
+    perf_summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
+    best = performance.get("best_signals_by_mfe_r") if isinstance(performance.get("best_signals_by_mfe_r"), list) else []
+    worst = performance.get("worst_signals_by_mae_r") if isinstance(performance.get("worst_signals_by_mae_r"), list) else []
+    best_line = ", ".join(str(item.get("ticker") or "") for item in best[:4] if isinstance(item, dict)) or "N/D"
+    worst_line = ", ".join(str(item.get("ticker") or "") for item in worst[:4] if isinstance(item, dict)) or "N/D"
+    return """
+    <details class="panel support-details">
+      <summary>Learning y Performance</summary>
+      <div class="section-head">
+        <h2>Learning y Performance</h2>
+        <p>Resumen local de historial/learning para evitar abrir dashboards separados.</p>
+      </div>
+      <div class="tiles">
+        <div class="tile">Reviews evaluadas<span>{evaluated}</span></div>
+        <div class="tile">Por status<span>{statuses}</span></div>
+        <div class="tile">Mejores MFE<span>{best}</span></div>
+        <div class="tile">Peores MAE<span>{worst}</span></div>
+      </div>
+    </details>
+    """.format(
+        evaluated=html_escape(perf_summary.get("evaluated_signal_count") or learning.get("evaluated_count") or "N/D"),
+        statuses=html_escape(", ".join(f"{k}:{v}" for k, v in sorted(learning_groups.items())[:6]) or "N/D"),
+        best=html_escape(best_line),
+        worst=html_escape(worst_line),
+    )
+
+
+def local_question_answer(question: str, payloads: dict[str, dict[str, Any]]) -> str:
+    question_norm = str(question or "").strip().lower()
+    executive = v31_payload_data(payloads, "executive")
+    items = v31_items_from_payloads(payloads)
+    if not question_norm:
+        return executive.get("answer_to_user") or "Pregunta vacia. Usa: que oportunidades tengo hoy, por que esta bloqueado MSFT, o estado del motor."
+    for item in items:
+        ticker = str(item.get("ticker") or "").lower()
+        if ticker and ticker in question_norm:
+            return "{ticker}: {state} | {strategy} | {contract} | razon={reason}. No autoriza ordenes.".format(
+                ticker=str(item.get("ticker") or "").upper(),
+                state=item.get("final_state") or item.get("state") or "UNKNOWN",
+                strategy=item.get("strategy") or "",
+                contract=v31_contract_line(item),
+                reason=item.get("primary_block_reason") or item.get("main_blocker") or item.get("explanation") or "sin razon primaria",
+            )
+    if "bloque" in question_norm or "por que" in question_norm or "por qué" in question_norm:
+        causes = executive.get("blocked_cause_groups") if isinstance(executive.get("blocked_cause_groups"), list) else []
+        if causes:
+            return "Bloqueos principales: " + "; ".join(
+                "{cause}={count} ({tickers})".format(
+                    cause=group.get("cause") or group.get("bucket"),
+                    count=group.get("count"),
+                    tickers=", ".join(str(ticker) for ticker in (group.get("tickers") or [])[:5]),
+                )
+                for group in causes[:5]
+            )
+    return executive.get("answer_to_user") or executive.get("first_line") or "No pude construir respuesta local; revisa Estado Ejecutivo V31."
+
+
+def render_local_question_panel(question_answer: str = "") -> str:
+    answer_html = ""
+    if question_answer:
+        answer_html = '<div class="notice">{}</div>'.format(html_escape(question_answer))
+    return """
+    <section class="panel">
+      <div class="section-head">
+        <h2>Pregunta operativa local</h2>
+        <p>Consulta el mismo backend que usa Super Engine Bolsa, sin salir de esta consola.</p>
+      </div>
+      {answer}
+      <form method="post" action="/ask" class="hero-actions" data-busy="Consultando motor" data-busy-detail="Leyendo endpoints GPT-safe de Render. No ejecuta ordenes.">
+        <input name="question" placeholder="Ej. que oportunidades tengo hoy / por que esta bloqueado MSFT / estado del motor">
+        <button>Preguntar</button>
+        <span>Respuesta basada en datos actuales del motor, no en invencion.</span>
+      </form>
+    </section>
+    """.format(answer=answer_html)
+
+
+def render_support_bundle(summary: str, *sections: str) -> str:
+    body = "\n".join(section for section in sections if section)
+    if not body:
+        return ""
+    return """
+    <details class="panel support-details support-bundle">
+      <summary>{summary}</summary>
+      {body}
+    </details>
+    """.format(summary=html_escape(summary), body=body)
 
 
 def module_health_items(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1751,19 +2504,25 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     warning = ""
     if not comparison["remote_ok"]:
         warning = """
-        <div class="warning">No pude verificar que cuenta ve GPT porque produccion no respondio a tiempo. Usa <strong>Alinear cuenta + Refresh IBKR</strong> para publicar cuenta y traer datos frescos en un solo paso.</div>
+        <div class="warning">No pude verificar que cuenta ve GPT porque produccion no respondio a tiempo. Usa <strong>Alinear/Publicar rapido</strong> para dejar contexto disponible; usa refresh profundo IBKR solo si necesitas contratos frescos.</div>
         """
     elif comparison["needs_refresh"]:
         warning = """
-        <div class="warning">La seleccion local no coincide con lo que GPT ve. Usa <strong>Alinear cuenta + Refresh IBKR</strong>; la consola publica la cuenta, refresca broker/opciones y luego verifica produccion.</div>
+        <div class="warning">La seleccion local no coincide con lo que GPT ve. Usa <strong>Alinear/Publicar rapido</strong>; no hace falta correr opciones profundas para corregir contexto GPT.</div>
+        """
+    elif comparison["inferred_from_local"]:
+        warning = """
+        <div class="warning">Produccion respondio, pero no devolvio campo de cuenta en este endpoint. La consola muestra la cuenta local activa/publicada como referencia operativa.</div>
         """
     elif not comparison["published_scope"]:
         warning = """
-        <div class="warning">No hay contexto publicado para GPT. Usa <strong>Alinear cuenta + Refresh IBKR</strong>. Si IBKR no responde, la consola intenta publicar la cuenta como fallback.</div>
+        <div class="warning">No hay contexto publicado para GPT. Usa <strong>Alinear/Publicar rapido</strong>. IBKR/opciones es un paso separado.</div>
         """
     remote_status = "cached" if operator_payload.get("cached") else ("ok" if operator_payload.get("ok") else "timeout" if "timed out" in str(operator_payload.get("error") or "").lower() else "blocked")
-    published_value = comparison["published_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
-    if comparison["missing_published_context"]:
+    published_value = comparison["display_alias"] or ("unavailable" if not comparison["remote_ok"] else "pendiente")
+    if comparison["inferred_from_local"]:
+        published_note = "remoto sin campo cuenta; mostrando seleccion local scope=" + (comparison["display_scope"] or "pendiente")
+    elif comparison["missing_published_context"]:
         published_note = "sin cuenta publicada; GPT remoto aun no ve " + (comparison["selected_scope"] or "la seleccion local")
     elif comparison["cached"]:
         published_note = "cache=" + comparison["cache_age_label"] + (" | live_error=" + comparison["live_error"] if comparison["live_error"] else "")
@@ -1772,7 +2531,9 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     else:
         published_note = "scope=" + (comparison["published_scope"] or "pendiente")
     return """
-    <section class="panel hero-panel">
+    <details class="panel support-details context-details">
+      <summary>Contexto activo Stock Ultimus Console</summary>
+      <section class="hero-panel embedded-panel">
       <div>
         <p class="eyebrow">Contexto activo</p>
         <h1>Stock Ultimus Console</h1>
@@ -1784,12 +2545,9 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
         {snapshot}
         {operator}
       </div>
-      <form method="post" action="/refresh-remote" class="hero-actions" data-busy="Actualizando estado remoto" data-busy-detail="Leyendo GPT/alertas desde produccion. No cambia cuenta ni conecta con IBKR.">
-        <button>Actualizar estado</button>
-        <span>Relee lo que produccion ya tiene publicado. No cambia cuenta ni refresca IBKR.</span>
-      </form>
       {warning}
-    </section>
+      </section>
+    </details>
     """.format(
         selected=render_metric(
             "Seleccion local",
@@ -1815,9 +2573,450 @@ def render_console_context(active: dict[str, Any], snapshot: dict[str, Any], ope
     )
 
 
-def render_console_actions(operator_payload: dict[str, Any] | None = None) -> str:
+
+
+def coberturas_form_value(context: dict[str, Any], key: str) -> str:
+    value = context.get(key)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def coberturas_badge(value: Any) -> str:
+    state = str(value or "UNKNOWN").upper()
+    klass = "neutral"
+    if state.startswith("REVIEW"):
+        klass = "ok"
+    elif state in {"WAIT_DATA", "WAIT_MARKET", "UNKNOWN"}:
+        klass = "warn"
+    elif "MANAGE" in state:
+        klass = "info"
+    elif "BLOCK" in state:
+        klass = "risk"
+    return '<span class="badge {}">{}</span>'.format(klass, html_escape(state))
+
+
+
+
+def coberturas_display_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if str(payload.get("decision") or "").upper() == "REVIEW_RSP_COVERAGE_PATHS":
+        rows: list[dict[str, Any]] = []
+        for key in ["top_put_candidates", "top_call_candidates"]:
+            values = payload.get(key)
+            if isinstance(values, list):
+                rows.extend(item for item in values[:3] if isinstance(item, dict))
+        return rows
+    candidates = payload.get("top_candidates")
+    return candidates if isinstance(candidates, list) else []
+
+
+def coberturas_money(value: Any) -> str:
+    number = console_float_or_none(value)
+    if number is None:
+        return "pendiente"
+    return "${:,.2f}".format(number)
+
+
+def coberturas_plain(value: Any, fallback: str = "pendiente") -> str:
+    if value is None or value == "":
+        return fallback
+    return str(value)
+
+
+def coberturas_prob_label(probability: Any) -> str:
+    if not isinstance(probability, dict) or not probability.get("available"):
+        return "probabilidad pendiente"
+    otm = probability.get("probability_otm")
+    assignment = probability.get("probability_assignment")
+    return "OTM {}% / asignacion {}%".format(coberturas_plain(otm), coberturas_plain(assignment))
+
+
+def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) -> str:
+    scenarios = payload.get("strategy_scenarios") if isinstance(payload.get("strategy_scenarios"), dict) else {}
+    sell_put = scenarios.get("sell_put") if isinstance(scenarios.get("sell_put"), dict) else {}
+    buy_write = scenarios.get("buy_100_sell_call") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {}
+
+    def card(title: str, scenario: dict[str, Any], max_key: str, capital_key: str) -> str:
+        probability = scenario.get("probability") if isinstance(scenario.get("probability"), dict) else {}
+        available = "Datos suficientes para comparar" if scenario.get("available") else "Datos incompletos"
+        return """
+        <div class="scenario-card">
+          <div class="scenario-head"><b>{title}</b>{badge}</div>
+          <div class="scenario-lines">
+            <span>Strike <strong>{strike}</strong></span>
+            <span>Exp <strong>{exp}</strong></span>
+            <span>Prima <strong>{premium}</strong></span>
+            <span>{capital_label} <strong>{capital}</strong></span>
+            <span>Margen IBKR <strong>{margin}</strong></span>
+            <span>Capital decision <strong>{decision_capital}</strong></span>
+            <span>Fuente capital <strong>{capital_source}</strong></span>
+            <span>Retorno capital <strong>{return_margin}</strong></span>
+            <span>Max ganancia <strong>{max_profit}</strong></span>
+            <span>Breakeven <strong>{breakeven}</strong></span>
+          </div>
+          <p class="muted">{probability} · Gamma: {gamma_status}</p>
+        </div>
+        """.format(
+            title=html_escape(title),
+            badge=coberturas_badge(available),
+            strike=html_escape(coberturas_plain(scenario.get("strike"))),
+            exp=html_escape(coberturas_plain(scenario.get("expiration"))),
+            premium=html_escape(coberturas_money(scenario.get("premium"))),
+            capital_label=html_escape("Capital" if capital_key == "cash_secured_notional" else "Debito neto"),
+            capital=html_escape(coberturas_money(scenario.get(capital_key))),
+            margin=html_escape(coberturas_money(scenario.get("ibkr_initial_margin_required"))),
+            decision_capital=html_escape(coberturas_money(scenario.get("decision_capital_required"))),
+            capital_source=html_escape(coberturas_plain(scenario.get("decision_capital_source"))),
+            return_margin=html_escape((str(scenario.get("decision_return_on_capital_pct")) + "%") if scenario.get("decision_return_on_capital_pct") is not None else "pendiente"),
+            max_profit=html_escape(coberturas_money(scenario.get(max_key))),
+            breakeven=html_escape(coberturas_plain(scenario.get("breakeven"))),
+            probability=html_escape(coberturas_prob_label(probability)),
+            gamma_status=html_escape(coberturas_plain((scenario.get("gamma_alignment") or {}).get("status"))),
+        )
+
+    recommendation = payload.get("strategy_recommendation") if isinstance(payload.get("strategy_recommendation"), dict) else {}
+    rec_html = ""
+    if recommendation:
+        sensitivity = recommendation.get("margin_decision_sensitivity") if isinstance(recommendation.get("margin_decision_sensitivity"), dict) else {}
+        rec_html = '<div class="notice"><b>Recomendacion:</b> {status}<br>{reason}<br><b>Margen:</b> {margin_note}</div>'.format(
+            status=html_escape(recommendation.get("status") or "pendiente"),
+            reason=html_escape(recommendation.get("reason") or ""),
+            margin_note=html_escape(sensitivity.get("note") or "Sensibilidad de margen pendiente."),
+        )
+    html_block = card("Sell put", sell_put, "max_profit", "cash_secured_notional") + card(
+        "Comprar 100 + sell call",
+        buy_write,
+        "max_profit_if_called",
+        "net_debit",
+    )
+    if compact:
+        return rec_html + '<div class="scenario-grid compact">{}</div>'.format(html_block)
+    return rec_html + '<div class="scenario-grid">{}</div>'.format(html_block)
+
+
+def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = False) -> str:
+    plan = payload.get("strategy_operating_plan") if isinstance(payload.get("strategy_operating_plan"), dict) else {}
+    manager = payload.get("position_manager") if isinstance(payload.get("position_manager"), dict) else {}
+    journal = payload.get("learning_journal") if isinstance(payload.get("learning_journal"), dict) else {}
+    scenarios = payload.get("strategy_scenarios") if isinstance(payload.get("strategy_scenarios"), dict) else {}
+    sell_ev = ((scenarios.get("sell_put") or {}).get("expected_value") if isinstance(scenarios.get("sell_put"), dict) else {}) or {}
+    buy_ev = ((scenarios.get("buy_100_sell_call") or {}).get("expected_value") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {}) or {}
+    exit_rules = payload.get("exit_rules") if isinstance(payload.get("exit_rules"), dict) else {}
+    rule_items = []
+    for item in (exit_rules.get("global") or [])[:2]:
+        rule_items.append("<li>{}</li>".format(html_escape(item)))
+    body = """
+      <div class="scenario-grid compact">
+        <div class="scenario-card">
+          <div class="scenario-head"><b>Gestion</b>{status}</div>
+          <p class="muted">{action}</p>
+        </div>
+        <div class="scenario-card">
+          <div class="scenario-head"><b>Valor esperado</b></div>
+          <div class="scenario-lines">
+            <span>Sell put <strong>{sell_ev}</strong></span>
+            <span>Buy-write <strong>{buy_ev}</strong></span>
+          </div>
+        </div>
+        <div class="scenario-card">
+          <div class="scenario-head"><b>Bitacora</b></div>
+          <div class="scenario-lines">
+            <span>Cerradas <strong>{closed}</strong></span>
+            <span>Win rate <strong>{win_rate}</strong></span>
+          </div>
+          <p class="muted">{learning}</p>
+        </div>
+      </div>
+      <ul class="muted">{rules}</ul>
+    """.format(
+        status=coberturas_badge(manager.get("status") or "UNKNOWN"),
+        action=html_escape(manager.get("primary_action") or "Pendiente"),
+        sell_ev=html_escape(coberturas_money(sell_ev.get("estimated_value"))),
+        buy_ev=html_escape(coberturas_money(buy_ev.get("estimated_value"))),
+        closed=html_escape(journal.get("closed_count")),
+        win_rate=html_escape((str(journal.get("win_rate_pct")) + "%") if journal.get("win_rate_pct") is not None else "pendiente"),
+        learning=html_escape(journal.get("next_learning_goal") or "Registrar operaciones para calibrar."),
+        rules="".join(rule_items) or "<li>Sin reglas cargadas.</li>",
+    )
+    if compact:
+        return body
+    return '<section class="panel"><h2>Plan operativo</h2>{}</section>'.format(body)
+
+def render_coberturas_rsp_page(message: str = "") -> bytes:
+    payload = shared_coberturas_engine.build_recommendation(RUNTIME)
+    context = payload.get("manual_context") if isinstance(payload.get("manual_context"), dict) else {}
+    position = payload.get("position") if isinstance(payload.get("position"), dict) else {}
+    candidates = coberturas_display_candidates(payload)
+    rows = []
+    for item in candidates:
+        rows.append("""
+          <tr>
+            <td>{side}</td><td>{exp}</td><td>{dte}</td><td>{strike}</td><td>{delta}</td>
+            <td>{bid}</td><td>{ask}</td><td>{mid}</td><td>{premium}</td><td>{score}</td><td>{why}</td>
+          </tr>
+        """.format(
+            side=html_escape(item.get("side")),
+            exp=html_escape(item.get("expiration")),
+            dte=html_escape(item.get("dte")),
+            strike=html_escape(item.get("strike")),
+            delta=html_escape(item.get("delta")),
+            bid=html_escape(item.get("bid")),
+            ask=html_escape(item.get("ask")),
+            mid=html_escape(item.get("mid")),
+            premium=html_escape(item.get("premium_100")),
+            score=html_escape(item.get("coberturas_score")),
+            why=html_escape("; ".join(item.get("coberturas_reasons") or item.get("coberturas_blockers") or [])),
+        ))
+    blocker_items = "".join("<li>{}</li>".format(html_escape(item)) for item in payload.get("blockers") or [])
+    scenarios_html = render_coberturas_scenarios(payload)
+    operating_plan_html = render_coberturas_operating_plan(payload)
+    if not blocker_items:
+        blocker_items = "<li>Sin bloqueadores criticos detectados.</li>"
+    notice = '<div class="notice">{}</div>'.format(html_escape(message)) if message else ""
+    body = """
+    <!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Stock Ultimus | Coberturas RSP</title>
+        <style>
+          :root {{ --ink:#111827; --muted:#5b6472; --paper:#f4f7fb; --card:#ffffff; --soft:#f8fafc; --accent:#11725f; --line:#d9e2ec; --warn:#a45f09; --risk:#b42318; --info:#2563eb; --display: ui-serif, Georgia, Cambria, "Times New Roman", serif; --body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+          body {{ margin:0; font-family:var(--body); color:var(--ink); background:var(--paper); }}
+          main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
+          h1 {{ font-family:var(--display); font-size:3.1rem; line-height:1; margin:0 0 12px; letter-spacing:0; }}
+          h2 {{ margin:0 0 12px; font-size:1.25rem; }}
+          a {{ color:var(--accent); font-weight:800; }}
+          .panel,.metric,.notice {{ border:1px solid var(--line); background:var(--card); border-radius:8px; box-shadow:0 8px 24px rgba(17,24,39,.06); }}
+          .panel {{ padding:18px; margin:16px 0; }}
+          .notice {{ padding:12px 16px; margin:14px 0; }}
+          .guardrail {{ border-left:6px solid var(--warn); background:#fff7ed; padding:13px 15px; border-radius:12px; line-height:1.45; }}
+          .topbar {{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; }}
+          .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }}
+          .scenario-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }}
+          .scenario-grid.compact {{ grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin:10px 0; }}
+          .scenario-card {{ border:1px solid var(--line); background:#ffffff; border-radius:8px; padding:14px; box-shadow:none; }}
+          .scenario-head {{ display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:10px; }}
+          .scenario-lines {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 10px; }}
+          .scenario-lines span {{ color:var(--muted); font-size:12px; }}
+          .scenario-lines strong {{ display:block; color:var(--ink); font-family:var(--display); font-size:18px; margin-top:2px; }}
+          .metric {{ padding:14px; }}
+          .metric span {{ display:block; color:var(--muted); font-size:.78rem; text-transform:uppercase; font-weight:900; }}
+          .metric strong {{ display:block; font-family:var(--display); font-size:1.55rem; margin-top:4px; }}
+          .layout {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.78fr); gap:16px; align-items:start; }}
+          label {{ display:block; color:var(--muted); font-size:.78rem; font-weight:900; text-transform:uppercase; margin:10px 0 5px; }}
+          input, select, textarea {{ width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:8px; background:#ffffff; padding:10px; font-size:14px; color:var(--ink); font-family:var(--body); }}
+          textarea {{ min-height:78px; resize:vertical; }}
+          button,.button {{ display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--accent); background:var(--accent); color:white; border-radius:999px; padding:10px 14px; font-weight:900; text-decoration:none; cursor:pointer; }}
+          .button.secondary {{ background:#ffffff; color:var(--ink); border-color:var(--line); }}
+          table {{ width:100%; border-collapse:collapse; min-width:900px; }}
+          th,td {{ padding:10px 11px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; vertical-align:top; }}
+          th {{ color:var(--muted); text-transform:uppercase; font-size:11px; }}
+          .tablewrap {{ overflow:auto; border:1px solid var(--line); border-radius:8px; background:#ffffff; }}
+          .badge {{ display:inline-flex; border-radius:999px; padding:5px 9px; color:white; font-size:12px; font-weight:900; }}
+          .badge.ok {{ background:#047857; }} .badge.warn {{ background:#b45309; }} .badge.risk {{ background:#b42318; }} .badge.info {{ background:#2563eb; }} .badge.neutral {{ background:#64748b; }}
+          .muted {{ color:var(--muted); line-height:1.45; }}
+          pre {{ background:#111827; color:#e5e7eb; border-radius:14px; padding:14px; overflow:auto; font-size:12px; }}
+          @media (max-width: 900px) {{ .layout {{ grid-template-columns:1fr; }} h1 {{ font-size:2.3rem; }} }}
+        </style>
+      </head>
+      <body>
+        <main>
+          <div class="topbar"><a class="button secondary" href="/console">Volver a consola</a><a class="button secondary" href="/coberturas/rsp">Ver JSON</a></div>
+          <p class="muted">Stock Ultimus Console</p>
+          <h1>Coberturas RSP</h1>
+          <div class="guardrail"><b>Guardrail:</b> modulo local de recomendacion. No coloca ordenes, no autoriza ejecucion y V0 se limita a RSP con maximo 1 contrato inicial.</div>
+          {notice}
+          <section class="grid">
+            <div class="metric"><span>Decision</span><strong>{decision}</strong></div>
+            <div class="metric"><span>Modo</span><strong>{mode}</strong></div>
+            <div class="metric"><span>Spot RSP</span><strong>{spot}</strong></div>
+            <div class="metric"><span>Candidatos</span><strong>{candidate_count}</strong></div>
+          </section>
+          <section class="panel">
+            <h2>Comparacion de estrategia</h2>
+            {scenarios}
+          </section>
+          {operating_plan}
+          <section class="layout">
+            <div class="panel">
+              <h2>Gamma y niveles del dia</h2>
+              <form method="post" action="/coberturas/rsp/manual_context">
+                <label>Modo posicion</label>
+                <select name="position_mode">
+                  <option value="AUTO">Auto desde IBKR</option>
+                  <option value="NO_SHARES">Sin acciones</option>
+                  <option value="WITH_SHARES">Con acciones</option>
+                  <option value="SHORT_PUT_OPEN">Put abierta</option>
+                  <option value="SHORT_CALL_OPEN">Call abierta</option>
+                </select>
+                <label>Lectura completa de gamma / captura</label>
+                <textarea name="gamma_blob" placeholder="Pega aqui el texto que salga de la captura: spot, soportes, resistencias, expected move, call wall, put wall, sesgo gamma.">{gamma_blob}</textarea>
+                <label>Spot RSP</label><input name="spot" value="{spot_value}">
+                <label>Soportes separados por coma</label><input name="support_levels" value="{supports}">
+                <label>Resistencias separadas por coma</label><input name="resistance_levels" value="{resistances}">
+                <label>Expected move bajo</label><input name="expected_move_low" value="{expected_low}">
+                <label>Expected move alto</label><input name="expected_move_high" value="{expected_high}">
+                <label>Call wall</label><input name="call_wall" value="{call_wall}">
+                <label>Put wall</label><input name="put_wall" value="{put_wall}">
+                <label>Sesgo gamma</label><input name="gamma_bias" value="{gamma_bias}">
+                <label>Notas gamma / captura</label><textarea name="gamma_notes">{gamma_notes}</textarea>
+                <label>Notas grafico</label><textarea name="chart_notes">{chart_notes}</textarea>
+                <button type="submit">Guardar contexto RSP</button>
+              </form>
+            </div>
+            <div class="panel">
+              <h2>Lectura actual</h2>
+              <p><b>Estado posicion:</b> {position_state}</p>
+              <p><b>Razon:</b> {mode_reason}</p>
+              <p><b>Siguiente paso:</b> {next_action}</p>
+              <h2>Bloqueadores</h2>
+              <ul>{blockers}</ul>
+              <p class="muted">Despues de guardar gamma, corre Refresh RSP semanal para traer cadena RSP 7-14 DTE fresca desde IBKR.</p>
+              <form method="post" action="/coberturas/rsp/refresh"><button class="secondary" type="submit">Refresh RSP semanal IBKR</button></form>
+            </div>
+          </section>
+          <section class="panel">
+            <h2>Strikes candidatos</h2>
+            <div class="tablewrap"><table>
+              <thead><tr><th>Lado</th><th>Exp</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Prima x100</th><th>Score</th><th>Lectura</th></tr></thead>
+              <tbody>{rows}</tbody>
+            </table></div>
+          </section>
+          <section class="panel">
+            <h2>Bitacora RSP</h2>
+            <form method="post" action="/coberturas/rsp/journal">
+              <div class="grid">
+                <div><label>Estrategia</label><select name="strategy"><option>SELL_PUT</option><option>BUY_100_SELL_CALL</option><option>MANAGE_OPEN_POSITION</option></select></div>
+                <div><label>Estado</label><select name="status"><option>OPEN</option><option>CLOSED</option><option>ROLLED</option><option>ASSIGNED</option><option>EXPIRED</option></select></div>
+                <div><label>P/L realizado</label><input name="realized_pnl" placeholder="0.00"></div>
+              </div>
+              <label>Decision / notas</label><textarea name="notes" placeholder="Que hicimos y por que."></textarea>
+              <button type="submit">Registrar en bitacora</button>
+            </form>
+          </section>
+          <details class="panel"><summary><b>Payload tecnico</b></summary><pre>{payload_json}</pre></details>
+        </main>
+      </body>
+    </html>
+    """.format(
+        notice=notice,
+        decision=coberturas_badge(payload.get("decision")),
+        mode=html_escape(payload.get("mode")),
+        spot=html_escape(payload.get("spot")),
+        candidate_count=html_escape(payload.get("candidate_count")),
+        scenarios=scenarios_html,
+        operating_plan=operating_plan_html,
+        gamma_blob=html_escape(coberturas_form_value(context, "gamma_blob")),
+        spot_value=html_escape(coberturas_form_value(context, "spot")),
+        supports=html_escape(coberturas_form_value(context, "support_levels")),
+        resistances=html_escape(coberturas_form_value(context, "resistance_levels")),
+        expected_low=html_escape(coberturas_form_value(context, "expected_move_low")),
+        expected_high=html_escape(coberturas_form_value(context, "expected_move_high")),
+        call_wall=html_escape(coberturas_form_value(context, "call_wall")),
+        put_wall=html_escape(coberturas_form_value(context, "put_wall")),
+        gamma_bias=html_escape(coberturas_form_value(context, "gamma_bias")),
+        gamma_notes=html_escape(coberturas_form_value(context, "gamma_notes")),
+        chart_notes=html_escape(coberturas_form_value(context, "chart_notes")),
+        position_state=coberturas_badge(position.get("state")),
+        mode_reason=html_escape(payload.get("mode_reason")),
+        next_action=html_escape(payload.get("next_action")),
+        blockers=blocker_items,
+        rows="".join(rows) or '<tr><td colspan="11">Sin candidatos RSP todavia. Guarda gamma y corre Refresh RSP semanal IBKR.</td></tr>',
+        payload_json=html_escape(json.dumps(payload, indent=2, sort_keys=True, default=str)),
+    )
+    return body.encode("utf-8")
+
+
+def render_coberturas_inline_panel() -> str:
+    payload = shared_coberturas_engine.build_recommendation(RUNTIME)
+    context = payload.get("manual_context") if isinstance(payload.get("manual_context"), dict) else {}
+    position = payload.get("position") if isinstance(payload.get("position"), dict) else {}
+    candidates = coberturas_display_candidates(payload)
+    rows = []
+    for item in candidates[:3]:
+        rows.append(
+            """
+            <tr>
+              <td>{side}</td><td>{exp}</td><td>{dte}</td><td>{strike}</td>
+              <td>{delta}</td><td>{premium}</td><td>{score}</td>
+            </tr>
+            """.format(
+                side=html_escape(item.get("side")),
+                exp=html_escape(item.get("expiration")),
+                dte=html_escape(item.get("dte")),
+                strike=html_escape(item.get("strike")),
+                delta=html_escape(item.get("delta")),
+                premium=html_escape(item.get("premium_100")),
+                score=html_escape(item.get("coberturas_score")),
+            )
+        )
+    blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
+    blocker_text = " · ".join(str(item) for item in blockers) if blockers else "Sin bloqueadores criticos detectados."
+    gamma_blob = coberturas_form_value(context, "gamma_blob") or coberturas_form_value(context, "gamma_notes")
+    scenarios_html = render_coberturas_scenarios(payload, compact=True)
+    operating_plan_html = render_coberturas_operating_plan(payload, compact=True)
+    return """
+    <section id="coberturas-rsp" class="panel coberturas-panel">
+      <div class="section-head">
+        <div>
+          <h2>Coberturas RSP</h2>
+          <p>Estrategia independiente dentro de esta misma consola: RSP, 1 lote inicial, recomendacion manual y sin ejecucion automatica.</p>
+        </div>
+        <a class="tile inline-link mini-tile" href="/coberturas/rsp">JSON</a>
+      </div>
+      <div class="coberturas-grid">
+        <div class="coberturas-form">
+          <form method="post" action="/coberturas/rsp/manual_context" data-busy="Guardando lectura RSP">
+            <input type="hidden" name="return_to" value="console">
+            <input type="hidden" name="position_mode" value="AUTO">
+            <label>Lectura de gamma / screenshot</label>
+            <textarea name="gamma_blob" placeholder="Pega aqui una sola lectura: RSP spot, soportes, resistencias, expected move bajo/alto, call wall, put wall y sesgo gamma.">{gamma_blob}</textarea>
+            <p><button type="submit">Guardar lectura RSP</button></p>
+          </form>
+          <p class="muted">Si me das una captura, primero la convertimos a este bloque de texto; despues lo pegamos aqui y la consola toma los niveles.</p>
+        </div>
+        <div class="coberturas-read">
+          <div class="capacity-grid">
+            <div class="metric status-metric"><span>Decision</span><strong>{decision}</strong></div>
+            <div class="metric"><span>Modo</span><strong>{mode}</strong></div>
+            <div class="metric"><span>Spot</span><strong>{spot}</strong></div>
+            <div class="metric status-metric"><span>Posicion</span><strong>{position}</strong></div>
+          </div>
+          <p class="why-line">{next_action}</p>
+          {scenarios}
+          {operating_plan}
+          <p class="review-line">{blockers}</p>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Lado</th><th>Exp</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Prima</th><th>Score</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table></div>
+          <form method="post" action="/coberturas/rsp/refresh" data-background-submit="true" data-status-target="rsp-refresh-status" data-busy="Consultando RSP semanal en IBKR" data-busy-detail="Lee RSP 7-14 DTE desde IBKR. No autoriza ordenes. Puedes seguir en esta pagina.">
+            <input type="hidden" name="return_to" value="console">
+            <button class="secondary" type="submit">Refresh RSP semanal IBKR</button>
+          </form>
+          <p id="rsp-refresh-status" class="muted">Sin refresh RSP corriendo.</p>
+        </div>
+      </div>
+    </section>
+    """.format(
+        gamma_blob=html_escape(gamma_blob),
+        decision=coberturas_badge(payload.get("decision")),
+        mode=html_escape(payload.get("mode")),
+        spot=html_escape(payload.get("spot")),
+        position=coberturas_badge(position.get("state")),
+        next_action=html_escape(payload.get("next_action")),
+        scenarios=scenarios_html,
+        operating_plan=operating_plan_html,
+        blockers=html_escape(blocker_text),
+        rows="".join(rows) or '<tr><td colspan="7">Sin candidatos RSP todavia. Guarda gamma y corre Refresh RSP semanal IBKR.</td></tr>',
+    )
+
+
+def render_console_actions(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any] | None = None) -> str:
     operator_payload = operator_payload if isinstance(operator_payload, dict) else {}
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    comparison = selected_vs_published(active, snapshot, operator_payload)
     counts = operator_alert_counts(data)
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
     alerts = data.get("active_alerts") if isinstance(data.get("active_alerts"), list) else []
@@ -1835,19 +3034,23 @@ def render_console_actions(operator_payload: dict[str, Any] | None = None) -> st
         )
     next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
     next_action = next_actions[0] if next_actions else {}
-    account = data.get("account_alias") or data.get("account_scope") or "pendiente"
+    account = comparison["display_alias"] or data.get("account_alias") or data.get("account_scope") or "pendiente"
     status = data.get("status") or ("OK" if operator_payload.get("ok") else operator_payload.get("error") or "UNKNOWN")
     return """
-    <section class="panel">
-      <h2>Administracion desde esta consola</h2>
+    <section class="panel embedded-support-panel">
+      <div class="section-head">
+        <h2>Administracion desde esta consola</h2>
+        <p>Accesos de soporte para administrar sin salir del cockpit principal.</p>
+      </div>
       <div class="tiles">
         <div class="tile">Alertas y acciones<span>{open} pendientes: {risk} riesgo, {watch} watch, {action} action. Usa los botones de cada tarjeta aqui mismo.</span></div>
         <div class="tile">Contexto GPT activo<span>status={status} | cuenta={account}. Actualiza con el boton de arriba; no necesitas abrir otro dashboard.</span></div>
         <div class="tile">Siguiente paso<span>{next_label}</span></div>
         <div class="tile">Futuros intradia<span>{intraday_message}</span></div>
+        <a class="tile inline-link" href="#coberturas-rsp">Coberturas RSP<span>Panel integrado para vender put / covered call en RSP. Recomendacion manual, sin ordenes.</span></a>
         <div class="tile">Historial local visible<span>{closed} alerta(s) cerrada(s) o revisada(s) quedan debajo de Alertas V32.</span></div>
       </div>
-      <p class="muted">No hace falta salir de esta consola para administrar cuenta, refrescar IBKR, revisar alertas o registrar decisiones. Rutas de diagnostico protegidas, no requeridas para operar desde consola: /gpt_v32_operator_today · /v32_operator_dashboard · /v32_operator_daily_summary_email/preview · /v32_operator_tracking_status.</p>
+      <p class="muted">No hace falta salir de esta consola para administrar cuenta, refrescar IBKR, revisar alertas o registrar decisiones. Rutas de diagnostico protegidas: /gpt_v32_operator_today · /v32_operator_dashboard · /coberturas · /v32_operator_daily_summary_email/preview · /v32_operator_tracking_status.</p>
     </section>
     """.format(
         open=html_escape(counts["open"]),
@@ -1860,6 +3063,30 @@ def render_console_actions(operator_payload: dict[str, Any] | None = None) -> st
         next_label=html_escape(next_action.get("label") or "Sin accion inmediata; mantener monitoreo desde la consola."),
         intraday_message=html_escape(intraday_message),
     )
+
+
+def render_notification_test_panel() -> str:
+    return """
+    <details class="panel support-details">
+      <summary>Prueba de notificaciones</summary>
+      <div class="section-head">
+        <h2>Prueba de notificaciones</h2>
+        <p>Valida canales externos sin generar senales ni ordenes. Preview no envia; prueba forzada envia un resumen operativo.</p>
+      </div>
+      <div class="hero-actions">
+        <form method="post" action="/notification-preview" data-busy="Leyendo preview notificaciones" data-busy-detail="Consulta email/Pushover en modo preview. No envia.">
+          <button>Preview alertas</button>
+        </form>
+        <form method="post" action="/notification-test-email" data-busy="Enviando email de prueba" data-busy-detail="Envio forzado de resumen operativo. No autoriza ordenes.">
+          <button class="secondary">Enviar email prueba</button>
+        </form>
+        <form method="post" action="/notification-test-push" data-busy="Enviando push de prueba" data-busy-detail="Envio forzado Pushover operativo. No autoriza ordenes.">
+          <button class="secondary">Enviar push prueba</button>
+        </form>
+        <span>Usa estas pruebas si no ves alertas en correo o movil.</span>
+      </div>
+    </details>
+    """
 
 
 def compact_contract_value(value: Any, suffix: str = "") -> str:
@@ -1945,6 +3172,19 @@ def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[st
             source = "buying_power"
         else:
             source = "N/D"
+    active = active_profile()
+    account_alias = first_published_context_value(
+        data.get("account_alias"),
+        context.get("account_alias"),
+        snapshot.get("account_alias"),
+        active.get("account_alias"),
+    )
+    account_scope = first_published_context_value(
+        data.get("account_scope"),
+        context.get("account_scope"),
+        snapshot.get("account_scope"),
+        active.get("account_scope"),
+    )
     return {
         "available": available_capacity is not None,
         "available_capacity": available_capacity,
@@ -1957,8 +3197,8 @@ def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[st
         "initial_margin_required": console_float_or_none(capacity.get("initial_margin_required", context.get("initial_margin_required"))),
         "maintenance_margin_required": console_float_or_none(capacity.get("maintenance_margin_required", context.get("maintenance_margin_required"))),
         "generated_at": capacity.get("generated_at") or context.get("generated_at") or snapshot.get("generated_at"),
-        "account_alias": data.get("account_alias") or context.get("account_alias") or snapshot.get("account_alias"),
-        "account_scope": data.get("account_scope") or context.get("account_scope") or snapshot.get("account_scope"),
+        "account_alias": account_alias,
+        "account_scope": account_scope,
         "sensitive_identifiers_excluded": True,
     }
 
@@ -2425,9 +3665,9 @@ def operator_alert_counts(data: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def operator_state_message(data: dict[str, Any]) -> str:
+def operator_state_message(data: dict[str, Any], account_hint: str = "") -> str:
     counts = operator_alert_counts(data)
-    account = data.get("account_alias") or data.get("account_scope") or "unknown"
+    account = account_hint or data.get("account_alias") or data.get("account_scope") or "unknown"
     return (
         "Estado actualizado desde produccion: {status} | GPT ve cuenta={account} | "
         "pendientes={open} ({risk} riesgo, {watch} watch, {action} action) | cerradas={closed}."
@@ -2639,7 +3879,7 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
         label=action.get("label") or "Sin accion inmediata",
     )
     return """
-    <section class="panel">
+    <section class="panel operator-alerts-panel">
       <div class="section-head">
         <h2>Alertas Operables</h2>
         <p>{next_action}</p>
@@ -2672,14 +3912,16 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
                 <h3>{alias}</h3>
                 <p>scope: <strong>{scope}</strong></p>
                 <p class="muted">{status}. ID real oculto.</p>
-                <p class="muted">Boton recomendado: alinea la cuenta local con GPT y refresca IBKR en un solo proceso.</p>
+                <p class="muted">Boton recomendado: alinea cuenta y publica contexto rapido. El refresh profundo de IBKR queda en Avanzado.</p>
               </div>
               <div class="actions">
-                <form method="post" action="/select-refresh" data-busy="Alineando cuenta + Refresh IBKR" data-busy-detail="Selecciona la cuenta, publica contexto para GPT, conecta con IBKR y refresca broker/opciones. Puede tardar; no autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Alinear cuenta + Refresh IBKR</button></form>
+                <form method="post" action="/select-refresh" data-busy="Alineando cuenta rapido" data-busy-detail="Selecciona cuenta y publica contexto para GPT sin escanear opciones. No autoriza ordenes."><input name="alias" value="{alias}" type="hidden"><button>Alinear cuenta rapido</button></form>
                 <details class="advanced-actions">
                   <summary>Avanzado</summary>
                   <form method="post" action="/select" data-busy="Publicando cuenta para GPT" data-busy-detail="Solo publica la cuenta para GPT; no conecta con IBKR."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Solo usar cuenta</button></form>
                   <form method="post" action="/account-capacity" data-busy="Leyendo capacidad IBKR" data-busy-detail="Lee solo AccountSummary de la cuenta seleccionada y publica margen/capital disponible."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Solo capacidad</button></form>
+                  <form method="post" action="/bridge" data-busy="Refresh profundo IBKR" data-busy-detail="Escanea broker/opciones con timeout corto. Si no termina, no invalida el contexto publicado."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Refresh IBKR corto</button></form>
+                  <form method="post" action="/bridge-deep" data-busy="Refresh profundo largo" data-busy-detail="Escaneo IBKR/opciones con mayor timeout. Usalo solo cuando TWS este estable y necesites contratos frescos."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Refresh profundo opciones</button></form>
                   <form method="post" action="/daily-open" data-busy="Daily open en curso" data-busy-detail="Ejecutando checklist local de apertura."><input name="alias" value="{alias}" type="hidden"><button class="secondary">Daily open</button></form>
                 </details>
               </div>
@@ -2696,6 +3938,96 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
     return "\n".join(profile_cards)
 
 
+def is_daily_open_result(result: dict[str, Any]) -> bool:
+    return "daily_open_checklist.py" in str(result.get("command") or "")
+
+
+def status_word(ok: Any, good: str = "OK", bad: str = "REVISAR") -> str:
+    if ok is True:
+        return good
+    if ok is False:
+        return bad
+    return "N/D"
+
+
+def render_daily_open_summary(result: dict[str, Any]) -> str:
+    if not is_daily_open_result(result):
+        return ""
+    report = load_json_file(DAILY_OPEN_CHECKLIST_PATH)
+    if not report:
+        return """
+        <div class="warning">Apertura diaria no dejo reporte estructurado. Revisa el detalle tecnico antes de asumir que termino bien.</div>
+        """
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    canslim = report.get("canslim_step") if isinstance(report.get("canslim_step"), dict) else {}
+    refresh = report.get("refresh_step") if isinstance(report.get("refresh_step"), dict) else {}
+    publish = report.get("publish_step") if isinstance(report.get("publish_step"), dict) else {}
+    ibkr_port = checks.get("ibkr_port") if isinstance(checks.get("ibkr_port"), dict) else {}
+    production_auth = checks.get("production_auth") if isinstance(checks.get("production_auth"), dict) else {}
+    operator_today = checks.get("v32_operator_today") if isinstance(checks.get("v32_operator_today"), dict) else {}
+    foundation = checks.get("foundation_health") if isinstance(checks.get("foundation_health"), dict) else {}
+    evidence = checks.get("operational_evidence_gate") if isinstance(checks.get("operational_evidence_gate"), dict) else {}
+    text = "\n".join([
+        str(refresh.get("stdout_tail") or ""),
+        str(publish.get("stdout_tail") or ""),
+        str(result.get("stdout_tail") or ""),
+        str(result.get("stderr_tail") or ""),
+    ])
+    ibkr_detail = "TWS/API alcanzable" if ibkr_port.get("ok") else "TWS/API no alcanzable"
+    if refresh.get("ok"):
+        ibkr_status = "OK"
+        ibkr_detail = "Bridge completo."
+    elif "IBKR conectado correctamente" in text and "positions request timed out" in text:
+        ibkr_status = "PARCIAL"
+        ibkr_detail = "Conecto y leyo precios; posiciones/portfolio no respondieron."
+    elif refresh.get("error"):
+        ibkr_status = "REVISAR"
+        ibkr_detail = str(refresh.get("error"))
+    else:
+        ibkr_status = status_word(refresh.get("ok"))
+    publish_detail = "Snapshot publicado." if publish.get("ok") else (str(publish.get("error") or "Render/publicacion no confirmo a tiempo."))
+    if "The read operation timed out" in str(publish.get("stdout_tail") or ""):
+        publish_detail = "Render recibio solicitud, pero no confirmo respuesta antes del timeout."
+    gpt_status = result.get("remote_verification_status") or ("OK" if operator_today.get("ok") else "NO CONFIRMADO")
+    overall = str(report.get("status") or "UNKNOWN")
+    level = "green" if overall in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"} and refresh.get("ok") else "amber"
+    if overall == "ACTION_REQUIRED" or refresh.get("ok") is False or publish.get("ok") is False:
+        level = "red"
+    return """
+    <div class="daily-open-summary summary-{level}">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Resultado operativo</p>
+          <h2>Apertura diaria: {overall}</h2>
+        </div>
+        <p>{next_action}</p>
+      </div>
+      <div class="tiles compact-status">
+        <div class="tile">CANSLIM<span>{canslim_status}. Candidatos actualizados si el paso marco OK.</span></div>
+        <div class="tile">IBKR/TWS<span>{ibkr_status}: {ibkr_detail}</span></div>
+        <div class="tile">Publicacion<span>{publish_status}: {publish_detail}</span></div>
+        <div class="tile">GPT/Produccion<span>{gpt_status}. Auth={production_status}; operador={operator_status}.</span></div>
+        <div class="tile">Foundation<span>{foundation_status}</span></div>
+        <div class="tile">Evidence Gate<span>{evidence_status}</span></div>
+      </div>
+    </div>
+    """.format(
+        level=html_escape(level),
+        overall=html_escape(overall),
+        next_action=html_escape(report.get("next_required_action") or "Sin siguiente accion reportada."),
+        canslim_status=html_escape(status_word(canslim.get("ok"))),
+        ibkr_status=html_escape(ibkr_status),
+        ibkr_detail=html_escape(ibkr_detail),
+        publish_status=html_escape(status_word(publish.get("ok"))),
+        publish_detail=html_escape(publish_detail),
+        gpt_status=html_escape(gpt_status),
+        production_status=html_escape(status_word(production_auth.get("ok"))),
+        operator_status=html_escape(status_word(operator_today.get("ok"))),
+        foundation_status=html_escape(str(foundation.get("status") or status_word(foundation.get("ok")))),
+        evidence_status=html_escape(str(evidence.get("state") or status_word(evidence.get("ok")))),
+    )
+
+
 def render_job_panel(job_id: str = "") -> tuple[str, str]:
     job = web_job(job_id)
     if not job:
@@ -2705,6 +4037,7 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
     result_html = ""
     if result:
         diagnostic = console_job_diagnostic(result)
+        daily_open_summary = render_daily_open_summary(result)
         verification_html = ""
         if "remote_verification_ok" in result:
             counts = result.get("remote_verification_counts") if isinstance(result.get("remote_verification_counts"), dict) else {}
@@ -2719,11 +4052,13 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
             )
         result_html = """
         {diagnostic}
+        {daily_open_summary}
         {verification}
         <p><strong>Resultado:</strong> returncode={returncode}</p>
         <pre>{stdout}{stderr}</pre>
         """.format(
             diagnostic=diagnostic,
+            daily_open_summary=daily_open_summary,
             verification=verification_html,
             returncode=html_escape(result.get("returncode")),
             stdout=html_escape(result.get("stdout_tail") or ""),
@@ -2785,7 +4120,47 @@ def console_job_diagnostic(result: dict[str, Any]) -> str:
     return ""
 
 
-def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "") -> bytes:
+def console_last_action_status(result: dict[str, Any]) -> str:
+    text = "\n".join([str(result.get("stdout_tail") or ""), str(result.get("stderr_tail") or "")])
+    if is_daily_open_result(result):
+        report = load_json_file(DAILY_OPEN_CHECKLIST_PATH)
+        status = str(report.get("status") or "UNKNOWN")
+        if status == "ACTION_REQUIRED":
+            return "APERTURA: requiere revision"
+        if status in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"}:
+            return "APERTURA: completada"
+        return "APERTURA: " + status
+    inferred_partial = "BRIDGE_TIMEOUT" in text and "FALLBACK_PUBLISHED" in text and "ok: True" in text
+    if result.get("partial_refresh_ok") or result.get("operator_status") == "PARTIAL_REFRESH_OK" or inferred_partial:
+        return "PARCIAL: contexto publicado, bridge IBKR no completo"
+    returncode_value = result.get("returncode")
+    try:
+        return "OK" if int(returncode_value or 0) == 0 else "REVISAR"
+    except Exception:
+        return "REVISAR"
+
+
+def console_last_action_summary(result: dict[str, Any]) -> str:
+    text = "\n".join([str(result.get("stdout_tail") or ""), str(result.get("stderr_tail") or "")])
+    if is_daily_open_result(result):
+        report = load_json_file(DAILY_OPEN_CHECKLIST_PATH)
+        status = str(report.get("status") or "UNKNOWN")
+        next_action = report.get("next_required_action") or "Revisar el resumen operativo de Apertura diaria."
+        if status == "ACTION_REQUIRED":
+            return "Apertura diaria corrio, pero no quedo lista para confiar sin revision. Siguiente paso: " + str(next_action)
+        return "Apertura diaria genero reporte: {}. Siguiente paso: {}".format(status, next_action)
+    inferred_partial = "BRIDGE_TIMEOUT" in text and "FALLBACK_PUBLISHED" in text and "ok: True" in text
+    if result.get("partial_refresh_ok") or result.get("operator_status") == "PARTIAL_REFRESH_OK" or inferred_partial:
+        return (
+            "El refresh IBKR no terminó a tiempo, pero la consola publicó contexto fallback a Render. "
+            "Puedes seguir leyendo estado/GPT; para datos frescos de opciones, reintenta Refresh IBKR cuando TWS esté estable."
+        )
+    if result.get("returncode") not in [0, "0", None]:
+        return "La última acción técnica requiere revisión. Abre el detalle solo si necesitas diagnosticar."
+    return "Última acción completada correctamente."
+
+
+def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "", question_answer: str = "") -> bytes:
     current_job = web_job(job_id)
     prefer_cache = True
     data = load_profiles()
@@ -2793,19 +4168,49 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     active = active_profile()
     snapshot = latest_master_snapshot()
     operator_payload = console_operator_payload(prefer_cache=prefer_cache)
+    v31_payloads = console_v31_payloads(prefer_cache=prefer_cache)
     reports = console_reports()
     result = result or web_last_result()
     refresh_meta, job_panel = render_job_panel(job_id)
+    manual_review_html = render_v31_manual_review_panel(v31_payloads)
+    coberturas_support = render_support_bundle(
+        "Coberturas RSP",
+        render_coberturas_inline_panel(),
+    )
+    v31_console_support = render_support_bundle(
+        "Estado Ejecutivo y Revision Manual V31",
+        render_v31_executive_panel(v31_payloads),
+        manual_review_html,
+    )
+    question_support = render_support_bundle(
+        "Pregunta operativa local",
+        render_local_question_panel(question_answer),
+    )
+    admin_support = render_support_bundle(
+        "Capacidad y administracion operativa",
+        render_account_capacity_panel(operator_payload, snapshot),
+        render_console_actions(active, snapshot, operator_payload),
+    )
 
     output = ""
     if result:
+        last_action_status = console_last_action_status(result)
+        last_action_summary = console_last_action_summary(result)
+        daily_open_summary = render_daily_open_summary(result)
+        output_open_attr = " open" if is_daily_open_result(result) and "requiere revision" in last_action_status.lower() else ""
         output = """
-        <section class="panel">
-          <h2>Ultima accion</h2>
+        <details class="panel support-details"{output_open_attr}>
+          <summary>Ultima accion tecnica: {status}</summary>
+          <p class="muted">{summary}</p>
+          {daily_open_summary}
           <p><strong>{command}</strong> | alias={alias} scope={scope} | returncode={returncode}</p>
           <pre>{stdout}{stderr}</pre>
-        </section>
+        </details>
         """.format(
+            output_open_attr=output_open_attr,
+            status=html_escape(last_action_status),
+            summary=html_escape(last_action_summary),
+            daily_open_summary=daily_open_summary,
             command=html_escape(result.get("command") or "Sin comando"),
             alias=html_escape(result.get("alias") or ""),
             scope=html_escape(result.get("account_scope") or ""),
@@ -2823,57 +4228,95 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         {refresh_meta}
         <title>Stock Ultimus Console</title>
         <style>
-          :root {{ --ink:#172019; --muted:#5d675f; --paper:#f7f2e8; --card:#fffaf0; --accent:#1d6b4f; --line:#d9cdb7; --warn:#9f4b1b; --risk:#b42318; }}
-          body {{ margin:0; font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif; color:var(--ink); background:radial-gradient(circle at top left,#e2f0dc,transparent 35%),linear-gradient(135deg,#f7f2e8,#eee2cc); }}
+          :root {{ --ink:#111827; --muted:#5b6472; --paper:#f4f7fb; --card:#ffffff; --soft:#f8fafc; --accent:#11725f; --accent-strong:#0f5f50; --line:#d9e2ec; --warn:#a45f09; --risk:#b42318; --info:#2563eb; --display: ui-serif, Georgia, Cambria, "Times New Roman", serif; --body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+          body {{ margin:0; font-family:var(--body); color:var(--ink); background:var(--paper); }}
           main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
-          h1 {{ font-size:3.4rem; line-height:.92; margin:0 0 12px; letter-spacing:0; }}
-          h2 {{ margin:0 0 12px; }}
-          h3 {{ margin:0; }}
-          .lede {{ color:var(--muted); max-width:720px; font-size:1.08rem; }}
-          .notice,.panel,.card {{ border:1px solid var(--line); background:rgba(255,250,240,.82); border-radius:22px; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
+          h1 {{ font-family:var(--display); font-size:3.25rem; line-height:1; margin:0 0 12px; letter-spacing:0; }}
+          h2 {{ margin:0 0 12px; font-size:1.25rem; }}
+          h3 {{ margin:0; font-size:1.05rem; }}
+          .lede,.body-text {{ color:var(--muted); max-width:720px; font-size:.95rem; line-height:1.45; }}
+          .notice,.panel,.card {{ border:1px solid var(--line); background:var(--card); border-radius:8px; box-shadow:0 8px 24px rgba(17,24,39,.06); }}
           .notice {{ padding:14px 18px; margin:22px 0; }}
-          .today-panel {{ border-color:#bfd7ff; background:#f7fbff; }}
+          .today-panel {{ border-color:#bfd7ff; border-left:6px solid #2563eb; background:#f7fbff; }}
+          .today-panel .section-head {{ gap:14px; }}
+          .today-panel .section-head h2 {{ margin-bottom:0; font-size:1.15rem; }}
+          .today-panel .section-head p:last-child {{ font-size:.92rem; line-height:1.35; }}
           .today-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }}
-          .control-strip {{ display:grid; grid-template-columns:1.15fr 1.35fr 1fr; gap:14px; align-items:center; border:1px solid var(--line); border-radius:22px; padding:14px 16px; margin-bottom:18px; background:#fffdf6; box-shadow:0 18px 50px rgba(72,52,20,.08); }}
+          .control-strip {{ display:grid; grid-template-columns:minmax(220px,.95fr) minmax(360px,1.45fr) minmax(190px,.8fr); gap:10px; align-items:center; border:1px solid var(--line); border-left-width:6px; border-radius:8px; padding:10px 12px; margin-bottom:14px; background:var(--card); box-shadow:0 8px 24px rgba(17,24,39,.06); }}
+          .health-green {{ border-left-color:#16a34a; }}
+          .health-amber {{ border-left-color:#d97706; }}
+          .health-red {{ border-left-color:#b42318; }}
           .signal {{ display:flex; align-items:center; gap:12px; }}
           .signal strong,.signal small,.thinking-now strong,.thinking-now small {{ display:block; }}
-          .signal small,.thinking-now small {{ color:var(--muted); margin-top:3px; }}
-          .signal-dot {{ width:18px; height:18px; border-radius:999px; flex:0 0 auto; box-shadow:0 0 0 6px rgba(0,0,0,.04); }}
+          .signal strong,.thinking-now strong {{ font-size:.98rem; }}
+          .signal small,.thinking-now small {{ color:var(--muted); margin-top:2px; font-size:.82rem; line-height:1.25; }}
+          .signal-dot {{ width:14px; height:14px; border-radius:999px; flex:0 0 auto; box-shadow:0 0 0 5px rgba(0,0,0,.04); }}
           .health-green .signal-dot {{ background:#16a34a; box-shadow:0 0 0 6px rgba(22,163,74,.14); }}
           .health-amber .signal-dot {{ background:#d97706; box-shadow:0 0 0 6px rgba(217,119,6,.16); }}
           .health-red .signal-dot {{ background:#b42318; box-shadow:0 0 0 6px rgba(180,35,24,.14); }}
-          .control-facts {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
-          .control-facts span {{ border:1px solid var(--line); border-radius:999px; background:#fffaf0; padding:7px 10px; font-size:.9rem; color:var(--muted); font-weight:800; }}
-          .thinking-now {{ border-left:1px solid var(--line); padding-left:14px; }}
+          .control-facts {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:6px; }}
+          .control-facts span {{ border:1px solid var(--line); border-radius:8px; background:var(--soft); padding:6px 8px; font-size:.86rem; color:var(--ink); font-weight:800; min-height:40px; display:flex; flex-direction:column; justify-content:center; }}
+          .control-facts b {{ color:var(--muted); font-size:.66rem; text-transform:uppercase; margin-bottom:1px; }}
+          .thinking-now {{ border-left:1px solid var(--line); padding-left:10px; }}
+          .operator-next {{ grid-column:1 / -1; display:grid; grid-template-columns:180px 1fr auto; gap:10px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:9px 11px; background:#ffffff; }}
+          .operator-next span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:900; }}
+          .operator-next strong {{ font-size:1rem; line-height:1.25; }}
+          .operator-next small {{ color:var(--muted); font-weight:800; }}
+          .next-green {{ border-color:#86d5aa; background:#f3fbf6; }}
+          .next-amber {{ border-color:#f4c58f; background:#fff8ed; }}
+          .next-red {{ border-color:#f4a6a6; background:#fff5f5; }}
+          .top-quick-actions {{ grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:8px; border-top:1px solid var(--line); padding-top:9px; }}
+          .top-quick-actions form {{ display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:0; }}
+          .top-quick-actions button {{ padding:8px 11px; font-size:.9rem; }}
+          .top-quick-actions span {{ color:var(--muted); font-size:.8rem; }}
           .hero-panel {{ display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:end; padding:28px; }}
+          .embedded-panel {{ padding:12px 0 0; }}
           .eyebrow {{ text-transform:uppercase; letter-spacing:.16em; color:var(--accent); font-weight:800; font-size:.78rem; margin:0 0 12px; }}
           .context-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }}
           .capacity-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }}
-          .metric {{ background:#fffdf6; border:1px solid var(--line); border-radius:18px; padding:14px; }}
+          .scenario-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin:10px 0; }}
+          .scenario-card {{ border:1px solid var(--line); background:#ffffff; border-radius:8px; padding:12px; box-shadow:none; }}
+          .scenario-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }}
+          .scenario-lines {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px 10px; }}
+          .scenario-lines span {{ color:var(--muted); font-size:.75rem; }}
+          .scenario-lines strong {{ display:block; color:var(--ink); font-family:var(--display); font-size:1.1rem; margin-top:2px; overflow-wrap:anywhere; }}
+          .metric {{ background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; }}
           .metric span,.metric small {{ display:block; color:var(--muted); }}
-          .metric strong {{ display:block; font-size:1.45rem; margin:4px 0; }}
+          .metric .label-text,.metric span {{ font-family:var(--body); font-size:.75rem; text-transform:uppercase; font-weight:900; }}
+          .metric strong {{ display:block; font-family:var(--display); font-size:1.55rem; line-height:1.1; margin:4px 0; color:var(--ink); overflow-wrap:anywhere; }}
+          .compact-metrics .metric {{ padding:10px 12px; min-height:0; }}
+          .compact-metrics .metric .label-text,.compact-metrics .metric span {{ font-size:.68rem; }}
+          .compact-metrics .metric strong {{ font-family:var(--body); font-size:1rem; line-height:1.25; font-weight:850; }}
+          .compact-metrics .metric small {{ font-size:.78rem; line-height:1.25; }}
           .hero-actions {{ grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:10px; border-top:1px solid var(--line); padding-top:14px; }}
           .hero-actions span {{ color:var(--muted); font-size:.92rem; }}
-          .warning {{ grid-column:1 / -1; background:#fff3df; color:var(--warn); border:1px solid #efc99d; border-radius:16px; padding:12px 14px; font-weight:700; }}
+          .warning {{ grid-column:1 / -1; background:#fff7ed; color:var(--warn); border:1px solid #f4c58f; border-radius:8px; padding:12px 14px; font-weight:700; }}
           .grid {{ display:grid; gap:14px; margin:22px 0; }}
           .card {{ display:flex; justify-content:space-between; gap:18px; padding:20px; align-items:center; }}
           .card.active {{ outline:3px solid rgba(29,107,79,.25); }}
-          .card h3 {{ margin:0; font-size:1.5rem; }}
+          .card h3 {{ margin:0; font-family:var(--display); font-size:1.55rem; }}
           .card p {{ margin:5px 0; }}
           .muted,.empty {{ color:var(--muted); }}
           .actions {{ display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }}
           .advanced-actions {{ width:100%; text-align:right; color:var(--muted); }}
           .advanced-actions summary {{ cursor:pointer; font-weight:800; }}
           .advanced-actions form {{ display:inline-block; margin:8px 0 0 6px; }}
-          button {{ border:0; border-radius:999px; padding:10px 14px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }}
+          button {{ border:0; border-radius:8px; padding:10px 14px; background:var(--accent); color:white; font-weight:700; cursor:pointer; }}
           button:disabled {{ opacity:.62; cursor:wait; }}
-          button.secondary {{ background:#6c5f45; }}
+          button.secondary {{ background:#475569; }}
           .panel {{ padding:20px; margin-top:20px; }}
           .job-panel {{ border-color:#b88b2a; background:#fff8e7; }}
           .job-panel.status-done {{ border-color:#1d6b4f; background:#eef8ef; }}
           .job-panel.status-error {{ border-color:var(--risk); background:#fff1ef; }}
+          .daily-open-summary {{ border:1px solid var(--line); border-left:6px solid #d97706; border-radius:8px; background:#ffffff; padding:14px; margin:12px 0; }}
+          .daily-open-summary.summary-green {{ border-left-color:#16a34a; background:#f3fbf6; }}
+          .daily-open-summary.summary-amber {{ border-left-color:#d97706; background:#fff8ed; }}
+          .daily-open-summary.summary-red {{ border-left-color:#b42318; background:#fff5f5; }}
+          .compact-status {{ margin-top:12px; }}
+          .compact-status .tile {{ padding:10px 12px; }}
+          .compact-status .tile span {{ font-size:.84rem; line-height:1.28; }}
           .module-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }}
-          .module-card {{ display:flex; gap:11px; align-items:flex-start; border:1px solid var(--line); background:#fffdf6; border-radius:16px; padding:12px; }}
+          .module-card {{ display:flex; gap:11px; align-items:flex-start; border:1px solid var(--line); background:var(--card); border-radius:8px; padding:12px; }}
           .module-card strong,.module-card span,.module-card small {{ display:block; }}
           .module-card span {{ color:var(--ink); margin-top:2px; }}
           .module-card small {{ color:var(--muted); margin-top:3px; }}
@@ -2882,34 +4325,37 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .module-amber .module-dot,.timeline-amber > span,.check-wait > span {{ background:#d97706; box-shadow:0 0 0 5px rgba(217,119,6,.16); }}
           .module-red .module-dot,.timeline-red > span {{ background:#b42318; box-shadow:0 0 0 5px rgba(180,35,24,.14); }}
           .timeline {{ list-style:none; padding:0; margin:14px 0 0; display:grid; gap:10px; }}
-          .timeline li {{ display:flex; gap:12px; align-items:flex-start; border:1px solid var(--line); border-radius:16px; background:#fffdf6; padding:12px; }}
+          .timeline li {{ display:flex; gap:12px; align-items:flex-start; border:1px solid var(--line); border-radius:8px; background:var(--card); padding:12px; }}
           .timeline li > span {{ width:12px; height:12px; border-radius:999px; margin-top:4px; flex:0 0 auto; background:#94a3b8; }}
           .timeline strong,.timeline small {{ display:block; }}
           .timeline small {{ color:var(--muted); margin-top:3px; }}
           .market-panel {{ border-color:#bfd7ff; background:#f5f9ff; }}
           .intraday-panel {{ border-color:#8ecae6; background:#f5fbff; }}
           .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
+          .operator-alerts-panel {{ border-left:6px solid #d97706; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
           .support-details .panel {{ box-shadow:none; margin-top:12px; }}
-          .diagnostic-alerts {{ margin-top:14px; border:1px dashed var(--line); border-radius:14px; padding:12px; background:#fffdf6; }}
+          .support-bundle {{ background:#fbfcfe; }}
+          .embedded-support-panel {{ background:#ffffff; }}
+          .diagnostic-alerts {{ margin-top:14px; border:1px dashed var(--line); border-radius:8px; padding:12px; background:var(--card); }}
           .diagnostic-alerts ul {{ margin:10px 0 0; padding-left:18px; color:var(--muted); }}
           .process-panel {{ border-color:#d97706; background:#fff8e7; }}
           .process-list {{ display:grid; gap:10px; margin-top:12px; }}
-          .process-row {{ display:flex; align-items:center; gap:12px; border:1px solid #efc99d; border-radius:16px; background:#fffdf6; padding:12px; color:var(--ink); text-decoration:none; }}
+          .process-row {{ display:flex; align-items:center; gap:12px; border:1px solid #efc99d; border-radius:8px; background:#ffffff; padding:12px; color:var(--ink); text-decoration:none; }}
           .process-row strong,.process-row small {{ display:block; }}
           .process-row small {{ color:var(--muted); }}
           .process-pulse {{ width:12px; height:12px; border-radius:999px; background:#d97706; box-shadow:0 0 0 6px rgba(217,119,6,.16); animation:pulse 1.2s infinite ease-in-out; }}
           @keyframes pulse {{ 0%,100% {{ transform:scale(.86); opacity:.72; }} 50% {{ transform:scale(1.12); opacity:1; }} }}
           .job-facts {{ list-style:none; padding:0; margin:12px 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
-          .job-facts li {{ border:1px solid var(--line); border-radius:14px; padding:10px; background:#fffdf6; }}
+          .job-facts li {{ border:1px solid var(--line); border-radius:8px; padding:10px; background:var(--card); }}
           .job-facts span,.job-facts strong {{ display:block; }}
           .job-facts span {{ color:var(--muted); font-size:.9rem; }}
           .job-facts strong {{ overflow-wrap:anywhere; }}
           .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }}
           .section-head p {{ margin:0; color:var(--muted); max-width:620px; }}
           .tiles,.alert-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
-          .tile,.alert-card {{ border:1px solid var(--line); background:#fffdf6; border-radius:18px; padding:14px; text-decoration:none; color:var(--ink); }}
+          .tile,.alert-card {{ border:1px solid var(--line); background:var(--card); border-radius:8px; padding:14px; text-decoration:none; color:var(--ink); }}
           .inline-link {{ display:inline-block; }}
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
@@ -2921,7 +4367,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
           .status-rejected .alert-title em,.status-risk-blocked .alert-title em {{ background:#fff1ef; color:var(--risk); }}
           .status-closed .alert-title em,.status-acknowledged .alert-title em,.status-approved-for-manual-review .alert-title em,.status-approved-for-manual-trade .alert-title em {{ background:#eef8ef; color:#1d6b4f; }}
-          .contract-line,.review-line,.economics-line,.capacity-line,.lifecycle-line,.why-line {{ margin-top:8px; border:1px solid var(--line); border-radius:12px; padding:8px 10px; background:#fffaf0; font-size:.92rem; line-height:1.35; }}
+          .contract-line,.review-line,.economics-line,.capacity-line,.lifecycle-line,.why-line {{ margin-top:8px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--soft); font-size:.92rem; line-height:1.35; }}
           .contract-line {{ font-weight:800; color:var(--ink); }}
           .economics-line {{ color:#1d6b4f; background:#f1fbf4; border-color:#badbcc; font-weight:800; }}
           .capacity-line {{ color:#174ea6; background:#eef5ff; border-color:#bfd7ff; font-weight:800; }}
@@ -2929,7 +4375,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .why-line {{ background:#f7fbff; border-color:#bfd7ff; color:#174ea6; font-weight:800; }}
           .review-line {{ color:var(--warn); background:#fff7e8; }}
           .alert-checklist {{ list-style:none; padding:0; margin:10px 0 0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }}
-          .alert-checklist li {{ display:grid; grid-template-columns:14px 1fr; column-gap:7px; align-items:start; border:1px solid var(--line); border-radius:11px; padding:7px; background:white; }}
+          .alert-checklist li {{ display:grid; grid-template-columns:14px 1fr; column-gap:7px; align-items:start; border:1px solid var(--line); border-radius:8px; padding:7px; background:white; }}
           .alert-checklist li > span {{ width:9px; height:9px; border-radius:999px; margin-top:4px; }}
           .alert-checklist strong {{ font-size:.82rem; line-height:1.1; }}
           .alert-checklist small {{ grid-column:2; font-size:.78rem; margin-top:2px; }}
@@ -2943,20 +4389,43 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .alert-actions .fill-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
           .alert-actions .actions {{ justify-content:flex-start; }}
           .alert-actions button {{ padding:8px 11px; font-size:.9rem; }}
+          .manual-review-actions .approved-for-manual-trade {{ background:#16a34a; }}
+          .manual-review-actions .reviewing {{ background:#d97706; }}
+          .manual-review-actions .watchlist {{ background:#2563eb; }}
+          .manual-review-actions .rejected {{ background:#dc2626; }}
+          .manual-review-actions .expired {{ background:#475569; }}
           .severity-action {{ border-color:#d97706; }}
           .severity-risk {{ border-color:var(--risk); }}
           .severity-watch {{ border-color:#2563eb; }}
           label {{ display:block; margin:10px 0 4px; font-weight:700; }}
-          input {{ width:min(520px,100%); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
-          pre {{ white-space:pre-wrap; overflow:auto; background:#162019; color:#f6f1df; border-radius:14px; padding:14px; max-height:360px; }}
+          input, select, textarea {{ width:min(520px,100%); border:1px solid var(--line); border-radius:8px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
+          textarea {{ width:100%; min-height:128px; resize:vertical; line-height:1.35; }}
+          table {{ width:100%; border-collapse:collapse; }}
+          th,td {{ padding:8px 9px; border-bottom:1px solid var(--line); text-align:left; font-size:.9rem; vertical-align:top; }}
+          th {{ color:var(--muted); text-transform:uppercase; font-size:.72rem; }}
+          .table-scroll {{ overflow:auto; border:1px solid var(--line); border-radius:8px; background:#ffffff; }}
+          .badge {{ display:inline-flex; border-radius:999px; padding:5px 9px; color:white; font-size:12px; font-weight:900; }}
+          .badge.ok {{ background:#047857; }} .badge.warn {{ background:#b45309; }} .badge.risk {{ background:#b42318; }} .badge.info {{ background:#2563eb; }} .badge.neutral {{ background:#64748b; }}
+          .coberturas-panel {{ border-color:#8ecae6; background:#ffffff; }}
+          .coberturas-grid {{ display:grid; grid-template-columns:minmax(280px,.8fr) minmax(0,1.2fr); gap:14px; align-items:start; }}
+          .coberturas-form,.coberturas-read {{ min-width:0; }}
+          .coberturas-panel .metric,.coberturas-panel .scenario-card,.coberturas-panel .table-scroll {{ background:#ffffff; box-shadow:none; }}
+          .coberturas-panel .status-metric .badge {{ background:#ffffff; color:var(--ink); border:1px solid var(--line); box-shadow:none; }}
+          .coberturas-panel .status-metric .badge.ok {{ border-color:#86d5aa; color:#05603a; }}
+          .coberturas-panel .status-metric .badge.warn {{ border-color:#f4c58f; color:#7a3b09; }}
+          .coberturas-panel .status-metric .badge.info {{ border-color:#bfd7ff; color:#174ea6; }}
+          .coberturas-panel .status-metric .badge.risk {{ border-color:#f4a6a6; color:#9f1239; }}
+          .coberturas-panel .review-line {{ color:#7a3b09; background:#fff7ed; border-color:#f4c58f; }}
+          .mini-tile {{ padding:9px 12px; border-radius:8px; }}
+          pre {{ white-space:pre-wrap; overflow:auto; background:#111827; color:#f8fafc; border-radius:8px; padding:14px; max-height:360px; }}
           .busy-overlay[hidden] {{ display:none; }}
           .busy-overlay {{ position:fixed; inset:0; background:rgba(23,32,25,.62); display:grid; place-items:center; z-index:20; padding:20px; }}
-          .busy-box {{ width:min(460px,100%); background:#fffaf0; border:1px solid var(--line); border-radius:18px; padding:20px; box-shadow:0 18px 50px rgba(0,0,0,.22); }}
+          .busy-box {{ width:min(460px,100%); background:#ffffff; border:1px solid var(--line); border-radius:8px; padding:20px; box-shadow:0 18px 50px rgba(0,0,0,.22); }}
           .busy-box strong,.busy-box span {{ display:block; }}
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} }}
-          @media (max-width:820px) {{ h1 {{ font-size:2.4rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
+          @media (max-width:820px) {{ h1 {{ font-size:2.35rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .coberturas-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
       <body>
@@ -2973,9 +4442,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {message}
           {job_panel}
           {alerts}
-          {actions}
+          {coberturas_support}
+          {v31_console_support}
+          {question_support}
+          {admin_support}
           {context}
-          {capacity}
+          {v31_learning}
+          {notifications}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -3044,14 +4517,53 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                   hiddenAction.value = actionValue;
                   form.appendChild(hiddenAction);
                 }}
+                const manualStatus = submitter && submitter.name === "status" ? submitter.value : "";
+                const manualReason = submitter && submitter.dataset ? submitter.dataset.reason : "";
+                if (manualStatus && manualReason) {{
+                  const reason = form.querySelector('input[name="reason"]');
+                  if (reason) reason.value = manualReason;
+                }}
                 const label = form.dataset.busy || "Procesando accion local";
+                const backgroundSubmit = form.dataset.backgroundSubmit === "true";
                 title.textContent = label;
                 detail.textContent = form.dataset.busyDetail || "Solicitud enviada. Veras confirmacion o un panel RUNNING/DONE en unos segundos.";
                 overlay.hidden = false;
-                form.querySelectorAll("button").forEach((button) => {{
+                const buttons = Array.from(form.querySelectorAll("button"));
+                buttons.forEach((button) => {{
+                  button.dataset.originalText = button.dataset.originalText || button.textContent;
                   button.disabled = true;
                   button.textContent = "Trabajando...";
                 }});
+                if (backgroundSubmit) {{
+                  event.preventDefault();
+                  const statusTarget = form.dataset.statusTarget ? document.getElementById(form.dataset.statusTarget) : null;
+                  if (statusTarget) statusTarget.textContent = "Refresh RSP solicitado. Esperando confirmacion local...";
+                  fetch(form.action, {{
+                    method: (form.method || "post").toUpperCase(),
+                    body: new FormData(form),
+                    headers: {{ "Accept": "application/json" }}
+                  }})
+                    .then((response) => response.json())
+                    .then((payload) => {{
+                      const job = payload.job_id ? " Job: " + payload.job_id : "";
+                      const message = payload.message || (payload.ok ? "Refresh RSP iniciado." : "No pude iniciar Refresh RSP.");
+                      title.textContent = payload.already_running ? "Refresh RSP ya esta corriendo" : "Refresh RSP iniciado";
+                      detail.textContent = message + job;
+                      if (statusTarget) statusTarget.textContent = message + job;
+                    }})
+                    .catch((error) => {{
+                      title.textContent = "Refresh RSP no confirmado";
+                      detail.textContent = String(error || "Error local");
+                      if (statusTarget) statusTarget.textContent = "No pude confirmar el refresh RSP. Revisa la consola.";
+                    }})
+                    .finally(() => {{
+                      buttons.forEach((button) => {{
+                        button.disabled = false;
+                        button.textContent = button.dataset.originalText || "Enviar";
+                      }});
+                      setTimeout(() => {{ overlay.hidden = true; }}, 1200);
+                    }});
+                }}
               }});
             }});
           }})();
@@ -3060,20 +4572,24 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
-        health=render_console_health(active, snapshot, operator_payload),
+        health=render_console_health(active, snapshot, operator_payload, reports),
         active_process=render_active_process_panel(),
         today=render_today_panel(active, snapshot, operator_payload, reports),
         modules=render_module_health(active, snapshot, operator_payload, reports),
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),
-        capacity=render_account_capacity_panel(operator_payload, snapshot),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
         job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
         alerts=render_operator_alerts(operator_payload, snapshot),
-        actions=render_console_actions(operator_payload),
+        v31_learning=render_v31_learning_panel(v31_payloads),
+        coberturas_support=coberturas_support,
+        v31_console_support=v31_console_support,
+        question_support=question_support,
+        admin_support=admin_support,
+        notifications=render_notification_test_panel(),
         output=output,
     )
     return body.encode("utf-8")
@@ -3082,8 +4598,15 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
 class AccountProfileWebHandler(BaseHTTPRequestHandler):
     server_version = "StockUltimusIBKRProfile/1.0"
 
-    def send_html(self, message: str = "", result: dict[str, Any] | None = None, status: int = 200, job_id: str = "") -> None:
-        payload = render_web_page(message=message, result=result, job_id=job_id)
+    def send_html(
+        self,
+        message: str = "",
+        result: dict[str, Any] | None = None,
+        status: int = 200,
+        job_id: str = "",
+        question_answer: str = "",
+    ) -> None:
+        payload = render_web_page(message=message, result=result, job_id=job_id, question_answer=question_answer)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -3107,6 +4630,17 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             job = web_job(job_id)
             self.send_json(job or {"ok": False, "error": "JOB_NOT_FOUND", "job_id": job_id}, status=200 if job else 404)
             return
+        if path == "/coberturas/rsp":
+            self.send_json(shared_coberturas_engine.build_recommendation(RUNTIME))
+            return
+        if path == "/coberturas":
+            payload = render_coberturas_rsp_page(message=(params.get("message") or [""])[0])
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
@@ -3114,7 +4648,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
-        status = 200 if path in ["/", "", "/console"] else 404
+        status = 200 if path in ["/", "", "/console", "/coberturas", "/coberturas/rsp"] else 404
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -3122,7 +4656,8 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             length = int(self.headers.get("Content-Length") or "0")
-            params = parse_qs(self.rfile.read(length).decode("utf-8"))
+            raw_body = self.rfile.read(length)
+            params = parse_qs(raw_body.decode("utf-8"))
             alias = (params.get("alias") or [""])[0]
             if self.path == "/setup":
                 args = argparse.Namespace(
@@ -3145,25 +4680,174 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/select-refresh":
                 args = argparse.Namespace(alias=alias)
                 cmd_select(args)
-                job_id = start_web_job(alias, console_bridge_command(), "Alinear cuenta + Refresh IBKR")
+                job_id = start_web_job(alias, account_publish_command(), "Alinear/Publicar rapido")
                 self.send_html(
-                    "Alineacion iniciada: alias={alias}. La consola publicara contexto, refrescara IBKR/opciones y verificara produccion. Si IBKR falla, intenta publicar cuenta como fallback.".format(
+                    "Alineacion rapida iniciada: alias={alias}. Publica contexto para GPT sin escaneo profundo de IBKR/opciones.".format(
                         alias=normalize_alias(alias)
                     ),
+                    job_id=job_id,
+                )
+            elif self.path == "/refresh-all":
+                active = active_profile()
+                selected_alias = alias or active.get("account_alias") or ""
+                if not selected_alias:
+                    self.send_html("Selecciona una cuenta antes de correr Alinear/Publicar rapido.", status=400)
+                    return
+                cmd_select(argparse.Namespace(alias=selected_alias))
+                job_id = start_web_job(selected_alias, account_publish_command(), "Alinear/Publicar rapido")
+                self.send_html(
+                    "Alinear/Publicar rapido iniciado: cuenta + contexto GPT. No escanea opciones ni autoriza ordenes.",
                     job_id=job_id,
                 )
             elif self.path == "/account-capacity":
                 job_id = start_web_job(alias, account_capacity_command(), "Refresh capacidad IBKR")
                 self.send_html("Refresh de cuenta iniciado. Lee AccountSummary y publica capital/margen disponible.", job_id=job_id)
+            elif self.path == "/ibkr-quick-check":
+                job_id = start_web_job(alias, ibkr_quick_check_command(), "Validar IBKR rapido")
+                self.send_html("Validacion rapida IBKR iniciada. Lee TWS/API y AccountSummary; no escanea opciones.", job_id=job_id)
             elif self.path == "/bridge":
-                job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")
-                self.send_html("Refresh IBKR iniciado. Esto lee broker/opciones; la consola mostrara RUNNING hasta que termine.", job_id=job_id)
+                job_id = start_web_job(alias, console_bridge_command(), "Refresh profundo IBKR/opciones")
+                self.send_html("Refresh IBKR iniciado en modo profundo/opciones. Usalo solo si necesitas contratos/opciones frescas.", job_id=job_id)
+            elif self.path == "/bridge-deep":
+                job_id = start_web_job(alias, console_deep_bridge_command(), "Refresh profundo IBKR/opciones")
+                self.send_html("Refresh profundo iniciado. Mayor timeout para contratos/opciones; usalo solo cuando TWS este estable.", job_id=job_id)
+            elif self.path == "/coberturas/rsp/refresh":
+                wants_json = "application/json" in (self.headers.get("Accept") or "")
+                selected_alias = alias or active_profile().get("account_alias") or ""
+                if not selected_alias:
+                    message = "Selecciona una cuenta antes de correr Refresh RSP semanal IBKR."
+                    if wants_json:
+                        self.send_json({"ok": False, "status": "MISSING_ACCOUNT", "message": message}, status=400)
+                    else:
+                        self.send_html(message, status=400)
+                    return
+                existing_job = running_web_job_by_label("Refresh RSP semanal IBKR")
+                if existing_job:
+                    message = "Ya hay un Refresh RSP semanal corriendo. No lance otro proceso."
+                    if wants_json:
+                        self.send_json({
+                            "ok": True,
+                            "already_running": True,
+                            "status": "RUNNING",
+                            "message": message,
+                            "job_id": existing_job.get("job_id"),
+                        })
+                    else:
+                        page = render_coberturas_rsp_page("{} Job: {}".format(message, existing_job.get("job_id")))
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.send_header("Content-Length", str(len(page)))
+                        self.end_headers()
+                        self.wfile.write(page)
+                    return
+                job_id = start_web_job(selected_alias, console_rsp_weekly_bridge_command(), "Refresh RSP semanal IBKR")
+                message = "Refresh RSP semanal iniciado. Solo consulta RSP, busca vencimientos 7-14 DTE y no autoriza ordenes."
+                if wants_json:
+                    self.send_json({"ok": True, "status": "RUNNING", "message": message, "job_id": job_id})
+                    return
+                page = render_coberturas_rsp_page("{} Job: {}".format(message, job_id))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
             elif self.path == "/daily-open":
-                job_id = start_web_job(alias, [sys.executable, "scripts/daily_open_checklist.py", "--refresh"], "Daily open checklist")
+                job_id = start_web_job(alias, daily_open_command(), "Daily open checklist")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Daily open iniciado.", "job_id": job_id})
+                    return
                 self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
             elif self.path == "/diagnostic":
                 job_id = start_web_job(alias, console_diagnostic_command(), "Diagnostico completo")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Diagnostico completo iniciado.", "job_id": job_id})
+                    return
                 self.send_html("Diagnostico completo iniciado. Revisa RUNNING/DONE en esta misma consola.", job_id=job_id)
+            elif self.path == "/market-open-readiness":
+                job_id = start_web_job(alias, market_open_readiness_command(), "Market open readiness")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Market open readiness iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Market open readiness iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/post-open-monitor":
+                existing_job = running_web_job_by_label("Post-open monitor")
+                if existing_job:
+                    if "application/json" in (self.headers.get("Accept") or ""):
+                        self.send_json({"ok": True, "already_running": True, "status": "RUNNING", "message": "Post-open monitor ya esta corriendo.", "job_id": existing_job.get("job_id")})
+                        return
+                    self.send_html("Post-open monitor ya esta corriendo.", job_id=existing_job.get("job_id"))
+                    return
+                job_id = start_web_job(alias, post_open_monitor_command(), "Post-open monitor")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Post-open monitor iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Post-open monitor iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/environment-alerts":
+                job_id = start_web_job(alias, environment_alerts_command(), "Environment alerts")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Environment alerts iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Environment alerts iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/security-audit":
+                job_id = start_web_job(alias, security_audit_command(), "Security audit")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Security audit iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Security audit iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/dependency-audit":
+                job_id = start_web_job(alias, dependency_audit_command(), "Dependency audit")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Dependency audit iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Dependency audit iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/local-dashboard-refresh":
+                job_id = start_web_job(alias, local_dashboard_command(), "Dashboard local")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "Dashboard local iniciado.", "job_id": job_id})
+                    return
+                self.send_html("Dashboard local iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/v32-pushover-monitor":
+                job_id = start_web_job(alias, v32_pushover_automation_command("monitor"), "V32 Pushover monitor")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "V32 Pushover monitor iniciado.", "job_id": job_id})
+                    return
+                self.send_html("V32 Pushover monitor iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/v32-pushover-postclose":
+                job_id = start_web_job(alias, v32_pushover_automation_command("post-close"), "V32 Pushover post-close")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "V32 Pushover post-close iniciado.", "job_id": job_id})
+                    return
+                self.send_html("V32 Pushover post-close iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/v32-pushover-preflight":
+                job_id = start_web_job(alias, v32_pushover_automation_command("preflight"), "V32 Pushover preflight")
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({"ok": True, "status": "RUNNING", "message": "V32 Pushover preflight iniciado.", "job_id": job_id})
+                    return
+                self.send_html("V32 Pushover preflight iniciado desde launchd/console.", job_id=job_id)
+            elif self.path == "/coberturas/rsp/manual_context":
+                payload = {key: (values[0] if values else "") for key, values in params.items()}
+                shared_coberturas_engine.write_manual_context(payload)
+                if payload.get("return_to") == "console":
+                    self.send_html("Lectura RSP guardada. Coberturas se actualizo en esta consola principal.")
+                    return
+                page = render_coberturas_rsp_page("Contexto RSP guardado en la consola local.")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+            elif self.path == "/coberturas/rsp/journal":
+                payload = {key: (values[0] if values else "") for key, values in params.items()}
+                result = shared_coberturas_engine.record_journal_entry(payload)
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json(result)
+                    return
+                page = render_coberturas_rsp_page("Bitacora RSP actualizada.")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
             elif self.path == "/refresh-remote":
                 result = fetch_remote_json(
                     "/gpt_v32_operator_today?limit=12",
@@ -3172,12 +4856,119 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 )
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
                 if result.get("ok"):
-                    self.send_html(operator_state_message(data))
+                    comparison = selected_vs_published(active_profile(), latest_master_snapshot(), result)
+                    self.send_html(operator_state_message(data, comparison.get("display_alias") or ""))
                 else:
                     self.send_html(
                         "No pude actualizar estado remoto: {}".format(result.get("error") or "unknown"),
                         status=400,
                     )
+            elif self.path == "/notification-preview":
+                email_preview = fetch_remote_json("/v32_operator_daily_summary_email/preview?force=true", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
+                push_preview = fetch_remote_json("/v32_operator_pushover_notify/preview?force=true", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
+                self.send_html("Preview de notificaciones consultado. No se envio nada.", result={
+                    "command": "GET email/pushover preview",
+                    "alias": active_profile().get("account_alias") or "",
+                    "account_scope": active_profile().get("account_scope") or "",
+                    "returncode": 0 if email_preview.get("ok") or push_preview.get("ok") else 1,
+                    "stdout_tail": json.dumps({
+                        "email_preview_ok": email_preview.get("ok"),
+                        "email_status": (email_preview.get("data") or {}).get("status"),
+                        "email_would_notify": (email_preview.get("data") or {}).get("would_notify"),
+                        "push_preview_ok": push_preview.get("ok"),
+                        "push_status": (push_preview.get("data") or {}).get("status"),
+                        "push_would_notify": (push_preview.get("data") or {}).get("would_notify"),
+                        "not_order_instruction": True,
+                        "execution_authorized": False,
+                    }, indent=2, sort_keys=True),
+                })
+            elif self.path == "/notification-test-email":
+                result = post_remote_json("/v32_operator_daily_summary_email?force=true", {}, timeout=max(45, REMOTE_VERIFY_TIMEOUT_SECONDS))
+                data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                self.send_html("Prueba email solicitada: status={}. Revisa bandeja/spam si email_sent=true.".format(data.get("status") or result.get("error") or "unknown"), result={
+                    "command": "POST /v32_operator_daily_summary_email?force=true",
+                    "alias": active_profile().get("account_alias") or "",
+                    "account_scope": active_profile().get("account_scope") or "",
+                    "returncode": 0 if result.get("ok") else 1,
+                    "stdout_tail": json.dumps({
+                        "ok": result.get("ok"),
+                        "status": data.get("status"),
+                        "email_sent": data.get("email_sent"),
+                        "reason": data.get("reason"),
+                        "not_order_instruction": True,
+                        "execution_authorized": False,
+                    }, indent=2, sort_keys=True),
+                })
+            elif self.path == "/notification-test-push":
+                result = post_remote_json("/v32_operator_pushover_notify?force=true", {}, timeout=max(45, REMOTE_VERIFY_TIMEOUT_SECONDS))
+                data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                self.send_html("Prueba push solicitada: status={}. Revisa movil si pushover_sent=true.".format(data.get("status") or result.get("error") or "unknown"), result={
+                    "command": "POST /v32_operator_pushover_notify?force=true",
+                    "alias": active_profile().get("account_alias") or "",
+                    "account_scope": active_profile().get("account_scope") or "",
+                    "returncode": 0 if result.get("ok") else 1,
+                    "stdout_tail": json.dumps({
+                        "ok": result.get("ok"),
+                        "status": data.get("status"),
+                        "pushover_sent": data.get("pushover_sent"),
+                        "reason": data.get("reason"),
+                        "not_order_instruction": True,
+                        "execution_authorized": False,
+                    }, indent=2, sort_keys=True),
+                })
+            elif self.path == "/ask":
+                question = (params.get("question") or [""])[0].strip()
+                payloads = console_v31_payloads(prefer_cache=False)
+                answer = local_question_answer(question, payloads)
+                self.send_html(
+                    "Pregunta consultada contra el motor. Decision support solamente.",
+                    question_answer=answer,
+                )
+            elif self.path == "/manual-review-event":
+                status_value = (params.get("status") or ["REVIEWING"])[0]
+                reason = (params.get("reason") or [""])[0].strip()
+                if not reason:
+                    reason = "Revision manual registrada desde consola local."
+                form_payload = {
+                    "ticker": (params.get("ticker") or [""])[0],
+                    "status": status_value,
+                    "reason": reason,
+                }
+                if status_value == "APPROVED_FOR_MANUAL_TRADE":
+                    form_payload["manual_broker_validation_override"] = "true"
+                    if "valid" not in reason.lower():
+                        form_payload["reason"] = (
+                            "Validé manualmente contrato, liquidez, spread, eventos, riesgo de cuenta y ticket en broker/TWS. "
+                            "Ejecución será manual."
+                        )
+                result = post_remote_form("/v31_manual_review_inbox/record", form_payload)
+                ticker_label = form_payload.get("ticker") or "UNKNOWN"
+                message = (
+                    "{ticker} registrado como {status}. Registro enviado a Render; no autoriza ordenes.".format(
+                        ticker=ticker_label,
+                        status=status_value,
+                    )
+                    if result.get("ok")
+                    else "No pude registrar revision V31: {}".format(result.get("error") or result.get("text") or "unknown")
+                )
+                if result.get("ok"):
+                    fetch_remote_json("/v31_manual_reviews?limit=250", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
+                    fetch_remote_json("/gpt_v31_daily_rankings", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
+                self.send_html(message, result={
+                    "command": "POST /v31_manual_review_inbox/record",
+                    "alias": active_profile().get("account_alias") or "",
+                    "account_scope": active_profile().get("account_scope") or "",
+                    "returncode": 0 if result.get("ok") else 1,
+                    "stdout_tail": json.dumps({
+                        "ok": result.get("ok"),
+                        "status": status_value,
+                        "ticker": ticker_label,
+                        "final_url": result.get("final_url"),
+                        "not_order_instruction": True,
+                        "execution_authorized": False,
+                    }, indent=2, sort_keys=True)[:6000],
+                    "stderr_tail": "" if result.get("ok") else str(result.get("error") or result.get("text") or ""),
+                }, status=200 if result.get("ok") else 400)
             elif self.path == "/operator-event":
                 action = (params.get("action") or [""])[0]
                 reason = (params.get("reason") or [""])[0].strip()
@@ -3232,7 +5023,12 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 }, status=200 if result.get("ok") else 400)
             else:
                 self.send_html("Ruta no encontrada.", status=404)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
+            sys.stderr.write(f"ibkr-profile-web POST ERROR {self.path}: {exc}\n")
+            sys.stderr.flush()
+            if "application/json" in (self.headers.get("Accept") or ""):
+                self.send_json({"ok": False, "status": "ERROR", "message": str(exc)}, status=400)
+                return
             self.send_html(f"No pude completar la accion: {exc}", status=400)
 
     def log_message(self, format: str, *args: Any) -> None:
