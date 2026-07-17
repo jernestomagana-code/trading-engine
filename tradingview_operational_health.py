@@ -190,7 +190,11 @@ def _visible_status_from_health(health: dict[str, Any], *, ibkr_primary_gap: str
 def _expected_alerts(coverage: dict[str, Any], *, include_optional: bool = True) -> list[dict[str, Any]]:
     rows = []
     for item in tradingview_alert_coverage.alerts(coverage):
-        if item.get("required") is True or include_optional:
+        if (
+            item.get("required") is True
+            or include_optional
+            or item.get("alert_role") == "HEARTBEAT_SNAPSHOT"
+        ):
             rows.append(item)
     return rows
 
