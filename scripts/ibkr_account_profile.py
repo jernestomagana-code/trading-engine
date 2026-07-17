@@ -335,8 +335,17 @@ def process_output_text(value: Any) -> str:
     return str(value or "")
 
 
-def enrich_console_bridge_output(text: str) -> str:
-    bridge_report = RUNTIME / "stock_ultimus_console_bridge_latest.json"
+def bridge_report_for_command(command: list[str]) -> Path:
+    try:
+        if "--json-out" in command:
+            return Path(command[command.index("--json-out") + 1])
+    except Exception:
+        pass
+    return RUNTIME / "stock_ultimus_console_bridge_latest.json"
+
+
+def enrich_console_bridge_output(text: str, command: list[str]) -> str:
+    bridge_report = bridge_report_for_command(command)
     if not bridge_report.exists():
         return text
     try:
@@ -413,7 +422,7 @@ def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
             timeout=timeout_seconds,
         )
         returncode = int(result.returncode)
-        stdout = enrich_console_bridge_output(result.stdout) if is_console_bridge_command(command) else result.stdout
+        stdout = enrich_console_bridge_output(result.stdout, command) if is_console_bridge_command(command) else result.stdout
         stderr = result.stderr
     except subprocess.TimeoutExpired as exc:
         timed_out = True

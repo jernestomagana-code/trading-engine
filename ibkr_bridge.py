@@ -3,6 +3,8 @@ import requests
 import time
 import math
 import logging
+import signal
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import nest_asyncio
@@ -87,6 +89,9 @@ if not _V283_REMOTE_INGEST_PATH.startswith("/"):
 
 _V283_INGEST_URL = _V283_REMOTE_BASE_URL + _V283_REMOTE_INGEST_PATH
 _V283_INGEST_TOKEN = _v283_os.environ.get("TRADING_ENGINE_INGEST_TOKEN", "")
+_V283_PUBLISH_TIMEOUT_SECONDS = float(_v283_os.environ.get("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "45"))
+_V283_PUBLISH_RETRIES = max(1, int(_v283_os.environ.get("TRADING_ENGINE_PUBLISH_RETRIES", "3")))
+_V283_PUBLISH_RETRY_SLEEP_SECONDS = float(_v283_os.environ.get("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "3"))
 
 def _v283_now():
     return _v283_datetime.now(_v283_timezone.utc).isoformat()
@@ -433,27 +438,40 @@ def _v283_publish_to_v28():
         "not_order_instruction": True,
     }
 
-    try:
-        headers = {}
-        if _V283_INGEST_TOKEN:
-            headers["X-Snapshot-Ingest-Token"] = _V283_INGEST_TOKEN
-        resp = _v283_requests.post(
-            _V283_INGEST_URL,
-            json=payload,
-            headers=headers,
-            timeout=20,
-        )
-        ok = 200 <= resp.status_code < 300
-        print(
-            "V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED"
-            f" | ok:{ok}"
-            f" | status:{resp.status_code}"
-            f" | rows:{len(rows)}"
-            f" | technical:{len(tech)}"
-            f" | url:{_V283_INGEST_URL}"
-        )
-    except Exception as e:
-        print(f"V28.3 OFFICIAL V31 SNAPSHOT ERROR | {e}")
+    last_error = ""
+    for attempt in range(1, _V283_PUBLISH_RETRIES + 1):
+        try:
+            headers = {}
+            if _V283_INGEST_TOKEN:
+                headers["X-Snapshot-Ingest-Token"] = _V283_INGEST_TOKEN
+            resp = _v283_requests.post(
+                _V283_INGEST_URL,
+                json=payload,
+                headers=headers,
+                timeout=_V283_PUBLISH_TIMEOUT_SECONDS,
+            )
+            ok = 200 <= resp.status_code < 300
+            print(
+                "V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED"
+                f" | ok:{ok}"
+                f" | status:{resp.status_code}"
+                f" | rows:{len(rows)}"
+                f" | technical:{len(tech)}"
+                f" | attempt:{attempt}/{_V283_PUBLISH_RETRIES}"
+                f" | url:{_V283_INGEST_URL}"
+            )
+            return {"ok": ok, "status_code": resp.status_code, "attempt": attempt, "url": _V283_INGEST_URL}
+        except Exception as e:
+            last_error = str(e)
+            print(
+                "V28.3 OFFICIAL V31 SNAPSHOT RETRY"
+                f" | attempt:{attempt}/{_V283_PUBLISH_RETRIES}"
+                f" | error:{last_error}"
+            )
+            if attempt < _V283_PUBLISH_RETRIES:
+                time.sleep(_V283_PUBLISH_RETRY_SLEEP_SECONDS)
+    print(f"V28.3 OFFICIAL V31 SNAPSHOT ERROR | {last_error}")
+    return {"ok": False, "error": last_error, "url": _V283_INGEST_URL}
 
 # ============================================================
 # END V28.3 OFFICIAL PUBLISHER HOOKED AFTER V26
@@ -740,6 +758,12 @@ nest_asyncio.apply()
 IB_HOST = _v283_os.environ.get("IBKR_HOST", "127.0.0.1")
 IB_PORT = int(_v283_os.environ.get("IBKR_PORT", "7496"))
 CLIENT_ID = int(_v283_os.environ.get("IBKR_CLIENT_ID", "42"))
+IBKR_REQUEST_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_REQUEST_TIMEOUT_SECONDS", "8"))
+ENGINE_POST_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_ENGINE_POST_TIMEOUT_SECONDS", "5"))
+POSITION_REQUEST_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_POSITION_REQUEST_TIMEOUT_SECONDS", "12"))
+STOCK_PRICE_SNAPSHOT_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_STOCK_PRICE_SNAPSHOT_TIMEOUT_SECONDS", "10"))
+POSITION_PRICE_SNAPSHOT_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_POSITION_PRICE_SNAPSHOT_TIMEOUT_SECONDS", "6"))
+OPTION_CONTRACT_MARKET_DATA_TIMEOUT_SECONDS = float(_v283_os.environ.get("IBKR_OPTION_CONTRACT_MARKET_DATA_TIMEOUT_SECONDS", "10"))
 
 ENGINE_URL = "https://trading-engine-p097.onrender.com/webhook/ibkr"
 
@@ -778,17 +802,18 @@ IB_CONNECT_RETRY_SLEEP_SECONDS = _env_float("IBKR_CONNECT_RETRY_SLEEP_SECONDS", 
 
 
 DAILY_RADAR_FAST = _env_bool("DAILY_RADAR_FAST", False)
+COBERTURAS_RSP_WEEKLY = _env_bool("COBERTURAS_RSP_WEEKLY", False)
 
 DEFAULT_WATCHLIST = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
-    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT", "RSP"
 ]
 
 DEFAULT_OPTION_SYMBOLS = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
-    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT"
+    "AVGO", "AMD", "COST", "CRM", "ORCL", "TLT", "RSP"
 ]
 
 FAST_WATCHLIST = list(DEFAULT_WATCHLIST)
@@ -796,42 +821,42 @@ FAST_OPTION_SYMBOLS = list(DEFAULT_OPTION_SYMBOLS)
 
 WATCHLIST = _env_csv_list(
     "IBKR_WATCHLIST",
-    FAST_WATCHLIST if DAILY_RADAR_FAST else DEFAULT_WATCHLIST,
+    ["RSP"] if COBERTURAS_RSP_WEEKLY else (FAST_WATCHLIST if DAILY_RADAR_FAST else DEFAULT_WATCHLIST),
 )
 OPTION_SYMBOLS = _env_csv_list(
     "IBKR_OPTION_SYMBOLS",
-    FAST_OPTION_SYMBOLS if DAILY_RADAR_FAST else DEFAULT_OPTION_SYMBOLS,
+    ["RSP"] if COBERTURAS_RSP_WEEKLY else (FAST_OPTION_SYMBOLS if DAILY_RADAR_FAST else DEFAULT_OPTION_SYMBOLS),
 )
 
 LOOP_SECONDS = int(_v283_os.environ.get("IBKR_LOOP_SECONDS", "180"))
 
-TARGET_DTE_MIN = 25
-TARGET_DTE_MAX = 65
-TARGET_DTE_IDEAL = 45
+TARGET_DTE_MIN = _env_int("IBKR_TARGET_DTE_MIN", 7 if COBERTURAS_RSP_WEEKLY else 25)
+TARGET_DTE_MAX = _env_int("IBKR_TARGET_DTE_MAX", 14 if COBERTURAS_RSP_WEEKLY else 65)
+TARGET_DTE_IDEAL = _env_int("IBKR_TARGET_DTE_IDEAL", 8 if COBERTURAS_RSP_WEEKLY else 45)
 
 MAX_OPTIONS_PER_SYMBOL = _env_int(
     "IBKR_MAX_OPTIONS_PER_SYMBOL",
-    2 if DAILY_RADAR_FAST else 8,
+    4 if COBERTURAS_RSP_WEEKLY else (2 if DAILY_RADAR_FAST else 8),
 )
 MAX_OPTION_SYMBOLS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_OPTION_SYMBOLS_PER_RUN",
-    6 if DAILY_RADAR_FAST else 10,
+    1 if COBERTURAS_RSP_WEEKLY else (6 if DAILY_RADAR_FAST else 10),
 ))
 MAX_TOTAL_OPTION_CONTRACTS_PER_RUN = max(1, _env_int(
     "IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN",
-    12 if DAILY_RADAR_FAST else 48,
+    4 if COBERTURAS_RSP_WEEKLY else (12 if DAILY_RADAR_FAST else 48),
 ))
 DYNAMIC_OPTION_UNIVERSE_ENABLED = _env_bool(
     "IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED",
-    True,
+    False if COBERTURAS_RSP_WEEKLY else True,
 )
 INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES = _env_bool(
     "IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES",
-    True,
+    False if COBERTURAS_RSP_WEEKLY else True,
 )
 OPTION_CORE_SYMBOLS = _env_csv_list(
     "IBKR_OPTION_CORE_SYMBOLS",
-    ["QQQ", "SPY"],
+    ["RSP"] if COBERTURAS_RSP_WEEKLY else ["QQQ", "SPY"],
 )
 OPTION_CONTEXT_ONLY_SYMBOLS = _env_csv_list(
     "IBKR_OPTION_CONTEXT_ONLY_SYMBOLS",
@@ -894,6 +919,32 @@ USE_STANDARD_OPTION_STRIKES = True
 STANDARD_STRIKE_MULTIPLE = 5
 
 SHOW_IBKR_CONTRACT_ERRORS = False
+
+
+class BridgeStepTimeout(TimeoutError):
+    pass
+
+
+@contextmanager
+def bridge_step_timeout(seconds, label):
+    if not seconds or seconds <= 0:
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+
+    def _raise_timeout(signum, frame):
+        raise BridgeStepTimeout(f"{label} timed out after {seconds:.1f}s")
+
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, float(seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer and previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 # Espera para que IBKR entregue bid/ask/greeks en opciones
 OPTION_MARKET_DATA_WAIT_SECONDS = float(
@@ -1086,7 +1137,8 @@ def connect_ibkr_with_retries():
                 attempt=attempt,
                 connected=True,
             )
-            print("IBKR conectado correctamente")
+            ib.RequestTimeout = IBKR_REQUEST_TIMEOUT_SECONDS
+            print(f"IBKR conectado correctamente | request_timeout:{IBKR_REQUEST_TIMEOUT_SECONDS}s")
             return True
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
@@ -1130,6 +1182,7 @@ PRIMARY_EXCHANGE_MAP = {
     "ORCL": "NYSE",
     "QQQ": "NASDAQ",
     "SPY": "ARCA",
+    "RSP": "ARCA",
     "TLT": "NASDAQ"
 }
 
@@ -1201,13 +1254,15 @@ def post(payload):
         response = requests.post(
             ENGINE_URL,
             json=payload,
-            timeout=90
+            timeout=ENGINE_POST_TIMEOUT_SECONDS
         )
 
         return response.status_code
 
     except Exception as e:
-        print("POST ERROR:", e)
+        ticker = payload.get("ticker") if isinstance(payload, dict) else ""
+        timeframe = payload.get("timeframe") if isinstance(payload, dict) else ""
+        print(f"POST ERROR {ticker} {timeframe}:", e, flush=True)
         return None
 
 
@@ -1234,6 +1289,173 @@ def is_standard_strike(strike):
 
     except Exception:
         return False
+
+
+def _as_float(value):
+    try:
+        if isinstance(value, dict):
+            for key in ("strike", "value", "low", "high"):
+                if key in value:
+                    return _as_float(value.get(key))
+            return None
+        if value in [None, "", "None"]:
+            return None
+        out = float(value)
+        if math.isnan(out) or math.isinf(out):
+            return None
+        return out
+    except Exception:
+        return None
+
+
+def _number_list(value):
+    if value in [None, "", "None"]:
+        return []
+    if isinstance(value, (int, float)):
+        parsed = _as_float(value)
+        return [parsed] if parsed is not None else []
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            parsed = _as_float(item)
+            if parsed is not None:
+                out.append(parsed)
+        return out
+    if isinstance(value, dict):
+        out = []
+        for item in value.values():
+            out.extend(_number_list(item))
+        return out
+    if isinstance(value, str):
+        raw = value.replace("$", " ").replace(",", " ")
+        out = []
+        for token in raw.split():
+            parsed = _as_float(token)
+            if parsed is not None:
+                out.append(parsed)
+        return out
+    return []
+
+
+def _append_unique_strike(out, strike):
+    parsed = _as_float(strike)
+    if parsed is None:
+        return
+    rounded = round(parsed, 4)
+    if all(abs(existing - rounded) > 0.0001 for existing in out):
+        out.append(rounded)
+
+
+def _nearest_available_strike(strikes, target, max_distance=2.51):
+    parsed = _as_float(target)
+    if parsed is None:
+        return None
+    candidates = [float(strike) for strike in strikes if strike is not None]
+    if not candidates:
+        return None
+    nearest = min(candidates, key=lambda strike: abs(strike - parsed))
+    if abs(nearest - parsed) <= max_distance:
+        return round(nearest, 4)
+    return None
+
+
+def _load_rsp_manual_context():
+    path = _v283_Path("runtime") / "coberturas_rsp_manual_context.json"
+    try:
+        data = _v283_json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _rsp_gamma_blob(context):
+    raw = context.get("gamma_blob")
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        data = _v283_json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _rsp_manual_candidate_strikes(context, right):
+    blob = _rsp_gamma_blob(context)
+    wanted_type = "put" if right == "P" else "call"
+    out = []
+    for source in [context, blob]:
+        candidates = source.get("option_chain_candidates") if isinstance(source, dict) else None
+        if not isinstance(candidates, list):
+            continue
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or item.get("right") or "").strip().lower()
+            if item_type and wanted_type not in item_type and right.lower() not in item_type:
+                continue
+            _append_unique_strike(out, item.get("strike"))
+    return out
+
+
+def _rsp_context_level_strikes(context, right):
+    blob = _rsp_gamma_blob(context)
+    out = []
+    if right == "P":
+        keys = ("expected_move_low", "put_wall", "support_levels")
+        blob_values = [
+            (blob.get("expected_move") or {}).get("low") if isinstance(blob.get("expected_move"), dict) else None,
+            (blob.get("gamma_context") or {}).get("put_wall") if isinstance(blob.get("gamma_context"), dict) else None,
+            (blob.get("technical_levels") or {}).get("supports") if isinstance(blob.get("technical_levels"), dict) else None,
+        ]
+    else:
+        keys = ("expected_move_high", "call_wall", "resistance_levels")
+        blob_values = [
+            (blob.get("expected_move") or {}).get("high") if isinstance(blob.get("expected_move"), dict) else None,
+            (blob.get("gamma_context") or {}).get("call_wall") if isinstance(blob.get("gamma_context"), dict) else None,
+            (blob.get("technical_levels") or {}).get("resistances") if isinstance(blob.get("technical_levels"), dict) else None,
+        ]
+    for key in keys:
+        for value in _number_list(context.get(key)):
+            _append_unique_strike(out, value)
+    for value in blob_values:
+        for item in _number_list(value):
+            _append_unique_strike(out, item)
+    return out
+
+
+def pick_rsp_weekly_strikes(strikes, stock_price, right, limit):
+    context = _load_rsp_manual_context()
+    targets = []
+    for value in _rsp_manual_candidate_strikes(context, right):
+        _append_unique_strike(targets, value)
+    context_levels = _rsp_context_level_strikes(context, right)
+    if right == "P":
+        context_levels = [item for item in context_levels if item <= stock_price]
+    else:
+        context_levels = [item for item in context_levels if item >= stock_price]
+    for value in context_levels:
+        _append_unique_strike(targets, value)
+
+    if not targets:
+        if right == "P":
+            targets = sorted(
+                [strike for strike in strikes if 0 <= (stock_price - strike) / stock_price <= 0.055],
+                key=lambda strike: abs(abs((strike - stock_price) / stock_price) - 0.02),
+            )
+        else:
+            targets = sorted(
+                [strike for strike in strikes if 0.005 <= (strike - stock_price) / stock_price <= 0.055],
+                key=lambda strike: abs(abs((strike - stock_price) / stock_price) - 0.025),
+            )
+
+    selected = []
+    for target in targets:
+        strike = _nearest_available_strike(strikes, target)
+        if strike is not None:
+            _append_unique_strike(selected, strike)
+        if len(selected) >= limit:
+            break
+    return selected[:limit]
 
 
 def tradingview_context_stub(symbol):
@@ -1723,6 +1945,30 @@ def stock_contract(symbol):
 
         except Exception:
             pass
+
+    try:
+        matches = ib.reqMatchingSymbols(symbol)
+        for match in matches or []:
+            matched = getattr(match, "contract", None)
+            if not matched:
+                continue
+            if str(getattr(matched, "symbol", "") or "").upper() != str(symbol or "").upper():
+                continue
+            if str(getattr(matched, "secType", "") or "").upper() != "STK":
+                continue
+            if str(getattr(matched, "currency", "") or "").upper() != "USD":
+                continue
+            if primary_exchange and str(getattr(matched, "primaryExchange", "") or getattr(matched, "exchange", "") or "").upper() != primary_exchange:
+                continue
+            return Stock(
+                symbol=symbol,
+                exchange="SMART",
+                currency="USD",
+                primaryExchange=primary_exchange or getattr(matched, "primaryExchange", None) or getattr(matched, "exchange", None),
+                conId=int(getattr(matched, "conId", 0) or 0),
+            )
+    except Exception as exc:
+        print(symbol, "matching symbol fallback failed:", exc)
 
     # Fallback final
     if primary_exchange:
@@ -2237,7 +2483,12 @@ def send_market_data():
     print("\n=== MARKET DATA V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
 
     for symbol in WATCHLIST:
-        snap = get_price_snapshot(symbol)
+        try:
+            with bridge_step_timeout(STOCK_PRICE_SNAPSHOT_TIMEOUT_SECONDS, f"market data {symbol}"):
+                snap = get_price_snapshot(symbol)
+        except BridgeStepTimeout as exc:
+            print(symbol, "PRICE TIMEOUT:", exc)
+            continue
 
         if not snap or snap.get("price") is None:
             print(symbol, "sin precio válido")
@@ -2292,10 +2543,15 @@ def get_positions_rows():
         return rows
 
     try:
-        positions = ib.positions()
-
+        print("POSITIONS REQUEST START", flush=True)
+        with bridge_step_timeout(POSITION_REQUEST_TIMEOUT_SECONDS, "positions request"):
+            positions = ib.positions()
+        print(f"POSITIONS REQUEST OK: {len(positions)} row(s)", flush=True)
+    except BridgeStepTimeout as e:
+        print("POSITIONS TIMEOUT:", e, flush=True)
+        return rows
     except Exception as e:
-        print("POSITIONS ERROR:", e)
+        print("POSITIONS ERROR:", e, flush=True)
         return rows
 
     for position in positions:
@@ -2306,6 +2562,9 @@ def get_positions_rows():
             symbol = contract.symbol
             sec_type = contract.secType
 
+            if COBERTURAS_RSP_WEEKLY and str(symbol or "").upper() != "RSP":
+                continue
+
             qty = safe_round(position.position, 4)
             avg = safe_round(position.avgCost, 4)
 
@@ -2315,7 +2574,12 @@ def get_positions_rows():
             price_source = None
 
             if sec_type == "STK":
-                snap = get_price_snapshot(symbol)
+                try:
+                    with bridge_step_timeout(POSITION_PRICE_SNAPSHOT_TIMEOUT_SECONDS, f"position price {symbol}"):
+                        snap = get_price_snapshot(symbol)
+                except BridgeStepTimeout as exc:
+                    print("POSITION PRICE TIMEOUT:", symbol, exc)
+                    snap = None
 
                 if snap and snap.get("price"):
                     market_price = snap["price"]
@@ -2771,15 +3035,19 @@ def qualify_option(symbol, expiry, strike, right, chain):
             tradingClass=trading_class
         )
 
+        if COBERTURAS_RSP_WEEKLY and str(symbol or "").upper() == "RSP":
+            return contract
+
         qualified = ib.qualifyContracts(contract)
 
         if qualified:
             return qualified[0]
 
-        return None
+        return contract
 
-    except Exception:
-        return None
+    except Exception as exc:
+        print(symbol, "option qualify fallback:", exc)
+        return contract if "contract" in locals() else None
 
 
 def pick_put_strikes(strikes, stock_price):
@@ -2838,52 +3106,47 @@ def build_option_candidates(symbol, stock_price):
     puts = []
     calls = []
 
-    if ENABLE_NAKED_PUTS:
-        puts = pick_put_strikes(strikes, stock_price)
+    if COBERTURAS_RSP_WEEKLY and str(symbol or "").upper() == "RSP":
+        per_side = max(1, (MAX_OPTIONS_PER_SYMBOL + 1) // 2)
+        if ENABLE_NAKED_PUTS:
+            puts = pick_rsp_weekly_strikes(strikes, stock_price, "P", per_side)
+        if ENABLE_COVERED_CALLS:
+            calls = pick_rsp_weekly_strikes(strikes, stock_price, "C", per_side)
+    else:
+        if ENABLE_NAKED_PUTS:
+            puts = pick_put_strikes(strikes, stock_price)
 
-    if ENABLE_COVERED_CALLS:
-        calls = pick_call_strikes(strikes, stock_price)
+        if ENABLE_COVERED_CALLS:
+            calls = pick_call_strikes(strikes, stock_price)
 
     valid = []
     invalid_count = 0
+    contract_specs = []
 
-    for strike in puts:
+    if COBERTURAS_RSP_WEEKLY and str(symbol or "").upper() == "RSP":
+        per_side = max(1, (MAX_OPTIONS_PER_SYMBOL + 1) // 2)
+        rsp_puts = puts[:per_side]
+        rsp_calls = calls[:per_side]
+        for index in range(max(len(rsp_puts), len(rsp_calls))):
+            if index < len(rsp_puts):
+                contract_specs.append((rsp_puts[index], "P", "NAKED_PUT"))
+            if index < len(rsp_calls):
+                contract_specs.append((rsp_calls[index], "C", "COVERED_CALL"))
+    else:
+        contract_specs.extend((strike, "P", "NAKED_PUT") for strike in puts)
+        contract_specs.extend((strike, "C", "COVERED_CALL") for strike in calls)
+
+    for strike, right, strategy in contract_specs:
         contract = qualify_option(
             symbol=symbol,
             expiry=expiry,
             strike=strike,
-            right="P",
+            right=right,
             chain=chain
         )
 
         if contract:
-            valid.append(
-                (
-                    contract,
-                    dte,
-                    "NAKED_PUT"
-                )
-            )
-        else:
-            invalid_count += 1
-
-    for strike in calls:
-        contract = qualify_option(
-            symbol=symbol,
-            expiry=expiry,
-            strike=strike,
-            right="C",
-            chain=chain
-        )
-
-        if contract:
-            valid.append(
-                (
-                    contract,
-                    dte,
-                    "COVERED_CALL"
-                )
-            )
+            valid.append((contract, dte, strategy))
         else:
             invalid_count += 1
 
@@ -3302,6 +3565,281 @@ def _score_option_candidate_core(strategy, option_type, strike, stock_price, dte
     return score, final_decision, "; ".join(reason), decision_cap
 
 
+
+
+# ============================================================
+# COBERTURAS RSP MARGIN PREVIEW (IBKR WHAT-IF, NO TRANSMIT)
+# ============================================================
+
+COBERTURAS_RSP_MARGIN_PREVIEW_PATH = _v283_Path("runtime") / "coberturas_rsp_margin_preview_latest.json"
+
+
+def margin_number(value):
+    if value in [None, "", "None"]:
+        return None
+    try:
+        text = str(value).replace(",", "").strip()
+        if not text:
+            return None
+        token = text.split()[0]
+        number = float(token)
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return round(number, 4)
+    except Exception:
+        return None
+
+
+def rsp_best_row(rows, strategy):
+    strategy = str(strategy or "").upper()
+    valid = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ticker") or row.get("symbol") or "").upper() != "RSP":
+            continue
+        if str(row.get("strategy") or row.get("strategy_hint") or "").upper() != strategy:
+            continue
+        if row.get("strike") is None or not row.get("expiration"):
+            continue
+        valid.append(row)
+    if not valid:
+        return None
+    return sorted(
+        valid,
+        key=lambda row: (
+            1 if row.get("mid") is not None else 0,
+            safe_round(row.get("score"), 0) or 0,
+            -(safe_round(row.get("strike"), 0) or 0) if strategy == "NAKED_PUT" else safe_round(row.get("strike"), 0) or 0,
+        ),
+        reverse=True,
+    )[0]
+
+
+def rsp_option_contract_from_row(row):
+    right = "P" if str(row.get("strategy") or "").upper() == "NAKED_PUT" else "C"
+    return Option(
+        symbol="RSP",
+        lastTradeDateOrContractMonth=str(row.get("expiration")),
+        strike=float(row.get("strike")),
+        right=right,
+        exchange="SMART",
+        currency="USD",
+        multiplier="100",
+        tradingClass="RSP",
+    )
+
+
+def rsp_order_limit_price(row, fallback=0.01):
+    for key in ["mid", "bid", "ask", "last", "market_price"]:
+        value = clean(row.get(key))
+        if value is not None:
+            return max(0.01, value)
+    return fallback
+
+
+def resolve_contract_for_margin(contract, timeout=4):
+    previous_timeout = getattr(ib, "RequestTimeout", 0)
+    try:
+        ib.RequestTimeout = timeout
+        try:
+            qualified = ib.qualifyContracts(contract)
+            if qualified:
+                return qualified[0]
+        except Exception:
+            pass
+        try:
+            details = ib.reqContractDetails(contract)
+            if details:
+                return details[0].contract
+        except Exception:
+            pass
+        return contract
+    finally:
+        try:
+            ib.RequestTimeout = previous_timeout
+        except Exception:
+            pass
+
+
+def order_state_payload(order_state):
+    return {
+        "status": getattr(order_state, "status", None),
+        "init_margin_before": margin_number(getattr(order_state, "initMarginBefore", None)),
+        "maint_margin_before": margin_number(getattr(order_state, "maintMarginBefore", None)),
+        "equity_with_loan_before": margin_number(getattr(order_state, "equityWithLoanBefore", None)),
+        "init_margin_change": margin_number(getattr(order_state, "initMarginChange", None)),
+        "maint_margin_change": margin_number(getattr(order_state, "maintMarginChange", None)),
+        "equity_with_loan_change": margin_number(getattr(order_state, "equityWithLoanChange", None)),
+        "init_margin_after": margin_number(getattr(order_state, "initMarginAfter", None)),
+        "maint_margin_after": margin_number(getattr(order_state, "maintMarginAfter", None)),
+        "equity_with_loan_after": margin_number(getattr(order_state, "equityWithLoanAfter", None)),
+        "commission": margin_number(getattr(order_state, "commission", None)),
+        "min_commission": margin_number(getattr(order_state, "minCommission", None)),
+        "max_commission": margin_number(getattr(order_state, "maxCommission", None)),
+        "commission_currency": getattr(order_state, "commissionCurrency", None),
+        "warning_text": str(getattr(order_state, "warningText", "") or ""),
+        "completed_status": str(getattr(order_state, "completedStatus", "") or ""),
+        "completed_time": str(getattr(order_state, "completedTime", "") or ""),
+        "raw_init_margin_change": str(getattr(order_state, "initMarginChange", "") or ""),
+        "raw_maint_margin_change": str(getattr(order_state, "maintMarginChange", "") or ""),
+    }
+
+
+def whatif_margin_preview(contract, order, label):
+    selected_account = _bridge_selected_ibkr_account()
+    order.whatIf = True
+    order.transmit = False
+    if selected_account:
+        order.account = selected_account
+    preview = {
+        "label": label,
+        "status": "UNKNOWN",
+        "account_alias": BRIDGE_ACCOUNT_ALIAS,
+        "account_scope": BRIDGE_ACCOUNT_SCOPE,
+        "selected_account_configured": bool(selected_account),
+        "selected_account_printed": False,
+        "order_type": getattr(order, "orderType", None),
+        "action": getattr(order, "action", None),
+        "quantity": safe_round(getattr(order, "totalQuantity", None), 4),
+        "limit_price": safe_round(getattr(order, "lmtPrice", None), 4),
+        "what_if": True,
+        "transmit": False,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    try:
+        state = ib.whatIfOrder(contract, order)
+        preview.update(order_state_payload(state))
+        preview["status"] = "MARGIN_PREVIEW_READY" if preview.get("init_margin_change") is not None else "MARGIN_PREVIEW_PARTIAL"
+        if preview["status"] == "MARGIN_PREVIEW_PARTIAL" and getattr(order, "orderType", "") == "LMT":
+            retry_order = MarketOrder(getattr(order, "action", ""), getattr(order, "totalQuantity", 0))
+            retry_order.whatIf = True
+            retry_order.transmit = False
+            if selected_account:
+                retry_order.account = selected_account
+            try:
+                retry_state = ib.whatIfOrder(contract, retry_order)
+                retry_payload = order_state_payload(retry_state)
+                preview["market_order_retry"] = retry_payload
+                if retry_payload.get("init_margin_change") is not None:
+                    preview.update(retry_payload)
+                    preview["status"] = "MARGIN_PREVIEW_READY"
+                    preview["order_type_used_for_margin"] = "MKT_RETRY"
+            except Exception as retry_exc:
+                preview["market_order_retry_error"] = str(retry_exc)[:500]
+    except Exception as exc:
+        preview.update({
+            "status": "MARGIN_PREVIEW_FAILED",
+            "error": str(exc)[:500],
+        })
+    return preview
+
+
+def build_rsp_margin_previews(option_rows):
+    payload = {
+        "margin_preview_version": "coberturas_rsp_margin_preview_v1",
+        "source": "IBKR_WHAT_IF_ORDER_PREVIEW",
+        "generated_at": now_iso(),
+        "ticker": "RSP",
+        "preview_count": 0,
+        "previews": [],
+        "warnings": [],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if not COBERTURAS_RSP_WEEKLY:
+        payload["status"] = "SKIPPED_NOT_COBERTURAS_RSP_WEEKLY"
+        return payload
+
+    put_row = rsp_best_row(option_rows, "NAKED_PUT")
+    call_row = rsp_best_row(option_rows, "COVERED_CALL")
+
+    if put_row:
+        put_contract = resolve_contract_for_margin(rsp_option_contract_from_row(put_row))
+        put_order = LimitOrder("SELL", 1, rsp_order_limit_price(put_row))
+        preview = whatif_margin_preview(put_contract, put_order, "SELL_PUT")
+        preview.update({
+            "strategy": "SELL_PUT",
+            "ticker": "RSP",
+            "expiration": put_row.get("expiration"),
+            "strike": put_row.get("strike"),
+            "premium_reference": rsp_order_limit_price(put_row),
+            "candidate_data_quality": put_row.get("data_quality"),
+        })
+        payload["previews"].append(preview)
+    else:
+        payload["warnings"].append("NO_SELL_PUT_CANDIDATE_FOR_MARGIN")
+
+    if call_row:
+        stock = resolve_contract_for_margin(stock_contract("RSP"))
+        call_contract = resolve_contract_for_margin(rsp_option_contract_from_row(call_row))
+        stock_conid = int(getattr(stock, "conId", 0) or 0)
+        call_conid = int(getattr(call_contract, "conId", 0) or 0)
+        if stock_conid and call_conid:
+            combo = Contract()
+            combo.symbol = "RSP"
+            combo.secType = "BAG"
+            combo.exchange = "SMART"
+            combo.currency = "USD"
+            combo.comboLegs = [
+                ComboLeg(conId=stock_conid, ratio=100, action="BUY", exchange="SMART"),
+                ComboLeg(conId=call_conid, ratio=1, action="SELL", exchange="SMART"),
+            ]
+            stock_price = clean(call_row.get("price")) or clean(call_row.get("underlying_price")) or 0
+            call_credit = rsp_order_limit_price(call_row)
+            combo_limit = max(0.01, (stock_price * 100) - (call_credit * 100)) if stock_price else 0.01
+            combo_order = LimitOrder("BUY", 1, combo_limit)
+            preview = whatif_margin_preview(combo, combo_order, "BUY_100_SELL_CALL")
+            preview.update({
+                "strategy": "BUY_100_SELL_CALL",
+                "ticker": "RSP",
+                "expiration": call_row.get("expiration"),
+                "strike": call_row.get("strike"),
+                "premium_reference": call_credit,
+                "underlying_reference": stock_price,
+                "candidate_data_quality": call_row.get("data_quality"),
+                "combo_stock_conid_available": True,
+                "combo_option_conid_available": True,
+            })
+            payload["previews"].append(preview)
+        else:
+            payload["previews"].append({
+                "label": "BUY_100_SELL_CALL",
+                "strategy": "BUY_100_SELL_CALL",
+                "ticker": "RSP",
+                "expiration": call_row.get("expiration"),
+                "strike": call_row.get("strike"),
+                "status": "MARGIN_PREVIEW_FAILED",
+                "error": "COMBO_CONID_MISSING",
+                "combo_stock_conid_available": bool(stock_conid),
+                "combo_option_conid_available": bool(call_conid),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            })
+    else:
+        payload["warnings"].append("NO_BUY_WRITE_CALL_CANDIDATE_FOR_MARGIN")
+
+    payload["preview_count"] = len(payload["previews"])
+    payload["status"] = "MARGIN_PREVIEW_READY" if any(p.get("status") == "MARGIN_PREVIEW_READY" for p in payload["previews"]) else "MARGIN_PREVIEW_INCOMPLETE"
+    return payload
+
+
+def write_rsp_margin_previews(option_rows):
+    payload = build_rsp_margin_previews(option_rows)
+    try:
+        COBERTURAS_RSP_MARGIN_PREVIEW_PATH.parent.mkdir(exist_ok=True)
+        COBERTURAS_RSP_MARGIN_PREVIEW_PATH.write_text(_v283_json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+    except Exception as exc:
+        print("RSP MARGIN PREVIEW WRITE ERROR:", exc)
+    print(
+        "RSP MARGIN PREVIEW"
+        f" | status:{payload.get('status')}"
+        f" | previews:{payload.get('preview_count')}"
+        f" | path:{COBERTURAS_RSP_MARGIN_PREVIEW_PATH}"
+    )
+    return payload
+
 def send_options_intelligence():
     print("\n=== OPTIONS INTELLIGENCE V18_1_REMOTE_SNAPSHOT_INGEST ===\n")
     IBKR_CHAIN_DIAGNOSTIC_EVENTS.clear()
@@ -3372,7 +3910,18 @@ def send_options_intelligence():
                     dte = item[1]
                     strategy = item[2]
 
-                    option_data = request_option_market_data(contract)
+                    try:
+                        with bridge_step_timeout(
+                            OPTION_CONTRACT_MARKET_DATA_TIMEOUT_SECONDS,
+                            f"option market data {symbol} {strategy} {contract.strike}",
+                        ):
+                            option_data = request_option_market_data(contract)
+                    except BridgeStepTimeout as exc:
+                        print(f"{symbol} {strategy} {contract.strike} option TIMEOUT: {exc}")
+                        option_data = _empty_option_market_data(
+                            error=exc,
+                            source="OPTION_CONTRACT_TIMEOUT",
+                        )
 
                     bid = option_data.get("bid")
                     ask = option_data.get("ask")
@@ -3540,6 +4089,9 @@ def send_options_intelligence():
                 "generated_at": now_iso(),
                 "not_order_instruction": True,
             })
+    if COBERTURAS_RSP_WEEKLY:
+        write_rsp_margin_previews(cycle_option_rows)
+
     diagnostic = ibkr_diagnostics.build_cycle_diagnostic(
         symbols=list(selected_symbols),
         chain_events=list(IBKR_CHAIN_DIAGNOSTIC_EVENTS),
@@ -4543,6 +5095,8 @@ print(
     f" {DAILY_RADAR_FAST}"
     f" | watchlist:{','.join(WATCHLIST)}"
     f" | option_symbols:{','.join(OPTION_SYMBOLS)}"
+    f" | coberturas_rsp_weekly:{COBERTURAS_RSP_WEEKLY}"
+    f" | target_dte:{TARGET_DTE_MIN}-{TARGET_DTE_MAX}/{TARGET_DTE_IDEAL}"
     f" | max_options_per_symbol:{MAX_OPTIONS_PER_SYMBOL}"
     f" | dynamic_option_universe:{DYNAMIC_OPTION_UNIVERSE_ENABLED}"
     f" | max_option_symbols_per_run:{MAX_OPTION_SYMBOLS_PER_RUN}"
