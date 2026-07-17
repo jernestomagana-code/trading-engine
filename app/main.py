@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, Request, Header, HTTPException
+try:
+    from fastapi import FastAPI, Request, Header, HTTPException, BackgroundTasks
+except ImportError:
+    from fastapi import FastAPI, Request, Header, HTTPException
+
+    class BackgroundTasks:
+        def add_task(self, fn, *args, **kwargs):
+            return None
 try:
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 except ImportError:
@@ -27376,9 +27383,27 @@ def _v31_data_pipeline_status_payload():
     }
 
 
-def _v31_ingest_snapshot_payload(payload):
+def _v31_ingest_snapshot_payload(payload, persist_durable=True, background_tasks=None):
     saved = _v28_write_master(payload)
-    durable_storage = _v31_persist_durable_snapshot(saved)
+    if persist_durable:
+        durable_storage = _v31_persist_durable_snapshot(saved)
+    elif background_tasks is not None:
+        background_tasks.add_task(_v31_persist_durable_snapshot, saved)
+        durable_storage = {
+            "enabled": supabase_enabled(),
+            "saved": False,
+            "status": "QUEUED_BACKGROUND",
+            "table": _V31_DURABLE_SNAPSHOT_TABLE,
+            "snapshot_id": V31_DURABLE_SNAPSHOT_ID,
+        }
+    else:
+        durable_storage = {
+            "enabled": supabase_enabled(),
+            "saved": False,
+            "status": "SKIPPED",
+            "table": _V31_DURABLE_SNAPSHOT_TABLE,
+            "snapshot_id": V31_DURABLE_SNAPSHOT_ID,
+        }
     return {
         "engine": "V31_CANONICAL_SNAPSHOT_INGEST",
         "status": "OK",
@@ -27394,6 +27419,22 @@ def _v31_ingest_snapshot_payload(payload):
         "v31_pipeline_status": "/v31_data_pipeline_status",
         "not_order_instruction": True,
     }
+
+
+def _v31_record_snapshot_ingest_audit(result):
+    _record_audit_event(
+        "SNAPSHOT_INGESTED",
+        {
+            "source": result.get("source"),
+            "rows_found": result.get("rows_found"),
+            "technical_available": result.get("technical_available"),
+            "durable_snapshot_saved": (result.get("durable_storage") or {}).get("saved"),
+            "durable_snapshot_status": (result.get("durable_storage") or {}).get("status"),
+            "not_order_instruction": True,
+        },
+        actor="bridge",
+        source="v31_ingest_snapshot",
+    )
 
 
 def _v31_master_snapshot_timestamp(master):
@@ -29250,6 +29291,7 @@ async def v31_trading_day_readiness(
 
 @app.post("/v31_ingest_snapshot")
 async def v31_ingest_snapshot(
+    background_tasks: BackgroundTasks,
     payload: dict,
     x_snapshot_ingest_token: Optional[str] = Header(default=None),
     x_decision_desk_token: Optional[str] = Header(default=None),
@@ -29260,19 +29302,12 @@ async def v31_ingest_snapshot(
         x_decision_desk_token,
         x_webhook_secret,
     )
-    result = _v31_ingest_snapshot_payload(payload)
-    _record_audit_event(
-        "SNAPSHOT_INGESTED",
-        {
-            "source": result.get("source"),
-            "rows_found": result.get("rows_found"),
-            "technical_available": result.get("technical_available"),
-            "durable_snapshot_saved": (result.get("durable_storage") or {}).get("saved"),
-            "not_order_instruction": True,
-        },
-        actor="bridge",
-        source="v31_ingest_snapshot",
+    result = _v31_ingest_snapshot_payload(
+        payload,
+        persist_durable=False,
+        background_tasks=background_tasks,
     )
+    background_tasks.add_task(_v31_record_snapshot_ingest_audit, result)
     return result
 
 

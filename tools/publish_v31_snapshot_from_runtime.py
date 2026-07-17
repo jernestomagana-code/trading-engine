@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,9 @@ import broker_check
 DEFAULT_REMOTE_URL = "https://trading-engine-p097.onrender.com"
 DEFAULT_INGEST_PATH = "/v31_ingest_snapshot"
 DEFAULT_MAX_AGE_MINUTES = 90
+DEFAULT_PUBLISH_TIMEOUT_SECONDS = int(os.getenv("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "45"))
+DEFAULT_PUBLISH_RETRIES = max(1, int(os.getenv("TRADING_ENGINE_PUBLISH_RETRIES", "3")))
+DEFAULT_PUBLISH_RETRY_SLEEP_SECONDS = float(os.getenv("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "3"))
 
 
 def now_iso() -> str:
@@ -345,6 +349,29 @@ def post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]
         return {"ok": False, "url": url, "error": str(exc)}
 
 
+def post_json_with_retries(
+    url: str,
+    payload: dict[str, Any],
+    timeout: int,
+    retries: int,
+    retry_sleep: float,
+) -> dict[str, Any]:
+    attempts = []
+    final: dict[str, Any] = {"ok": False, "url": url, "error": "not_attempted"}
+    for attempt in range(1, max(1, retries) + 1):
+        result = post_json(url, payload, timeout)
+        result["attempt"] = attempt
+        result["max_attempts"] = max(1, retries)
+        attempts.append(result)
+        final = dict(result)
+        if result.get("ok"):
+            break
+        if attempt < max(1, retries):
+            time.sleep(max(0.0, retry_sleep))
+    final["attempts"] = attempts
+    return final
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish local runtime snapshot to V31 ingest.")
     parser.add_argument("--runtime-dir", default="runtime", help="Runtime directory to scan.")
@@ -353,7 +380,9 @@ def main() -> int:
     parser.add_argument("--publish", action="store_true", help="POST snapshot to remote V31 ingest.")
     parser.add_argument("--max-age-minutes", type=int, default=DEFAULT_MAX_AGE_MINUTES)
     parser.add_argument("--allow-stale", action="store_true", help="Allow publish even if runtime files are stale.")
-    parser.add_argument("--timeout", type=int, default=15)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_PUBLISH_TIMEOUT_SECONDS)
+    parser.add_argument("--retries", type=int, default=DEFAULT_PUBLISH_RETRIES)
+    parser.add_argument("--retry-sleep", type=float, default=DEFAULT_PUBLISH_RETRY_SLEEP_SECONDS)
     args = parser.parse_args()
 
     ingest_path = args.ingest_path if args.ingest_path.startswith("/") else f"/{args.ingest_path}"
@@ -392,7 +421,13 @@ def main() -> int:
             }
             print(json.dumps(result, indent=2, ensure_ascii=False))
             return 2
-        result["publish_result"] = post_json(url, payload, args.timeout)
+        result["publish_result"] = post_json_with_retries(
+            url,
+            payload,
+            args.timeout,
+            args.retries,
+            args.retry_sleep,
+        )
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if (not args.publish or result.get("publish_result", {}).get("ok")) else 1
