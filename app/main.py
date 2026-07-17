@@ -29202,6 +29202,7 @@ async def v32_options_underlying_alert_health(market_closed_ok: bool = False):
         Path("runtime"),
         coverage_path=Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
         market_closed_ok=market_closed_ok,
+        events_override=_v32_load_tradingview_signal_events(limit=20000),
     )
 
 
@@ -29211,6 +29212,7 @@ async def v32_options_underlying_production_audit(market_closed_ok: bool = False
         Path("runtime"),
         coverage_path=Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
         market_closed_ok=market_closed_ok,
+        events_override=_v32_load_tradingview_signal_events(limit=20000),
     )
 
 
