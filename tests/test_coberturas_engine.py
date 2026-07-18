@@ -226,5 +226,46 @@ class CoberturasEngineTests(unittest.TestCase):
             self.assertIn("margin_decision_sensitivity", payload["strategy_recommendation"])
 
 
+    def test_margin_preview_is_not_reported_as_open_position(self):
+        runtime_data = {
+            "coberturas_rsp_margin_preview_latest.json": {
+                "previews": [{
+                    "ticker": "RSP",
+                    "strategy": "SELL_PUT",
+                    "quantity": 1,
+                    "what_if": True,
+                    "status": "MARGIN_PREVIEW_PARTIAL",
+                }]
+            },
+            "ibkr_account_capacity_latest.json": {"available": True},
+        }
+        position = ce.extract_position_state(runtime_data, {"position_mode": "AUTO"})
+        self.assertEqual(position["state"], "NO_SHARES")
+        self.assertEqual(position["open_rsp_options"], [])
+
+    def test_known_but_insufficient_capacity_is_not_called_missing_capital(self):
+        scenarios = {
+            "sell_put": {
+                "available": True,
+                "decision_capital_required": 21000,
+                "decision_return_on_capital_pct": 0.29,
+                "can_afford_by_available_funds": False,
+                "can_afford_by_buying_power": False,
+            },
+            "buy_100_sell_call": {
+                "available": True,
+                "decision_capital_required": 21480,
+                "decision_return_on_capital_pct": 1.26,
+                "can_afford_by_available_funds": False,
+                "can_afford_by_buying_power": False,
+            },
+        }
+        recommendation = ce.build_strategy_recommendation(scenarios, [])
+        self.assertEqual(recommendation["status"], "WAIT_ACCOUNT_CAPACITY")
+        self.assertEqual(recommendation["blockers"], ["INSUFFICIENT_ACCOUNT_CAPACITY"])
+        self.assertIn("capital conservador si esta calculado", recommendation["reason"])
+        self.assertNotIn("CAPITAL_DATA_MISSING", json.dumps(recommendation))
+
+
 if __name__ == "__main__":
     unittest.main()

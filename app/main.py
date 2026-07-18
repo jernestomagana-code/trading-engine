@@ -14853,8 +14853,7 @@ def v22_2_trade_decision(ticker: str):
 
 
 # === V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
-@app.post("/technical_snapshot")
-async def technical_snapshot(payload: dict):
+async def technical_snapshot_v223_legacy_helper(payload: dict):
     """
     Endpoint seguro para recibir snapshot técnico desde curl / TradingView / puente externo.
     Guarda el snapshot en runtime/technical_snapshot_by_ticker_safe.json.
@@ -14906,8 +14905,9 @@ async def technical_snapshot(payload: dict):
 
 
 @app.post("/technical-snapshot")
-async def technical_snapshot_dash(payload: dict):
-    return await technical_snapshot(payload)
+async def technical_snapshot_dash(request: Request):
+    """Compatibility spelling for the canonical technical snapshot ingest."""
+    return await technical_snapshot_ingest(request)
 # === END V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
 
 
@@ -15031,7 +15031,6 @@ async def v224_get_technical_snapshot_safe_status():
     }
 
 
-@app.get("/technical_snapshot_safe/{ticker}")
 async def v224_get_technical_snapshot_safe_ticker(ticker: str):
     store = _v224_load_safe_technical_store()
     t = str(ticker or "").upper().strip()
@@ -15049,9 +15048,9 @@ async def v224_get_technical_snapshot_safe_ticker(ticker: str):
 
 
 # === V22.5 DEPLOY UNBLOCKER / COMPATIBILITY ALIAS ===
-@app.post("/technical-snapshot")
 async def technical_snapshot_dash_alias(payload: dict):
-    return await technical_snapshot(payload)
+    """Legacy helper retained without registering a duplicate FastAPI route."""
+    return await technical_snapshot_v223_legacy_helper(payload)
 
 @app.get("/v22_5_system_status")
 async def v22_5_system_status():

@@ -32,6 +32,25 @@ LOCAL_CONSOLE_COMMAND = ROOT / "Stock Ultimus Console.command"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
+    def test_fastapi_routes_are_not_registered_twice(self):
+        tree = ast.parse(APP.read_text(), filename=str(APP))
+        registrations = []
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                    continue
+                if not isinstance(decorator.func.value, ast.Name) or decorator.func.value.id != "app":
+                    continue
+                if decorator.func.attr not in {"get", "post", "put", "delete", "patch"}:
+                    continue
+                if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                    registrations.append((decorator.func.attr, decorator.args[0].value))
+
+        duplicates = sorted({item for item in registrations if registrations.count(item) > 1})
+        self.assertEqual(duplicates, [])
+
     def test_bridge_loop_is_not_executed_at_module_scope(self):
         tree = ast.parse(BRIDGE.read_text(), filename=str(BRIDGE))
         self.assertFalse(any(isinstance(node, ast.While) for node in tree.body))

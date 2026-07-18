@@ -314,6 +314,8 @@ def row_mid(row: dict[str, Any]) -> float | None:
 def extract_option_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for file_name, payload in runtime_data.items():
+        if file_name == "coberturas_rsp_margin_preview_latest.json":
+            continue
         for item in scan_dicts(payload):
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
             if ticker != TICKER:
@@ -421,6 +423,9 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
     shares = 0.0
     open_options: list[dict[str, Any]] = []
     for file_name, payload in runtime_data.items():
+        # What-if margin previews are hypothetical orders, not positions.
+        if file_name == "coberturas_rsp_margin_preview_latest.json":
+            continue
         for item in scan_dicts(payload):
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
             if ticker != TICKER:
@@ -431,7 +436,8 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
             if sec_type in {"STK", "STOCK", "ETF"} and qty is not None:
                 shares += qty
             looks_like_position_option = sec_type in {"OPT", "OPTION"} or (qty is not None and ("PUT" in klass or "CALL" in klass))
-            if looks_like_position_option:
+            is_preview = item.get("what_if") is True or safe_upper(item.get("status"), "").startswith("MARGIN_PREVIEW")
+            if looks_like_position_option and not is_preview:
                 option = dict(item)
                 option["source_file"] = file_name
                 open_options.append(option)
@@ -858,6 +864,41 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
             "not_order_instruction": True,
         }
     if len(comparable) < 2:
+        capacity_blocked = [
+            row
+            for row in rows
+            if row["available"]
+            and row.get("decision_capital_required") is not None
+            and (
+                row.get("can_afford_by_buying_power") is False
+                or row.get("can_afford_by_available_funds") is False
+            )
+        ]
+        if capacity_blocked:
+            required = [
+                safe_float(row.get("decision_capital_required"), None)
+                for row in capacity_blocked
+            ]
+            required = [value for value in required if value is not None]
+            required_note = (
+                " Capital requerido estimado: ${:,.2f} a ${:,.2f}.".format(min(required), max(required))
+                if required
+                else ""
+            )
+            return {
+                "status": "WAIT_ACCOUNT_CAPACITY",
+                "recommended_strategy": None,
+                "reason": (
+                    "El capital conservador si esta calculado, pero los fondos disponibles o el poder de compra "
+                    "no alcanzan para comparar ambos caminos de forma operable."
+                    + required_note
+                ),
+                "blockers": ["INSUFFICIENT_ACCOUNT_CAPACITY"],
+                "comparison": rows,
+                "margin_decision_sensitivity": margin_decision_sensitivity(rows),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
         return {
             "status": "WAIT_CAPITAL_DATA",
             "recommended_strategy": None,
@@ -1092,7 +1133,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         if recommendation_status.startswith("RECOMMEND_"):
             decision = recommendation_status
             next_action = strategy_recommendation.get("reason") or "Revisar recomendacion comparativa antes de preparar orden manual."
-        elif recommendation_status in {"WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA"}:
+        elif recommendation_status in {"WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA", "WAIT_ACCOUNT_CAPACITY"}:
             decision = recommendation_status
             next_action = strategy_recommendation.get("reason") or "Refrescar margen IBKR para comparar caminos."
         else:

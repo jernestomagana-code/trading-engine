@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,6 +33,25 @@ DEFAULT_MAX_AGE_MINUTES = 90
 DEFAULT_PUBLISH_TIMEOUT_SECONDS = int(os.getenv("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "45"))
 DEFAULT_PUBLISH_RETRIES = max(1, int(os.getenv("TRADING_ENGINE_PUBLISH_RETRIES", "3")))
 DEFAULT_PUBLISH_RETRY_SLEEP_SECONDS = float(os.getenv("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "3"))
+PUBLISH_DATA_FILES = (
+    "decision_desk_snapshot.json",
+    "v32_ibkr_chain_coverage.json",
+    "stock_ultimus_console_bridge_latest.json",
+    "market_bridge_session_latest.json",
+    "daily_radar_latest.json",
+    "canslim_candidates_latest.json",
+    "technical_snapshot_by_ticker_safe.json",
+    "technical_snapshot_by_ticker.json",
+    "v26_local_master_snapshot.json",
+    "v28_master_snapshot.json",
+    "v25_master_snapshot.json",
+    "ibkr_account_capacity_latest.json",
+)
+RESERVED_NON_TICKERS = {
+    "CANSLIM", "CONTROL_PANEL", "GATE", "MARKET", "OPTIONS", "POST_MORTEM",
+    "RAW", "SCORE_CALIBRATION", "TECHNICAL", "TOP",
+}
+MARKET_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,8}(?:[.!-][A-Z0-9]{1,4})?!?$")
 
 
 def now_iso() -> str:
@@ -140,6 +160,34 @@ def runtime_freshness(runtime_dir: Path) -> dict[str, Any]:
     }
 
 
+def publish_data_freshness(runtime_dir: Path) -> dict[str, Any]:
+    """Measure only publishable market/account inputs, not monitor state files."""
+    files = [runtime_dir / name for name in PUBLISH_DATA_FILES if (runtime_dir / name).exists()]
+    if not files:
+        return {
+            "newest_file": None,
+            "newest_mtime": None,
+            "age_minutes": None,
+            "file_count": 0,
+            "considered_files": [],
+        }
+    newest = max(files, key=lambda path: path.stat().st_mtime)
+    newest_dt = datetime.fromtimestamp(newest.stat().st_mtime, tz=timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - newest_dt).total_seconds() / 60
+    return {
+        "newest_file": str(newest),
+        "newest_mtime": newest_dt.isoformat(),
+        "age_minutes": round(age_minutes, 2),
+        "file_count": len(files),
+        "considered_files": [path.name for path in files],
+    }
+
+
+def valid_market_symbol(value: Any) -> bool:
+    symbol = str(value or "").upper().strip()
+    return bool(symbol and symbol not in RESERVED_NON_TICKERS and MARKET_SYMBOL_RE.fullmatch(symbol))
+
+
 def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -197,7 +245,7 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     best_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
-        if not ticker:
+        if not valid_market_symbol(ticker):
             continue
 
         row["ticker"] = ticker
@@ -229,7 +277,7 @@ def extract_technical_snapshot(runtime_data: dict[str, Any]) -> dict[str, dict[s
             return
 
         ticker = str(value.get("ticker") or value.get("symbol") or key or "").upper().strip()
-        if not ticker:
+        if not valid_market_symbol(ticker):
             return
 
         looks_technical = any(
@@ -285,6 +333,11 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         options_rows=options_rows,
         timeframe="1d",
     )
+    technical_snapshot = {
+        str(ticker).upper().strip(): value
+        for ticker, value in technical_snapshot.items()
+        if valid_market_symbol(ticker) and isinstance(value, dict)
+    }
     broker_enriched = broker_check.merge_broker_checks(
         {
             "account_scope": account_context.get("account_scope"),
@@ -388,7 +441,7 @@ def main() -> int:
     ingest_path = args.ingest_path if args.ingest_path.startswith("/") else f"/{args.ingest_path}"
     url = args.remote_url.rstrip("/") + ingest_path
     runtime_dir = Path(args.runtime_dir)
-    freshness = runtime_freshness(runtime_dir)
+    freshness = publish_data_freshness(runtime_dir)
     payload = build_payload(runtime_dir)
     age = freshness.get("age_minutes")
     stale = bool(age is None or age > args.max_age_minutes)
