@@ -266,6 +266,25 @@ class CoberturasEngineTests(unittest.TestCase):
         self.assertIn("capital conservador si esta calculado", recommendation["reason"])
         self.assertNotIn("CAPITAL_DATA_MISSING", json.dumps(recommendation))
 
+    def test_capacity_is_recovered_from_canonical_snapshot(self):
+        runtime_data = {
+            "v28_master_snapshot.json": {
+                "data": {
+                    "account_context": {
+                        "available": True,
+                        "available_funds": 15.76,
+                        "buying_power": 15.76,
+                        "net_liquidation": 15.76,
+                        "sensitive_identifiers_excluded": True,
+                    }
+                }
+            }
+        }
+        capacity = ce.extract_account_capacity(runtime_data)
+        self.assertEqual(capacity["available_funds"], 15.76)
+        self.assertEqual(capacity["buying_power"], 15.76)
+        self.assertTrue(capacity["sensitive_identifiers_excluded"])
+
 
 if __name__ == "__main__":
     unittest.main()

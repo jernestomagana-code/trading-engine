@@ -461,6 +461,32 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
     }
 
 
+def extract_account_capacity(runtime_data: dict[str, Any]) -> dict[str, Any]:
+    """Recover sanitized capacity from canonical snapshots when no sidecar exists."""
+    candidates: list[dict[str, Any]] = []
+    capacity_fields = {
+        "available_funds", "available_capacity", "buying_power", "net_liquidation",
+        "excess_liquidity", "total_cash_value",
+    }
+    for payload in runtime_data.values():
+        for item in scan_dicts(payload):
+            if capacity_fields.intersection(item):
+                candidates.append(dict(item))
+    if not candidates:
+        return {}
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        present = sum(item.get(field) is not None for field in capacity_fields)
+        sanitized = int(bool(item.get("sensitive_identifiers_excluded")))
+        return present, sanitized
+
+    selected = max(candidates, key=score)
+    selected.setdefault("available", any(selected.get(field) is not None for field in capacity_fields))
+    selected.setdefault("source", "CANONICAL_SNAPSHOT_ACCOUNT_CONTEXT")
+    selected["sensitive_identifiers_excluded"] = True
+    return selected
+
+
 def strategy_for_position(position_state: str) -> tuple[str, str]:
     if position_state == "NO_SHARES":
         return "SELL_PUT", "Sin acciones RSP: buscar venta de put asegurada por efectivo/margen."
@@ -1104,6 +1130,11 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         candidate_rows = []
 
     account_capacity = load_json(runtime_dir / "ibkr_account_capacity_latest.json")
+    if not account_capacity.get("available") and not any(
+        account_capacity.get(key) is not None
+        for key in ("available_funds", "available_capacity", "buying_power")
+    ):
+        account_capacity = extract_account_capacity(runtime_data)
     margin_preview = load_json(runtime_dir / "coberturas_rsp_margin_preview_latest.json")
     scenarios = apply_probability_and_gamma(
         apply_margin_previews(
