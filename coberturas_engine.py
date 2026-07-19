@@ -279,6 +279,22 @@ def scan_dicts(obj: Any):
             yield from scan_dicts(item)
 
 
+def extract_manual_context(runtime_data: dict[str, Any]) -> dict[str, Any]:
+    """Recover the RSP context embedded in a canonical snapshot after deploys."""
+    for payload in runtime_data.values():
+        for item in scan_dicts(payload):
+            nested = item.get("coberturas_rsp_manual_context")
+            if isinstance(nested, dict):
+                context = dict(nested)
+                context.setdefault("available", True)
+                return context
+            if item.get("context_version") == "coberturas_rsp_manual_context_v1":
+                context = dict(item)
+                context.setdefault("available", True)
+                return context
+    return {}
+
+
 def runtime_files(runtime_dir: Path) -> list[Path]:
     if not runtime_dir.exists():
         return []
@@ -1102,8 +1118,10 @@ def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_c
 
 
 def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
-    manual_context = load_manual_context()
     runtime_data = load_runtime_jsons(runtime_dir)
+    manual_context = load_manual_context()
+    if not manual_context.get("available"):
+        manual_context = extract_manual_context(runtime_data) or manual_context
     option_rows = extract_option_rows(runtime_data)
     spot = extract_rsp_underlying_price(runtime_data, manual_context)
     position = extract_position_state(runtime_data, manual_context)

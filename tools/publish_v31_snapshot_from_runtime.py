@@ -356,6 +356,9 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         "account_scope": account_context.get("account_scope"),
         "account_alias": account_context.get("account_alias"),
         "account_context": json_safe(account_context),
+        "coberturas_rsp_manual_context": json_safe(
+            runtime_data.get("coberturas_rsp_manual_context.json") or {}
+        ),
         "options_rows": json_safe(options_rows),
         "technical_snapshot": json_safe(technical_snapshot),
         "broker_checks": json_safe(broker_enriched.get("broker_checks") or []),

@@ -285,6 +285,25 @@ class CoberturasEngineTests(unittest.TestCase):
         self.assertEqual(capacity["buying_power"], 15.76)
         self.assertTrue(capacity["sensitive_identifiers_excluded"])
 
+    def test_manual_context_is_recovered_from_canonical_snapshot(self):
+        runtime_data = {
+            "v28_master_snapshot.json": {
+                "data": {
+                    "coberturas_rsp_manual_context": {
+                        "context_version": "coberturas_rsp_manual_context_v1",
+                        "ticker": "RSP",
+                        "spot": 215.15,
+                        "support_levels": [214.4],
+                        "not_order_instruction": True,
+                    }
+                }
+            }
+        }
+        context = ce.extract_manual_context(runtime_data)
+        self.assertTrue(context["available"])
+        self.assertEqual(context["spot"], 215.15)
+        self.assertEqual(context["support_levels"], [214.4])
+
 
 if __name__ == "__main__":
     unittest.main()

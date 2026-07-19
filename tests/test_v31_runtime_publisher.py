@@ -67,6 +67,11 @@ class V31RuntimePublisherTests(unittest.TestCase):
                 "RAW": {"score": 99, "trend": "UNKNOWN"},
                 "GATE": {"score": 98, "trend": "UNKNOWN"},
             }))
+            (runtime / "coberturas_rsp_manual_context.json").write_text(json.dumps({
+                "context_version": "coberturas_rsp_manual_context_v1",
+                "ticker": "RSP",
+                "spot": 215.15,
+            }))
 
             payload = publisher.build_payload(runtime)
 
@@ -77,6 +82,7 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertIn("QQQ", payload["technical_snapshot"])
         self.assertNotIn("CONTROL_PANEL", payload["technical_snapshot"])
         self.assertNotIn("RAW", payload["technical_snapshot"])
+        self.assertEqual(payload["coberturas_rsp_manual_context"]["spot"], 215.15)
         self.assertNotIn("GATE", payload["technical_snapshot"])
         self.assertFalse(payload["market"]["is_regular_market_open"])
         self.assertTrue(payload["not_order_instruction"])
