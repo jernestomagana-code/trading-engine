@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import alert_lifecycle as shared_alert_lifecycle
+import broker_control_tower as shared_control_tower
 
 RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
@@ -36,6 +37,7 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
 ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
+CONTROL_TOWER_PATH = RUNTIME / "broker_control_tower_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -534,6 +536,15 @@ def account_capacity_command() -> list[str]:
         "scripts/ibkr_account_profile.py",
         "refresh-account-capacity",
         "--publish",
+    ]
+
+
+def control_tower_refresh_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/refresh_multi_account_control_tower.py",
+        "--json-out",
+        "runtime/broker_control_tower_latest.json",
     ]
 
 
@@ -2696,6 +2707,121 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
     return "\n".join(profile_cards)
 
 
+def load_control_tower(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
+    try:
+        data = json.loads(CONTROL_TOWER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    profile_map = profiles if isinstance(profiles, dict) else {}
+    if profile_map:
+        persisted_accounts = {
+            str(row.get("account_alias") or ""): row
+            for row in (data.get("accounts") or [])
+            if isinstance(row, dict)
+        }
+        keychain_ready = {
+            alias: bool(persisted_accounts.get(alias, {}).get("keychain_ready"))
+            for alias in profile_map
+        }
+        registry = shared_control_tower.build_registry(
+            profile_map,
+            active.get("account_alias") or "",
+            keychain_ready,
+        )
+        snapshots = shared_control_tower.load_snapshots(RUNTIME, registry)
+        if any(snapshots.values()):
+            return shared_control_tower.consolidate(registry, snapshots)
+    if isinstance(data, dict) and data.get("control_tower_version"):
+        return data
+    registry = shared_control_tower.build_registry(
+        profile_map,
+        active.get("account_alias") or "",
+        {alias: False for alias in profile_map},
+    )
+    return shared_control_tower.consolidate(registry, {})
+
+
+def _tower_money(value: Any) -> str:
+    parsed = console_float_or_none(value)
+    return "N/D" if parsed is None else "${:,.2f}".format(parsed)
+
+
+def render_control_tower_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_control_tower(profiles, active)
+    capacity = payload.get("consolidated_capacity") if isinstance(payload.get("consolidated_capacity"), dict) else {}
+    rows = []
+    for account in payload.get("accounts") or []:
+        if not isinstance(account, dict):
+            continue
+        account_capacity = account.get("capacity") if isinstance(account.get("capacity"), dict) else {}
+        status = str(account.get("refresh_status") or "UNREFRESHED").upper()
+        rows.append(
+            """
+            <article class="card status-{status_class}">
+              <div>
+                <h3>{alias}</h3>
+                <p><strong>{broker}</strong> · scope {scope}</p>
+                <p class="muted">{status} · edad {age} min · posiciones {positions}</p>
+              </div>
+              <div>
+                <p><strong>NAV:</strong> {nav}</p>
+                <p><strong>Disponible:</strong> {available}</p>
+                <p><strong>Buying power:</strong> {buying_power}</p>
+              </div>
+            </article>
+            """.format(
+                status_class=html_escape(status.lower()),
+                alias=html_escape(account.get("account_alias") or "unknown"),
+                broker=html_escape(account.get("broker") or "unknown"),
+                scope=html_escape(account.get("account_scope") or "unknown"),
+                status=html_escape(status),
+                age=html_escape(account.get("snapshot_age_minutes") if account.get("snapshot_age_minutes") is not None else "N/D"),
+                positions=html_escape(account.get("position_count") or 0),
+                nav=html_escape(_tower_money(account_capacity.get("net_liquidation"))),
+                available=html_escape(_tower_money(account_capacity.get("available_funds"))),
+                buying_power=html_escape(_tower_money(account_capacity.get("buying_power"))),
+            )
+        )
+    if not rows:
+        rows.append('<p class="empty">No hay cuentas configuradas para Control Tower.</p>')
+    aliases = [str(item.get("account_alias") or "") for item in (payload.get("accounts") or []) if isinstance(item, dict)]
+    job_alias = active.get("account_alias") or (aliases[0] if aliases else "")
+    action = (
+        '<form method="post" action="/control-tower-refresh" data-busy="Actualizando todas las cuentas" '
+        'data-busy-detail="Lectura secuencial y de solo consulta en IBKR; no coloca ordenes.">'
+        f'<input type="hidden" name="alias" value="{html_escape(job_alias)}">'
+        '<button>Refrescar todas las cuentas</button></form>'
+        if job_alias else ""
+    )
+    warnings = ", ".join(payload.get("warnings") or []) or "ninguna"
+    return """
+    <section class="panel control-tower">
+      <div class="section-head">
+        <h2>Control Tower multi-cuenta</h2>
+        <p><strong>{status}</strong> · {ready}/{total} cuentas listas · IDs reales excluidos.</p>
+      </div>
+      <div class="control-facts">
+        <div><span>NAV consolidado</span><strong>{nav}</strong></div>
+        <div><span>Fondos disponibles</span><strong>{available}</strong></div>
+        <div><span>Buying power</span><strong>{buying_power}</strong></div>
+      </div>
+      <p class="muted">Advertencias: {warnings}</p>
+      <div class="grid">{rows}</div>
+      <div class="actions">{action}</div>
+    </section>
+    """.format(
+        status=html_escape(payload.get("status") or "WAIT_ACCOUNT_REFRESH"),
+        ready=html_escape(payload.get("ready_account_count") or 0),
+        total=html_escape(payload.get("account_count") or 0),
+        nav=html_escape(_tower_money(capacity.get("net_liquidation"))),
+        available=html_escape(_tower_money(capacity.get("available_funds"))),
+        buying_power=html_escape(_tower_money(capacity.get("buying_power"))),
+        warnings=html_escape(warnings),
+        rows="".join(rows),
+        action=action,
+    )
+
+
 def render_job_panel(job_id: str = "") -> tuple[str, str]:
     job = web_job(job_id)
     if not job:
@@ -2745,7 +2871,7 @@ def render_job_panel(job_id: str = "") -> tuple[str, str]:
       </div>
       <ul class="job-facts">
         <li><span>Alias</span><strong>{alias}</strong></li>
-        <li><span>Comando</span><strong>{command}</strong></li>
+        <li><span>Comando</span><strong class="job-command">{command}</strong></li>
         <li><span>Inicio</span><strong>{started_at}</strong></li>
         <li><span>Fin</span><strong>{finished_at}</strong></li>
       </ul>
@@ -2802,7 +2928,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         output = """
         <section class="panel">
           <h2>Ultima accion</h2>
-          <p><strong>{command}</strong> | alias={alias} scope={scope} | returncode={returncode}</p>
+          <p><strong class="job-command">{command}</strong> | alias={alias} scope={scope} | returncode={returncode}</p>
           <pre>{stdout}{stderr}</pre>
         </section>
         """.format(
@@ -2906,6 +3032,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .job-facts span,.job-facts strong {{ display:block; }}
           .job-facts span {{ color:var(--muted); font-size:.9rem; }}
           .job-facts strong {{ overflow-wrap:anywhere; }}
+          .job-command {{ overflow-wrap:anywhere; word-break:break-word; }}
           .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }}
           .section-head p {{ margin:0; color:var(--muted); max-width:620px; }}
           .tiles,.alert-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
@@ -2976,6 +3103,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {actions}
           {context}
           {capacity}
+          {control_tower}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -3067,6 +3195,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),
         capacity=render_account_capacity_panel(operator_payload, snapshot),
+        control_tower=render_control_tower_panel(profiles, active),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -3107,6 +3236,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             job = web_job(job_id)
             self.send_json(job or {"ok": False, "error": "JOB_NOT_FOUND", "job_id": job_id}, status=200 if job else 404)
             return
+        if path == "/control-tower":
+            profile_data = load_profiles()
+            profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+            self.send_json(load_control_tower(profile_map, active_profile()))
+            return
         if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
@@ -3114,9 +3248,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
-        status = 200 if path in ["/", "", "/console"] else 404
+        status = 200 if path in ["/", "", "/console", "/control-tower"] else 404
         self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8" if path == "/control-tower" else "text/html; charset=utf-8")
         self.end_headers()
 
     def do_POST(self) -> None:
@@ -3155,6 +3289,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/account-capacity":
                 job_id = start_web_job(alias, account_capacity_command(), "Refresh capacidad IBKR")
                 self.send_html("Refresh de cuenta iniciado. Lee AccountSummary y publica capital/margen disponible.", job_id=job_id)
+            elif self.path == "/control-tower-refresh":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(selected_alias, control_tower_refresh_command(), "Control Tower multi-cuenta")
+                self.send_html(
+                    "Refresco multi-cuenta iniciado. Lee todas las cuentas configuradas de forma secuencial y sanitizada; no autoriza ordenes.",
+                    job_id=job_id,
+                )
             elif self.path == "/bridge":
                 job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")
                 self.send_html("Refresh IBKR iniciado. Esto lee broker/opciones; la consola mostrara RUNNING hasta que termine.", job_id=job_id)
