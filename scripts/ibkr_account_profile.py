@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import alert_lifecycle as shared_alert_lifecycle
+import alert_effectiveness as shared_alert_effectiveness
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
 import decision_outcome_intelligence as shared_decision_outcomes
@@ -5268,6 +5269,59 @@ def render_decision_outcome_panel() -> str:
     )
 
 
+def load_alert_effectiveness() -> dict[str, Any]:
+    return shared_alert_effectiveness.build_from_runtime(RUNTIME)
+
+
+def render_alert_effectiveness_panel() -> str:
+    payload = load_alert_effectiveness()
+    resolved = int(payload.get("resolved_entry_alert_count") or 0)
+    coverage = payload.get("entry_tracking_coverage_pct")
+    precision = payload.get("verified_precision_pct")
+    attribution = payload.get("source_attribution_coverage_pct")
+    sample_label = "Sin muestra" if resolved == 0 else str(resolved)
+    return """
+    <section class="panel alert-effectiveness status-{status_class}">
+      <div class="section-head">
+        <div><h2>Efectividad del alertamiento</h2><p>Calidad verificable de alertas, filtros y seguimiento.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Alertas lógicas</span><strong>{logical}</strong></div>
+        <div><span>Duplicados consolidados</span><strong>{duplicates}</strong></div>
+        <div><span>Alertas de entrada</span><strong>{entries}</strong></div>
+        <div><span>Cobertura de seguimiento</span><strong>{coverage}</strong></div>
+        <div><span>Alertas resueltas</span><strong>{resolved}/30</strong></div>
+        <div><span>Precisión verificada</span><strong>{precision}</strong></div>
+      </div>
+      <div class="control-facts">
+        <div><span>Alertas acertadas</span><strong>{useful}</strong></div>
+        <div><span>Falsas alarmas</span><strong>{false_positive}</strong></div>
+        <div><span>Oportunidades perdidas</span><strong>{missed}</strong></div>
+        <div><span>Bloqueos de riesgo correctos</span><strong>{correct_blocks}</strong></div>
+        <div><span>Atribución de fuente</span><strong>{attribution}</strong></div>
+        <div><span>Brecha principal</span><strong>{gap}</strong></div>
+      </div>
+      <p class="muted">“Falsa alarma”, “oportunidad perdida” y “bloqueo correcto” sólo se contabilizan con un resultado cerrado vinculado. Hasta entonces se muestran como “Sin muestra”. Ninguna métrica cambia reglas automáticamente.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "waiting").lower()),
+        status="REVISABLE" if payload.get("status") == "REVIEWABLE" else "ESPERANDO RESULTADOS" if resolved == 0 else "ACUMULANDO EVIDENCIA",
+        logical=html_escape(payload.get("logical_alert_count") or 0),
+        duplicates=html_escape(payload.get("duplicate_decisions_collapsed") or 0),
+        entries=html_escape(payload.get("entry_alert_count") or 0),
+        coverage=html_escape(f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else "Sin alertas"),
+        resolved=html_escape(resolved),
+        precision=html_escape(f"{precision:.1f}%" if isinstance(precision, (int, float)) else "Sin muestra"),
+        useful=html_escape(payload.get("useful_alert_count") if resolved else sample_label),
+        false_positive=html_escape(payload.get("false_positive_count") if resolved else sample_label),
+        missed=html_escape(payload.get("missed_opportunity_count") if resolved else sample_label),
+        correct_blocks=html_escape(payload.get("correct_risk_block_count") if resolved else sample_label),
+        attribution=html_escape(f"{attribution:.1f}%" if isinstance(attribution, (int, float)) else "Sin datos"),
+        gap=html_escape(payload.get("primary_gap") or "N/D"),
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5784,6 +5838,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {portfolio_whatif}
           {portfolio_operations}
           {decision_outcomes}
+          {alert_effectiveness}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -5921,6 +5976,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_whatif=render_portfolio_whatif_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
+        alert_effectiveness=render_alert_effectiveness_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -6031,6 +6087,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         if path == "/decision-outcomes":
             self.send_json(load_decision_outcome_intelligence())
             return
+        if path == "/alert-effectiveness":
+            self.send_json(load_alert_effectiveness())
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -6054,6 +6113,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-rebalance",
             "/portfolio-rebalance-whatif",
             "/decision-outcomes",
+            "/alert-effectiveness",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }

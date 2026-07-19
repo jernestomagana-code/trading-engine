@@ -420,6 +420,28 @@ def load_runtime_inputs(runtime_dir: Path) -> tuple[list[dict[str, Any]], list[d
 def build_alert_opportunity_audit(runtime_dir: Path, generated_at: str | None = None, recent_days: int = 14) -> dict[str, Any]:
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     decisions, outcomes, source_files = load_runtime_inputs(runtime_dir)
+    return build_alert_opportunity_audit_normalized(
+        decisions, outcomes, source_files, generated_at=generated_at, recent_days=recent_days,
+        runtime_dir=str(runtime_dir),
+    )
+
+
+def build_alert_opportunity_audit_from_rows(
+    decision_rows: list[dict[str, Any]], outcome_rows: list[dict[str, Any]], *, generated_at: str | None = None, recent_days: int = 14
+) -> dict[str, Any]:
+    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    decisions = dedupe_decisions([normalize_decision(item, "provided_rows") for item in decision_rows])
+    outcomes = [normalize_outcome(item) for item in outcome_rows]
+    return build_alert_opportunity_audit_normalized(
+        decisions, outcomes, {"provided_rows": True}, generated_at=generated_at, recent_days=recent_days,
+        runtime_dir="provided_rows",
+    )
+
+
+def build_alert_opportunity_audit_normalized(
+    decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]], source_files: dict[str, bool], *, generated_at: str, recent_days: int,
+    runtime_dir: str,
+) -> dict[str, Any]:
     state_counts = group_decisions(decisions, "final_state")
     blocker_counts = group_decisions(
         [item for item in decisions if item.get("main_blocker") != UNKNOWN],
