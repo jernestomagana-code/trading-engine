@@ -40,6 +40,7 @@ import portfolio_stress_engine as shared_portfolio_stress
 import portfolio_factor_engine as shared_portfolio_factors
 import portfolio_rebalance_engine as shared_portfolio_rebalance
 import portfolio_whatif_engine as shared_portfolio_whatif
+import preventive_maintenance as shared_preventive_maintenance
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -78,6 +79,7 @@ OUTCOME_JOURNAL_PATH = RUNTIME / "v32_outcomes_journal.json"
 DAILY_OUTCOME_EVALUATION_PATH = RUNTIME / "daily_outcome_evaluation_latest.json"
 EXECUTIVE_DAILY_PATH = RUNTIME / "executive_report_daily_latest.json"
 EXECUTIVE_WEEKLY_PATH = RUNTIME / "executive_report_weekly_latest.json"
+PREVENTIVE_MAINTENANCE_PATH = RUNTIME / "preventive_maintenance_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -881,6 +883,10 @@ def daily_outcome_evaluation_command() -> list[str]:
 
 def executive_report_command(period: str) -> list[str]:
     return [sys.executable, "scripts/build_executive_report.py", "--period", period]
+
+
+def preventive_maintenance_command() -> list[str]:
+    return [sys.executable, "scripts/run_preventive_maintenance.py"]
 
 
 def portfolio_risk_operations_command(
@@ -5410,6 +5416,74 @@ def render_executive_report_panel() -> str:
     )
 
 
+def load_preventive_maintenance() -> dict[str, Any]:
+    payload = shared_risk_operations.load_json(PREVENTIVE_MAINTENANCE_PATH)
+    return payload if payload.get("maintenance_version") else shared_preventive_maintenance.build_maintenance_report(RUNTIME)
+
+
+def render_preventive_maintenance_panel() -> str:
+    payload = load_preventive_maintenance()
+    summary = payload.get("summary") or {}
+    action_cards = []
+    for item in payload.get("actions") or []:
+        action_cards.append("""
+          <article class="scenario-card">
+            <div class="scenario-head"><strong>{title}</strong><span>{priority}</span></div>
+            <p>{detail}</p>
+          </article>
+        """.format(
+            title=html_escape(item.get("title") or "Revisión"),
+            priority=html_escape(item.get("priority") or "WATCH"),
+            detail=html_escape(item.get("detail") or ""),
+        ))
+    return """
+    <section class="panel preventive-maintenance status-{status_class}">
+      <div class="section-head">
+        <div><h2>Mantenimiento preventivo</h2><p>Datos, procesos, conexión IBKR, históricos y almacenamiento.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Archivos saludables</span><strong>{healthy}/{files}</strong></div>
+        <div><span>Datos vencidos/advertencias</span><strong>{warnings}</strong></div>
+        <div><span>Fallas altas</span><strong>{high}</strong></div>
+        <div><span>Procesos instalados</span><strong>{installed}/{jobs}</strong></div>
+        <div><span>Conexión IBKR</span><strong>{bridge}</strong></div>
+        <div><span>Acciones pendientes</span><strong>{actions}</strong></div>
+      </div>
+      <div class="control-facts">
+        <div><span>Archivos runtime</span><strong>{runtime_files}</strong></div>
+        <div><span>Tamaño runtime</span><strong>{runtime_size} MB</strong></div>
+        <div><span>Espacio libre</span><strong>{disk_free} GB</strong></div>
+        <div><span>Almacenamiento</span><strong>{storage}</strong></div>
+        <div><span>Última revisión</span><strong>{age}</strong></div>
+        <div><span>Autoeliminación</span><strong>DESACTIVADA</strong></div>
+      </div>
+      <div class="scenario-grid">{action_cards}</div>
+      <form method="post" action="/preventive-maintenance" data-busy="Ejecutando mantenimiento preventivo" data-busy-detail="Diagnostica sin borrar archivos ni reiniciar servicios.">
+        <button class="secondary">Revisar mantenimiento ahora</button>
+      </form>
+      <p class="muted">El mantenimiento automático diagnostica y prioriza. Cualquier eliminación, rotación material o reinicio requiere una acción separada y explícita.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "unknown").lower()),
+        status=html_escape(payload.get("status") or "SIN REPORTE"),
+        healthy=html_escape(summary.get("healthy_file_count") or 0),
+        files=html_escape(summary.get("file_check_count") or 0),
+        warnings=html_escape(summary.get("stale_or_warning_file_count") or 0),
+        high=html_escape(summary.get("high_file_count") or 0),
+        installed=html_escape(summary.get("installed_job_count") or 0),
+        jobs=html_escape(summary.get("expected_job_count") or 0),
+        bridge="CONECTADO" if summary.get("bridge_connected") else "REVISAR",
+        actions=html_escape(summary.get("action_count") or 0),
+        runtime_files=html_escape(summary.get("runtime_file_count") or 0),
+        runtime_size=html_escape(summary.get("runtime_size_mb") or 0),
+        disk_free=html_escape(summary.get("disk_free_gb") or 0),
+        storage=html_escape(summary.get("storage_status") or "UNKNOWN"),
+        age=html_escape(age_label(payload.get("generated_at")) if payload.get("generated_at") else "Sin revisión"),
+        action_cards="".join(action_cards) or '<p class="empty">Sin acciones preventivas pendientes.</p>',
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5928,6 +6002,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {decision_outcomes}
           {alert_effectiveness}
           {executive_report}
+          {preventive_maintenance}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -6067,6 +6142,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         decision_outcomes=render_decision_outcome_panel(),
         alert_effectiveness=render_alert_effectiveness_panel(),
         executive_report=render_executive_report_panel(),
+        preventive_maintenance=render_preventive_maintenance_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -6183,6 +6259,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         if path == "/executive-report":
             self.send_json(load_executive_reports())
             return
+        if path == "/preventive-maintenance":
+            self.send_json(load_preventive_maintenance())
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -6208,6 +6287,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/decision-outcomes",
             "/alert-effectiveness",
             "/executive-report",
+            "/preventive-maintenance",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -6477,6 +6557,26 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     })
                     return
                 self.send_html(f"Reporte ejecutivo {period} iniciado.", job_id=job_id)
+            elif self.path == "/preventive-maintenance":
+                existing_job = running_web_job_by_label("Mantenimiento preventivo")
+                if existing_job:
+                    self.send_html("El mantenimiento preventivo ya está corriendo.", job_id=existing_job.get("job_id"))
+                    return
+                job_id = start_web_job(
+                    normalize_alias(alias or active_profile().get("account_alias") or ""),
+                    preventive_maintenance_command(),
+                    "Mantenimiento preventivo",
+                )
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({
+                        "ok": True, "status": "RUNNING", "job_id": job_id,
+                        "message": "Mantenimiento preventivo iniciado.",
+                        "automatic_deletion_authorized": False,
+                        "automatic_restart_authorized": False,
+                        "execution_authorized": False, "not_order_instruction": True,
+                    })
+                    return
+                self.send_html("Mantenimiento preventivo iniciado sin borrar ni reiniciar.", job_id=job_id)
             elif self.path == "/diagnostic":
                 job_id = start_web_job(alias, console_diagnostic_command(), "Diagnostico completo")
                 if "application/json" in (self.headers.get("Accept") or ""):

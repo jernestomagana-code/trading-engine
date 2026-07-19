@@ -41,6 +41,7 @@ ENDPOINTS = {
     "daily-outcome-evaluation": ("/daily-outcome-evaluation", "Seguimiento automático de resultados"),
     "executive-report-daily": ("/executive-report-daily", "Reporte ejecutivo diario"),
     "executive-report-weekly": ("/executive-report-weekly", "Reporte ejecutivo semanal"),
+    "preventive-maintenance": ("/preventive-maintenance", "Mantenimiento preventivo"),
 }
 
 JOB_TIMEOUTS = {
@@ -53,6 +54,7 @@ JOB_TIMEOUTS = {
     "daily-outcome-evaluation": 900.0,
     "executive-report-daily": 600.0,
     "executive-report-weekly": 600.0,
+    "preventive-maintenance": 600.0,
 }
 
 

@@ -121,6 +121,13 @@ JOBS = {
         "calendar": {"Weekday": 5, "Hour": 18, "Minute": 0},
         "description": "Builds the sanitized weekly executive report every Friday.",
     },
+    "preventive-maintenance": {
+        "label": "com.stockultimus.preventive-maintenance",
+        "program": "scripts/run_preventive_maintenance.py",
+        "args": [],
+        "calendar": {"Hour": 6, "Minute": 45},
+        "description": "Checks runtime freshness, scheduled jobs, IBKR health, file growth, and disk space every day.",
+    },
 }
 
 
