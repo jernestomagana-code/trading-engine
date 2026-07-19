@@ -100,6 +100,8 @@ class PortfolioStressEngineTests(unittest.TestCase):
 
         self.assertIn("ib.reqAccountUpdates(account_id)", source)
         self.assertIn("ib.portfolio(account_id)", source)
+        self.assertIn("ib.RequestTimeout = max(1.0, min(self.timeout, 5.0))", source)
+        self.assertIn("ib.client.reqAccountUpdates(False, account_id)", source)
         self.assertNotIn("placeOrder", source)
 
     def test_console_renders_stress_scenarios_and_safe_route(self):

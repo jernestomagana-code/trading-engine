@@ -124,6 +124,7 @@ class IBKRReadOnlyAdapter:
         ib = IB()
         try:
             ib.connect(self.host, self.port, clientId=self.client_id, readonly=True, timeout=self.timeout)
+            ib.RequestTimeout = max(1.0, min(self.timeout, 5.0))
             managed = {str(value).strip() for value in ib.managedAccounts() or []}
             summary = list(ib.accountSummary() or [])
             positions = list(ib.positions() or [])
@@ -149,6 +150,11 @@ class IBKRReadOnlyAdapter:
                     portfolio_rows = list(ib.portfolio(account_id) or [])
                 except Exception:
                     portfolio_rows = []
+                finally:
+                    try:
+                        ib.client.reqAccountUpdates(False, account_id)
+                    except Exception:
+                        pass
                 output[alias] = control_tower.account_snapshot(
                     broker=self.broker,
                     alias=alias,
