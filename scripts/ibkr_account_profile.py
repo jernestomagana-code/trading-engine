@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 import alert_lifecycle as shared_alert_lifecycle
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
+import decision_outcome_intelligence as shared_decision_outcomes
 import gamma_context_store as shared_gamma_context_store
 import portfolio_risk_engine as shared_portfolio_risk
 import portfolio_risk_operations as shared_risk_operations
@@ -70,6 +71,8 @@ PORTFOLIO_REBALANCE_PATH = RUNTIME / "portfolio_rebalance_latest.json"
 PORTFOLIO_REBALANCE_POLICY_PATH = ROOT / "config" / "portfolio_rebalance_policy.json"
 PORTFOLIO_WHATIF_PATH = RUNTIME / "portfolio_rebalance_whatif_latest.json"
 PORTFOLIO_WHATIF_POLICY_PATH = ROOT / "config" / "portfolio_whatif_policy.json"
+DECISION_JOURNAL_PATH = RUNTIME / "v32_decision_journal.json"
+OUTCOME_JOURNAL_PATH = RUNTIME / "v32_outcomes_journal.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -5134,6 +5137,96 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         action_form=action_form,
         orders=html_escape(payload.get("orders_created") if payload.get("orders_created") is not None else "N/D"),
     )
+def load_decision_outcome_intelligence() -> dict[str, Any]:
+    def rows(path: Path, key: str) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = []
+        values = payload if isinstance(payload, list) else payload.get(key) or [] if isinstance(payload, dict) else []
+        return [item for item in values if isinstance(item, dict)]
+
+    decisions = rows(DECISION_JOURNAL_PATH, "decisions")
+    outcomes = rows(OUTCOME_JOURNAL_PATH, "outcomes")
+    return shared_decision_outcomes.build_intelligence(decisions, outcomes)
+
+
+def render_decision_outcome_panel() -> str:
+    payload = load_decision_outcome_intelligence()
+    recent_rows = []
+    for row in payload.get("recent_decisions") or []:
+        recent_rows.append("""
+          <tr>
+            <td><strong>{ticker}</strong><br><span class="muted">{strategy}</span></td>
+            <td>{decision}<br><span class="muted">{action}</span></td>
+            <td><strong>{outcome}</strong></td>
+            <td>{pnl}</td>
+            <td>{recorded}</td>
+          </tr>
+        """.format(
+            ticker=html_escape(row.get("ticker") or "N/D"),
+            strategy=html_escape(row.get("strategy") or "N/D"),
+            decision=html_escape(row.get("final_state") or row.get("decision") or "N/D"),
+            action=html_escape(row.get("action") or "Sin detalle"),
+            outcome=html_escape(row.get("outcome") or "PENDIENTE"),
+            pnl=html_escape(f"{row.get('pnl_r'):.2f} R" if isinstance(row.get("pnl_r"), (int, float)) else "Pendiente"),
+            recorded=html_escape(str(row.get("recorded_at") or "N/D").replace("T", " ")[:16]),
+        ))
+    strategy_rows = []
+    for row in payload.get("strategies") or []:
+        win_rate = row.get("win_rate")
+        expectancy = row.get("expectancy_r")
+        strategy_rows.append("""
+          <tr>
+            <td><strong>{strategy}</strong></td><td>{decisions}</td><td>{closed}</td><td>{complete}/30</td>
+            <td>{win_rate}</td><td>{expectancy}</td><td>{state}</td>
+          </tr>
+        """.format(
+            strategy=html_escape(row.get("strategy") or "UNKNOWN"),
+            decisions=html_escape(row.get("decisions") or 0),
+            closed=html_escape(row.get("closed_outcomes") or 0),
+            complete=html_escape(row.get("complete_closed_outcomes") or 0),
+            win_rate=html_escape(f"{win_rate:.1f}%" if isinstance(win_rate, (int, float)) else "Sin muestra"),
+            expectancy=html_escape(f"{expectancy:.2f} R" if isinstance(expectancy, (int, float)) else "Sin muestra"),
+            state="LISTA" if row.get("parameter_review_ready") else "ACUMULANDO",
+        ))
+    coverage = payload.get("actionable_outcome_coverage_pct")
+    return """
+    <section class="panel decision-outcomes status-{status_class}">
+      <div class="section-head">
+        <div><h2>Historial de decisiones y resultados</h2><p>Trazabilidad, efectividad y evidencia acumulada por estrategia.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Decisiones registradas</span><strong>{decisions}</strong></div>
+        <div><span>Decisiones accionables</span><strong>{actionable}</strong></div>
+        <div><span>Resultados vinculados</span><strong>{linked}</strong></div>
+        <div><span>Cobertura accionable</span><strong>{coverage}</strong></div>
+        <div><span>Resultados completos</span><strong>{complete}/30</strong></div>
+        <div><span>Avance de evidencia</span><strong>{progress}</strong></div>
+      </div>
+      <h3>Rendimiento por estrategia</h3>
+      <div class="table-scroll"><table><thead><tr><th>Estrategia</th><th>Decisiones</th><th>Cerrados</th><th>Completos</th><th>Acierto</th><th>Expectativa</th><th>Estado</th></tr></thead>
+      <tbody>{strategies}</tbody></table></div>
+      <h3>Decisiones recientes</h3>
+      <div class="table-scroll"><table><thead><tr><th>Activo</th><th>Decisión</th><th>Resultado</th><th>PnL</th><th>Fecha</th></tr></thead>
+      <tbody>{recent}</tbody></table></div>
+      <p class="muted">La consola no cambia parámetros automáticamente. Se requieren 30 resultados cerrados y completos antes de habilitar una revisión profesional de parámetros.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "building").lower()),
+        status="EVIDENCIA LISTA" if payload.get("parameter_review_ready") else "ACUMULANDO EVIDENCIA",
+        decisions=html_escape(payload.get("decision_count") or 0),
+        actionable=html_escape(payload.get("actionable_decision_count") or 0),
+        linked=html_escape(payload.get("linked_actionable_outcome_count") or 0),
+        coverage=html_escape(f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else "Sin decisiones"),
+        complete=html_escape(payload.get("complete_closed_outcomes") or 0),
+        progress=html_escape(f"{float(payload.get('evidence_progress_pct') or 0):.1f}%"),
+        strategies="".join(strategy_rows) or '<tr><td colspan="7">Todavía no hay resultados por estrategia.</td></tr>',
+        recent="".join(recent_rows) or '<tr><td colspan="5">Todavía no hay decisiones accionables registradas.</td></tr>',
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5649,6 +5742,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {portfolio_rebalance}
           {portfolio_whatif}
           {portfolio_operations}
+          {decision_outcomes}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -5785,6 +5879,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_rebalance=render_portfolio_rebalance_panel(profiles, active),
         portfolio_whatif=render_portfolio_whatif_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
+        decision_outcomes=render_decision_outcome_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -5892,6 +5987,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         if path == "/portfolio-rebalance-whatif":
             self.send_json(load_portfolio_whatif())
             return
+        if path == "/decision-outcomes":
+            self.send_json(load_decision_outcome_intelligence())
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -5914,6 +6012,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-factors",
             "/portfolio-rebalance",
             "/portfolio-rebalance-whatif",
+            "/decision-outcomes",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
