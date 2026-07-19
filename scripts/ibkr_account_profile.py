@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 import alert_lifecycle as shared_alert_lifecycle
 import broker_control_tower as shared_control_tower
 import portfolio_risk_engine as shared_portfolio_risk
+import portfolio_risk_operations as shared_risk_operations
 
 RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
@@ -42,6 +43,10 @@ CONTROL_TOWER_PATH = RUNTIME / "broker_control_tower_latest.json"
 PORTFOLIO_RISK_PATH = RUNTIME / "portfolio_risk_latest.json"
 PORTFOLIO_RISK_HISTORY_PATH = RUNTIME / "portfolio_risk_history.json"
 PORTFOLIO_RISK_POLICY_PATH = ROOT / "config" / "portfolio_risk_policy.json"
+PORTFOLIO_RISK_ACTIONS_PATH = RUNTIME / "portfolio_risk_actions.json"
+PORTFOLIO_RISK_OUTBOX_PATH = RUNTIME / "portfolio_risk_outbox.json"
+PORTFOLIO_RISK_OPERATIONS_STATUS_PATH = RUNTIME / "portfolio_risk_operations_status.json"
+PORTFOLIO_RISK_DIGEST_PATH = RUNTIME / "portfolio_risk_digest_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -560,6 +565,15 @@ def portfolio_risk_refresh_command() -> list[str]:
         "runtime/portfolio_risk_latest.json",
         "--history-out",
         "runtime/portfolio_risk_history.json",
+    ]
+
+
+def portfolio_risk_operations_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_portfolio_risk_operations.py",
+        "--mode",
+        "preflight",
     ]
 
 
@@ -2840,7 +2854,9 @@ def render_control_tower_panel(profiles: dict[str, Any], active: dict[str, Any])
 def load_portfolio_risk(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
     tower = load_control_tower(profiles, active)
     policy = shared_portfolio_risk.load_policy(PORTFOLIO_RISK_POLICY_PATH)
-    return shared_portfolio_risk.evaluate(tower, policy)
+    evaluation = shared_portfolio_risk.evaluate(tower, policy)
+    actions = shared_risk_operations.load_json(PORTFOLIO_RISK_ACTIONS_PATH)
+    return shared_risk_operations.decorate_evaluation(evaluation, actions)
 
 
 def _tower_percent(value: Any) -> str:
@@ -2861,25 +2877,48 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
         ratio_metric = metric.endswith("_ratio") or metric == "account_nav_share"
         value_label = _tower_percent(value) if ratio_metric else ("N/D" if value is None else str(value))
         threshold_label = _tower_percent(threshold) if ratio_metric else ("N/D" if threshold is None else str(threshold))
+        operational_status = str(alert.get("operational_status") or "OPEN").upper()
+        alert_id = str(alert.get("alert_id") or "")
+        if operational_status == "OPEN":
+            lifecycle_actions = """
+              <form method="post" action="/portfolio-risk-action" class="risk-actions" data-busy="Guardando acción de riesgo">
+                <input type="hidden" name="alert_id" value="{alert_id}">
+                <input name="reason" placeholder="Nota opcional de revisión">
+                <div class="actions">
+                  <button name="action" value="ACKNOWLEDGE">Confirmar 4 h</button>
+                  <button class="secondary" name="action" value="SNOOZE">Silenciar 60 min</button>
+                </div>
+              </form>
+            """.format(alert_id=html_escape(alert_id))
+        else:
+            lifecycle_actions = """
+              <form method="post" action="/portfolio-risk-action" class="risk-actions" data-busy="Reabriendo alerta de riesgo">
+                <input type="hidden" name="alert_id" value="{alert_id}">
+                <button class="secondary" name="action" value="REOPEN">Reabrir ahora</button>
+              </form>
+            """.format(alert_id=html_escape(alert_id))
         alert_rows.append(
             """
             <article class="risk-alert severity-{severity_class}">
-              <div class="risk-alert-title"><strong>{severity}</strong><span>{account}</span></div>
+              <div class="risk-alert-title"><strong>{severity}</strong><span>{account} · {operational_status}</span></div>
               <h3>{title}</h3>
               <p>{message}</p>
               <p class="muted">Métrica: {metric} · valor {value} · límite {threshold}</p>
               <p><strong>Siguiente paso:</strong> {action}</p>
+              {lifecycle_actions}
             </article>
             """.format(
                 severity_class=html_escape(str(alert.get("severity") or "watch").lower()),
                 severity=html_escape(alert.get("severity") or "WATCH"),
                 account=html_escape(alert.get("account_alias") or alert.get("scope") or "SISTEMA"),
+                operational_status=html_escape(operational_status),
                 title=html_escape(alert.get("title") or alert.get("rule") or "Alerta de riesgo"),
                 message=html_escape(alert.get("message") or ""),
                 metric=html_escape(metric or "N/D"),
                 value=html_escape(value_label),
                 threshold=html_escape(threshold_label),
                 action=html_escape(alert.get("recommended_action") or "Revisión manual."),
+                lifecycle_actions=lifecycle_actions,
             )
         )
     if not alert_rows:
@@ -2919,6 +2958,51 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
         policy=html_escape(payload.get("policy_version") or "unknown"),
         alerts="".join(alert_rows),
         action=action,
+    )
+
+
+def render_portfolio_operations_panel() -> str:
+    status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
+    outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
+    digest = shared_risk_operations.load_json(PORTFOLIO_RISK_DIGEST_PATH)
+    actions = shared_risk_operations.load_json(PORTFOLIO_RISK_ACTIONS_PATH)
+    action_rows = actions.get("actions") if isinstance(actions.get("actions"), dict) else {}
+    installed_jobs = sum(
+        1
+        for label in [
+            "com.stockultimus.portfolio-risk-monitor",
+            "com.stockultimus.portfolio-risk-digest",
+            "com.stockultimus.portfolio-risk-preflight",
+        ]
+        if (Path.home() / "Library" / "LaunchAgents" / f"{label}.plist").exists()
+    )
+    return """
+    <section class="panel portfolio-operations">
+      <div class="section-head">
+        <div><h2>Operación y mantenimiento</h2><p>Automatización local, trazable y sin ejecución de órdenes.</p></div>
+        <strong>{automation}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Último ciclo</span><strong>{cycle}</strong></div>
+        <div><span>Outbox pendiente</span><strong>{pending}</strong></div>
+        <div><span>Acciones humanas</span><strong>{actions}</strong></div>
+        <div><span>Digest</span><strong>{digest}</strong></div>
+      </div>
+      <p class="muted">Notificación local: {local_notify} · notificación externa: DESACTIVADA · jobs instalados {installed}/3.</p>
+      <div class="actions">
+        <form method="post" action="/portfolio-risk-operations-run" data-busy="Ejecutando mantenimiento de riesgo" data-busy-detail="Reevalúa, actualiza outbox y digest sin consultar ni operar el broker.">
+          <button>Ejecutar mantenimiento ahora</button>
+        </form>
+      </div>
+    </section>
+    """.format(
+        automation=html_escape("AUTOMATIZADO" if installed_jobs == 3 else "LISTO PARA ACTIVAR"),
+        cycle=html_escape(status.get("status") or "SIN EJECUTAR"),
+        pending=html_escape(outbox.get("pending_count") or 0),
+        actions=html_escape(len(action_rows)),
+        digest=html_escape("LISTO" if digest.get("digest_version") else "PENDIENTE"),
+        local_notify=html_escape("ACTIVA" if status.get("local_notifications_enabled") else "INACTIVA"),
+        installed=html_escape(installed_jobs),
     )
 
 
@@ -3189,6 +3273,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .risk-alert.severity-high {{ border-left-color:#d97706; }}
           .risk-alert.severity-watch {{ border-left-color:#2563eb; }}
           .risk-alert.severity-info {{ border-left-color:#1d6b4f; }}
+          .risk-actions {{ margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }}
+          .risk-actions input {{ margin-bottom:8px; }}
+          .risk-actions .actions {{ justify-content:flex-start; }}
+          .risk-actions button {{ padding:8px 11px; font-size:.9rem; }}
+          .portfolio-operations {{ background:#f8fbf6; }}
           label {{ display:block; margin:10px 0 4px; font-weight:700; }}
           input {{ width:min(520px,100%); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
           pre {{ white-space:pre-wrap; overflow:auto; background:#162019; color:#f6f1df; border-radius:14px; padding:14px; max-height:360px; }}
@@ -3221,6 +3310,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {capacity}
           {control_tower}
           {portfolio_risk}
+          {portfolio_operations}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -3314,6 +3404,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         capacity=render_account_capacity_panel(operator_payload, snapshot),
         control_tower=render_control_tower_panel(profiles, active),
         portfolio_risk=render_portfolio_risk_panel(profiles, active),
+        portfolio_operations=render_portfolio_operations_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -3364,6 +3455,12 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_portfolio_risk(profile_map, active_profile()))
             return
+        if path == "/portfolio-risk-outbox":
+            self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
+            return
+        if path == "/portfolio-risk-operations":
+            self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH))
+            return
         if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
@@ -3371,9 +3468,10 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
-        status = 200 if path in ["/", "", "/console", "/control-tower", "/portfolio-risk"] else 404
+        json_paths = {"/control-tower", "/portfolio-risk", "/portfolio-risk-outbox", "/portfolio-risk-operations"}
+        status = 200 if path in ["/", "", "/console", *json_paths] else 404
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8" if path in {"/control-tower", "/portfolio-risk"} else "text/html; charset=utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8" if path in json_paths else "text/html; charset=utf-8")
         self.end_headers()
 
     def do_POST(self) -> None:
@@ -3425,6 +3523,41 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 self.send_html(
                     "Evaluación de riesgo iniciada sobre los snapshots sanitizados. No transmite ni ejecuta órdenes.",
                     job_id=job_id,
+                )
+            elif self.path == "/portfolio-risk-operations-run":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(selected_alias, portfolio_risk_operations_command(), "Mantenimiento de riesgo")
+                self.send_html(
+                    "Mantenimiento iniciado: reevaluación, outbox y digest locales; no consulta ni opera el broker.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-risk-action":
+                profile_data = load_profiles()
+                profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+                current_risk = load_portfolio_risk(profile_map, active_profile())
+                active_alerts_by_id = {
+                    str(item.get("alert_id") or ""): item
+                    for item in (current_risk.get("alerts") or [])
+                    if isinstance(item, dict) and item.get("alert_id")
+                }
+                known_alert_ids = {
+                    alert_id for alert_id in active_alerts_by_id
+                }
+                requested_alert_id = (params.get("alert_id") or [""])[0]
+                item = shared_risk_operations.record_action(
+                    PORTFOLIO_RISK_ACTIONS_PATH,
+                    alert_id=requested_alert_id,
+                    action=(params.get("action") or [""])[0],
+                    reason=(params.get("reason") or [""])[0],
+                    snooze_minutes=60,
+                    acknowledgement_minutes=240,
+                    alert_severity=(active_alerts_by_id.get(requested_alert_id) or {}).get("severity") or "",
+                    known_alert_ids=known_alert_ids,
+                )
+                self.send_html(
+                    "Alerta de riesgo actualizada: {status}. Esta acción no modifica posiciones ni órdenes.".format(
+                        status=item.get("status") or "UNKNOWN"
+                    )
                 )
             elif self.path == "/bridge":
                 job_id = start_web_job(alias, console_bridge_command(), "Refresh IBKR")

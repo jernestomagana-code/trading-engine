@@ -1,0 +1,22 @@
+{
+  "operations_version": "stock_ultimus_portfolio_risk_operations_v1",
+  "timezone": "America/New_York",
+  "weekday_monitoring_only": true,
+  "monitor_window": {
+    "start": "07:00",
+    "end": "17:30"
+  },
+  "notification_severities": [
+    "CRITICAL",
+    "HIGH"
+  ],
+  "notification_cooldown_minutes": 60,
+  "acknowledgement_minutes": 240,
+  "default_snooze_minutes": 60,
+  "escalation_minutes": {
+    "CRITICAL": 15,
+    "HIGH": 60
+  },
+  "outbox_max_items": 500,
+  "local_notifications_enabled": false
+}
