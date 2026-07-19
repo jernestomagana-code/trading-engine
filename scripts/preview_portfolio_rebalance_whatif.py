@@ -140,7 +140,8 @@ def main() -> int:
                 "account_alias": alias,
                 "real_account_id_excluded": True,
                 "what_if": True,
-                "transmit": False,
+                "transmit": True,
+                "transmit_semantics": "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER",
                 "execution_authorized": False,
                 "order_created": False,
                 "not_order_instruction": True,
@@ -170,9 +171,9 @@ def main() -> int:
                     tif="DAY",
                     account=account_id,
                     whatIf=True,
-                    transmit=False,
+                    transmit=True,
                 )
-                if order.whatIf is not True or order.transmit is not False:
+                if order.whatIf is not True or order.transmit is not True:
                     raise RuntimeError("WHATIF_ORDER_GUARD_FAILED")
                 state = ib.whatIfOrder(contract, order)
                 preview.update(whatif_engine.order_state_payload(state))
@@ -188,7 +189,9 @@ def main() -> int:
     except Exception as exc:
         previews.append({
             "status": "FAILED", "error": safe_error(exc, list(account_ids.values())),
-            "what_if": True, "transmit": False, "execution_authorized": False,
+            "what_if": True, "transmit": True,
+            "transmit_semantics": "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER",
+            "execution_authorized": False,
             "order_created": False, "not_order_instruction": True,
         })
     finally:
@@ -215,7 +218,8 @@ def main() -> int:
         "open_order_fingerprint_unchanged": result["open_order_fingerprint_unchanged"],
         "orders_created": result["orders_created"],
         "what_if_only": True,
-        "transmit": False,
+        "transmit": True,
+        "transmit_semantics": "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER",
         "execution_authorized": False,
         "real_account_ids_excluded": True,
         "not_order_instruction": True,

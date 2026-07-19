@@ -8,6 +8,6 @@
     "VIRTUAL_LIQUIDITY_BUFFER"
   ],
   "require_open_orders_unchanged": true,
-  "require_transmit_false": true,
+  "ibkr_requires_transmit_true_for_whatif": true,
   "require_what_if_true": true
 }

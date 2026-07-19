@@ -19,7 +19,7 @@ DEFAULT_POLICY: dict[str, Any] = {
     "whole_share_stock_previews": True,
     "allowed_simulation_actions": ["VIRTUAL_REDUCTION", "VIRTUAL_OPTION_CLOSE", "VIRTUAL_LIQUIDITY_BUFFER"],
     "require_open_orders_unchanged": True,
-    "require_transmit_false": True,
+    "ibkr_requires_transmit_true_for_whatif": True,
     "require_what_if_true": True,
 }
 
@@ -116,7 +116,8 @@ def build_preview_requests(
             "position_quantity_after": round(effective_after, 4),
             "order_type": "MKT",
             "what_if": True,
-            "transmit": False,
+            "transmit": True,
+            "transmit_semantics": "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER",
             "reduce_only": True,
             "execution_authorized": False,
             "not_order_instruction": True,
@@ -209,7 +210,8 @@ def summarize(
         "warnings": request_build.get("warnings") or [],
         "manual_decision_required": True,
         "what_if_only": True,
-        "transmit": False,
+        "transmit": True,
+        "transmit_semantics": "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER",
         "execution_authorized": False,
         "automatic_rebalance_authorized": False,
         "sensitive_identifiers_excluded": True,

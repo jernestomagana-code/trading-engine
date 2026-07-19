@@ -5025,7 +5025,7 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
               <div><span>Margen inicial</span><strong>{initial}</strong></div>
               <div><span>Margen mantenimiento</span><strong>{maintenance}</strong></div>
               <div><span>Comisión</span><strong>{commission}</strong></div>
-              <div><span>Transmit</span><strong>FALSE</strong></div>
+              <div><span>Modo IBKR</span><strong>WHAT-IF</strong></div>
             </div>
             <p class="muted">{warning}</p>
           </article>
@@ -5054,7 +5054,7 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
     alias = active.get("account_alias") or next(iter(profiles or {}), "")
     action_form = (
         '<form method="post" action="/portfolio-rebalance-whatif" data-busy="Consultando what-if oficial IBKR" '
-        'data-busy-detail="Envía únicamente previews whatIf=true y transmit=false; no crea órdenes.">'
+        'data-busy-detail="IBKR exige transmit=true para procesar el preview; whatIf=true impide crear una orden real.">'
         f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
         f'<label>Alternativa <select name="candidate_id" required>{candidate_options}</select></label>'
         '<button>Validar margen y comisión</button></form>'
@@ -5081,7 +5081,7 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         <h3>Validar una alternativa</h3>
         {action_form}
       </div>
-      <p class="muted">Los cambios de margen se suman como previews independientes y no equivalen a una cesta combinada. whatIf=true · transmit=false · órdenes creadas {orders}.</p>
+      <p class="muted">Los cambios de margen se suman como previews independientes y no equivalen a una cesta combinada. IBKR recibe whatIf=true y transmit=true solo para procesar el preview; órdenes reales creadas {orders}.</p>
     </section>
     """.format(
         status_class=html_escape(str(status).lower()),
@@ -5986,7 +5986,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     "Validación oficial IBKR what-if",
                 )
                 self.send_html(
-                    "Validación what-if iniciada con transmit=false. No se creó ni transmitió ninguna orden.",
+                    "Validación what-if iniciada. IBKR procesa el preview con whatIf=true; no se crea una orden real.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-operations-run":

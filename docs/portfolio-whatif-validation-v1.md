@@ -3,8 +3,9 @@
 ## Objetivo
 
 La Etapa 6D1 conecta las alternativas virtuales de rebalanceo con el preview
-oficial de margen y comisiones de IBKR. Cada solicitud usa `whatIf=true` y
-`transmit=false`; no crea una orden activa.
+oficial de margen y comisiones de IBKR. Cada solicitud usa `whatIf=true`. IBKR
+exige además `transmit=true` para procesar la consulta; con `whatIf=true` ese flag
+envía un preview al servidor y no crea una orden activa.
 
 Todo se opera y visualiza desde la consola local. Los IDs reales de cuenta se
 leen desde Keychain únicamente dentro del proceso y nunca se guardan ni muestran.
@@ -15,7 +16,8 @@ leen desde Keychain únicamente dentro del proceso y nunca se guardan ni muestra
 - La cantidad posterior no puede aumentar exposición ni cambiar de signo.
 - El contrato debe coincidir exactamente con una posición viva de la misma cuenta.
 - La acción debe ser `SELL` para reducir un largo o `BUY` para reducir un corto.
-- Cada objeto exige `whatIf=true` y `transmit=false` antes de llamar a IBKR.
+- Cada objeto exige `whatIf=true`; `transmit=true` se permite exclusivamente por
+  el requisito del servidor para procesar el preview.
 - Se comparan las órdenes abiertas antes y después mediante una huella estable.
 - Cualquier cambio en esa huella produce `SAFETY_VIOLATION`.
 - El número de previews está limitado por política.

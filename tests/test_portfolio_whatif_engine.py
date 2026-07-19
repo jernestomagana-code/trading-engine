@@ -36,7 +36,7 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
             }],
         }
 
-    def test_requests_are_reduce_only_whatif_and_never_transmit(self):
+    def test_requests_are_reduce_only_and_use_ibkr_whatif_submission_semantics(self):
         result = whatif.build_preview_requests(self.rebalance, self.policy)
 
         self.assertEqual(result["status"], "READY")
@@ -45,7 +45,8 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
         self.assertEqual(result["requests"][0]["quantity"], 200.0)
         self.assertEqual(result["requests"][1]["action"], "BUY")
         self.assertTrue(all(row["what_if"] for row in result["requests"]))
-        self.assertTrue(all(not row["transmit"] for row in result["requests"]))
+        self.assertTrue(all(row["transmit"] for row in result["requests"]))
+        self.assertTrue(all(row["transmit_semantics"] == "SUBMIT_WHATIF_PREVIEW_TO_IBKR_NOT_LIVE_ORDER" for row in result["requests"]))
         self.assertTrue(all(row["reduce_only"] for row in result["requests"]))
 
     def test_increase_or_unproven_virtual_action_is_rejected(self):
@@ -97,7 +98,7 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
         self.assertIn("[ACCOUNT_ID_REDACTED]", error)
         self.assertIn("readonly=False", source)
         self.assertIn("whatIf=True", source)
-        self.assertIn("transmit=False", source)
+        self.assertIn("transmit=True", source)
         self.assertIn("ib.whatIfOrder", source)
         self.assertIn("open_order_fingerprint", source)
         self.assertNotIn("ib.placeOrder", source)
@@ -129,7 +130,7 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
 
         self.assertIn("Validación oficial IBKR what-if", rendered)
         self.assertIn("Margen y comisiones sin transmitir órdenes", rendered)
-        self.assertIn("whatIf=true · transmit=false", rendered)
+        self.assertIn("whatIf=true y transmit=true solo para procesar el preview", rendered)
         self.assertIn("Validar margen y comisión", rendered)
 
 
