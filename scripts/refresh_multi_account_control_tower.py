@@ -17,6 +17,7 @@ import portfolio_risk_engine as risk_engine
 import portfolio_risk_store as risk_store
 import portfolio_stress_engine as stress_engine
 import portfolio_factor_engine as factor_engine
+import portfolio_rebalance_engine as rebalance_engine
 from brokers.ibkr_readonly import IBKRReadOnlyAdapter
 from scripts import ibkr_account_profile as profiles
 
@@ -44,9 +45,12 @@ def main() -> int:
     parser.add_argument("--stress-json-out", default="runtime/portfolio_stress_latest.json")
     parser.add_argument("--factor-policy", default="config/portfolio_factor_policy.json")
     parser.add_argument("--factor-json-out", default="runtime/portfolio_factor_latest.json")
+    parser.add_argument("--rebalance-policy", default="config/portfolio_rebalance_policy.json")
+    parser.add_argument("--rebalance-json-out", default="runtime/portfolio_rebalance_latest.json")
     parser.add_argument("--skip-risk-evaluation", action="store_true")
     parser.add_argument("--skip-stress-evaluation", action="store_true")
     parser.add_argument("--skip-factor-evaluation", action="store_true")
+    parser.add_argument("--skip-rebalance-evaluation", action="store_true")
     args = parser.parse_args()
 
     runtime_dir = rooted_path(args.runtime_dir)
@@ -115,6 +119,15 @@ def main() -> int:
         factor_policy = factor_engine.load_policy(rooted_path(args.factor_policy))
         factor_evaluation = factor_engine.evaluate(payload, factor_policy)
         factor_engine.write_result(rooted_path(args.factor_json_out), factor_evaluation)
+    rebalance_evaluation = {}
+    if not args.skip_rebalance_evaluation:
+        rebalance_evaluation = rebalance_engine.evaluate(
+            payload,
+            rebalance_engine.load_policy(rooted_path(args.rebalance_policy)),
+            stress_engine.load_policy(rooted_path(args.stress_policy)),
+            factor_engine.load_policy(rooted_path(args.factor_policy)),
+        )
+        rebalance_engine.write_result(rooted_path(args.rebalance_json_out), rebalance_evaluation)
     print(json.dumps({
         "status": payload.get("status"),
         "account_count": payload.get("account_count"),
@@ -133,6 +146,9 @@ def main() -> int:
         "factor_status": factor_evaluation.get("status") or "SKIPPED",
         "factor_history_coverage_ratio": factor_evaluation.get("history_coverage_ratio"),
         "factor_greeks_coverage_ratio": factor_evaluation.get("greeks_coverage_ratio"),
+        "rebalance_status": rebalance_evaluation.get("status") or "SKIPPED",
+        "rebalance_candidate_count": rebalance_evaluation.get("candidate_count", 0),
+        "rebalance_preferred_simulation_id": rebalance_evaluation.get("preferred_simulation_id"),
         "sensitive_identifiers_excluded": True,
         "execution_authorized": False,
         "not_order_instruction": True,

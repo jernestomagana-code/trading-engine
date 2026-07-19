@@ -35,6 +35,7 @@ import portfolio_risk_engine as shared_portfolio_risk
 import portfolio_risk_operations as shared_risk_operations
 import portfolio_stress_engine as shared_portfolio_stress
 import portfolio_factor_engine as shared_portfolio_factors
+import portfolio_rebalance_engine as shared_portfolio_rebalance
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -64,6 +65,8 @@ PORTFOLIO_STRESS_PATH = RUNTIME / "portfolio_stress_latest.json"
 PORTFOLIO_STRESS_POLICY_PATH = ROOT / "config" / "portfolio_stress_policy.json"
 PORTFOLIO_FACTOR_PATH = RUNTIME / "portfolio_factor_latest.json"
 PORTFOLIO_FACTOR_POLICY_PATH = ROOT / "config" / "portfolio_factor_policy.json"
+PORTFOLIO_REBALANCE_PATH = RUNTIME / "portfolio_rebalance_latest.json"
+PORTFOLIO_REBALANCE_POLICY_PATH = ROOT / "config" / "portfolio_rebalance_policy.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -818,6 +821,20 @@ def portfolio_factor_refresh_command() -> list[str]:
         "--json-out",
         "runtime/portfolio_factor_latest.json",
     ]
+
+
+def portfolio_rebalance_refresh_command(ticker: str = "", reduction_pct: str = "") -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/evaluate_portfolio_rebalance.py",
+        "--json-out",
+        "runtime/portfolio_rebalance_latest.json",
+    ]
+    if ticker:
+        command.extend(["--ticker", ticker])
+    if reduction_pct:
+        command.extend(["--reduction-pct", reduction_pct])
+    return command
 
 
 def portfolio_risk_operations_command(
@@ -4865,6 +4882,115 @@ def render_portfolio_factor_panel(profiles: dict[str, Any], active: dict[str, An
     )
 
 
+def load_portfolio_rebalance(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
+    persisted = shared_risk_operations.load_json(PORTFOLIO_REBALANCE_PATH)
+    if persisted.get("rebalance_engine_version"):
+        return persisted
+    tower = load_control_tower(profiles, active)
+    return shared_portfolio_rebalance.evaluate(
+        tower,
+        shared_portfolio_rebalance.load_policy(PORTFOLIO_REBALANCE_POLICY_PATH),
+        shared_portfolio_stress.load_policy(PORTFOLIO_STRESS_POLICY_PATH),
+        shared_portfolio_factors.load_policy(PORTFOLIO_FACTOR_POLICY_PATH),
+    )
+
+
+def render_portfolio_rebalance_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_portfolio_rebalance(profiles, active)
+    baseline = payload.get("baseline") if isinstance(payload.get("baseline"), dict) else {}
+    cards = []
+    preferred = str(payload.get("preferred_simulation_id") or "")
+    for candidate in payload.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+        improvements = candidate.get("improvements") if isinstance(candidate.get("improvements"), dict) else {}
+        constraints = candidate.get("constraints") if isinstance(candidate.get("constraints"), dict) else {}
+        actions = candidate.get("virtual_actions") if isinstance(candidate.get("virtual_actions"), list) else []
+        action_summary = ", ".join(
+            "{} {}".format(item.get("ticker") or "", item.get("simulation_action") or "")
+            for item in actions[:4] if isinstance(item, dict)
+        ) or "sin cambios virtuales"
+        is_preferred = str(candidate.get("candidate_id") or "") == preferred
+        cards.append("""
+          <article class="scenario-card rebalance-card {preferred_class}">
+            <div class="scenario-head"><strong>{name}</strong><span>{label}</span></div>
+            <p>{description}</p>
+            <div class="scenario-lines">
+              <div><span>Estrés peor caso</span><strong>{stress}</strong></div>
+              <div><span>Volatilidad</span><strong>{volatility}</strong></div>
+              <div><span>Concentración mayor</span><strong>{concentration}</strong></div>
+              <div><span>Dollar delta</span><strong>{delta}</strong></div>
+              <div><span>Rotación virtual</span><strong>{turnover}</strong></div>
+              <div><span>Mejora cola</span><strong>{tail_improvement}</strong></div>
+            </div>
+            <p class="muted">Cambios: {actions}. Score comparativo {score}; restricciones {constraints}; decisión manual obligatoria.</p>
+          </article>
+        """.format(
+            preferred_class="preferred-simulation" if is_preferred else "",
+            name=html_escape(candidate.get("name") or "Simulación"),
+            label="MEJOR EQUILIBRIO" if is_preferred else "ALTERNATIVA",
+            description=html_escape(candidate.get("description") or ""),
+            stress=html_escape(_tower_percent(metrics.get("worst_stress_loss_ratio"))),
+            volatility=html_escape(_tower_percent(metrics.get("annualized_volatility"))),
+            concentration=html_escape(_tower_percent(metrics.get("top_ticker_share"))),
+            delta=html_escape(_tower_money(metrics.get("option_dollar_delta"))),
+            turnover=html_escape(_tower_money(candidate.get("turnover_dollars"))),
+            tail_improvement=html_escape(_tower_money(improvements.get("tail_loss_reduction_dollars"))),
+            actions=html_escape(action_summary),
+            score=html_escape(candidate.get("model_score") or 0),
+            constraints="cumplidas" if constraints.get("all_satisfied") else "no cumplidas",
+        ))
+    ticker_options = "".join(
+        '<option value="{ticker}">{ticker}</option>'.format(ticker=html_escape(ticker))
+        for ticker in (payload.get("available_tickers") or [])
+    )
+    warnings = ", ".join(payload.get("warnings") or []) or "ninguna"
+    alias = active.get("account_alias") or next(iter(profiles or {}), "")
+    custom_form = (
+        '<form method="post" action="/portfolio-rebalance-simulate" data-busy="Simulando rebalanceo" '
+        'data-busy-detail="Crea una comparación virtual; no crea ni transmite órdenes.">'
+        f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
+        f'<label>Ticker <select name="ticker" required>{ticker_options}</select></label>'
+        '<label>Reducción virtual % <input type="number" name="reduction_pct" min="1" max="100" step="1" value="10" required></label>'
+        '<button>Simular solamente</button></form>'
+        if alias and ticker_options else ""
+    )
+    return """
+    <section class="panel portfolio-rebalance status-{status_class}">
+      <div class="section-head">
+        <div><h2>Simulador de rebalanceo</h2><p>Compara alternativas virtuales antes de cualquier decisión manual.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Estrés actual</span><strong>{stress}</strong></div>
+        <div><span>Volatilidad actual</span><strong>{volatility}</strong></div>
+        <div><span>Concentración actual</span><strong>{concentration}</strong></div>
+        <div><span>Liquidez mínima</span><strong>{liquidity}</strong></div>
+        <div><span>Alternativas</span><strong>{count}</strong></div>
+      </div>
+      <div class="scenario-grid">{cards}</div>
+      <div class="rebalance-custom">
+        <h3>Simulación personalizada</h3>
+        <p class="muted">Elige un ticker y un porcentaje. Solo altera una copia matemática de la cartera.</p>
+        {custom_form}
+      </div>
+      <p class="muted">Advertencias: {warnings}. No incluye impuestos, deslizamiento ni ejecución. Órdenes creadas: 0.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "blocked").lower()),
+        status=html_escape(payload.get("status") or "BLOCKED"),
+        stress=html_escape(_tower_percent(baseline.get("worst_stress_loss_ratio"))),
+        volatility=html_escape(_tower_percent(baseline.get("annualized_volatility"))),
+        concentration=html_escape(_tower_percent(baseline.get("top_ticker_share"))),
+        liquidity=html_escape(_tower_percent(baseline.get("minimum_excess_liquidity_ratio"))),
+        count=html_escape(payload.get("candidate_count") or 0),
+        cards="".join(cards) or '<p class="empty">No se detectó un cambio virtual necesario bajo la política actual.</p>',
+        custom_form=custom_form,
+        warnings=html_escape(warnings),
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5377,6 +5503,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {portfolio_risk}
           {portfolio_stress}
           {portfolio_factors}
+          {portfolio_rebalance}
           {portfolio_operations}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
@@ -5511,6 +5638,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_risk=render_portfolio_risk_panel(profiles, active),
         portfolio_stress=render_portfolio_stress_panel(profiles, active),
         portfolio_factors=render_portfolio_factor_panel(profiles, active),
+        portfolio_rebalance=render_portfolio_rebalance_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
@@ -5611,6 +5739,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_portfolio_factors(profile_map, active_profile()))
             return
+        if path == "/portfolio-rebalance":
+            profile_data = load_profiles()
+            profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+            self.send_json(load_portfolio_rebalance(profile_map, active_profile()))
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -5631,6 +5764,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-risk",
             "/portfolio-stress",
             "/portfolio-factors",
+            "/portfolio-rebalance",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -5717,6 +5851,19 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(selected_alias, portfolio_factor_refresh_command(), "Inteligencia avanzada de cartera")
                 self.send_html(
                     "Análisis avanzado iniciado sobre datos sanitizados. No transmite ni ejecuta órdenes.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-rebalance-simulate":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                ticker = str((params.get("ticker") or [""])[0]).upper().strip()
+                reduction_pct = str((params.get("reduction_pct") or [""])[0]).strip()
+                job_id = start_web_job(
+                    selected_alias,
+                    portfolio_rebalance_refresh_command(ticker, reduction_pct),
+                    "Simulación virtual de rebalanceo",
+                )
+                self.send_html(
+                    "Simulación iniciada sobre una copia matemática. No se creó ni transmitió ninguna orden.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-operations-run":

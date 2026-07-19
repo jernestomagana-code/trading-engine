@@ -1,0 +1,11 @@
+{
+  "policy_version": "stock_ultimus_portfolio_rebalance_policy_v1",
+  "target_max_ticker_gross_share": 0.35,
+  "minimum_excess_liquidity_ratio": 0.30,
+  "maximum_option_dollar_delta_nav_ratio": 0.10,
+  "maximum_single_simulation_turnover_nav_ratio": 0.25,
+  "linear_margin_release_ratio": 0.50,
+  "option_margin_release_multiple": 3.0,
+  "default_custom_reduction_pct": 10,
+  "maximum_custom_reduction_pct": 100
+}
