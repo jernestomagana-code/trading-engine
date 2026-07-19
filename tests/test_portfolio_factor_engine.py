@@ -138,6 +138,8 @@ class PortfolioFactorEngineTests(unittest.TestCase):
 
         self.assertIn('Stock(ticker, "SMART"', source)
         self.assertIn('quote_contract.exchange = "SMART"', source)
+        self.assertIn("for market_data_type in (2, 4, 3)", source)
+        self.assertIn("ib.cancelMktData(contract)", source)
         self.assertNotIn("placeOrder", source)
 
 

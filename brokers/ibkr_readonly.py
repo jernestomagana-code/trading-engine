@@ -144,6 +144,36 @@ class IBKRReadOnlyAdapter:
             "vega": control_tower.safe_float(getattr(greeks, "vega", None)),
         }
 
+    @classmethod
+    def _request_option_greeks(cls, ib: Any, contract: Any) -> dict[str, float | None]:
+        empty = cls._option_greeks(None)
+        try:
+            quote_rows = ib.reqTickers(contract)
+            quote = quote_rows[0] if quote_rows else None
+            result = cls._option_greeks(quote)
+            if result.get("delta") is not None:
+                return result
+        except Exception:
+            result = empty
+        for market_data_type in (2, 4, 3):  # frozen, delayed-frozen, delayed
+            ticker = None
+            try:
+                ib.reqMarketDataType(market_data_type)
+                ticker = ib.reqMktData(contract, "", False, False)
+                ib.sleep(0.75)
+                result = cls._option_greeks(ticker)
+                if result.get("delta") is not None:
+                    return result
+            except Exception:
+                pass
+            finally:
+                try:
+                    if ticker is not None:
+                        ib.cancelMktData(contract)
+                except Exception:
+                    pass
+        return result
+
     @staticmethod
     def _historical_closes(ib: Any, contract: Any) -> list[float]:
         try:
@@ -194,10 +224,7 @@ class IBKRReadOnlyAdapter:
                 quote_contract = copy(contract)
                 if key[1] == "OPT" and not str(getattr(quote_contract, "exchange", "") or "").strip():
                     quote_contract.exchange = "SMART"
-                quote_rows = ib.reqTickers(quote_contract)
-                quote = quote_rows[0] if quote_rows else None
-                if quote is not None:
-                    position.update(cls._option_greeks(quote))
+                position.update(cls._request_option_greeks(ib, quote_contract))
             except Exception:
                 pass
         return clean
