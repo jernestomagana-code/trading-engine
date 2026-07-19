@@ -16,6 +16,7 @@ from typing import Any
 
 AUDIT_VERSION = "alert_opportunity_deep_audit_v1"
 UNKNOWN = "UNKNOWN"
+MISSING_SOURCE_VALUES = {"", UNKNOWN, "NO_CANDIDATE_SOURCE", "NO_CONFIRMATION_SOURCE"}
 
 
 def safe_upper(value: Any, default: str = UNKNOWN) -> str:
@@ -28,6 +29,10 @@ def safe_text(value: Any, default: str = "") -> str:
         return default
     text = str(value).strip()
     return text if text else default
+
+
+def is_missing_source(value: Any) -> bool:
+    return safe_upper(value, "") in MISSING_SOURCE_VALUES
 
 
 def safe_float(value: Any) -> float | None:
@@ -160,6 +165,7 @@ def normalize_decision(item: dict[str, Any], origin: str) -> dict[str, Any]:
     attribution = item.get("source_attribution") if isinstance(item.get("source_attribution"), dict) else {}
     candidate_source = safe_upper(item.get("candidate_source") or attribution.get("candidate_source"), UNKNOWN)
     confirmation_source = safe_upper(item.get("confirmation_source") or attribution.get("confirmation_source"), UNKNOWN)
+    signal_source = infer_signal_source(item)
     return {
         "id": decision_key(item),
         "origin": origin,
@@ -173,7 +179,7 @@ def normalize_decision(item: dict[str, Any], origin: str) -> dict[str, Any]:
         "blockers": blockers,
         "candidate_source": candidate_source,
         "confirmation_source": confirmation_source,
-        "signal_source": infer_signal_source(item),
+        "signal_source": UNKNOWN if is_missing_source(signal_source) else signal_source,
         "source_confidence": item.get("source_confidence") or attribution.get("source_confidence"),
         "signal_id": item.get("signal_id") or attribution.get("signal_id"),
         "snapshot_id": item.get("snapshot_id") or attribution.get("snapshot_id"),
@@ -319,9 +325,9 @@ def audit_question_for_state(state: str, blocker: str, blockers: list[str]) -> s
 
 
 def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]], source_files: dict[str, bool]) -> dict[str, Any]:
-    unknown_source = sum(1 for item in decisions if item["signal_source"] == UNKNOWN)
-    missing_candidate_source = sum(1 for item in decisions if item.get("candidate_source") in [UNKNOWN, ""])
-    missing_confirmation_source = sum(1 for item in decisions if item.get("confirmation_source") in [UNKNOWN, ""])
+    unknown_source = sum(1 for item in decisions if is_missing_source(item.get("signal_source")))
+    missing_candidate_source = sum(1 for item in decisions if is_missing_source(item.get("candidate_source")))
+    missing_confirmation_source = sum(1 for item in decisions if is_missing_source(item.get("confirmation_source")))
     closed_outcomes = sum(1 for item in outcomes if item["outcome"] in {"WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"})
     return {
         "source_files_found": source_files,
@@ -368,8 +374,8 @@ def build_freshness(decisions: list[dict[str, Any]], generated_at: str, recent_d
             "main_blocker",
         ),
         "recent_source_counts": group_decisions(recent, "signal_source"),
-        "recent_unknown_source_decisions": sum(1 for item in recent if item.get("signal_source") == UNKNOWN),
-        "historical_unknown_source_decisions": sum(1 for item in historical if item.get("signal_source") == UNKNOWN),
+        "recent_unknown_source_decisions": sum(1 for item in recent if is_missing_source(item.get("signal_source"))),
+        "historical_unknown_source_decisions": sum(1 for item in historical if is_missing_source(item.get("signal_source"))),
         "recent_missed_opportunity_review": build_missed_opportunity_rows(recent),
     }
 
@@ -382,7 +388,7 @@ def primary_gap(decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]])
     ]
     if len(closed_outcomes) < 30:
         return "INSUFFICIENT_OUTCOME_SAMPLE"
-    unknown_source = sum(1 for item in decisions if item["signal_source"] == UNKNOWN)
+    unknown_source = sum(1 for item in decisions if is_missing_source(item.get("signal_source")))
     if unknown_source / len(decisions) > 0.25:
         return "SIGNAL_SOURCE_ATTRIBUTION_GAP"
     return "REVIEWABLE_SAMPLE"

@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ib_insync import IB, Stock, Option
@@ -318,7 +319,7 @@ def probe_once(
         ib.reqMarketDataType(market_data_type)
         ticker = ib.reqMktData(
             contract,
-            genericTickList="100,101,106",
+            genericTickList="" if snapshot else "100,101,106",
             snapshot=bool(snapshot),
             regulatorySnapshot=False,
         )
@@ -358,6 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-wait", type=float, default=12)
     parser.add_argument("--snapshot-wait", type=float, default=4)
     parser.add_argument("--timeout", type=float, default=10)
+    parser.add_argument("--json-out", default="", help="Optional local JSON path for sanitized probe evidence.")
     return parser
 
 
@@ -389,7 +391,10 @@ def main() -> int:
             "engine": "IBKR_OPTION_QUOTE_PROBE",
             "generated_at": now_iso(),
             "readonly": True,
+            "manual_review_required": True,
+            "execution_authorized": False,
             "not_order_instruction": True,
+            "secrets_printed": False,
             "selection": selection,
             "contract": {
                 "localSymbol": getattr(contract, "localSymbol", None),
@@ -404,6 +409,10 @@ def main() -> int:
             "attempts": attempts,
             "errors": errors[-20:],
         }
+        if args.json_out:
+            output = Path(args.json_out).expanduser()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0 if best and best.get("data_quality") != "ERROR" else 1
     finally:

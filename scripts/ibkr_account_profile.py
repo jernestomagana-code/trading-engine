@@ -4717,6 +4717,16 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
         )
     if not alert_rows:
         alert_rows.append('<p class="empty">Sin alertas de cartera bajo la política vigente.</p>')
+    primary_alerts = alert_rows[:3]
+    secondary_alerts = alert_rows[3:]
+    alerts_html = "".join(primary_alerts)
+    if secondary_alerts:
+        alerts_html += (
+            '<details class="remaining-risk-alerts">'
+            f'<summary>Ver {len(secondary_alerts)} alertas adicionales</summary>'
+            f'<div class="risk-alert-list">{"".join(secondary_alerts)}</div>'
+            '</details>'
+        )
     alias = active.get("account_alias") or next(iter(profiles or {}), "")
     action = (
         '<form method="post" action="/portfolio-risk-refresh" data-busy="Reevaluando riesgo" '
@@ -4750,7 +4760,7 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
         high=html_escape(counts.get("high") or 0),
         watch=html_escape(counts.get("watch") or 0),
         policy=html_escape(payload.get("policy_version") or "unknown"),
-        alerts="".join(alert_rows),
+        alerts=alerts_html,
         action=action,
     )
 
@@ -5741,6 +5751,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           html,body {{ max-width:100%; overflow-x:clip; }}
           body {{ margin:0; font-family:var(--body); color:var(--ink); background:var(--paper); }}
           main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
+          [id] {{ scroll-margin-top:84px; }}
           h1 {{ font-family:var(--display); font-size:3.25rem; line-height:1; margin:0 0 12px; letter-spacing:0; }}
           h2 {{ margin:0 0 12px; font-size:1.25rem; }}
           h3 {{ margin:0; font-size:1.05rem; }}
@@ -5781,6 +5792,19 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .top-quick-actions form {{ display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:0; }}
           .top-quick-actions button {{ padding:8px 11px; font-size:.9rem; }}
           .top-quick-actions span {{ color:var(--muted); font-size:.8rem; }}
+          .operator-nav {{ position:sticky; top:8px; z-index:10; display:flex; gap:6px; align-items:center; overflow-x:auto; margin:0 0 14px; padding:7px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.96); box-shadow:0 8px 24px rgba(17,24,39,.10); backdrop-filter:blur(10px); }}
+          .operator-nav a {{ flex:0 0 auto; color:var(--ink); text-decoration:none; font-size:.84rem; font-weight:850; border-radius:7px; padding:8px 10px; }}
+          .operator-nav a:hover,.operator-nav a:focus-visible {{ color:var(--accent-strong); background:#eaf6f2; outline:none; }}
+          .operator-workspace {{ padding:0; overflow:hidden; margin-top:18px; background:#fbfcfe; }}
+          .operator-workspace > summary {{ cursor:pointer; list-style:none; display:flex; justify-content:space-between; gap:18px; align-items:center; padding:17px 20px; }}
+          .operator-workspace > summary::-webkit-details-marker {{ display:none; }}
+          .operator-workspace > summary::after {{ content:"Abrir"; flex:0 0 auto; color:var(--accent-strong); background:#eaf6f2; border-radius:999px; padding:6px 10px; font-size:.78rem; font-weight:900; }}
+          .operator-workspace[open] > summary::after {{ content:"Cerrar"; }}
+          .operator-workspace > summary span,.operator-workspace > summary small {{ display:block; }}
+          .operator-workspace > summary span {{ font-weight:900; }}
+          .operator-workspace > summary small {{ margin-top:3px; color:var(--muted); font-size:.8rem; line-height:1.3; }}
+          .workspace-body {{ padding:0 18px 18px; border-top:1px solid var(--line); }}
+          .workspace-body > .panel:first-child,.workspace-body > details:first-child {{ margin-top:18px; }}
           .hero-panel {{ display:grid; grid-template-columns:1.1fr .9fr; gap:24px; align-items:end; padding:28px; }}
           .embedded-panel {{ padding:12px 0 0; }}
           .eyebrow {{ text-transform:uppercase; letter-spacing:.16em; color:var(--accent); font-weight:800; font-size:.78rem; margin:0 0 12px; }}
@@ -5924,6 +5948,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .risk-score span {{ color:var(--muted); font-size:.82rem; }}
           .risk-score strong {{ font-size:1.35rem; }}
           .risk-alert-list {{ display:grid; gap:10px; margin-top:14px; }}
+          .remaining-risk-alerts {{ margin-top:12px; border:1px dashed var(--line); border-radius:10px; padding:12px; background:#ffffff; }}
+          .remaining-risk-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--accent-strong); }}
           .risk-alert {{ border:1px solid var(--line); border-left-width:6px; border-radius:16px; padding:14px; background:#fffdf6; }}
           .risk-alert h3,.risk-alert p {{ margin:6px 0 0; }}
           .risk-alert-title {{ display:flex; justify-content:space-between; gap:12px; font-size:.82rem; letter-spacing:.04em; }}
@@ -5966,7 +5992,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
-          @media (max-width:820px) {{ h1 {{ font-size:2.35rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .coberturas-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
+          @media (max-width:820px) {{ main {{ padding:14px 10px 44px; }} h1 {{ font-size:2.35rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .coberturas-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 12px 12px; }} }}
         </style>
       </head>
       <body>
@@ -5979,60 +6005,87 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         <main>
           <h1 class="sr-only">Stock Ultimus Console</h1>
           {health}
+          <nav class="operator-nav" aria-label="Navegación principal de la consola">
+            <a href="#hoy">Hoy</a>
+            <a href="#alertas">Alertas</a>
+            <a href="#posiciones">Posiciones</a>
+            <a href="#riesgo">Riesgo</a>
+            <a href="#cartera">Cartera</a>
+            <a href="#resultados">Resultados</a>
+            <a href="#herramientas">Herramientas</a>
+          </nav>
           {active_process}
-          {today}
+          <div id="hoy">{today}</div>
           {message}
           {job_panel}
-          {alerts}
-          {active_positions}
-          {coberturas_support}
-          {v31_console_support}
-          {question_support}
-          {admin_support}
-          {context}
-          {v31_learning}
-          {notifications}
-          {control_tower}
-          {portfolio_risk}
-          {portfolio_stress}
-          {portfolio_factors}
-          {portfolio_rebalance}
-          {portfolio_whatif}
-          {portfolio_operations}
-          {decision_outcomes}
-          {alert_effectiveness}
-          {executive_report}
-          {preventive_maintenance}
-          <details class="panel support-details">
-            <summary>Ver diagnostico tecnico y salud de modulos</summary>
-            {modules}
-            {market_mode}
-            {timeline}
-            {diagnostic}
+          <div id="alertas">{alerts}</div>
+          <div id="posiciones">{active_positions}</div>
+          <div id="riesgo">{portfolio_risk}</div>
+
+          <details id="cartera" class="panel operator-workspace">
+            <summary><span>Cartera avanzada<small>Control multicuenta, estrés, factores y alternativas virtuales.</small></span></summary>
+            <div class="workspace-body">
+              {control_tower}
+              {portfolio_stress}
+              {portfolio_factors}
+              {portfolio_rebalance}
+              {portfolio_whatif}
+              {portfolio_operations}
+            </div>
           </details>
-          <details class="panel support-details">
-            <summary>Administrar cuentas y perfiles</summary>
-            <section>
-              <div class="section-head">
-                <h2>Cuentas</h2>
-                <p>Escoge la cuenta que quieres revisar. <strong>Usar cuenta</strong> publica contexto para GPT; <strong>Refresh IBKR</strong> solo trae datos frescos del broker.</p>
-              </div>
-            </section>
-            <section class="grid">{profile_cards}</section>
-            <section>
-              <h2>Crear o actualizar perfil</h2>
-              <form method="post" action="/setup" autocomplete="off" data-busy="Guardando perfil local">
-                <label>Alias amigable</label>
-                <input name="alias" placeholder="primary" required>
-                <label>Scope publicado</label>
-                <input name="scope" placeholder="primary">
-                <label>ID real IBKR</label>
-                <input name="account" placeholder="Se guarda en Keychain; no se imprime" required>
-                <p><button class="secondary">Guardar perfil local</button></p>
-              </form>
-            </section>
+
+          <details id="resultados" class="panel operator-workspace">
+            <summary><span>Resultados y aprendizaje<small>Desempeño, efectividad de alertas y reportes ejecutivos.</small></span></summary>
+            <div class="workspace-body">
+              {decision_outcomes}
+              {alert_effectiveness}
+              {executive_report}
+              {v31_learning}
+            </div>
           </details>
-          {output}
+
+          <details id="herramientas" class="panel operator-workspace">
+            <summary><span>Herramientas y administración<small>Diagnóstico, mantenimiento, cuentas y utilidades de uso ocasional.</small></span></summary>
+            <div class="workspace-body">
+              {coberturas_support}
+              {v31_console_support}
+              {question_support}
+              {admin_support}
+              {context}
+              {notifications}
+              {preventive_maintenance}
+              <details class="panel support-details">
+                <summary>Ver diagnostico tecnico y salud de modulos</summary>
+                {modules}
+                {market_mode}
+                {timeline}
+                {diagnostic}
+              </details>
+              <details class="panel support-details">
+                <summary>Administrar cuentas y perfiles</summary>
+                <section>
+                  <div class="section-head">
+                    <h2>Cuentas</h2>
+                    <p>Escoge la cuenta que quieres revisar. <strong>Usar cuenta</strong> publica contexto para GPT; <strong>Refresh IBKR</strong> solo trae datos frescos del broker.</p>
+                  </div>
+                </section>
+                <section class="grid">{profile_cards}</section>
+                <section>
+                  <h2>Crear o actualizar perfil</h2>
+                  <form method="post" action="/setup" autocomplete="off" data-busy="Guardando perfil local">
+                    <label>Alias amigable</label>
+                    <input name="alias" placeholder="primary" required>
+                    <label>Scope publicado</label>
+                    <input name="scope" placeholder="primary">
+                    <label>ID real IBKR</label>
+                    <input name="account" placeholder="Se guarda en Keychain; no se imprime" required>
+                    <p><button class="secondary">Guardar perfil local</button></p>
+                  </form>
+                </section>
+              </details>
+              {output}
+            </div>
+          </details>
           <footer>Decision support solamente. Esta pantalla no autoriza ordenes ni ejecuciones automaticas.</footer>
         </main>
         <script>

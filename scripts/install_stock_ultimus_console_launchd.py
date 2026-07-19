@@ -11,20 +11,27 @@ import argparse
 import json
 import os
 import plistlib
+import shutil
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+APPLICATION_SUPPORT = Path.home() / "Library" / "Application Support" / "Stock Ultimus"
+SERVICE_ROOT = APPLICATION_SUPPORT / "ConsoleService"
+SERVICE_RUNTIME = APPLICATION_SUPPORT / "Runtime"
+RUNTIME_MIGRATION_BACKUPS = APPLICATION_SUPPORT / "MigrationBackups"
 LOG_DIR = Path("/private/tmp")
 PYTHON = os.getenv("STOCK_ULTIMUS_CONSOLE_PYTHON", "/usr/bin/python3")
 LABEL = "com.stockultimus.local-console"
 OPENER_LABEL = "com.stockultimus.local-console-opener"
 DEFAULT_PORT = 8765
+SERVICE_COPY_DIRS = ("scripts", "config", "brokers")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,11 +58,86 @@ def opener_plist_path() -> Path:
     return LAUNCH_AGENTS / f"{OPENER_LABEL}.plist"
 
 
+def _copy_tree(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    shutil.copytree(
+        source,
+        destination,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
+
+
+def prepare_service_bundle(dry_run: bool = False) -> dict[str, Any]:
+    """Install code outside Documents and share one canonical runtime directory.
+
+    macOS may deny a background LaunchAgent access to Documents even when the
+    same Python command works from Terminal.  The service copy avoids that TCC
+    boundary.  The workspace runtime becomes a symlink so manual tools and the
+    background console continue reading and writing the exact same data.
+    """
+
+    project_runtime = ROOT / "runtime"
+    result: dict[str, Any] = {
+        "service_root": str(SERVICE_ROOT),
+        "service_runtime": str(SERVICE_RUNTIME),
+        "project_runtime": str(project_runtime),
+        "runtime_shared": project_runtime.is_symlink() and project_runtime.resolve() == SERVICE_RUNTIME.resolve(),
+    }
+    if dry_run:
+        result["planned"] = True
+        return result
+
+    APPLICATION_SUPPORT.mkdir(parents=True, exist_ok=True)
+    SERVICE_ROOT.mkdir(parents=True, exist_ok=True)
+    for source in ROOT.glob("*.py"):
+        shutil.copy2(source, SERVICE_ROOT / source.name)
+    for directory in SERVICE_COPY_DIRS:
+        _copy_tree(ROOT / directory, SERVICE_ROOT / directory)
+
+    if project_runtime.is_symlink():
+        if project_runtime.resolve() != SERVICE_RUNTIME.resolve():
+            raise RuntimeError(f"runtime symlink points to an unexpected location: {project_runtime.resolve()}")
+        SERVICE_RUNTIME.mkdir(parents=True, exist_ok=True)
+    elif project_runtime.exists():
+        if SERVICE_RUNTIME.exists():
+            _copy_tree(project_runtime, SERVICE_RUNTIME)
+            RUNTIME_MIGRATION_BACKUPS.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = RUNTIME_MIGRATION_BACKUPS / f"runtime-{stamp}"
+            shutil.move(str(project_runtime), str(backup))
+            result["runtime_backup"] = str(backup)
+        else:
+            shutil.move(str(project_runtime), str(SERVICE_RUNTIME))
+        project_runtime.symlink_to(SERVICE_RUNTIME, target_is_directory=True)
+    else:
+        SERVICE_RUNTIME.mkdir(parents=True, exist_ok=True)
+        project_runtime.symlink_to(SERVICE_RUNTIME, target_is_directory=True)
+
+    service_runtime_link = SERVICE_ROOT / "runtime"
+    if service_runtime_link.is_symlink() and service_runtime_link.resolve() != SERVICE_RUNTIME.resolve():
+        service_runtime_link.unlink()
+    elif service_runtime_link.exists() and not service_runtime_link.is_symlink():
+        raise RuntimeError(f"service runtime path is not a symlink: {service_runtime_link}")
+    if not service_runtime_link.exists():
+        service_runtime_link.symlink_to(SERVICE_RUNTIME, target_is_directory=True)
+
+    result.update(
+        {
+            "planned": False,
+            "runtime_shared": project_runtime.is_symlink() and project_runtime.resolve() == SERVICE_RUNTIME.resolve(),
+            "copied_root_python_files": len(list(ROOT.glob("*.py"))),
+        }
+    )
+    return result
+
+
 def plist_payload(port: int) -> dict[str, Any]:
     command = "cd {root} && exec {python} {script} serve --host 127.0.0.1 --port {port}".format(
-        root=shlex.quote(str(ROOT)),
+        root=shlex.quote(str(SERVICE_ROOT)),
         python=shlex.quote(PYTHON),
-        script=shlex.quote(str(ROOT / "scripts" / "ibkr_account_profile.py")),
+        script=shlex.quote(str(SERVICE_ROOT / "scripts" / "ibkr_account_profile.py")),
         port=int(port),
     )
     return {
@@ -65,7 +147,7 @@ def plist_payload(port: int) -> dict[str, Any]:
             "-lc",
             command,
         ],
-        "WorkingDirectory": str(ROOT),
+        "WorkingDirectory": str(SERVICE_ROOT),
         "StandardOutPath": str(LOG_DIR / f"{LABEL}.out"),
         "StandardErrorPath": str(LOG_DIR / f"{LABEL}.err"),
         "RunAtLoad": True,
@@ -80,9 +162,14 @@ def opener_plist_payload() -> dict[str, Any]:
     command_file = ROOT / "Stock Ultimus Console.command"
     check_and_open = (
         "/usr/sbin/lsof -nP -iTCP:{port} -sTCP:LISTEN >/dev/null "
-        "|| /usr/bin/open {command_file}"
+        "|| ( /usr/bin/launchctl kickstart -k {domain}/{label} >/dev/null 2>&1; "
+        "for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+        "/usr/sbin/lsof -nP -iTCP:{port} -sTCP:LISTEN >/dev/null && exit 0; "
+        "/bin/sleep 1; done; /usr/bin/open {command_file} )"
     ).format(
         port=DEFAULT_PORT,
+        domain=user_domain(),
+        label=LABEL,
         command_file=shlex.quote(str(command_file)),
     )
     return {
@@ -137,7 +224,9 @@ def install(port: int, dry_run: bool) -> dict[str, Any]:
     }
     if dry_run:
         result["plist"] = payload
+        result["service_bundle"] = prepare_service_bundle(dry_run=True)
         return result
+    result["service_bundle"] = prepare_service_bundle()
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         plistlib.dump(payload, handle, sort_keys=True)
@@ -199,6 +288,10 @@ def uninstall(dry_run: bool) -> dict[str, Any]:
 
 def status(port: int) -> dict[str, Any]:
     path = plist_path()
+    listener = launchctl(
+        ["/usr/sbin/lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN"]
+    )
+    health = {"ok": listener["ok"], "port_listening": listener["ok"]}
     return {
         "action": "status",
         "dry_run": False,
@@ -208,6 +301,10 @@ def status(port: int) -> dict[str, Any]:
         "opener_path": str(opener_plist_path()),
         "installed": path.exists(),
         "opener_installed": opener_plist_path().exists(),
+        "service_bundle_installed": (SERVICE_ROOT / "scripts" / "ibkr_account_profile.py").exists(),
+        "runtime_shared": (ROOT / "runtime").is_symlink()
+        and (ROOT / "runtime").resolve() == SERVICE_RUNTIME.resolve(),
+        "health": health,
         "url": console_url(port),
         "print": launchctl(["launchctl", "print", f"{user_domain()}/{LABEL}"]),
         "opener_print": launchctl(["launchctl", "print", f"{user_domain()}/{OPENER_LABEL}"]),
@@ -226,6 +323,21 @@ def main(argv: list[str] | None = None) -> int:
         result = status(args.port)
     if args.open and not args.dry_run:
         result["open"] = open_console(args.port)
+    if args.install and not args.dry_run:
+        result["ok"] = bool(
+            result.get("service_bundle", {}).get("runtime_shared")
+            and result.get("bootstrap", {}).get("ok")
+            and result.get("enable", {}).get("ok")
+            and result.get("kickstart", {}).get("ok")
+        )
+    elif args.install_opener_fallback and not args.dry_run:
+        result["ok"] = bool(
+            result.get("bootstrap", {}).get("ok")
+            and result.get("enable", {}).get("ok")
+            and result.get("kickstart", {}).get("ok")
+        )
+    elif not (args.install or args.install_opener_fallback or args.uninstall):
+        result["ok"] = bool(result.get("print", {}).get("ok") and result.get("health", {}).get("ok"))
     result.update(
         {
             "engine": "STOCK_ULTIMUS_LOCAL_CONSOLE_LAUNCHD_INSTALLER",
@@ -235,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     print(json.dumps(result, indent=2, sort_keys=True, default=str))
-    return 0
+    return 0 if result.get("ok", True) else 1
 
 
 if __name__ == "__main__":

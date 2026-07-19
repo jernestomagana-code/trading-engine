@@ -390,28 +390,30 @@ Simplified console alert lanes:
   context, refreshes IBKR/broker data, and verifies production in one RUNNING/DONE
   job. The old single-purpose actions remain under `Avanzado` for fallback use.
 
-No-terminal launcher:
+Permanent no-terminal service:
 
 ```text
 Stock Ultimus Console.command
 ```
 
-Double-click that file from Finder to start the local console and open the
-browser. It is the safest fallback when macOS privacy/TCC prevents launchd from
-binding a localhost port from a background job.
+The installer copies the operational Python bundle to
+`~/Library/Application Support/Stock Ultimus/ConsoleService`, outside the
+macOS `Documents` privacy boundary. The canonical `runtime` is stored beside
+that bundle and the workspace points to it with a symlink, so background and
+manual tools always use the same data. `Stock Ultimus Console.command` first
+tries this permanent service and starts a Terminal-hosted server only as a
+last-resort recovery path.
 
-Optional one-time autostart install:
+One-time autostart install (and the same command after code updates):
 
 ```bash
 python3 scripts/install_stock_ultimus_console_launchd.py --install --open
 python3 scripts/install_stock_ultimus_console_launchd.py --status
 ```
 
-If macOS privacy/TCC blocks the background LaunchAgent from reading the project
-under `~/Documents`, install the opener watchdog fallback instead. It checks
-whether port `8765` is already listening every 60 seconds and opens
-`Stock Ultimus Console.command` only when the port is down. It does not poll the
-full `/console` page, which avoids repeated sessions when remote data is slow:
+Keep the opener watchdog as a secondary recovery layer. It first kickstarts the
+permanent service, waits up to ten seconds and opens `Stock Ultimus
+Console.command` only when the service still does not bind port `8765`:
 
 ```bash
 python3 scripts/install_stock_ultimus_console_launchd.py --install-opener-fallback --open
@@ -425,12 +427,12 @@ or order execution permissions.
 
 Operational flow:
 
-1. Pick the account alias in the local selector.
-2. Click `Refrescar bridge` or run the daily-open action.
-3. The refreshed snapshot publishes only `account_scope` and `account_alias`.
-4. GPT/action payloads use that sanitized account context for the current answer.
-5. Use the console alert panel and protected links to review V32 alerts, email
-   preview, tracking, and the exact GPT payload for the selected context.
+1. Use the sticky navigation for `Hoy`, `Alertas`, `Posiciones` and `Riesgo`.
+2. Open `Cartera`, `Resultados` or `Herramientas` only when deeper work is needed.
+3. Pick the account alias under `Herramientas` when a context change is required.
+4. Click `Refrescar bridge` or run the daily-open action.
+5. The refreshed snapshot publishes only `account_scope` and `account_alias`.
+6. GPT/action payloads use that sanitized account context for the current answer.
 
 If you change accounts without refreshing the bridge/snapshot, GPT still sees the
 previous published account context. Treat a stale or missing `account_context` as

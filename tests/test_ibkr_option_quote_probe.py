@@ -46,7 +46,10 @@ class IbkrOptionQuoteProbeTests(unittest.TestCase):
         }
 
         self.assertIn("readonly=True", source)
+        self.assertIn("execution_authorized", source)
         self.assertIn("not_order_instruction", source)
+        self.assertIn("--json-out", source)
+        self.assertIn('genericTickList="" if snapshot else "100,101,106"', source)
         self.assertNotIn("placeOrder", source)
         self.assertNotIn("whatIfOrder", source)
         self.assertNotIn("ibkr_bridge", imported_modules)

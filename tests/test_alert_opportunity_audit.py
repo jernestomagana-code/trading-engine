@@ -161,6 +161,29 @@ class AlertOpportunityAuditTests(unittest.TestCase):
             self.assertEqual(freshness["recent_unknown_source_decisions"], 0)
             self.assertEqual(freshness["recent_missed_opportunity_review"], [])
 
+    def test_no_source_sentinels_remain_missing_evidence(self):
+        with TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "v32_decision_journal.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "decision_id": "DEC-MISSING-SOURCE",
+                            "ticker": "QQQ",
+                            "strategy": "NAKED_PUT",
+                            "final_state": "NO_DATA",
+                            "candidate_source": "NO_CANDIDATE_SOURCE",
+                            "confirmation_source": "TECHNICAL_SNAPSHOT",
+                        }
+                    ]
+                )
+            )
+
+            payload = alert_opportunity_audit.build_alert_opportunity_audit(runtime)
+
+            self.assertEqual(payload["data_quality"]["missing_candidate_source_decisions"], 1)
+            self.assertEqual(payload["data_quality"]["source_attribution_coverage_pct"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
