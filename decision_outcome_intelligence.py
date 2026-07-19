@@ -21,6 +21,64 @@ def _timestamp(item: dict[str, Any]) -> str:
     return str(item.get("recorded_at") or item.get("decision_generated_at") or item.get("generated_at") or "")
 
 
+def _contract_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
+    return (
+        _upper(item.get("ticker")),
+        _upper(item.get("strategy")),
+        str(contract.get("expiration") or ""),
+        str(contract.get("strike") or ""),
+        _upper(contract.get("right"), ""),
+    )
+
+
+def _parse_time(value: Any) -> datetime | None:
+    text = str(value or "").strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text) if text else None
+    except Exception:
+        return None
+
+
+def link_decisions_to_outcomes(
+    decisions: list[dict[str, Any]], outcomes: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    links: dict[str, dict[str, Any]] = {}
+    used_outcomes: set[int] = set()
+    by_decision = {str(item.get("decision_id")): item for item in outcomes if item.get("decision_id")}
+    by_signal = {str(item.get("signal_id")): item for item in outcomes if item.get("signal_id")}
+    for decision in decisions:
+        decision_id = str(decision.get("decision_id") or "")
+        signal_id = str(decision.get("signal_id") or "")
+        outcome = by_decision.get(decision_id) or by_signal.get(signal_id)
+        if decision_id and outcome is not None and id(outcome) not in used_outcomes:
+            links[decision_id] = outcome
+            used_outcomes.add(id(outcome))
+
+    for outcome in outcomes:
+        if id(outcome) in used_outcomes:
+            continue
+        outcome_time = _parse_time(outcome.get("entry_ready_at") or outcome.get("recorded_at"))
+        if not outcome_time:
+            continue
+        candidates = []
+        for decision in decisions:
+            decision_id = str(decision.get("decision_id") or "")
+            if not decision_id or decision_id in links or _contract_key(decision) != _contract_key(outcome):
+                continue
+            decision_time = _parse_time(_timestamp(decision))
+            if not decision_time:
+                continue
+            delta = abs((decision_time - outcome_time).total_seconds())
+            if delta <= 6 * 60 * 60:
+                candidates.append((delta, decision_time, decision_id))
+        if candidates:
+            _, _, decision_id = min(candidates, key=lambda row: (row[0], -row[1].timestamp()))
+            links[decision_id] = outcome
+            used_outcomes.add(id(outcome))
+    return links
+
+
 def build_intelligence(
     decisions: list[dict[str, Any]],
     outcomes: list[dict[str, Any]],
@@ -35,20 +93,10 @@ def build_intelligence(
         decisions, outcomes, generated_at=generated_at
     )
     summary = performance.get("summary") if isinstance(performance.get("summary"), dict) else {}
-    outcome_by_decision = {
-        str(item.get("decision_id")): item
-        for item in outcomes
-        if item.get("decision_id")
-    }
-    outcome_by_signal = {
-        str(item.get("signal_id")): item
-        for item in outcomes
-        if item.get("signal_id")
-    }
+    outcome_links = link_decisions_to_outcomes(decisions, outcomes)
     def linked_outcome(decision: dict[str, Any]) -> dict[str, Any] | None:
         decision_id = str(decision.get("decision_id") or "")
-        signal_id = str(decision.get("signal_id") or "")
-        return outcome_by_decision.get(decision_id) or outcome_by_signal.get(signal_id)
+        return outcome_links.get(decision_id)
 
     actionable = [item for item in decisions if _upper(item.get("final_state")) in ACTIONABLE_STATES]
     linked_actionable = [item for item in actionable if linked_outcome(item)]

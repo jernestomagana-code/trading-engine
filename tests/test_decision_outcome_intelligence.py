@@ -129,6 +129,24 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
         self.assertNotIn("account_number", saved[0])
         self.assertIn("/v32_decisions?limit=1000", request.call_args.args[0])
 
+    def test_contract_and_entry_time_link_legacy_decision_without_shared_id(self):
+        decisions = [{
+            "decision_id": "LEGACY-D1", "ticker": "SPY", "strategy": "NAKED_PUT",
+            "final_state": "ENTRY_READY", "recorded_at": "2026-06-22T13:55:52+00:00",
+            "selected_contract": {"expiration": "20260731", "strike": 675.0},
+        }]
+        outcomes = [{
+            "signal_id": "SIG-SPY-675", "ticker": "SPY", "strategy": "NAKED_PUT",
+            "outcome": "PENDING", "entry_ready_at": "2026-06-22T13:55:52+00:00",
+            "selected_contract": {"expiration": "20260731", "strike": 675.0},
+        }]
+
+        payload = intelligence.build_intelligence(decisions, outcomes)
+
+        self.assertEqual(payload["linked_actionable_outcome_count"], 1)
+        self.assertEqual(payload["actionable_outcome_coverage_pct"], 100.0)
+        self.assertEqual(payload["recent_decisions"][0]["outcome"], "PENDING")
+
 
 if __name__ == "__main__":
     unittest.main()
