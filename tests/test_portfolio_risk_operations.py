@@ -201,6 +201,90 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
             self.assertGreater(outbox["pending_count"], 0)
             send.assert_not_called()
 
+    def test_five_clean_digest_sessions_unlock_observation_without_enabling_notifications(self):
+        outbox = {
+            "items": [],
+            "pending_count": 0,
+            "sensitive_identifiers_excluded": True,
+            "execution_authorized": False,
+            "automatic_liquidation_authorized": False,
+        }
+        cycle = {
+            "status": "COMPLETED",
+            "local_notifications_enabled": False,
+            "external_notification_sent": False,
+            "execution_authorized": False,
+            "automatic_liquidation_authorized": False,
+        }
+        config = operations.load_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "observation.json"
+            first = operations.record_observation_session(
+                path,
+                tower=self.tower_payload,
+                evaluation=self.evaluation,
+                outbox=outbox,
+                cycle=cycle,
+                config=config,
+                reference=self.now,
+            )
+            repeated = operations.record_observation_session(
+                path,
+                tower=self.tower_payload,
+                evaluation=self.evaluation,
+                outbox=outbox,
+                cycle=cycle,
+                config=config,
+                reference=self.now + timedelta(hours=1),
+            )
+            for offset in range(1, 5):
+                final = operations.record_observation_session(
+                    path,
+                    tower=self.tower_payload,
+                    evaluation=self.evaluation,
+                    outbox=outbox,
+                    cycle=cycle,
+                    config=config,
+                    reference=self.now + timedelta(days=offset),
+                )
+
+        self.assertEqual(first["observed_session_count"], 1)
+        self.assertEqual(repeated["observed_session_count"], 1)
+        self.assertEqual(final["status"], "READY_TO_ENABLE_LOCAL_NOTIFICATIONS")
+        self.assertEqual(final["consecutive_clean_sessions"], 5)
+        self.assertTrue(final["ready_to_enable_local_notifications"])
+        self.assertFalse(final["local_notifications_enabled"])
+
+    def test_weekend_digest_does_not_count_as_observation_session(self):
+        outbox = {
+            "items": [],
+            "pending_count": 0,
+            "sensitive_identifiers_excluded": True,
+            "execution_authorized": False,
+            "automatic_liquidation_authorized": False,
+        }
+        cycle = {
+            "status": "COMPLETED",
+            "local_notifications_enabled": False,
+            "external_notification_sent": False,
+            "execution_authorized": False,
+            "automatic_liquidation_authorized": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = operations.record_observation_session(
+                Path(tmp) / "observation.json",
+                tower=self.tower_payload,
+                evaluation=self.evaluation,
+                outbox=outbox,
+                cycle=cycle,
+                config=operations.load_config(),
+                reference=datetime(2026, 7, 19, 15, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertFalse(result["recorded"])
+        self.assertEqual(result["observed_session_count"], 0)
+        self.assertEqual(result["record_reason"], "NON_TRADING_WEEKDAY")
+
     def test_local_opt_in_delivers_existing_pending_outbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
@@ -249,6 +333,10 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
         self.assertNotIn("TOKEN", encoded.upper())
         self.assertNotIn("PASSWORD", encoded.upper())
         self.assertNotIn("SECRET", encoded.upper())
+        digest = installer.plist_payload(installer.JOBS["digest"])
+        preflight = installer.plist_payload(installer.JOBS["preflight"])
+        self.assertEqual([item["Weekday"] for item in digest["StartCalendarInterval"]], [1, 2, 3, 4, 5])
+        self.assertEqual([item["Weekday"] for item in preflight["StartCalendarInterval"]], [1, 2, 3, 4, 5])
 
     def test_console_bridge_commands_preserve_silent_defaults(self):
         monitor = account_console.portfolio_risk_operations_command("monitor", refresh_broker=True)
@@ -280,6 +368,7 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
                 "PORTFOLIO_RISK_OUTBOX_PATH": account_console.PORTFOLIO_RISK_OUTBOX_PATH,
                 "PORTFOLIO_RISK_OPERATIONS_STATUS_PATH": account_console.PORTFOLIO_RISK_OPERATIONS_STATUS_PATH,
                 "PORTFOLIO_RISK_DIGEST_PATH": account_console.PORTFOLIO_RISK_DIGEST_PATH,
+                "PORTFOLIO_RISK_OBSERVATION_PATH": account_console.PORTFOLIO_RISK_OBSERVATION_PATH,
             }
             account_console.RUNTIME = runtime
             account_console.CONTROL_TOWER_PATH = runtime / "broker_control_tower_latest.json"
@@ -287,6 +376,7 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
             account_console.PORTFOLIO_RISK_OUTBOX_PATH = runtime / "portfolio_risk_outbox.json"
             account_console.PORTFOLIO_RISK_OPERATIONS_STATUS_PATH = runtime / "portfolio_risk_operations_status.json"
             account_console.PORTFOLIO_RISK_DIGEST_PATH = runtime / "portfolio_risk_digest_latest.json"
+            account_console.PORTFOLIO_RISK_OBSERVATION_PATH = runtime / "portfolio_risk_observation.json"
             tower.write_control_tower(account_console.CONTROL_TOWER_PATH, self.tower_payload)
             for alias in ["primary"]:
                 snapshot = tower.account_snapshot(
@@ -297,6 +387,12 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
                 tower.write_snapshot(runtime, snapshot)
             tower.write_control_tower(account_console.PORTFOLIO_RISK_OUTBOX_PATH, {
                 "pending_count": 2, "sensitive_identifiers_excluded": True,
+            })
+            tower.write_control_tower(account_console.PORTFOLIO_RISK_OBSERVATION_PATH, {
+                "status": "OBSERVING",
+                "consecutive_clean_sessions": 2,
+                "remaining_clean_sessions": 3,
+                "target_sessions": 5,
             })
             try:
                 risk_html = account_console.render_portfolio_risk_panel(
@@ -312,6 +408,8 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
         self.assertIn("Silenciar 60 min", risk_html)
         self.assertIn("Operación y mantenimiento", operations_html)
         self.assertIn("Outbox pendiente", operations_html)
+        self.assertIn("Observación", operations_html)
+        self.assertIn("2/5", operations_html)
         self.assertIn("Ejecutar mantenimiento ahora", operations_html)
 
     def test_console_routes_actions_outbox_and_operations(self):

@@ -57,6 +57,7 @@ PORTFOLIO_RISK_ACTIONS_PATH = RUNTIME / "portfolio_risk_actions.json"
 PORTFOLIO_RISK_OUTBOX_PATH = RUNTIME / "portfolio_risk_outbox.json"
 PORTFOLIO_RISK_OPERATIONS_STATUS_PATH = RUNTIME / "portfolio_risk_operations_status.json"
 PORTFOLIO_RISK_DIGEST_PATH = RUNTIME / "portfolio_risk_digest_latest.json"
+PORTFOLIO_RISK_OBSERVATION_PATH = RUNTIME / "portfolio_risk_observation.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -4665,6 +4666,7 @@ def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
     digest = shared_risk_operations.load_json(PORTFOLIO_RISK_DIGEST_PATH)
+    observation = shared_risk_operations.load_json(PORTFOLIO_RISK_OBSERVATION_PATH)
     actions = shared_risk_operations.load_json(PORTFOLIO_RISK_ACTIONS_PATH)
     action_rows = actions.get("actions") if isinstance(actions.get("actions"), dict) else {}
     installed_jobs = sum(
@@ -4687,8 +4689,9 @@ def render_portfolio_operations_panel() -> str:
         <div><span>Outbox pendiente</span><strong>{pending}</strong></div>
         <div><span>Acciones humanas</span><strong>{actions}</strong></div>
         <div><span>Digest</span><strong>{digest}</strong></div>
+        <div><span>Observación</span><strong>{observed}/{target}</strong></div>
       </div>
-      <p class="muted">Notificación local: {local_notify} · notificación externa: DESACTIVADA · jobs instalados {installed}/3.</p>
+      <p class="muted">Notificación local: {local_notify} · notificación externa: DESACTIVADA · jobs instalados {installed}/3 · calibración: {observation_status} · faltan {remaining} sesiones limpias.</p>
       <div class="actions">
         <form method="post" action="/portfolio-risk-operations-run" data-busy="Ejecutando mantenimiento de riesgo" data-busy-detail="Reevalúa, actualiza outbox y digest sin consultar ni operar el broker.">
           <button>Ejecutar mantenimiento ahora</button>
@@ -4701,6 +4704,10 @@ def render_portfolio_operations_panel() -> str:
         pending=html_escape(outbox.get("pending_count") or 0),
         actions=html_escape(len(action_rows)),
         digest=html_escape("LISTO" if digest.get("digest_version") else "PENDIENTE"),
+        observed=html_escape(observation.get("consecutive_clean_sessions") or 0),
+        target=html_escape(observation.get("target_sessions") or 5),
+        observation_status=html_escape(observation.get("status") or "OBSERVING"),
+        remaining=html_escape(observation.get("remaining_clean_sessions") if observation.get("remaining_clean_sessions") is not None else 5),
         local_notify=html_escape("ACTIVA" if status.get("local_notifications_enabled") else "INACTIVA"),
         installed=html_escape(installed_jobs),
     )

@@ -18,5 +18,6 @@
     "HIGH": 60
   },
   "outbox_max_items": 500,
-  "local_notifications_enabled": false
+  "local_notifications_enabled": false,
+  "observation_target_sessions": 5
 }

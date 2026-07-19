@@ -29,6 +29,8 @@ Mantener las notificaciones apagadas durante cinco sesiones hábiles. Revisar ca
 6. que los artefactos sigan excluyendo identificadores reales y secretos;
 7. que ninguna ruta autorice órdenes o liquidaciones.
 
+El digest de lunes a viernes registra estas comprobaciones de manera idempotente en `runtime/portfolio_risk_observation.json`. Una repetición del mismo día reemplaza la sesión en vez de aumentar el contador. Los fines de semana no se programan y tampoco cuentan si el digest se ejecuta manualmente. El archivo sólo cambia a `READY_TO_ENABLE_LOCAL_NOTIFICATIONS` cuando las últimas cinco sesiones registradas son limpias; la activación sigue requiriendo una decisión humana explícita.
+
 ## Criterio para activar avisos locales
 
 Activarlos sólo después de cinco sesiones limpias, sin falsos positivos críticos, sin duplicados y con horarios correctos. La activación es explícita:

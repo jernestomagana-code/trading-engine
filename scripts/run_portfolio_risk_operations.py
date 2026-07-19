@@ -208,6 +208,23 @@ def run_cycle(args: argparse.Namespace, *, reference: datetime | None = None) ->
         "automatic_liquidation_authorized": False,
         "not_order_instruction": True,
     }
+    if args.mode == "digest":
+        observation = operations.record_observation_session(
+            runtime_dir / "portfolio_risk_observation.json",
+            tower=operations.load_json(runtime_dir / "broker_control_tower_latest.json"),
+            evaluation=decorated,
+            outbox=outbox,
+            cycle=result,
+            config=config,
+            reference=reference,
+        )
+        result["observation"] = {
+            "status": observation.get("status"),
+            "observed_session_count": observation.get("observed_session_count"),
+            "consecutive_clean_sessions": observation.get("consecutive_clean_sessions"),
+            "remaining_clean_sessions": observation.get("remaining_clean_sessions"),
+            "ready_to_enable_local_notifications": observation.get("ready_to_enable_local_notifications"),
+        }
     control_tower.write_control_tower(status_path, result)
     return result
 

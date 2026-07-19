@@ -34,13 +34,19 @@ JOBS = {
     "digest": {
         "label": "com.stockultimus.portfolio-risk-digest",
         "args": ["--mode", "digest"],
-        "calendar": {"Hour": 17, "Minute": 35},
+        "calendar": [
+            {"Weekday": day, "Hour": 17, "Minute": 35}
+            for day in range(1, 6)
+        ],
         "description": "Builds the daily local risk digest after the monitoring window.",
     },
     "preflight": {
         "label": "com.stockultimus.portfolio-risk-preflight",
         "args": ["--mode", "preflight"],
-        "calendar": {"Hour": 7, "Minute": 0},
+        "calendar": [
+            {"Weekday": day, "Hour": 7, "Minute": 0}
+            for day in range(1, 6)
+        ],
         "description": "Checks policy, snapshots, lifecycle, and outbox before monitoring starts.",
     },
 }
@@ -74,7 +80,12 @@ def plist_payload(job: dict[str, Any], enable_local_notifications: bool = False)
     if job.get("start_interval"):
         payload["StartInterval"] = int(job["start_interval"])
     if job.get("calendar"):
-        payload["StartCalendarInterval"] = dict(job["calendar"])
+        calendar = job["calendar"]
+        payload["StartCalendarInterval"] = (
+            [dict(item) for item in calendar]
+            if isinstance(calendar, list)
+            else dict(calendar)
+        )
     return payload
 
 

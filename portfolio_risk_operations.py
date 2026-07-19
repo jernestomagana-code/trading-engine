@@ -14,6 +14,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import broker_control_tower as control_tower
 
@@ -21,6 +22,7 @@ import broker_control_tower as control_tower
 OPERATIONS_VERSION = "stock_ultimus_portfolio_risk_operations_v1"
 ACTIONS_VERSION = "stock_ultimus_portfolio_risk_actions_v1"
 OUTBOX_VERSION = "stock_ultimus_portfolio_risk_outbox_v1"
+OBSERVATION_VERSION = "stock_ultimus_portfolio_risk_observation_v1"
 VALID_ACTIONS = {"ACKNOWLEDGE", "SNOOZE", "REOPEN"}
 DEFAULT_CONFIG: dict[str, Any] = {
     "operations_version": OPERATIONS_VERSION,
@@ -34,6 +36,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "escalation_minutes": {"CRITICAL": 15, "HIGH": 60},
     "outbox_max_items": 500,
     "local_notifications_enabled": False,
+    "observation_target_sessions": 5,
 }
 
 
@@ -311,6 +314,129 @@ def mark_outbox_delivery(outbox: dict[str, Any], message_ids: set[str], *, refer
             item["delivered_channel"] = "MACOS_NOTIFICATION_CENTER"
     result["updated_at"] = reference.isoformat()
     result["pending_count"] = sum(1 for item in (result.get("items") or []) if item.get("status") == "PENDING")
+    return result
+
+
+def record_observation_session(
+    path: Path,
+    *,
+    tower: dict[str, Any],
+    evaluation: dict[str, Any],
+    outbox: dict[str, Any],
+    cycle: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    reference: datetime | None = None,
+) -> dict[str, Any]:
+    """Record one idempotent weekday observation for notification calibration."""
+    reference = reference or datetime.now(timezone.utc)
+    config = config or DEFAULT_CONFIG
+    try:
+        local = reference.astimezone(ZoneInfo(str(config.get("timezone") or "America/New_York")))
+    except Exception:
+        local = reference.astimezone(timezone.utc)
+    target = max(1, int(config.get("observation_target_sessions") or 5))
+    previous = load_json(path)
+    sessions = [item for item in (previous.get("sessions") or []) if isinstance(item, dict)]
+    if local.weekday() >= 5:
+        result = dict(previous) if previous else {
+            "observation_version": OBSERVATION_VERSION,
+            "sessions": sessions,
+        }
+        result.update({
+            "updated_at": reference.isoformat(),
+            "status": result.get("status") or "OBSERVING",
+            "recorded": False,
+            "record_reason": "NON_TRADING_WEEKDAY",
+            "target_sessions": target,
+            "observed_session_count": len(sessions),
+            "consecutive_clean_sessions": int(result.get("consecutive_clean_sessions") or 0),
+            "remaining_clean_sessions": max(0, target - int(result.get("consecutive_clean_sessions") or 0)),
+            "ready_to_enable_local_notifications": False,
+            "local_notifications_enabled": False,
+            "external_notifications_enabled": False,
+            "execution_authorized": False,
+            "automatic_liquidation_authorized": False,
+            "not_order_instruction": True,
+        })
+        control_tower.write_control_tower(path, result)
+        return result
+
+    pending = [item for item in (outbox.get("items") or []) if isinstance(item, dict) and item.get("status") == "PENDING"]
+    pending_keys = [
+        (str(item.get("alert_id") or ""), str(item.get("severity") or ""), str(item.get("notification_type") or ""))
+        for item in pending
+    ]
+    account_count = int(tower.get("account_count") or 0)
+    checks = {
+        "cycle_completed": cycle.get("status") == "COMPLETED",
+        "control_tower_ready": tower.get("status") == "READY",
+        "all_accounts_ready": account_count > 0 and int(tower.get("ready_account_count") or 0) == account_count,
+        "no_failed_accounts": int(tower.get("failed_account_count") or 0) == 0,
+        "no_stale_accounts": int(tower.get("stale_account_count") or 0) == 0,
+        "no_pending_duplicates": len(pending_keys) == len(set(pending_keys)),
+        "sensitive_identifiers_excluded": bool(
+            tower.get("sensitive_identifiers_excluded")
+            and evaluation.get("sensitive_identifiers_excluded")
+            and outbox.get("sensitive_identifiers_excluded")
+        ),
+        "execution_disabled": not bool(
+            tower.get("execution_authorized")
+            or evaluation.get("execution_authorized")
+            or outbox.get("execution_authorized")
+            or cycle.get("execution_authorized")
+        ),
+        "automatic_liquidation_disabled": not bool(
+            evaluation.get("automatic_liquidation_authorized")
+            or outbox.get("automatic_liquidation_authorized")
+            or cycle.get("automatic_liquidation_authorized")
+        ),
+        "notifications_disabled": not bool(
+            cycle.get("local_notifications_enabled") or cycle.get("external_notification_sent")
+        ),
+    }
+    session_date = local.date().isoformat()
+    session = {
+        "session_date": session_date,
+        "recorded_at": reference.isoformat(),
+        "clean": all(checks.values()),
+        "checks": checks,
+        "account_count": account_count,
+        "risk_status": evaluation.get("status"),
+        "risk_score": evaluation.get("risk_score"),
+        "pending_outbox_count": int(outbox.get("pending_count") or 0),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    sessions = [item for item in sessions if item.get("session_date") != session_date]
+    sessions.append(session)
+    sessions = sorted(sessions, key=lambda item: str(item.get("session_date") or ""))[-30:]
+    latest = sessions[-target:]
+    ready = len(latest) >= target and all(item.get("clean") for item in latest)
+    consecutive_clean = 0
+    for item in reversed(sessions):
+        if not item.get("clean"):
+            break
+        consecutive_clean += 1
+    result = {
+        "observation_version": OBSERVATION_VERSION,
+        "updated_at": reference.isoformat(),
+        "status": "READY_TO_ENABLE_LOCAL_NOTIFICATIONS" if ready else "OBSERVING",
+        "recorded": True,
+        "record_reason": "WEEKDAY_DIGEST",
+        "target_sessions": target,
+        "observed_session_count": len(sessions),
+        "consecutive_clean_sessions": consecutive_clean,
+        "remaining_clean_sessions": max(0, target - consecutive_clean),
+        "ready_to_enable_local_notifications": ready,
+        "sessions": sessions,
+        "local_notifications_enabled": False,
+        "external_notifications_enabled": False,
+        "sensitive_identifiers_excluded": True,
+        "execution_authorized": False,
+        "automatic_liquidation_authorized": False,
+        "not_order_instruction": True,
+    }
+    control_tower.write_control_tower(path, result)
     return result
 
 
