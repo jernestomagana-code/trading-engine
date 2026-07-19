@@ -16,6 +16,7 @@ import broker_control_tower as control_tower
 import portfolio_risk_engine as risk_engine
 import portfolio_risk_store as risk_store
 import portfolio_stress_engine as stress_engine
+import portfolio_factor_engine as factor_engine
 from brokers.ibkr_readonly import IBKRReadOnlyAdapter
 from scripts import ibkr_account_profile as profiles
 
@@ -41,8 +42,11 @@ def main() -> int:
     parser.add_argument("--risk-history-out", default="runtime/portfolio_risk_history.json")
     parser.add_argument("--stress-policy", default="config/portfolio_stress_policy.json")
     parser.add_argument("--stress-json-out", default="runtime/portfolio_stress_latest.json")
+    parser.add_argument("--factor-policy", default="config/portfolio_factor_policy.json")
+    parser.add_argument("--factor-json-out", default="runtime/portfolio_factor_latest.json")
     parser.add_argument("--skip-risk-evaluation", action="store_true")
     parser.add_argument("--skip-stress-evaluation", action="store_true")
+    parser.add_argument("--skip-factor-evaluation", action="store_true")
     args = parser.parse_args()
 
     runtime_dir = rooted_path(args.runtime_dir)
@@ -106,6 +110,11 @@ def main() -> int:
         stress_policy = stress_engine.load_policy(rooted_path(args.stress_policy))
         stress_evaluation = stress_engine.evaluate(payload, stress_policy)
         stress_engine.write_result(rooted_path(args.stress_json_out), stress_evaluation)
+    factor_evaluation = {}
+    if not args.skip_factor_evaluation:
+        factor_policy = factor_engine.load_policy(rooted_path(args.factor_policy))
+        factor_evaluation = factor_engine.evaluate(payload, factor_policy)
+        factor_engine.write_result(rooted_path(args.factor_json_out), factor_evaluation)
     print(json.dumps({
         "status": payload.get("status"),
         "account_count": payload.get("account_count"),
@@ -121,6 +130,9 @@ def main() -> int:
         "stress_status": stress_evaluation.get("status") or "SKIPPED",
         "stress_worst_scenario_id": stress_evaluation.get("worst_scenario_id"),
         "stress_worst_loss_nav_ratio": stress_evaluation.get("worst_loss_nav_ratio"),
+        "factor_status": factor_evaluation.get("status") or "SKIPPED",
+        "factor_history_coverage_ratio": factor_evaluation.get("history_coverage_ratio"),
+        "factor_greeks_coverage_ratio": factor_evaluation.get("greeks_coverage_ratio"),
         "sensitive_identifiers_excluded": True,
         "execution_authorized": False,
         "not_order_instruction": True,

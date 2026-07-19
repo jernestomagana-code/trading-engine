@@ -1,0 +1,29 @@
+{
+  "policy_version": "stock_ultimus_portfolio_factor_policy_v1",
+  "minimum_history_bars": 30,
+  "minimum_history_coverage_ratio": 0.80,
+  "minimum_greeks_coverage_ratio": 0.80,
+  "high_correlation_threshold": 0.75,
+  "dominant_factor_threshold": 0.50,
+  "annualized_volatility_watch": 0.25,
+  "annualized_volatility_high": 0.40,
+  "ticker_factors": {
+    "SPY": {"asset_class": "EQUITY", "style": "BROAD_MARKET", "sector": "DIVERSIFIED", "macro": "GROWTH"},
+    "QQQ": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "TECH_HEAVY", "macro": "GROWTH"},
+    "RSP": {"asset_class": "EQUITY", "style": "EQUAL_WEIGHT", "sector": "DIVERSIFIED", "macro": "GROWTH"},
+    "NFLX": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "COMMUNICATION_SERVICES", "macro": "GROWTH"},
+    "MSFT": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "TECHNOLOGY", "macro": "GROWTH"},
+    "AAPL": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "TECHNOLOGY", "macro": "GROWTH"},
+    "NVDA": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "TECHNOLOGY", "macro": "GROWTH"},
+    "TSLA": {"asset_class": "EQUITY", "style": "GROWTH", "sector": "CONSUMER_DISCRETIONARY", "macro": "GROWTH"},
+    "TLT": {"asset_class": "FIXED_INCOME", "style": "LONG_DURATION", "sector": "US_TREASURY", "macro": "RATES_DURATION"},
+    "IEF": {"asset_class": "FIXED_INCOME", "style": "INTERMEDIATE_DURATION", "sector": "US_TREASURY", "macro": "RATES_DURATION"},
+    "GLD": {"asset_class": "COMMODITY", "style": "DEFENSIVE", "sector": "PRECIOUS_METALS", "macro": "INFLATION"},
+    "IBIT": {"asset_class": "CRYPTO", "style": "ALTERNATIVE", "sector": "DIGITAL_ASSET", "macro": "LIQUIDITY"}
+  },
+  "default_factors": {
+    "STK": {"asset_class": "EQUITY", "style": "UNCLASSIFIED", "sector": "UNCLASSIFIED", "macro": "GROWTH"},
+    "OPT": {"asset_class": "DERIVATIVE", "style": "OPTION", "sector": "UNCLASSIFIED", "macro": "UNCLASSIFIED"},
+    "FOP": {"asset_class": "DERIVATIVE", "style": "OPTION", "sector": "UNCLASSIFIED", "macro": "UNCLASSIFIED"}
+  }
+}

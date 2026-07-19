@@ -107,6 +107,97 @@ class IBKRReadOnlyAdapter:
             })
         return clean
 
+    @staticmethod
+    def _position_key(position: dict[str, Any]) -> tuple[str, str, str, str, str]:
+        return (
+            str(position.get("ticker") or "UNKNOWN").upper(),
+            str(position.get("security_type") or "UNKNOWN").upper(),
+            str(position.get("expiration") or ""),
+            str(control_tower.safe_float(position.get("strike")) or 0),
+            str(position.get("right") or "").upper(),
+        )
+
+    @staticmethod
+    def _contract_key(contract: Any) -> tuple[str, str, str, str, str]:
+        return (
+            str(getattr(contract, "symbol", None) or getattr(contract, "localSymbol", None) or "UNKNOWN").upper(),
+            str(getattr(contract, "secType", None) or "UNKNOWN").upper(),
+            str(getattr(contract, "lastTradeDateOrContractMonth", None) or ""),
+            str(control_tower.safe_float(getattr(contract, "strike", None)) or 0),
+            str(getattr(contract, "right", None) or "").upper(),
+        )
+
+    @staticmethod
+    def _option_greeks(ticker: Any) -> dict[str, float | None]:
+        greeks = (
+            getattr(ticker, "modelGreeks", None)
+            or getattr(ticker, "bidGreeks", None)
+            or getattr(ticker, "askGreeks", None)
+            or getattr(ticker, "lastGreeks", None)
+        )
+        return {
+            "implied_volatility": control_tower.safe_float(getattr(greeks, "impliedVol", None)),
+            "delta": control_tower.safe_float(getattr(greeks, "delta", None)),
+            "gamma": control_tower.safe_float(getattr(greeks, "gamma", None)),
+            "theta": control_tower.safe_float(getattr(greeks, "theta", None)),
+            "vega": control_tower.safe_float(getattr(greeks, "vega", None)),
+        }
+
+    @staticmethod
+    def _historical_closes(ib: Any, contract: Any) -> list[float]:
+        try:
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr="6 M",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+                keepUpToDate=False,
+            )
+        except Exception:
+            return []
+        values = []
+        for bar in (bars or [])[-130:]:
+            close = control_tower.safe_float(getattr(bar, "close", None))
+            if close is not None and close > 0:
+                values.append(close)
+        return values
+
+    @classmethod
+    def _enrich_positions(
+        cls,
+        ib: Any,
+        clean: list[dict[str, Any]],
+        contracts: dict[tuple[str, str, str, str, str], Any],
+        history_cache: dict[str, list[float]],
+    ) -> list[dict[str, Any]]:
+        try:
+            from ib_insync import Stock
+        except Exception:
+            Stock = None
+        for position in clean:
+            key = cls._position_key(position)
+            contract = contracts.get(key)
+            ticker = key[0]
+            if ticker not in history_cache:
+                history_contract = contract
+                if key[1] in {"OPT", "FOP"} and Stock is not None:
+                    history_contract = Stock(ticker, "SMART", str(position.get("currency") or "USD"))
+                history_cache[ticker] = cls._historical_closes(ib, history_contract) if history_contract is not None else []
+            position["historical_closes"] = list(history_cache.get(ticker) or [])
+            if key[1] not in {"OPT", "FOP"} or contract is None:
+                continue
+            try:
+                quote_rows = ib.reqTickers(contract)
+                quote = quote_rows[0] if quote_rows else None
+                if quote is not None:
+                    position.update(cls._option_greeks(quote))
+            except Exception:
+                pass
+        return clean
+
     def collect(self, accounts: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
         try:
             from ib_insync import IB
@@ -129,6 +220,7 @@ class IBKRReadOnlyAdapter:
             summary = list(ib.accountSummary() or [])
             positions = list(ib.positions() or [])
             output = {}
+            history_cache: dict[str, list[float]] = {}
             for item in accounts:
                 alias = item["account_alias"]
                 account_id = item["account_id"]
@@ -155,15 +247,23 @@ class IBKRReadOnlyAdapter:
                         ib.client.reqAccountUpdates(False, account_id)
                     except Exception:
                         pass
+                source_rows = portfolio_rows or [row for row in positions if str(getattr(row, "account", "") or "").strip() == account_id]
+                contracts = {
+                    self._contract_key(getattr(row, "contract", None)): getattr(row, "contract", None)
+                    for row in source_rows
+                    if getattr(row, "contract", None) is not None
+                }
+                clean_positions = (
+                    self._portfolio_positions(portfolio_rows, account_id)
+                    or self._positions(positions, account_id)
+                )
+                clean_positions = self._enrich_positions(ib, clean_positions, contracts, history_cache)
                 output[alias] = control_tower.account_snapshot(
                     broker=self.broker,
                     alias=alias,
                     scope=item["account_scope"],
                     capacity=self._summary_capacity(summary, account_id),
-                    positions=(
-                        self._portfolio_positions(portfolio_rows, account_id)
-                        or self._positions(positions, account_id)
-                    ),
+                    positions=clean_positions,
                 )
             return output
         except Exception as exc:

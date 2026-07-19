@@ -145,6 +145,15 @@ def account_snapshot(
             "market_price": safe_float(item.get("market_price")),
             "market_value": safe_float(item.get("market_value")),
             "unrealized_pl": safe_float(item.get("unrealized_pl") or item.get("unrealized_pnl")),
+            "implied_volatility": safe_float(item.get("implied_volatility") or item.get("iv")),
+            "delta": safe_float(item.get("delta")),
+            "gamma": safe_float(item.get("gamma")),
+            "theta": safe_float(item.get("theta")),
+            "vega": safe_float(item.get("vega")),
+            "historical_closes": [
+                value for value in (safe_float(raw) for raw in (item.get("historical_closes") or [])[-130:])
+                if value is not None
+            ],
         })
     ready = status == "READY" and any(value is not None for value in clean_capacity.values())
     effective_status = "READY" if ready else ("CAPACITY_UNAVAILABLE" if status == "READY" else status)

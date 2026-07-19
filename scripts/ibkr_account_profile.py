@@ -34,6 +34,7 @@ import gamma_context_store as shared_gamma_context_store
 import portfolio_risk_engine as shared_portfolio_risk
 import portfolio_risk_operations as shared_risk_operations
 import portfolio_stress_engine as shared_portfolio_stress
+import portfolio_factor_engine as shared_portfolio_factors
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -61,6 +62,8 @@ PORTFOLIO_RISK_DIGEST_PATH = RUNTIME / "portfolio_risk_digest_latest.json"
 PORTFOLIO_RISK_OBSERVATION_PATH = RUNTIME / "portfolio_risk_observation.json"
 PORTFOLIO_STRESS_PATH = RUNTIME / "portfolio_stress_latest.json"
 PORTFOLIO_STRESS_POLICY_PATH = ROOT / "config" / "portfolio_stress_policy.json"
+PORTFOLIO_FACTOR_PATH = RUNTIME / "portfolio_factor_latest.json"
+PORTFOLIO_FACTOR_POLICY_PATH = ROOT / "config" / "portfolio_factor_policy.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -805,6 +808,15 @@ def portfolio_stress_refresh_command() -> list[str]:
         "scripts/evaluate_portfolio_stress.py",
         "--json-out",
         "runtime/portfolio_stress_latest.json",
+    ]
+
+
+def portfolio_factor_refresh_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/evaluate_portfolio_factors.py",
+        "--json-out",
+        "runtime/portfolio_factor_latest.json",
     ]
 
 
@@ -4752,6 +4764,107 @@ def render_portfolio_stress_panel(profiles: dict[str, Any], active: dict[str, An
         warnings=html_escape(warnings),
         action=action,
     )
+
+
+def load_portfolio_factors(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
+    tower = load_control_tower(profiles, active)
+    policy = shared_portfolio_factors.load_policy(PORTFOLIO_FACTOR_POLICY_PATH)
+    return shared_portfolio_factors.evaluate(tower, policy)
+
+
+def render_portfolio_factor_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_portfolio_factors(profiles, active)
+    historical = payload.get("historical_risk") if isinstance(payload.get("historical_risk"), dict) else {}
+    greeks = payload.get("option_greeks") if isinstance(payload.get("option_greeks"), dict) else {}
+    factor_cards = []
+    for group in payload.get("factor_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        leaders = group.get("factors") if isinstance(group.get("factors"), list) else []
+        top = leaders[0] if leaders and isinstance(leaders[0], dict) else {}
+        factor_cards.append("""
+          <article class="scenario-card">
+            <div class="scenario-head"><strong>{group}</strong><span>{share}</span></div>
+            <h3>{label}</h3>
+            <p class="muted">Exposición neta {exposure} · {dominant}</p>
+          </article>
+        """.format(
+            group=html_escape(str(group.get("group") or "factor").replace("_", " ").title()),
+            share=html_escape(_tower_percent(top.get("gross_share"))),
+            label=html_escape(top.get("label") or "N/D"),
+            exposure=html_escape(_tower_money(top.get("signed_exposure"))),
+            dominant="factor dominante" if group.get("dominant") else "diversificado",
+        ))
+    correlation_rows = []
+    for row in (payload.get("correlations") or [])[:6]:
+        if not isinstance(row, dict):
+            continue
+        correlation_rows.append("<li><strong>{left} / {right}</strong><span>{value} · {state}</span></li>".format(
+            left=html_escape(row.get("left") or ""),
+            right=html_escape(row.get("right") or ""),
+            value=html_escape("{:.2f}".format(console_float_or_none(row.get("correlation")) or 0)),
+            state="alta" if row.get("high_correlation") else "normal",
+        ))
+    warnings = ", ".join(payload.get("warnings") or []) or "ninguna"
+    alias = active.get("account_alias") or next(iter(profiles or {}), "")
+    action = (
+        '<form method="post" action="/portfolio-factor-refresh" data-busy="Actualizando inteligencia de cartera" '
+        'data-busy-detail="Recalcula factores, historia, correlaciones y Greeks sin operar el broker.">'
+        f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
+        '<button>Recalcular inteligencia</button></form>'
+        if alias else ""
+    )
+    return """
+    <section class="panel portfolio-factors status-{status_class}">
+      <div class="section-head">
+        <div><h2>Inteligencia avanzada de cartera</h2><p>Factores, comportamiento histórico, correlaciones y opciones.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Historia cubierta</span><strong>{history_coverage}</strong></div>
+        <div><span>Greeks cubiertos</span><strong>{greeks_coverage}</strong></div>
+        <div><span>Volatilidad anual</span><strong>{volatility}</strong></div>
+        <div><span>Pérdida cola 95%</span><strong>{tail_loss}</strong></div>
+        <div><span>Correlaciones altas</span><strong>{high_corr}</strong></div>
+      </div>
+      <div class="scenario-grid">{factor_cards}</div>
+      <div class="scenario-grid">
+        <article class="scenario-card">
+          <h3>Greeks agregados</h3>
+          <div class="scenario-lines">
+            <div><span>Dollar delta</span><strong>{dollar_delta}</strong></div>
+            <div><span>Theta diario</span><strong>{theta}</strong></div>
+            <div><span>Vega / punto</span><strong>{vega}</strong></div>
+            <div><span>Gamma P&amp;L 1%</span><strong>{gamma}</strong></div>
+          </div>
+        </article>
+        <article class="scenario-card">
+          <h3>Correlaciones principales</h3>
+          <ul class="factor-correlation-list">{correlations}</ul>
+        </article>
+      </div>
+      <p class="muted">Advertencias: {warnings}. Sensibilidad histórica, no pronóstico. Sin órdenes ni liquidación automática.</p>
+      <div class="actions">{action}</div>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "blocked").lower()),
+        status=html_escape(payload.get("status") or "BLOCKED"),
+        history_coverage=html_escape(_tower_percent(payload.get("history_coverage_ratio"))),
+        greeks_coverage=html_escape(_tower_percent(payload.get("greeks_coverage_ratio"))),
+        volatility=html_escape(_tower_percent(historical.get("annualized_volatility"))),
+        tail_loss=html_escape(_tower_money(historical.get("estimated_tail_loss_dollars"))),
+        high_corr=html_escape(payload.get("high_correlation_pair_count") or 0),
+        factor_cards="".join(factor_cards) or '<p class="empty">Sin factores valorables.</p>',
+        dollar_delta=html_escape(_tower_money(greeks.get("dollar_delta"))),
+        theta=html_escape(_tower_money(greeks.get("theta_daily"))),
+        vega=html_escape(_tower_money(greeks.get("vega_per_vol_point"))),
+        gamma=html_escape(_tower_money(greeks.get("gamma_pnl_1pct"))),
+        correlations="".join(correlation_rows) or '<li><span>Sin pares suficientes.</span></li>',
+        warnings=html_escape(warnings),
+        action=action,
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5263,6 +5376,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {control_tower}
           {portfolio_risk}
           {portfolio_stress}
+          {portfolio_factors}
           {portfolio_operations}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
@@ -5396,6 +5510,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         control_tower=render_control_tower_panel(profiles, active),
         portfolio_risk=render_portfolio_risk_panel(profiles, active),
         portfolio_stress=render_portfolio_stress_panel(profiles, active),
+        portfolio_factors=render_portfolio_factor_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
@@ -5491,6 +5606,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_portfolio_stress(profile_map, active_profile()))
             return
+        if path == "/portfolio-factors":
+            profile_data = load_profiles()
+            profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+            self.send_json(load_portfolio_factors(profile_map, active_profile()))
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -5510,6 +5630,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/control-tower",
             "/portfolio-risk",
             "/portfolio-stress",
+            "/portfolio-factors",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -5589,6 +5710,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(selected_alias, portfolio_stress_refresh_command(), "Estrés multicuenta")
                 self.send_html(
                     "Cálculo de estrés iniciado sobre snapshots sanitizados. No transmite ni ejecuta órdenes.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-factor-refresh":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(selected_alias, portfolio_factor_refresh_command(), "Inteligencia avanzada de cartera")
+                self.send_html(
+                    "Análisis avanzado iniciado sobre datos sanitizados. No transmite ni ejecuta órdenes.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-operations-run":
