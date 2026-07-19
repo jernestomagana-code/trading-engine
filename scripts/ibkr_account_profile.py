@@ -31,6 +31,7 @@ import alert_lifecycle as shared_alert_lifecycle
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
 import gamma_context_store as shared_gamma_context_store
+import portfolio_risk_engine as shared_portfolio_risk
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -48,6 +49,9 @@ GAMMA_CONTEXTS_PATH = RUNTIME / "gamma_contexts.json"
 POSITION_STATE_ALERTS_PATH = RUNTIME / "active_position_state_alerts.json"
 ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
 CONTROL_TOWER_PATH = RUNTIME / "broker_control_tower_latest.json"
+PORTFOLIO_RISK_PATH = RUNTIME / "portfolio_risk_latest.json"
+PORTFOLIO_RISK_HISTORY_PATH = RUNTIME / "portfolio_risk_history.json"
+PORTFOLIO_RISK_POLICY_PATH = ROOT / "config" / "portfolio_risk_policy.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -772,6 +776,17 @@ def control_tower_refresh_command() -> list[str]:
         "scripts/refresh_multi_account_control_tower.py",
         "--json-out",
         "runtime/broker_control_tower_latest.json",
+    ]
+
+
+def portfolio_risk_refresh_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/evaluate_portfolio_risk.py",
+        "--json-out",
+        "runtime/portfolio_risk_latest.json",
+        "--history-out",
+        "runtime/portfolio_risk_history.json",
     ]
 
 
@@ -4512,6 +4527,91 @@ def render_control_tower_panel(profiles: dict[str, Any], active: dict[str, Any])
     )
 
 
+def load_portfolio_risk(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
+    tower = load_control_tower(profiles, active)
+    policy = shared_portfolio_risk.load_policy(PORTFOLIO_RISK_POLICY_PATH)
+    return shared_portfolio_risk.evaluate(tower, policy)
+
+
+def _tower_percent(value: Any) -> str:
+    parsed = console_float_or_none(value)
+    return "N/D" if parsed is None else "{:.1f}%".format(parsed * 100)
+
+
+def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_portfolio_risk(profiles, active)
+    counts = payload.get("alert_counts") if isinstance(payload.get("alert_counts"), dict) else {}
+    alert_rows = []
+    for alert in (payload.get("alerts") or [])[:10]:
+        if not isinstance(alert, dict):
+            continue
+        metric = str(alert.get("metric") or "")
+        value = alert.get("value")
+        threshold = alert.get("threshold")
+        ratio_metric = metric.endswith("_ratio") or metric == "account_nav_share"
+        value_label = _tower_percent(value) if ratio_metric else ("N/D" if value is None else str(value))
+        threshold_label = _tower_percent(threshold) if ratio_metric else ("N/D" if threshold is None else str(threshold))
+        alert_rows.append(
+            """
+            <article class="risk-alert severity-{severity_class}">
+              <div class="risk-alert-title"><strong>{severity}</strong><span>{account}</span></div>
+              <h3>{title}</h3>
+              <p>{message}</p>
+              <p class="muted">Métrica: {metric} · valor {value} · límite {threshold}</p>
+              <p><strong>Siguiente paso:</strong> {action}</p>
+            </article>
+            """.format(
+                severity_class=html_escape(str(alert.get("severity") or "watch").lower()),
+                severity=html_escape(alert.get("severity") or "WATCH"),
+                account=html_escape(alert.get("account_alias") or alert.get("scope") or "SISTEMA"),
+                title=html_escape(alert.get("title") or alert.get("rule") or "Alerta de riesgo"),
+                message=html_escape(alert.get("message") or ""),
+                metric=html_escape(metric or "N/D"),
+                value=html_escape(value_label),
+                threshold=html_escape(threshold_label),
+                action=html_escape(alert.get("recommended_action") or "Revisión manual."),
+            )
+        )
+    if not alert_rows:
+        alert_rows.append('<p class="empty">Sin alertas de cartera bajo la política vigente.</p>')
+    alias = active.get("account_alias") or next(iter(profiles or {}), "")
+    action = (
+        '<form method="post" action="/portfolio-risk-refresh" data-busy="Reevaluando riesgo" '
+        'data-busy-detail="Aplica la política a los snapshots sanitizados; no transmite ni ejecuta órdenes.">'
+        f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
+        '<button>Reevaluar riesgo</button></form>'
+        if alias else ""
+    )
+    return """
+    <section class="panel portfolio-risk status-{status_class}">
+      <div class="section-head">
+        <div><h2>Riesgo de cartera</h2><p>{decision}</p></div>
+        <div class="risk-score"><span>Score</span><strong>{score}/100</strong></div>
+      </div>
+      <div class="control-facts">
+        <div><span>Estado</span><strong>{status}</strong></div>
+        <div><span>Críticas</span><strong>{critical}</strong></div>
+        <div><span>Altas</span><strong>{high}</strong></div>
+        <div><span>Vigilancia</span><strong>{watch}</strong></div>
+      </div>
+      <p class="muted">Política {policy} · evaluación explicable · sin liquidación automática.</p>
+      <div class="risk-alert-list">{alerts}</div>
+      <div class="actions">{action}</div>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "blocked").lower()),
+        status=html_escape(payload.get("status") or "BLOCKED"),
+        decision=html_escape(payload.get("decision_support") or "NO_NEW_RISK"),
+        score=html_escape(payload.get("risk_score") or 0),
+        critical=html_escape(counts.get("critical") or 0),
+        high=html_escape(counts.get("high") or 0),
+        watch=html_escape(counts.get("watch") or 0),
+        policy=html_escape(payload.get("policy_version") or "unknown"),
+        alerts="".join(alert_rows),
+        action=action,
+    )
+
+
 def render_job_panel(job_id: str = "") -> tuple[str, str]:
     job = web_job(job_id)
     if not job:
@@ -4893,6 +4993,22 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .severity-action {{ border-color:#d97706; }}
           .severity-risk {{ border-color:var(--risk); }}
           .severity-watch {{ border-color:#2563eb; }}
+          .portfolio-risk.status-blocked {{ border-color:#dc7a68; background:#fff8f5; }}
+          .portfolio-risk.status-action_required {{ border-color:#d97706; background:#fffbef; }}
+          .portfolio-risk.status-watch {{ border-color:#6a8fc8; background:#f7faff; }}
+          .risk-score {{ min-width:96px; text-align:center; border:1px solid var(--line); border-radius:16px; padding:9px 14px; background:#fffdf6; }}
+          .risk-score span,.risk-score strong {{ display:block; }}
+          .risk-score span {{ color:var(--muted); font-size:.82rem; }}
+          .risk-score strong {{ font-size:1.35rem; }}
+          .risk-alert-list {{ display:grid; gap:10px; margin-top:14px; }}
+          .risk-alert {{ border:1px solid var(--line); border-left-width:6px; border-radius:16px; padding:14px; background:#fffdf6; }}
+          .risk-alert h3,.risk-alert p {{ margin:6px 0 0; }}
+          .risk-alert-title {{ display:flex; justify-content:space-between; gap:12px; font-size:.82rem; letter-spacing:.04em; }}
+          .risk-alert-title span {{ color:var(--muted); }}
+          .risk-alert.severity-critical {{ border-left-color:#b42318; }}
+          .risk-alert.severity-high {{ border-left-color:#d97706; }}
+          .risk-alert.severity-watch {{ border-left-color:#2563eb; }}
+          .risk-alert.severity-info {{ border-left-color:#1d6b4f; }}
           label {{ display:block; margin:10px 0 4px; font-weight:700; }}
           input, select, textarea {{ width:min(520px,100%); border:1px solid var(--line); border-radius:8px; padding:11px 12px; font:inherit; background:white; box-sizing:border-box; }}
           textarea {{ width:100%; min-height:128px; resize:vertical; line-height:1.35; }}
@@ -4949,6 +5065,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {v31_learning}
           {notifications}
           {control_tower}
+          {portfolio_risk}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -5079,6 +5196,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),
         control_tower=render_control_tower_panel(profiles, active),
+        portfolio_risk=render_portfolio_risk_panel(profiles, active),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -5153,6 +5271,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_control_tower(profile_map, active_profile()))
             return
+        if path == "/portfolio-risk":
+            profile_data = load_profiles()
+            profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+            self.send_json(load_portfolio_risk(profile_map, active_profile()))
+            return
         if path not in ["/", "", "/console"]:
             self.send_html("Ruta no encontrada.", status=404)
             return
@@ -5160,7 +5283,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
-        json_paths = {"/coberturas/rsp", "/active-positions", "/control-tower"}
+        json_paths = {"/coberturas/rsp", "/active-positions", "/control-tower", "/portfolio-risk"}
         status = 200 if path in ["/", "", "/console", "/coberturas", *json_paths] else 404
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8" if path in json_paths else "text/html; charset=utf-8")
@@ -5223,6 +5346,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(selected_alias, control_tower_refresh_command(), "Control Tower multi-cuenta")
                 self.send_html(
                     "Refresco multi-cuenta iniciado. Lee todas las cuentas configuradas de forma secuencial y sanitizada; no autoriza ordenes.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-risk-refresh":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(selected_alias, portfolio_risk_refresh_command(), "Reevaluar riesgo de cartera")
+                self.send_html(
+                    "Evaluación de riesgo iniciada sobre los snapshots sanitizados. No transmite ni ejecuta órdenes.",
                     job_id=job_id,
                 )
             elif self.path == "/bridge":
