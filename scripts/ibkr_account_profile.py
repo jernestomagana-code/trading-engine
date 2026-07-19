@@ -11,6 +11,7 @@ import argparse
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -88,6 +89,7 @@ POST_OPEN_MONITOR_PATH = RUNTIME / "post_open_monitor_latest.json"
 OPERATOR_NOTIFY_PATH = RUNTIME / "v32_operator_notify_latest.json"
 OPERATIONAL_EDGE_PATH = RUNTIME / "v32_operational_edge_latest.json"
 DAILY_OPEN_CHECKLIST_PATH = RUNTIME / "daily_open_checklist_latest.json"
+OPERATOR_GUIDE_PATH = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 SNAPSHOT_INGEST_KEYCHAIN_SERVICES = ("stock-ultimus-snapshot-ingest", "stock-ultimus-snapshot-ingest-token")
@@ -5677,6 +5679,151 @@ def console_last_action_summary(result: dict[str, Any]) -> str:
     return "Última acción completada correctamente."
 
 
+def operator_guide_inline(value: str) -> str:
+    """Render the small inline subset used by the trusted local guide."""
+    escaped = html_escape(value)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    return escaped
+
+
+def operator_guide_markdown_to_html(markdown_text: str) -> str:
+    """Render the project's operator guide without an external dependency."""
+    lines = markdown_text.splitlines()
+    rendered: list[str] = []
+    paragraph: list[str] = []
+    list_kind = ""
+    in_code = False
+    code_lines: list[str] = []
+
+    def close_paragraph() -> None:
+        if paragraph:
+            rendered.append("<p>{}</p>".format(operator_guide_inline(" ".join(paragraph))))
+            paragraph.clear()
+
+    def close_list() -> None:
+        nonlocal list_kind
+        if list_kind:
+            rendered.append(f"</{list_kind}>")
+            list_kind = ""
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            close_paragraph()
+            close_list()
+            if in_code:
+                rendered.append("<pre><code>{}</code></pre>".format(html_escape("\n".join(code_lines))))
+                code_lines.clear()
+                in_code = False
+            else:
+                in_code = True
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+        if not stripped:
+            close_paragraph()
+            close_list()
+            index += 1
+            continue
+        heading = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+        if heading:
+            close_paragraph()
+            close_list()
+            level = len(heading.group(1))
+            rendered.append(f"<h{level}>{operator_guide_inline(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if stripped.startswith("|") and index + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-+", lines[index + 1]):
+            close_paragraph()
+            close_list()
+            headers = [cell.strip() for cell in stripped.strip("|").split("|")]
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                rows.append([cell.strip() for cell in lines[index].strip().strip("|").split("|")])
+                index += 1
+            rendered.append("<div class=\"guide-table\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table></div>".format(
+                "".join(f"<th>{operator_guide_inline(cell)}</th>" for cell in headers),
+                "".join("<tr>{}</tr>".format("".join(f"<td>{operator_guide_inline(cell)}</td>" for cell in row)) for row in rows),
+            ))
+            continue
+        unordered = re.match(r"^-\s+(.+)$", stripped)
+        ordered = re.match(r"^\d+\.\s+(.+)$", stripped)
+        if unordered or ordered:
+            close_paragraph()
+            requested_kind = "ul" if unordered else "ol"
+            if list_kind != requested_kind:
+                close_list()
+                list_kind = requested_kind
+                rendered.append(f"<{list_kind}>")
+            rendered.append("<li>{}</li>".format(operator_guide_inline((unordered or ordered).group(1))))
+            index += 1
+            continue
+        paragraph.append(stripped)
+        index += 1
+
+    close_paragraph()
+    close_list()
+    if in_code:
+        rendered.append("<pre><code>{}</code></pre>".format(html_escape("\n".join(code_lines))))
+    return "\n".join(rendered)
+
+
+def render_operator_guide_page() -> bytes:
+    try:
+        markdown_text = OPERATOR_GUIDE_PATH.read_text(encoding="utf-8")
+        guide_html = operator_guide_markdown_to_html(markdown_text)
+        guide_status = "Guía oficial cargada desde el proyecto"
+    except Exception as exc:
+        guide_html = "<h1>Guía no disponible</h1><p>{}</p>".format(html_escape(str(exc)))
+        guide_status = "Revisar archivo oficial"
+    page = """
+    <!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Guía · Stock Ultimus Console</title>
+        <style>
+          :root {{ --ink:#111827; --muted:#5b6472; --paper:#f4f7fb; --card:#fff; --line:#d9e2ec; --accent:#11725f; }}
+          * {{ box-sizing:border-box; }}
+          body {{ margin:0; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.58; }}
+          main {{ width:min(980px,calc(100% - 24px)); margin:24px auto 60px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:clamp(20px,5vw,54px); box-shadow:0 12px 36px rgba(17,24,39,.08); }}
+          .guide-top {{ position:sticky; top:8px; z-index:2; display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; padding:10px 12px; margin:-8px 0 28px; background:rgba(255,255,255,.96); border:1px solid var(--line); border-radius:10px; }}
+          .guide-top a {{ color:white; background:var(--accent); padding:8px 12px; border-radius:8px; text-decoration:none; font-weight:800; }}
+          .guide-top span {{ color:var(--muted); font-size:.86rem; }}
+          h1 {{ font-size:clamp(2rem,5vw,3.2rem); line-height:1.05; margin:0 0 22px; }}
+          h2 {{ margin:42px 0 12px; padding-top:10px; border-top:1px solid var(--line); font-size:1.45rem; }}
+          h3 {{ margin:26px 0 8px; font-size:1.12rem; }}
+          p,li {{ max-width:78ch; }}
+          li {{ margin:5px 0; }}
+          code {{ background:#eef2f7; border-radius:5px; padding:2px 5px; }}
+          pre {{ overflow:auto; max-width:100%; padding:16px; border-radius:9px; color:#f8fafc; background:#111827; }}
+          pre code {{ padding:0; background:transparent; }}
+          .guide-table {{ overflow-x:auto; border:1px solid var(--line); border-radius:9px; margin:14px 0 22px; }}
+          table {{ width:100%; min-width:620px; border-collapse:collapse; }}
+          th,td {{ padding:10px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }}
+          th {{ background:#f8fafc; font-size:.8rem; text-transform:uppercase; }}
+          @media (max-width:640px) {{ main {{ margin-top:8px; }} .guide-top {{ top:4px; }} }}
+        </style>
+      </head>
+      <body>
+        <main>
+          <div class="guide-top"><a href="/console">← Volver a la consola</a><span>{status}</span></div>
+          {guide}
+        </main>
+      </body>
+    </html>
+    """.format(status=html_escape(guide_status), guide=guide_html)
+    return page.encode("utf-8")
+
+
 def render_web_page(message: str = "", result: dict[str, Any] | None = None, job_id: str = "", question_answer: str = "") -> bytes:
     current_job = web_job(job_id)
     prefer_cache = True
@@ -6013,6 +6160,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             <a href="#cartera">Cartera</a>
             <a href="#resultados">Resultados</a>
             <a href="#herramientas">Herramientas</a>
+            <a href="/guide">Guía</a>
           </nav>
           {active_process}
           <div id="hoy">{today}</div>
@@ -6275,6 +6423,14 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
+        if path == "/guide":
+            payload = render_operator_guide_page()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path == "/control-tower":
             profile_data = load_profiles()
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
@@ -6344,7 +6500,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
-        status = 200 if path in ["/", "", "/console", "/coberturas", *json_paths] else 404
+        status = 200 if path in ["/", "", "/console", "/coberturas", "/guide", *json_paths] else 404
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8" if path in json_paths else "text/html; charset=utf-8")
         self.end_headers()

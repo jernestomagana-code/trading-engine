@@ -31,7 +31,7 @@ PYTHON = os.getenv("STOCK_ULTIMUS_CONSOLE_PYTHON", "/usr/bin/python3")
 LABEL = "com.stockultimus.local-console"
 OPENER_LABEL = "com.stockultimus.local-console-opener"
 DEFAULT_PORT = 8765
-SERVICE_COPY_DIRS = ("scripts", "config", "brokers")
+SERVICE_COPY_DIRS = ("scripts", "config", "brokers", "docs")
 
 
 def build_parser() -> argparse.ArgumentParser:
