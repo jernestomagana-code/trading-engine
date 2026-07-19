@@ -35,12 +35,18 @@ ENDPOINTS = {
     "v32-pushover-monitor": ("/v32-pushover-monitor", "Pushover monitor"),
     "v32-pushover-postclose": ("/v32-pushover-postclose", "Pushover post-close"),
     "v32-pushover-preflight": ("/v32-pushover-preflight", "Pushover preflight"),
+    "portfolio-risk-monitor": ("/portfolio-risk-monitor", "Monitoreo de riesgo de cartera"),
+    "portfolio-risk-preflight": ("/portfolio-risk-preflight", "Preflight de riesgo de cartera"),
+    "portfolio-risk-digest": ("/portfolio-risk-digest", "Digest de riesgo de cartera"),
 }
 
 JOB_TIMEOUTS = {
     # The post-open watcher intentionally spans roughly 90 minutes.
     "post-open-monitor": 6000.0,
     "daily-snapshot-refresh": 900.0,
+    "portfolio-risk-monitor": 900.0,
+    "portfolio-risk-preflight": 600.0,
+    "portfolio-risk-digest": 600.0,
 }
 
 
@@ -48,9 +54,12 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def post_console(path: str, timeout: float) -> dict:
+def post_console(path: str, timeout: float, *, local_notify: bool = False) -> dict:
     base = os.getenv("STOCK_ULTIMUS_CONSOLE_URL", DEFAULT_CONSOLE_URL).rstrip("/")
-    data = urllib.parse.urlencode({"source": "launchd_console_runner"}).encode("utf-8")
+    data = urllib.parse.urlencode({
+        "source": "launchd_console_runner",
+        "local_notify": "1" if local_notify else "0",
+    }).encode("utf-8")
     req = urllib.request.Request(
         base + path,
         data=data,
@@ -158,6 +167,11 @@ def main() -> int:
         default=None,
         help="Maximum time to wait for the console job to finish.",
     )
+    parser.add_argument(
+        "--local-notify",
+        action="store_true",
+        help="Explicitly request local notifications for supported jobs.",
+    )
     args = parser.parse_args()
     path, label = ENDPOINTS[args.job]
     result = {
@@ -169,7 +183,7 @@ def main() -> int:
         "execution_authorized": False,
         "not_order_instruction": True,
     }
-    result["trigger"] = post_console(path, args.timeout)
+    result["trigger"] = post_console(path, args.timeout, local_notify=args.local_notify)
     job_id = result["trigger"].get("job_id")
     if result["trigger"].get("ok") and job_id:
         job_timeout = (

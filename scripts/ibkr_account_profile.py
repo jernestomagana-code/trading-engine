@@ -795,13 +795,23 @@ def portfolio_risk_refresh_command() -> list[str]:
     ]
 
 
-def portfolio_risk_operations_command() -> list[str]:
-    return [
+def portfolio_risk_operations_command(
+    mode: str = "preflight",
+    *,
+    refresh_broker: bool = False,
+    local_notify: bool = False,
+) -> list[str]:
+    command = [
         sys.executable,
         "scripts/run_portfolio_risk_operations.py",
         "--mode",
-        "preflight",
+        mode,
     ]
+    if refresh_broker:
+        command.append("--refresh-broker")
+    if local_notify:
+        command.append("--local-notify")
+    return command
 
 
 def console_diagnostic_command() -> list[str]:
@@ -5317,6 +5327,16 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         job_id: str = "",
         question_answer: str = "",
     ) -> None:
+        if job_id and "application/json" in str(self.headers.get("Accept") or ""):
+            self.send_json({
+                "ok": status < 400,
+                "status": "ACCEPTED" if status < 400 else "ERROR",
+                "message": message,
+                "job_id": job_id,
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }, status=status)
+            return
         payload = render_web_page(message=message, result=result, job_id=job_id, question_answer=question_answer)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -5464,6 +5484,27 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(selected_alias, portfolio_risk_operations_command(), "Mantenimiento de riesgo")
                 self.send_html(
                     "Mantenimiento iniciado: reevaluación, outbox y digest locales; no consulta ni opera el broker.",
+                    job_id=job_id,
+                )
+            elif self.path in {"/portfolio-risk-monitor", "/portfolio-risk-preflight", "/portfolio-risk-digest"}:
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                mode = {
+                    "/portfolio-risk-monitor": "monitor",
+                    "/portfolio-risk-preflight": "preflight",
+                    "/portfolio-risk-digest": "digest",
+                }[self.path]
+                local_notify = (params.get("local_notify") or ["0"])[0] == "1"
+                job_id = start_web_job(
+                    selected_alias,
+                    portfolio_risk_operations_command(
+                        mode,
+                        refresh_broker=mode == "monitor",
+                        local_notify=local_notify and mode == "monitor",
+                    ),
+                    f"Riesgo de cartera: {mode}",
+                )
+                self.send_html(
+                    f"Ciclo {mode} iniciado mediante el puente local; sin ejecución de órdenes.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-action":

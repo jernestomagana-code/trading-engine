@@ -241,11 +241,22 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
         encoded = json.dumps(default)
 
         self.assertEqual(default["StartInterval"], 300)
+        self.assertEqual(default["WorkingDirectory"], str(installer.RUNNER_DIR))
+        self.assertIn(str(installer.RUNNER_PATH), default["ProgramArguments"])
+        self.assertIn("portfolio-risk-monitor", default["ProgramArguments"])
         self.assertNotIn("--local-notify", default["ProgramArguments"])
         self.assertIn("--local-notify", enabled["ProgramArguments"])
         self.assertNotIn("TOKEN", encoded.upper())
         self.assertNotIn("PASSWORD", encoded.upper())
         self.assertNotIn("SECRET", encoded.upper())
+
+    def test_console_bridge_commands_preserve_silent_defaults(self):
+        monitor = account_console.portfolio_risk_operations_command("monitor", refresh_broker=True)
+        preflight = account_console.portfolio_risk_operations_command("preflight")
+
+        self.assertIn("--refresh-broker", monitor)
+        self.assertNotIn("--local-notify", monitor)
+        self.assertNotIn("--refresh-broker", preflight)
 
     def test_operations_sources_never_place_orders_or_send_external_email(self):
         root = Path(__file__).resolve().parents[1]

@@ -78,6 +78,15 @@ python3 scripts/install_portfolio_risk_launchd.py --install --dry-run
 Los jobs no se consideran activos hasta que sus tres archivos estén instalados en `~/Library/LaunchAgents`.
 El runner usa un lock no bloqueante para impedir que dos ciclos modifiquen simultáneamente snapshots, outbox o digest.
 
+Para proyectos ubicados en `Documents`, los jobs no abren directamente los scripts del repositorio. El instalador copia un runner mínimo a `~/Library/Application Support/Stock Ultimus/Launchd`; ese runner llama exclusivamente a la consola local en `127.0.0.1:8765`, espera la terminación del trabajo y devuelve su resultado. Así se respeta la protección de privacidad de macOS sin conceder acceso amplio al disco ni duplicar el runtime operativo.
+
+La consola local y su opener de respaldo deben estar disponibles. El estado se comprueba con:
+
+```bash
+python3 scripts/install_stock_ultimus_console_launchd.py --status
+python3 scripts/install_portfolio_risk_launchd.py --status
+```
+
 ## Guardrails
 
 - IDs reales de broker excluidos.

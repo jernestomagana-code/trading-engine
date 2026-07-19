@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Install secret-free launchd jobs for local portfolio-risk operations."""
+"""Install secret-free launchd jobs for local portfolio-risk operations.
+
+The background jobs use an Application Support runner and call the localhost
+console, avoiding macOS privacy/TCC denial for projects stored in Documents.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path("/private/tmp")
 PYTHON = sys.executable
+RUNNER_DIR = Path.home() / "Library" / "Application Support" / "Stock Ultimus" / "Launchd"
+RUNNER_PATH = RUNNER_DIR / "stock_ultimus_launchd_console_runner.py"
+RUNNER_SOURCE = ROOT / "scripts" / "stock_ultimus_launchd_console_runner.py"
 JOBS = {
     "monitor": {
         "label": "com.stockultimus.portfolio-risk-monitor",
@@ -49,23 +56,41 @@ def plist_path(job: dict[str, Any]) -> Path:
 
 
 def plist_payload(job: dict[str, Any], enable_local_notifications: bool = False) -> dict[str, Any]:
-    arguments = [PYTHON, str(ROOT / "scripts" / "run_portfolio_risk_operations.py"), *job["args"]]
+    arguments = [PYTHON, str(RUNNER_PATH), job["label"].replace("com.stockultimus.", "")]
     if enable_local_notifications and job.get("label") == JOBS["monitor"]["label"]:
         arguments.append("--local-notify")
     payload: dict[str, Any] = {
         "Label": job["label"],
         "ProgramArguments": arguments,
-        "WorkingDirectory": str(ROOT),
+        "WorkingDirectory": str(RUNNER_DIR),
         "StandardOutPath": str(LOG_DIR / f"{job['label']}.out"),
         "StandardErrorPath": str(LOG_DIR / f"{job['label']}.err"),
         "RunAtLoad": False,
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "EnvironmentVariables": {
+            "PYTHONUNBUFFERED": "1",
+            "STOCK_ULTIMUS_CONSOLE_URL": "http://127.0.0.1:8765",
+        },
     }
     if job.get("start_interval"):
         payload["StartInterval"] = int(job["start_interval"])
     if job.get("calendar"):
         payload["StartCalendarInterval"] = dict(job["calendar"])
     return payload
+
+
+def install_runner(dry_run: bool) -> dict[str, Any]:
+    result = {
+        "runner_path": str(RUNNER_PATH),
+        "source": str(RUNNER_SOURCE),
+        "installed": False,
+    }
+    if dry_run:
+        return result
+    RUNNER_DIR.mkdir(parents=True, exist_ok=True)
+    RUNNER_PATH.write_text(RUNNER_SOURCE.read_text())
+    RUNNER_PATH.chmod(0o755)
+    result["installed"] = True
+    return result
 
 
 def user_domain() -> str:
@@ -83,6 +108,7 @@ def launchctl(command: list[str]) -> dict[str, Any]:
 
 
 def install(jobs: dict[str, dict[str, Any]], dry_run: bool, enable_local_notifications: bool) -> dict[str, Any]:
+    runner = install_runner(dry_run)
     results = []
     for name, job in jobs.items():
         path = plist_path(job)
@@ -96,7 +122,7 @@ def install(jobs: dict[str, dict[str, Any]], dry_run: bool, enable_local_notific
             item["bootstrap"] = launchctl(["launchctl", "bootstrap", user_domain(), str(path)])
             item["enable"] = launchctl(["launchctl", "enable", f"{user_domain()}/{job['label']}"])
         results.append(item)
-    return {"action": "install", "dry_run": dry_run, "results": results}
+    return {"action": "install", "dry_run": dry_run, "runner": runner, "results": results}
 
 
 def uninstall(jobs: dict[str, dict[str, Any]], dry_run: bool) -> dict[str, Any]:
