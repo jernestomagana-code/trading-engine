@@ -32,6 +32,25 @@ LOCAL_CONSOLE_COMMAND = ROOT / "Stock Ultimus Console.command"
 
 
 class BridgeEntrypointTests(unittest.TestCase):
+    def test_fastapi_routes_are_not_registered_twice(self):
+        tree = ast.parse(APP.read_text(), filename=str(APP))
+        registrations = []
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                    continue
+                if not isinstance(decorator.func.value, ast.Name) or decorator.func.value.id != "app":
+                    continue
+                if decorator.func.attr not in {"get", "post", "put", "delete", "patch"}:
+                    continue
+                if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                    registrations.append((decorator.func.attr, decorator.args[0].value))
+
+        duplicates = sorted({item for item in registrations if registrations.count(item) > 1})
+        self.assertEqual(duplicates, [])
+
     def test_bridge_loop_is_not_executed_at_module_scope(self):
         tree = ast.parse(BRIDGE.read_text(), filename=str(BRIDGE))
         self.assertFalse(any(isinstance(node, ast.While) for node in tree.body))
@@ -76,7 +95,7 @@ class BridgeEntrypointTests(unittest.TestCase):
         default_option_symbols = set(module_vars["DEFAULT_OPTION_SYMBOLS"])
         self.assertEqual(default_watchlist, default_option_symbols)
         self.assertTrue({"AAPL", "MSFT", "NVDA", "META", "AMZN", "TSLA", "GOOGL"}.issubset(default_watchlist))
-        self.assertTrue({"AVGO", "AMD", "COST", "CRM", "ORCL"}.issubset(default_watchlist))
+        self.assertTrue({"AVGO", "AMD", "COST", "CRM", "ORCL", "RSP"}.issubset(default_watchlist))
 
         source = BRIDGE.read_text()
         self.assertIn("FAST_WATCHLIST = list(DEFAULT_WATCHLIST)", source)
@@ -148,7 +167,8 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn('"RUNNING"', source)
         self.assertIn("Refresh IBKR iniciado", source)
         self.assertIn("busy-overlay", source)
-        self.assertIn("Alineando cuenta + Refresh IBKR", source)
+        self.assertIn("Alinear cuenta rapido", source)
+        self.assertIn("Refresh profundo opciones", source)
         self.assertIn("def console_health", source)
         self.assertIn("def render_console_health", source)
         self.assertIn("def render_active_process_panel", source)
@@ -177,7 +197,8 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("def selected_vs_published", source)
         self.assertIn("def published_context_value", source)
         self.assertIn("UNKNOWN_CONTEXT_VALUES", source)
-        self.assertIn("Alinear cuenta + Refresh IBKR", source)
+        self.assertIn("Alinear cuenta rapido", source)
+        self.assertIn('"/bridge-deep"', source)
         self.assertIn('"/select-refresh"', source)
         self.assertIn("Solo usar cuenta</button>", source)
         self.assertIn("Publicando cuenta para GPT", source)
@@ -193,6 +214,7 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("scripts/run_market_bridge_session.py", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", source)
+        self.assertIn("QQQ,SPY,AAPL,NVDA,TSLA,RSP", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", source)
         self.assertIn("--ibkr-client-id", source)
@@ -204,13 +226,19 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("No sigas presionando Refresh", source)
         self.assertIn("stock_ultimus_console_bridge_latest.json", source)
         self.assertIn("Solo relee la pantalla local; no lanza otro trabajo", source)
-        self.assertIn("Alinear cuenta + Refresh IBKR</strong>", source)
+        self.assertIn("Alinear/Publicar rapido</strong>", source)
         self.assertIn("def do_HEAD", source)
         self.assertIn("/gpt_v32_operator_today?limit=12", source)
         self.assertIn("READ_ACCESS_TOKEN", source)
         self.assertIn("def read_keychain_value_any_account", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
         self.assertIn("/v32_operator_daily_summary_email/preview", source)
+        self.assertIn("/coberturas", source)
+        self.assertIn("Coberturas RSP", source)
+        self.assertIn("def render_coberturas_inline_panel", source)
+        self.assertIn('name="gamma_blob"', source)
+        self.assertIn('name="return_to" value="console"', source)
+        self.assertIn('payload.get("return_to") == "console"', source)
         self.assertIn("def post_remote_json", source)
         self.assertIn('"/diagnostic"', source)
         self.assertIn("console_diagnostic_command", source)
@@ -758,9 +786,16 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
 
         self.assertIn("STOCK_ULTIMUS_LOCAL_CONSOLE_LAUNCHD_INSTALLER", source)
         self.assertIn("com.stockultimus.local-console", source)
+        self.assertIn("com.stockultimus.local-console-opener", source)
         self.assertIn("scripts/ibkr_account_profile.py", source)
         self.assertIn("serve --host 127.0.0.1", source)
+        self.assertIn("Stock Ultimus Console.command", source)
+        self.assertIn("--install-opener-fallback", source)
         self.assertIn('"/bin/zsh"', source)
+        self.assertIn("/usr/bin/open", source)
+        self.assertIn("/usr/sbin/lsof", source)
+        self.assertIn("-iTCP:{port}", source)
+        self.assertIn('"StartInterval": 60', source)
         self.assertIn("shlex.quote", source)
         self.assertIn("127.0.0.1", source)
         self.assertIn('"RunAtLoad": True', source)
@@ -782,6 +817,9 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("ibkr_account_profile.py", source)
         self.assertIn("serve --host 127.0.0.1 --port 8765", source)
         self.assertIn("http://127.0.0.1:8765", source)
+        self.assertIn("/usr/sbin/lsof", source)
+        self.assertIn("-iTCP:8765", source)
+        self.assertIn('exit 0', source)
         self.assertIn("/usr/bin/python3", source)
         self.assertNotIn("READ_ACCESS_TOKEN", source)
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)

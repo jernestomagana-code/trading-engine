@@ -1,3 +1,4 @@
 ib_insync==0.9.86
 nest_asyncio>=1.6,<2
-requests>=2.32,<3
+requests>=2.33,<3
+urllib3>=2.7,<3

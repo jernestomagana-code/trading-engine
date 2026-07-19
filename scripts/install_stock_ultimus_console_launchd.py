@@ -23,12 +23,14 @@ LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 LOG_DIR = Path("/private/tmp")
 PYTHON = os.getenv("STOCK_ULTIMUS_CONSOLE_PYTHON", "/usr/bin/python3")
 LABEL = "com.stockultimus.local-console"
+OPENER_LABEL = "com.stockultimus.local-console-opener"
 DEFAULT_PORT = 8765
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install the Stock Ultimus localhost console launchd job.")
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--install-opener-fallback", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -43,6 +45,10 @@ def console_url(port: int) -> str:
 
 def plist_path() -> Path:
     return LAUNCH_AGENTS / f"{LABEL}.plist"
+
+
+def opener_plist_path() -> Path:
+    return LAUNCH_AGENTS / f"{OPENER_LABEL}.plist"
 
 
 def plist_payload(port: int) -> dict[str, Any]:
@@ -67,6 +73,29 @@ def plist_payload(port: int) -> dict[str, Any]:
         "EnvironmentVariables": {
             "PYTHONUNBUFFERED": "1",
         },
+    }
+
+
+def opener_plist_payload() -> dict[str, Any]:
+    command_file = ROOT / "Stock Ultimus Console.command"
+    check_and_open = (
+        "/usr/sbin/lsof -nP -iTCP:{port} -sTCP:LISTEN >/dev/null "
+        "|| /usr/bin/open {command_file}"
+    ).format(
+        port=DEFAULT_PORT,
+        command_file=shlex.quote(str(command_file)),
+    )
+    return {
+        "Label": OPENER_LABEL,
+        "ProgramArguments": [
+            "/bin/zsh",
+            "-lc",
+            check_and_open,
+        ],
+        "RunAtLoad": True,
+        "StartInterval": 60,
+        "StandardOutPath": str(LOG_DIR / f"{OPENER_LABEL}.out"),
+        "StandardErrorPath": str(LOG_DIR / f"{OPENER_LABEL}.err"),
     }
 
 
@@ -119,6 +148,30 @@ def install(port: int, dry_run: bool) -> dict[str, Any]:
     return result
 
 
+def install_opener_fallback(dry_run: bool) -> dict[str, Any]:
+    path = opener_plist_path()
+    payload = opener_plist_payload()
+    result: dict[str, Any] = {
+        "action": "install_opener_fallback",
+        "dry_run": dry_run,
+        "label": OPENER_LABEL,
+        "path": str(path),
+        "url": console_url(DEFAULT_PORT),
+        "note": "Watchdog: opens Stock Ultimus Console.command when localhost console is down and background launchd is blocked by macOS privacy/TCC.",
+    }
+    if dry_run:
+        result["plist"] = payload
+        return result
+    LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        plistlib.dump(payload, handle, sort_keys=True)
+    launchctl(["launchctl", "bootout", user_domain(), str(path)])
+    result["bootstrap"] = launchctl(["launchctl", "bootstrap", user_domain(), str(path)])
+    result["enable"] = launchctl(["launchctl", "enable", f"{user_domain()}/{OPENER_LABEL}"])
+    result["kickstart"] = launchctl(["launchctl", "kickstart", "-k", f"{user_domain()}/{OPENER_LABEL}"])
+    return result
+
+
 def uninstall(dry_run: bool) -> dict[str, Any]:
     path = plist_path()
     result: dict[str, Any] = {
@@ -130,11 +183,17 @@ def uninstall(dry_run: bool) -> dict[str, Any]:
     if dry_run:
         return result
     result["bootout"] = launchctl(["launchctl", "bootout", user_domain(), str(path)])
+    result["opener_bootout"] = launchctl(["launchctl", "bootout", user_domain(), str(opener_plist_path())])
     try:
         path.unlink()
         result["removed"] = True
     except FileNotFoundError:
         result["removed"] = False
+    try:
+        opener_plist_path().unlink()
+        result["opener_removed"] = True
+    except FileNotFoundError:
+        result["opener_removed"] = False
     return result
 
 
@@ -145,9 +204,13 @@ def status(port: int) -> dict[str, Any]:
         "dry_run": False,
         "label": LABEL,
         "path": str(path),
+        "opener_label": OPENER_LABEL,
+        "opener_path": str(opener_plist_path()),
         "installed": path.exists(),
+        "opener_installed": opener_plist_path().exists(),
         "url": console_url(port),
         "print": launchctl(["launchctl", "print", f"{user_domain()}/{LABEL}"]),
+        "opener_print": launchctl(["launchctl", "print", f"{user_domain()}/{OPENER_LABEL}"]),
     }
 
 
@@ -155,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.install:
         result = install(args.port, args.dry_run)
+    elif args.install_opener_fallback:
+        result = install_opener_fallback(args.dry_run)
     elif args.uninstall:
         result = uninstall(args.dry_run)
     else:

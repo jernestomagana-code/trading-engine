@@ -93,7 +93,7 @@
         <h1>Stock Ultimus Command Center</h1>
         <p>V32 operator, resumen diario, alertas, tracking y learning.</p>
       </div>
-      <div class="updated">Actualizado<br><strong>5 julio 2026</strong></div>
+      <div class="updated">Actualizado<br><strong>16 julio 2026</strong></div>
     </header>
 
     <main>
@@ -101,12 +101,12 @@
         <article class="status-summary">
           <div class="overline">Donde estamos</div>
           <strong>Panel principal operativo</strong>
-          <p>Usa el GPT o este Command Center para decidir el siguiente paso. Produccion, read-auth y guardrails estan sanos; el avance total sigue en WARN porque falta snapshot fresco, payload TradingView al ledger y outcomes completos suficientes.</p>
+          <p>Usa el GPT o este Command Center para decidir el siguiente paso. Produccion, read-auth, snapshot y guardrails estan sanos; el avance total sigue en WARN porque faltan ledger TradingView, outcomes completos suficientes y corregir 2 fallas P0 del guard readonly.</p>
         </article>
         <article class="metric">
           <div class="overline">Prioridad</div>
-          <div class="metric-value">GPT</div>
-          <div class="metric-note">Pregunta: que hago hoy?</div>
+          <div class="metric-value">P0</div>
+          <div class="metric-note">readonly guard.</div>
         </article>
         <article class="metric">
           <div class="overline">Preflight real</div>
@@ -115,8 +115,8 @@
         </article>
         <article class="metric">
           <div class="overline">Operating day</div>
-          <div class="metric-value">Track</div>
-          <div class="metric-note"><a href="/v32_operator_tracking_status">Eventos/outcomes</a></div>
+          <div class="metric-value">Ready</div>
+          <div class="metric-note">WAIT_MARKET.</div>
         </article>
         <article class="metric">
           <div class="overline">Terceros</div>
@@ -154,7 +154,7 @@
             <article class="work-item" data-area="platform">
               <div class="item-top"><h4>No Auto-Order</h4><span class="tag">Seguridad</span></div>
               <p>El flujo conserva execution_authorized=false y not_order_instruction=true.</p>
-              <div class="evidence"><span class="dot"></span>Preflight y tests OK</div>
+              <div class="evidence"><span class="dot"></span>Preflight guardrails OK</div>
             </article>
             <article class="work-item" data-area="platform">
               <div class="item-top"><h4>Daily Radar Runbook</h4><span class="tag">Docs</span></div>
@@ -173,12 +173,12 @@
             </article>
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Audit Cloud</h4><span class="tag">Prod</span></div>
-              <p>Preflight completo pasa con warnings esperados; 6 gates, 0 fallas.</p>
-              <div class="evidence"><span class="dot"></span>PASS_WITH_WARNINGS</div>
+              <p>Auditoria cloud pasa completa: 26/26 checks, pipeline OK y snapshot fresco.</p>
+              <div class="evidence"><span class="dot"></span>PASS</div>
             </article>
             <article class="work-item" data-area="data">
               <div class="item-top"><h4>Foundation Evidence</h4><span class="tag">Datos</span></div>
-              <p>La base local ya acumula 140 decisiones, 69 ENTRY_READY historicos/locales, 106 option rows y 92.86% de source coverage.</p>
+              <p>La base local acumula 52 decisiones, 5 ENTRY_READY historicos/locales, 4 option rows diagnosticas y 80.77% de source coverage.</p>
               <div class="evidence"><span class="dot"></span>foundation_health WARN</div>
             </article>
             <article class="work-item" data-area="ops">
@@ -195,12 +195,17 @@
         </div>
 
         <div class="lane active">
-          <div class="lane-header"><h3>En Curso</h3><span class="count">4</span></div>
+          <div class="lane-header"><h3>En Curso</h3><span class="count">5</span></div>
           <div class="lane-items">
             <article class="work-item" data-area="ops">
-              <div class="item-top"><h4>Refrescar Pipeline</h4><span class="state work">Mercado</span></div>
-              <p>En dia habil, abrir TWS/IBKR y correr el checklist diario para snapshot fresco y alertas reales.</p>
-              <div class="evidence"><span class="dot"></span>scripts/daily_open_checklist.py</div>
+              <div class="item-top"><h4>Pipeline Fresco</h4><span class="state good">OK</span></div>
+              <p>Produccion tiene snapshot fresco, 123 option rows, 32 tecnicos y estado READY_FOR_DECISION_REVIEW.</p>
+              <div class="evidence"><span class="dot"></span>WAIT_MARKET_WINDOW</div>
+            </article>
+            <article class="work-item" data-area="platform">
+              <div class="item-top"><h4>P0 Readonly Guard</h4><span class="state risk">Fix</span></div>
+              <p>La prueba P0 actual corrio 39 tests y fallo 2 por expectativa readonly=True en ibkr_bridge.py.</p>
+              <div class="evidence"><span class="dot" style="background:var(--red)"></span>2 failures</div>
             </article>
             <article class="work-item" data-area="signals">
               <div class="item-top"><h4>Notificaciones Externas</h4><span class="state work">Config</span></div>
@@ -225,8 +230,8 @@
           <div class="lane-items">
             <article class="work-item" data-area="ops">
               <div class="item-top"><h4>Correr Operating Day</h4><span class="state wait">Proximo</span></div>
-              <p>Con TWS/IBKR abierto y datos de mercado disponibles.</p>
-              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>publicar snapshot</div>
+              <p>Con mercado abierto; hoy no promover WAIT_MARKET como senal accionable.</p>
+              <div class="evidence"><span class="dot" style="background:var(--blue)"></span>sin ENTRY_READY</div>
             </article>
             <article class="work-item" data-area="data">
               <div class="item-top"><h4>Manual Review</h4><span class="state wait">Condicional</span></div>
@@ -263,13 +268,14 @@
           <table>
             <thead><tr><th>Gate</th><th>Para considerarlo listo</th><th>Evidencia requerida</th><th>Estado</th></tr></thead>
             <tbody>
-              <tr><td>Produccion</td><td>Preflight completo sin skip-cloud.</td><td>PASS_WITH_WARNINGS; auth protegido OK.</td><td><span class="state good">OK</span></td></tr>
+              <tr><td>Produccion</td><td>Preflight completo sin skip-cloud.</td><td>PASS_WITH_WARNINGS; cloud audit PASS 26/26.</td><td><span class="state good">OK</span></td></tr>
               <tr><td>GPT Action</td><td>getDailyNow funciona desde el GPT oficial.</td><td>Health 200/401 OK.</td><td><span class="state good">OK</span></td></tr>
-              <tr><td>IBKR/radar</td><td>Broker fresh en ciclo diario.</td><td>Checklist diario publica snapshot cuando TWS/mercado esten disponibles.</td><td><span class="state work">Mercado</span></td></tr>
+              <tr><td>IBKR/radar</td><td>Broker fresh en ciclo diario.</td><td>Snapshot fresco; rows=123, tecnicos=32, WAIT_MARKET.</td><td><span class="state good">OK</span></td></tr>
               <tr><td>Alertas</td><td>Action/Risk/manual review visibles.</td><td>GPT, dashboard, resumen diario y notificador usan V32 operator.</td><td><span class="state good">OK</span></td></tr>
               <tr><td>Manual review</td><td>Humano clasifica setups.</td><td>Consola/rutas/auth OK; ahora no hay setups.</td><td><span class="state good">OK</span></td></tr>
               <tr><td>Outcomes</td><td>Learning real post-cierre.</td><td>Dry-run OK; 1 cerrado, 0 completos.</td><td><span class="state work">Muestra</span></td></tr>
-              <tr><td>Foundation</td><td>Evidencia suficiente para ajustar parametros.</td><td>140 decisiones; falta ledger TradingView y 30 outcomes completos por estrategia.</td><td><span class="state work">WARN</span></td></tr>
+              <tr><td>Foundation</td><td>Evidencia suficiente para ajustar parametros.</td><td>52 decisiones; falta ledger TradingView y 30 outcomes completos por estrategia.</td><td><span class="state work">WARN</span></td></tr>
+              <tr><td>P0 Tests</td><td>Guardrails de bridge verdes.</td><td>39 tests, 2 fallas por readonly=True.</td><td><span class="state risk">Fix</span></td></tr>
             </tbody>
           </table>
           <p style="margin:0;color:var(--muted);font-size:12px;line-height:1.4;">Operativo personal esta sano. En feriados o mercado cerrado, WAIT_MARKET no requiere accion ni dispara ruido.</p>
@@ -288,8 +294,8 @@
         <aside class="section">
           <div class="section-title"><h2>Orden Recomendado</h2></div>
           <ol class="needs-list">
-            <li><span class="priority">1</span><div><strong>Preguntar al GPT</strong><p>Usar "que hago hoy" como interfaz principal.</p></div></li>
-            <li><span class="priority">2</span><div><strong>Checklist diario</strong><p>Refrescar snapshot con TWS/IBKR en ventana util.</p></div></li>
+            <li><span class="priority">1</span><div><strong>P0 readonly</strong><p>Resolver las 2 fallas del guard de bridge.</p></div></li>
+            <li><span class="priority">2</span><div><strong>Preguntar al GPT</strong><p>Usar "que hago hoy" como interfaz principal.</p></div></li>
             <li><span class="priority">3</span><div><strong>Foundation backfill</strong><p>Completar outcomes/fuentes y ledger TradingView antes de tocar parametros.</p></div></li>
             <li><span class="priority">4</span><div><strong>Backtesting</strong><p>Cerrar alertas con razon/outcome para alimentar learning.</p></div></li>
           </ol>

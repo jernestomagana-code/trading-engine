@@ -59,6 +59,22 @@ def port_open(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def v31_publish_status(output: str) -> str:
+    if (
+        "V28.3 OFFICIAL V31 SNAPSHOT PUBLISHED | ok:True" in output
+        or "V31 REMOTE MASTER SNAPSHOT PUBLISHED | ok:True" in output
+        or "V31 SNAPSHOT PUBLISHED | ok:True" in output
+    ):
+        return "V31_PUBLISHED"
+    if (
+        "V28.3 OFFICIAL V31 SNAPSHOT ERROR" in output
+        or "V28 REMOTE MASTER SNAPSHOT PUBLISH ERROR" in output
+        or "V31 canonical publish call error" in output
+    ):
+        return "V31_PUBLISH_FAILED"
+    return "V31_PUBLISH_NOT_CONFIRMED"
+
+
 def post_json(url: str, token: str, timeout: int) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
@@ -96,6 +112,18 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     env["PYTHONUNBUFFERED"] = "1"
     if args.fast:
         env["DAILY_RADAR_FAST"] = "1"
+    if args.coberturas_rsp_weekly:
+        env["COBERTURAS_RSP_WEEKLY"] = "1"
+        env.setdefault("IBKR_WATCHLIST", "RSP")
+        env.setdefault("IBKR_OPTION_SYMBOLS", "RSP")
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
+        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "1")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "4")
+        env.setdefault("IBKR_TARGET_DTE_MIN", "7")
+        env.setdefault("IBKR_TARGET_DTE_MAX", "14")
+        env.setdefault("IBKR_TARGET_DTE_IDEAL", "8")
+        env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "0")
+        env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "0")
 
     cmd = [sys.executable, str(ROOT / "ibkr_bridge.py"), "--once"]
     started_at = now_iso()
@@ -127,13 +155,16 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
 
     output = result.stdout + "\n" + result.stderr
     tail = "\n".join(output.splitlines()[-30:])
+    publish_status = v31_publish_status(output)
+    local_ok = result.returncode == 0
     return {
-        "ok": result.returncode == 0,
-        "status": "BRIDGE_OK" if result.returncode == 0 else "BRIDGE_FAILED",
+        "ok": local_ok,
+        "status": "BRIDGE_OK" if local_ok and publish_status == "V31_PUBLISHED" else ("BRIDGE_OK_PUBLISH_PENDING" if local_ok else "BRIDGE_FAILED"),
         "returncode": result.returncode,
         "started_at": started_at,
         "finished_at": now_iso(),
-        "published": "V31 SNAPSHOT PUBLISHED" in output or "REMOTE INGEST: True" in output,
+        "published": publish_status == "V31_PUBLISHED",
+        "publish_status": publish_status,
         "tail": tail,
     }
 
@@ -155,6 +186,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--fast", action="store_true", help="Use DAILY_RADAR_FAST=1. Enabled by default unless --full-scan is passed.")
     parser.add_argument("--full-scan", action="store_true", help="Disable fast mode and scan the full configured option depth.")
+    parser.add_argument("--coberturas-rsp-weekly", action="store_true", help="Run an RSP-only 7-14 DTE options refresh for Coberturas.")
     parser.add_argument("--notify", action="store_true", help="Call /v31_monitor_notify after successful bridge runs.")
     parser.add_argument("--force-notify", action="store_true", help="Pass force=true when calling monitor notify.")
     parser.add_argument("--json-out", default=str(ROOT / "runtime" / "market_bridge_session_latest.json"))

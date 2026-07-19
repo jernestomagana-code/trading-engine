@@ -224,6 +224,101 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("REMOTE_CACHE_STALE_LOCAL_CORE_READY", health["info"])
         self.assertIn("IBKR: OK", rendered)
 
+    def test_selected_vs_published_infers_local_account_when_remote_omits_account_fields(self):
+        active = {"account_scope": "remanente", "account_alias": "remanente"}
+        snapshot = {"available": True, "account_scope": "", "account_alias": ""}
+        operator_payload = {"ok": True, "data": {"status": "WAIT_MARKET"}}
+
+        comparison = account_console.selected_vs_published(active, snapshot, operator_payload)
+        html = account_console.render_console_context(active, snapshot, operator_payload)
+
+        self.assertEqual(comparison["status"], "LOCAL_CONTEXT_INFERRED")
+        self.assertEqual(comparison["display_alias"], "remanente")
+        self.assertFalse(comparison["needs_refresh"])
+        self.assertIn("remoto sin campo cuenta", html)
+        self.assertIn("remanente", html)
+
+    def test_console_actions_uses_inferred_local_account_when_remote_omits_account_fields(self):
+        active = {"account_scope": "remanente", "account_alias": "remanente"}
+        snapshot = {"available": True, "account_scope": "", "account_alias": ""}
+        operator_payload = {"ok": True, "data": {"status": "WAIT_MARKET", "active_alerts": []}}
+
+        html = account_console.render_console_actions(active, snapshot, operator_payload)
+
+        self.assertIn("cuenta=remanente", html)
+        self.assertNotIn("cuenta=unknown", html)
+
+    def test_console_v31_payloads_fetches_active_positions_endpoint(self):
+        seen = []
+
+        def fake_fetch(path, prefer_cache=False, timeout=account_console.REMOTE_READ_TIMEOUT_SECONDS):
+            seen.append(path)
+            return {"ok": True, "data": {}}
+
+        with patch.object(account_console, "fetch_remote_json", side_effect=fake_fetch):
+            payloads = account_console.console_v31_payloads(prefer_cache=True)
+
+        self.assertIn("active_positions", payloads)
+        self.assertIn("/v31_active_position_management", seen)
+
+    def test_console_renders_active_position_management_panel(self):
+        snapshot = {
+            "available": True,
+            "path": "runtime/v28_master_snapshot.json",
+            "data": {
+                "generated_at": account_console.now_iso(),
+                "account_context": {
+                    "available": True,
+                    "available_funds": 100000,
+                    "generated_at": account_console.now_iso(),
+                },
+                "positions": [
+                    {
+                        "ticker": "QQQ",
+                        "sec_type": "OPT",
+                        "right": "P",
+                        "strike": 650,
+                        "position_size": -1,
+                        "entry_credit": 4.0,
+                        "option_mark": 1.5,
+                        "dte": 12,
+                        "delta": -0.12,
+                    }
+                ],
+                "technical_snapshot": {
+                    "QQQ": {
+                        "ticker": "QQQ",
+                        "trend": "BULLISH",
+                        "price": 670,
+                        "support_level": 640,
+                        "gamma_wall": 675,
+                    }
+                },
+            },
+        }
+
+        payload = account_console.console_active_position_management(snapshot, {})
+        html = account_console.render_active_positions_panel(snapshot, {}, {"account_alias": "primary"})
+
+        self.assertEqual(payload["positions_found"], 1)
+        self.assertEqual(payload["positions"][0]["management_action"], "REVIEW_CLOSE_OR_BUY_BACK")
+        self.assertIn("Posiciones activas", html)
+        self.assertIn("Refresh posiciones IBKR", html)
+        self.assertIn("REVIEW_CLOSE_OR_BUY_BACK", html)
+        self.assertIn("Revise cierre", html)
+        self.assertIn("Editar tesis y datos de entrada", html)
+        self.assertIn('action="/position-context"', html)
+        self.assertIn("Portfolio", html)
+        self.assertIn("Plan", html)
+        self.assertIn("/active-positions", html)
+
+    def test_console_renders_manual_gamma_panel(self):
+        html = account_console.render_gamma_context_panel()
+
+        self.assertIn("Gamma manual", html)
+        self.assertIn('action="/gamma-context"', html)
+        self.assertIn("call_wall", html)
+
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_runtime = account_console.RUNTIME
@@ -293,12 +388,50 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(capacity["available_capacity"], 5000)
         self.assertEqual(capacity["capacity_source"], "remote_new")
 
-    def test_profile_cards_promote_one_click_account_refresh(self):
+    def test_console_capacity_falls_back_to_active_account_when_remote_account_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_runtime = account_console.RUNTIME
+            original_capacity_path = account_console.ACCOUNT_CAPACITY_PATH
+            original_active_path = account_console.ACTIVE_PATH
+            account_console.RUNTIME = Path(tmp)
+            account_console.ACCOUNT_CAPACITY_PATH = Path(tmp) / "ibkr_account_capacity_latest.json"
+            account_console.ACTIVE_PATH = Path(tmp) / "ibkr_account_active_profile.json"
+            account_console.ACTIVE_PATH.write_text(json.dumps({
+                "account_scope": "remanente",
+                "account_alias": "remanente",
+            }))
+            account_console.ACCOUNT_CAPACITY_PATH.write_text(json.dumps({
+                "available": True,
+                "available_capacity": 1000,
+                "capacity_source": "local",
+            }))
+            try:
+                capacity = account_console.console_account_capacity(
+                    {
+                        "ok": True,
+                        "data": {
+                            "account_scope": "unknown",
+                            "account_capacity": {"available_capacity": 5000, "capacity_source": "remote"},
+                        },
+                    },
+                    {"available": True},
+                )
+            finally:
+                account_console.RUNTIME = original_runtime
+                account_console.ACCOUNT_CAPACITY_PATH = original_capacity_path
+                account_console.ACTIVE_PATH = original_active_path
+
+        self.assertEqual(capacity["account_alias"], "remanente")
+        self.assertEqual(capacity["account_scope"], "remanente")
+
+    def test_profile_cards_promote_fast_account_publish_and_deep_refresh(self):
         profiles = {"remanente": {"alias": "remanente", "account_scope": "remanente"}}
         html = account_console.render_profile_cards(profiles, {"account_alias": "remanente"})
 
         self.assertIn('action="/select-refresh"', html)
-        self.assertIn("Alinear cuenta + Refresh IBKR", html)
+        self.assertIn("Alinear cuenta rapido", html)
+        self.assertIn('action="/bridge-deep"', html)
+        self.assertIn("Refresh profundo opciones", html)
         self.assertIn("Avanzado", html)
         self.assertIn("Solo usar cuenta", html)
 
@@ -308,7 +441,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             html = account_console.render_profile_cards(profiles, {"account_alias": "remanente"})
 
         self.assertIn("Falta Keychain", html)
-        self.assertIn("Alinear cuenta + Refresh IBKR", html)
+        self.assertIn("Alinear cuenta rapido", html)
 
     def test_render_alert_card_shows_status_badge_and_friendly_actions(self):
         alert = {
@@ -467,6 +600,155 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Futuros vivos", market)
         self.assertIn("Diagnostico completo", diagnostic)
         self.assertIn("Revisar sistema", diagnostic)
+
+    def test_unified_local_console_renders_v31_manual_review_surfaces(self):
+        payloads = {
+            "executive": {
+                "ok": True,
+                "data": {
+                    "status": "READY_FOR_DECISION_REVIEW",
+                    "operational_readiness": "READY_FOR_DECISION_REVIEW",
+                    "answer_to_user": "Motor corrio: hay setups para revision manual.",
+                    "summary": {"entry_ready": 1, "risk_blocked": 1, "wait_options_data": 0, "wait_technical": 0},
+                    "blocked_cause_groups": [
+                        {"cause": "broker_capacity", "count": 1, "tickers": ["MSFT"], "examples": [{"reason": "faltante=11500"}]},
+                    ],
+                },
+            },
+            "rankings": {
+                "ok": True,
+                "data": {
+                    "top_recommendations": [
+                        {
+                            "ticker": "QQQ",
+                            "strategy": "NAKED_PUT",
+                            "final_state": "ENTRY_READY",
+                            "manual_review_ready": True,
+                            "selected_contract": {
+                                "strike": 650,
+                                "expiration": "20260821",
+                                "dte": 46,
+                                "bid": 5.99,
+                                "ask": 6.05,
+                                "mid": 6.02,
+                                "delta": -0.14,
+                                "spread_pct": 1.0,
+                            },
+                        }
+                    ],
+                    "blocked_or_waiting": [
+                        {
+                            "ticker": "MSFT",
+                            "strategy": "NAKED_PUT",
+                            "final_state": "RISK_BLOCKED",
+                            "primary_block_reason": "Broker check: faltante=11500",
+                            "selected_contract": {"strike": 365},
+                        }
+                    ],
+                },
+            },
+            "reviews": {"ok": True, "data": {"recent_reviews": []}},
+            "learning": {"ok": True, "data": {"by_manual_status": {"WATCHLIST": 2}, "evaluated_count": 2}},
+            "performance": {"ok": True, "data": {"summary": {"evaluated_signal_count": 2}}},
+        }
+
+        executive_html = account_console.render_v31_executive_panel(payloads)
+        manual_html = account_console.render_v31_manual_review_panel(payloads)
+        learning_html = account_console.render_v31_learning_panel(payloads)
+
+        self.assertIn("Estado Ejecutivo V31", executive_html)
+        self.assertIn("broker_capacity", executive_html)
+        self.assertIn("Revision Manual V31", manual_html)
+        self.assertIn("APPROVED_FOR_MANUAL_TRADE", manual_html)
+        self.assertIn("/manual-review-event", manual_html)
+        self.assertIn("No accionables descartadas del inbox", manual_html)
+        self.assertIn("Broker check: faltante=11500", manual_html)
+        self.assertNotIn('<input name="ticker" value="MSFT"', manual_html)
+        self.assertIn("Learning y Performance", learning_html)
+
+    def test_local_question_answer_uses_v31_payload_without_inventing(self):
+        payloads = {
+            "executive": {
+                "ok": True,
+                "data": {
+                    "answer_to_user": "Motor corrio: sin ENTRY_READY.",
+                    "blocked_cause_groups": [{"cause": "options_data", "count": 2, "tickers": ["TLT"]}],
+                },
+            },
+            "rankings": {
+                "ok": True,
+                "data": {
+                    "top_recommendations": [],
+                    "blocked_or_waiting": [
+                        {
+                            "ticker": "MSFT",
+                            "strategy": "NAKED_PUT",
+                            "final_state": "RISK_BLOCKED",
+                            "primary_block_reason": "Delta fuera de rango",
+                            "selected_contract": {"strike": 365, "expiration": "20260821"},
+                        }
+                    ],
+                },
+            },
+        }
+
+        answer = account_console.local_question_answer("por que esta bloqueado MSFT", payloads)
+
+        self.assertIn("MSFT", answer)
+        self.assertIn("RISK_BLOCKED", answer)
+        self.assertIn("Delta fuera de rango", answer)
+        self.assertIn("No autoriza ordenes", answer)
+
+    def test_remote_cache_keeps_multiple_console_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = account_console.REMOTE_CACHE_PATH
+            account_console.REMOTE_CACHE_PATH = Path(tmp) / "remote_cache.json"
+            try:
+                account_console.write_remote_cache(
+                    "/gpt_v31_executive_status?limit=8",
+                    {"ok": True, "token_present": True, "url": "https://example.test/a", "data": {"status": "OK"}},
+                )
+                account_console.write_remote_cache(
+                    "/gpt_v31_daily_rankings",
+                    {"ok": True, "token_present": True, "url": "https://example.test/b", "data": {"top_recommendations": []}},
+                )
+
+                executive = account_console.read_remote_cache("/gpt_v31_executive_status?limit=8")
+                rankings = account_console.read_remote_cache("/gpt_v31_daily_rankings")
+
+                self.assertEqual(executive["data"]["status"], "OK")
+                self.assertEqual(rankings["data"]["top_recommendations"], [])
+                self.assertTrue(executive["cached"])
+                self.assertTrue(rankings["cached"])
+            finally:
+                account_console.REMOTE_CACHE_PATH = original_path
+
+    def test_console_last_action_status_distinguishes_partial_bridge_refresh(self):
+        result = {
+            "returncode": 1,
+            "partial_refresh_ok": True,
+            "operator_status": "PARTIAL_REFRESH_OK",
+            "stdout_tail": "BRIDGE_TIMEOUT",
+        }
+
+        self.assertIn("PARCIAL", account_console.console_last_action_status(result))
+        self.assertIn("contexto fallback", account_console.console_last_action_summary(result))
+
+        legacy_result = {
+            "returncode": 1,
+            "stdout_tail": "status: BRIDGE_TIMEOUT\n--- account context fallback ---\nstatus: FALLBACK_PUBLISHED\nok: True\n",
+        }
+
+        self.assertIn("PARCIAL", account_console.console_last_action_status(legacy_result))
+
+    def test_notification_test_panel_exposes_preview_and_safe_test_actions(self):
+        html = account_console.render_notification_test_panel()
+
+        self.assertIn("Prueba de notificaciones", html)
+        self.assertIn('action="/notification-preview"', html)
+        self.assertIn('action="/notification-test-email"', html)
+        self.assertIn('action="/notification-test-push"', html)
+        self.assertIn("No autoriza ordenes", html)
 
 
 if __name__ == "__main__":

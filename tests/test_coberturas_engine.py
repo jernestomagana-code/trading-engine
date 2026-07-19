@@ -225,6 +225,144 @@ class CoberturasEngineTests(unittest.TestCase):
             self.assertEqual(payload["strategy_scenarios"]["buy_100_sell_call"]["gamma_alignment"]["status"], "SUPPORTIVE")
             self.assertIn("margin_decision_sensitivity", payload["strategy_recommendation"])
 
+    def test_operating_plan_includes_management_ev_and_learning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            original_context = ce.MANUAL_CONTEXT_PATH
+            original_journal = ce.JOURNAL_PATH
+            ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
+            ce.JOURNAL_PATH = runtime / "coberturas_rsp_journal.json"
+            try:
+                ce.write_manual_context({
+                    "spot": "214",
+                    "position_mode": "NO_SHARES",
+                    "support_levels": "210,208",
+                    "resistance_levels": "220",
+                    "expected_move_low": "211",
+                    "expected_move_high": "216",
+                    "call_wall": "220",
+                    "gamma_bias": "positivo",
+                })
+                (runtime / "ibkr_account_capacity_latest.json").write_text(
+                    json.dumps({"available_funds": 25000, "buying_power": 80000, "available": True}),
+                    encoding="utf-8",
+                )
+                (runtime / "coberturas_rsp_journal.json").write_text(
+                    json.dumps([
+                        {"strategy": "SELL_PUT", "status": "CLOSED", "realized_pnl": 60},
+                        {"strategy": "BUY_100_SELL_CALL", "status": "CLOSED", "realized_pnl": -25},
+                    ]),
+                    encoding="utf-8",
+                )
+                (runtime / "v32_ibkr_chain_coverage.json").write_text(
+                    json.dumps({
+                        "option_rows": [
+                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 0.9, "ask": 1.1},
+                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 0.8, "ask": 1.0},
+                        ],
+                        "chain_by_ticker": {"RSP": {}},
+                        "not_order_instruction": True,
+                    }),
+                    encoding="utf-8",
+                )
+                payload = ce.build_recommendation(runtime)
+            finally:
+                ce.MANUAL_CONTEXT_PATH = original_context
+                ce.JOURNAL_PATH = original_journal
+            self.assertIn("position_manager", payload)
+            self.assertIn("exit_rules", payload)
+            self.assertIn("strategy_operating_plan", payload)
+            self.assertIn("learning_journal", payload)
+            self.assertIn("expected_value", payload["strategy_scenarios"]["sell_put"])
+            self.assertIn("composite_success_probability", payload["strategy_scenarios"]["buy_100_sell_call"])
+            self.assertEqual(payload["learning_journal"]["closed_count"], 2)
+            self.assertFalse(payload["strategy_operating_plan"]["execution_authorized"])
+
+    def test_margin_preview_is_not_reported_as_open_position(self):
+        runtime_data = {
+            "coberturas_rsp_margin_preview_latest.json": {
+                "previews": [
+                    {
+                        "ticker": "RSP",
+                        "strategy": "SELL_PUT",
+                        "quantity": 1,
+                        "what_if": True,
+                        "status": "MARGIN_PREVIEW_PARTIAL",
+                    }
+                ]
+            },
+            "ibkr_account_capacity_latest.json": {"available": True},
+        }
+
+        position = ce.extract_position_state(runtime_data, {"position_mode": "AUTO"})
+
+        self.assertEqual(position["state"], "NO_SHARES")
+        self.assertEqual(position["open_rsp_options"], [])
+
+    def test_known_but_insufficient_capacity_is_not_called_missing_capital(self):
+        scenarios = {
+            "sell_put": {
+                "available": True,
+                "decision_capital_required": 21000,
+                "decision_return_on_capital_pct": 0.29,
+                "can_afford_by_available_funds": False,
+                "can_afford_by_buying_power": False,
+            },
+            "buy_100_sell_call": {
+                "available": True,
+                "decision_capital_required": 21480,
+                "decision_return_on_capital_pct": 1.26,
+                "can_afford_by_available_funds": False,
+                "can_afford_by_buying_power": False,
+            },
+        }
+
+        recommendation = ce.build_strategy_recommendation(scenarios, [])
+
+        self.assertEqual(recommendation["status"], "WAIT_ACCOUNT_CAPACITY")
+        self.assertEqual(recommendation["blockers"], ["INSUFFICIENT_ACCOUNT_CAPACITY"])
+        self.assertIn("capital conservador si esta calculado", recommendation["reason"])
+        self.assertNotIn("CAPITAL_DATA_MISSING", json.dumps(recommendation))
+
+    def test_capacity_is_recovered_from_canonical_snapshot(self):
+        runtime_data = {
+            "v28_master_snapshot.json": {
+                "data": {
+                    "account_context": {
+                        "available": True,
+                        "available_funds": 15.76,
+                        "buying_power": 15.76,
+                        "net_liquidation": 15.76,
+                        "sensitive_identifiers_excluded": True,
+                    }
+                }
+            }
+        }
+        capacity = ce.extract_account_capacity(runtime_data)
+        self.assertEqual(capacity["available_funds"], 15.76)
+        self.assertEqual(capacity["buying_power"], 15.76)
+        self.assertTrue(capacity["sensitive_identifiers_excluded"])
+
+    def test_manual_context_is_recovered_from_canonical_snapshot(self):
+        runtime_data = {
+            "v28_master_snapshot.json": {
+                "data": {
+                    "coberturas_rsp_manual_context": {
+                        "context_version": "coberturas_rsp_manual_context_v1",
+                        "ticker": "RSP",
+                        "spot": 215.15,
+                        "support_levels": [214.4],
+                        "not_order_instruction": True,
+                    }
+                }
+            }
+        }
+        context = ce.extract_manual_context(runtime_data)
+        self.assertTrue(context["available"])
+        self.assertEqual(context["spot"], 215.15)
+        self.assertEqual(context["support_levels"], [214.4])
+
 
 if __name__ == "__main__":
     unittest.main()

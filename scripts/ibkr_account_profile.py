@@ -29,6 +29,11 @@ if str(ROOT) not in sys.path:
 
 import alert_lifecycle as shared_alert_lifecycle
 import coberturas_engine as shared_coberturas_engine
+import gamma_context_store as shared_gamma_context_store
+import position_management as shared_position_management
+import position_management_journal as shared_position_management_journal
+import position_context_store as shared_position_context_store
+import position_state_alerts as shared_position_state_alerts
 
 RUNTIME = ROOT / "runtime"
 PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
@@ -36,6 +41,10 @@ ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
 WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
+POSITION_MANAGEMENT_JOURNAL_PATH = RUNTIME / "active_position_management_journal.json"
+POSITION_CONTEXTS_PATH = RUNTIME / "active_position_contexts.json"
+GAMMA_CONTEXTS_PATH = RUNTIME / "gamma_contexts.json"
+POSITION_STATE_ALERTS_PATH = RUNTIME / "active_position_state_alerts.json"
 ACCOUNT_CAPACITY_PATH = RUNTIME / "ibkr_account_capacity_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
@@ -1512,6 +1521,7 @@ def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]
     return {
         "executive": fetch_remote_json("/gpt_v31_executive_status?limit=8", prefer_cache=prefer_cache),
         "rankings": fetch_remote_json("/gpt_v31_daily_rankings", prefer_cache=prefer_cache),
+        "active_positions": fetch_remote_json("/v31_active_position_management", prefer_cache=prefer_cache),
         "monitor": fetch_remote_json("/v31_monitor_status", prefer_cache=prefer_cache),
         "reviews": fetch_remote_json("/v31_manual_reviews?limit=250", prefer_cache=prefer_cache),
         "learning": fetch_remote_json("/v31_manual_review_learning?limit=250", prefer_cache=prefer_cache),
@@ -1719,7 +1729,7 @@ def render_console_health(
       </div>
       <div class="control-facts">
         <span><b>Produccion</b>{production}</span>
-        <span><b>IBKR</b>{ibkr}</span>
+        <span title="IBKR: {ibkr}"><b>IBKR</b>{ibkr}</span>
         <span><b>Contexto GPT</b>{context}</span>
         <span title="{snapshot_hint}"><b>Datos snapshot</b>{snapshot}</span>
         <span><b>Capacidad</b>{capacity}</span>
@@ -2851,26 +2861,26 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
             <div class="panel">
               <h2>Gamma y niveles del dia</h2>
               <form method="post" action="/coberturas/rsp/manual_context">
-                <label>Modo posicion</label>
-                <select name="position_mode">
+                <label for="rsp-position-mode">Modo posicion</label>
+                <select id="rsp-position-mode" name="position_mode">
                   <option value="AUTO">Auto desde IBKR</option>
                   <option value="NO_SHARES">Sin acciones</option>
                   <option value="WITH_SHARES">Con acciones</option>
                   <option value="SHORT_PUT_OPEN">Put abierta</option>
                   <option value="SHORT_CALL_OPEN">Call abierta</option>
                 </select>
-                <label>Lectura completa de gamma / captura</label>
-                <textarea name="gamma_blob" placeholder="Pega aqui el texto que salga de la captura: spot, soportes, resistencias, expected move, call wall, put wall, sesgo gamma.">{gamma_blob}</textarea>
-                <label>Spot RSP</label><input name="spot" value="{spot_value}">
-                <label>Soportes separados por coma</label><input name="support_levels" value="{supports}">
-                <label>Resistencias separadas por coma</label><input name="resistance_levels" value="{resistances}">
-                <label>Expected move bajo</label><input name="expected_move_low" value="{expected_low}">
-                <label>Expected move alto</label><input name="expected_move_high" value="{expected_high}">
-                <label>Call wall</label><input name="call_wall" value="{call_wall}">
-                <label>Put wall</label><input name="put_wall" value="{put_wall}">
-                <label>Sesgo gamma</label><input name="gamma_bias" value="{gamma_bias}">
-                <label>Notas gamma / captura</label><textarea name="gamma_notes">{gamma_notes}</textarea>
-                <label>Notas grafico</label><textarea name="chart_notes">{chart_notes}</textarea>
+                <label for="rsp-gamma-blob">Lectura completa de gamma / captura</label>
+                <textarea id="rsp-gamma-blob" name="gamma_blob" placeholder="Pega aqui el texto que salga de la captura: spot, soportes, resistencias, expected move, call wall, put wall, sesgo gamma.">{gamma_blob}</textarea>
+                <label for="rsp-spot">Spot RSP</label><input id="rsp-spot" name="spot" value="{spot_value}">
+                <label for="rsp-supports">Soportes separados por coma</label><input id="rsp-supports" name="support_levels" value="{supports}">
+                <label for="rsp-resistances">Resistencias separadas por coma</label><input id="rsp-resistances" name="resistance_levels" value="{resistances}">
+                <label for="rsp-expected-low">Expected move bajo</label><input id="rsp-expected-low" name="expected_move_low" value="{expected_low}">
+                <label for="rsp-expected-high">Expected move alto</label><input id="rsp-expected-high" name="expected_move_high" value="{expected_high}">
+                <label for="rsp-call-wall">Call wall</label><input id="rsp-call-wall" name="call_wall" value="{call_wall}">
+                <label for="rsp-put-wall">Put wall</label><input id="rsp-put-wall" name="put_wall" value="{put_wall}">
+                <label for="rsp-gamma-bias">Sesgo gamma</label><input id="rsp-gamma-bias" name="gamma_bias" value="{gamma_bias}">
+                <label for="rsp-gamma-notes">Notas gamma / captura</label><textarea id="rsp-gamma-notes" name="gamma_notes">{gamma_notes}</textarea>
+                <label for="rsp-chart-notes">Notas grafico</label><textarea id="rsp-chart-notes" name="chart_notes">{chart_notes}</textarea>
                 <button type="submit">Guardar contexto RSP</button>
               </form>
             </div>
@@ -2896,11 +2906,11 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
             <h2>Bitacora RSP</h2>
             <form method="post" action="/coberturas/rsp/journal">
               <div class="grid">
-                <div><label>Estrategia</label><select name="strategy"><option>SELL_PUT</option><option>BUY_100_SELL_CALL</option><option>MANAGE_OPEN_POSITION</option></select></div>
-                <div><label>Estado</label><select name="status"><option>OPEN</option><option>CLOSED</option><option>ROLLED</option><option>ASSIGNED</option><option>EXPIRED</option></select></div>
-                <div><label>P/L realizado</label><input name="realized_pnl" placeholder="0.00"></div>
+                <div><label for="rsp-journal-strategy">Estrategia</label><select id="rsp-journal-strategy" name="strategy"><option>SELL_PUT</option><option>BUY_100_SELL_CALL</option><option>MANAGE_OPEN_POSITION</option></select></div>
+                <div><label for="rsp-journal-status">Estado</label><select id="rsp-journal-status" name="status"><option>OPEN</option><option>CLOSED</option><option>ROLLED</option><option>ASSIGNED</option><option>EXPIRED</option></select></div>
+                <div><label for="rsp-journal-pnl">P/L realizado</label><input id="rsp-journal-pnl" name="realized_pnl" placeholder="0.00"></div>
               </div>
-              <label>Decision / notas</label><textarea name="notes" placeholder="Que hicimos y por que."></textarea>
+              <label for="rsp-journal-notes">Decision / notas</label><textarea id="rsp-journal-notes" name="notes" placeholder="Que hicimos y por que."></textarea>
               <button type="submit">Registrar en bitacora</button>
             </form>
           </section>
@@ -3907,6 +3917,345 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
     )
 
 
+def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]:
+    runtime_data: dict[str, Any] = {}
+    newest_mtime = None
+    if RUNTIME.exists():
+        for path in RUNTIME.glob("*.json"):
+            if not path.is_file():
+                continue
+            data = load_json_file(path)
+            if isinstance(data, dict) and data:
+                runtime_data[path.name] = data
+                try:
+                    mtime = path.stat().st_mtime
+                    newest_mtime = mtime if newest_mtime is None else max(newest_mtime, mtime)
+                except Exception:
+                    pass
+    snapshot_data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+    generated_at = snapshot_data.get("generated_at") or snapshot.get("generated_at") or snapshot.get("mtime")
+    if newest_mtime is not None:
+        try:
+            generated_at = datetime.fromtimestamp(newest_mtime, timezone.utc).isoformat()
+        except Exception:
+            pass
+    context = {
+        "generated_at": generated_at,
+        "runtime_data": runtime_data,
+        **runtime_data,
+    }
+    for key in ["account_context", "account_scope", "account_alias", "technical_snapshot", "positions"]:
+        if snapshot_data.get(key) not in [None, "", [], {}]:
+            context[key] = snapshot_data.get(key)
+    local_contexts = shared_position_context_store.load_contexts(POSITION_CONTEXTS_PATH)
+    context["active_position_contexts"] = local_contexts
+    context["gamma_contexts"] = shared_gamma_context_store.load_contexts(GAMMA_CONTEXTS_PATH)
+    return context
+
+
+def console_active_position_management(snapshot: dict[str, Any] | None = None, v31_payloads: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    snapshot = snapshot if isinstance(snapshot, dict) else latest_master_snapshot()
+    v31_payloads = v31_payloads if isinstance(v31_payloads, dict) else {}
+    remote_result = v31_payloads.get("active_positions") if isinstance(v31_payloads.get("active_positions"), dict) else {}
+    remote = remote_result.get("data") if isinstance(remote_result.get("data"), dict) else {}
+    data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+    if isinstance(data, dict):
+        data = dict(data)
+        data["active_position_contexts"] = shared_position_context_store.load_contexts(POSITION_CONTEXTS_PATH)
+        data["gamma_contexts"] = shared_gamma_context_store.load_contexts(GAMMA_CONTEXTS_PATH)
+    existing = data.get("active_position_management") if isinstance(data.get("active_position_management"), dict) else {}
+    if existing.get("position_management_version"):
+        local = dict(existing)
+        local["source"] = "local_master_snapshot_embedded"
+        local["source_path"] = snapshot.get("path") or ""
+    else:
+        try:
+            local = shared_position_management.build_active_position_management(data)
+            local["source"] = "local_master_snapshot_recalculated"
+            local["source_path"] = snapshot.get("path") or ""
+        except Exception as exc:
+            local = {
+                "position_management_version": "active_position_management_v1",
+                "status": "ERROR",
+                "positions_found": 0,
+                "positions_requiring_review": 0,
+                "risk_review_count": 0,
+                "positions": [],
+                "summary": {},
+                "error": str(exc)[:180],
+                "source": "local_master_snapshot_error",
+                "not_order_instruction": True,
+                "execution_authorized": False,
+                "can_operate": False,
+            }
+    if int(local.get("positions_found") or 0) == 0:
+        try:
+            runtime_context = console_runtime_position_context(snapshot)
+            runtime_local = shared_position_management.build_active_position_management(runtime_context)
+            if int(runtime_local.get("positions_found") or 0) > 0:
+                local = runtime_local
+                local["source"] = "local_runtime_recalculated"
+                local["source_path"] = "runtime/*.json"
+        except Exception:
+            pass
+    remote_positions = int(remote.get("positions_found") or 0) if remote else 0
+    local_positions = int(local.get("positions_found") or 0)
+    if remote.get("position_management_version") and (local_positions == 0 and remote_positions > 0):
+        payload = dict(remote)
+        payload["source"] = "remote_v31_active_position_management"
+        payload["remote_cached"] = bool(remote_result.get("cached"))
+        payload["remote_error"] = remote_result.get("live_error") or remote_result.get("error") or ""
+    else:
+        payload = local
+        payload["remote_available"] = bool(remote.get("position_management_version"))
+        payload["remote_error"] = remote_result.get("live_error") or remote_result.get("error") or ""
+    payload["console_endpoint"] = "/active-positions"
+    payload["not_order_instruction"] = True
+    payload["execution_authorized"] = False
+    payload["can_operate"] = False
+    try:
+        state_alerts = shared_position_state_alerts.update_from_management(payload, POSITION_STATE_ALERTS_PATH)
+        payload["state_change_alerts"] = {
+            "state_alert_version": state_alerts.get("state_alert_version"),
+            "latest_alerts": state_alerts.get("latest_alerts") or [],
+            "alert_count": len(state_alerts.get("alerts") or []),
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+    except Exception:
+        payload["state_change_alerts"] = shared_position_state_alerts.summary(POSITION_STATE_ALERTS_PATH)
+    payload["management_journal"] = shared_position_management_journal.summary(POSITION_MANAGEMENT_JOURNAL_PATH)
+    payload["management_journal_evaluation"] = shared_position_management_journal.evaluate_against_management(
+        payload,
+        path=POSITION_MANAGEMENT_JOURNAL_PATH,
+    )
+    return payload
+
+
+def position_badge(value: Any) -> str:
+    text = str(value or "UNKNOWN").upper()
+    klass = "neutral"
+    if text in {"NO_ACTION_RECOMMENDED", "MONITOR", "NO_POSITION"}:
+        klass = "ok"
+    elif "REFRESH" in text or "WAIT" in text:
+        klass = "warn"
+    elif "RISK" in text or "DEFENSIVE" in text or "ASSIGNMENT" in text:
+        klass = "risk"
+    elif "REVIEW" in text:
+        klass = "info"
+    return '<span class="badge {}">{}</span>'.format(klass, html_escape(text))
+
+
+def render_position_management_card(item: dict[str, Any]) -> str:
+    technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
+    thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
+    reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+    warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
+    blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+    reason_text = "; ".join(str(x) for x in (reasons[:2] or warnings[:2] or blockers[:2])) or "Sin nota adicional."
+    contract_bits = [
+        item.get("strategy"),
+        item.get("sec_type"),
+        ("qty " + str(item.get("position_size"))) if item.get("position_size") is not None else "",
+        ("strike " + str(item.get("strike"))) if item.get("strike") is not None else "",
+        ("DTE " + str(item.get("dte"))) if item.get("dte") is not None else "",
+    ]
+    market_bits = [
+        "trend=" + str(technical.get("trend") or "UNKNOWN"),
+        "precio=" + str(item.get("underlying_price") or "pendiente"),
+        "soporte=" + str(technical.get("support") or "pendiente"),
+        "resistencia=" + str(technical.get("resistance") or "pendiente"),
+        "gamma=" + ("OK" if technical.get("gamma_available") else "pendiente"),
+    ]
+    return """
+    <article class="alert-card position-card">
+      <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
+      <div class="success-line">{state}</div>
+      <span>{contract}</span>
+      <div class="economics-line">Captura prima: {capture} | PnL: {pnl} | Peso: {weight}</div>
+      <div class="capacity-line">{market}</div>
+      <div class="review-line">{reason}</div>
+      <small>warnings: {warnings} | blockers: {blockers}</small>
+      <details class="diagnostic-alerts">
+        <summary>Editar tesis y datos de entrada</summary>
+        <form method="post" action="/position-context" class="alert-actions" data-busy="Guardando tesis de posicion" data-busy-detail="Actualiza contexto local para el motor. No ejecuta ordenes.">
+          <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="ticker" value="{ticker_raw}">
+          <input type="hidden" name="strategy" value="{strategy_raw}">
+          <label>Tesis / razon de entrada</label>
+          <input name="thesis_text" value="{thesis_text}" placeholder="Ej. soporte intacto, prima vendida por IV alta">
+          <div class="fill-grid">
+            <input name="invalidation_level" value="{invalidation}" placeholder="Invalidacion / soporte clave">
+            <input name="target" value="{target}" placeholder="Target / captura">
+          </div>
+          <div class="fill-grid">
+            <input name="entry_credit" value="{entry_credit}" placeholder="Credito entrada">
+            <input name="entry_date" value="{entry_date}" placeholder="Fecha entrada YYYY-MM-DD">
+          </div>
+          <input name="roll_plan" value="{roll_plan}" placeholder="Plan de roll / asignacion">
+          <p><button>Guardar tesis</button></p>
+        </form>
+      </details>
+      <form method="post" action="/position-management-event" class="alert-actions" data-busy="Registrando gestion de posicion" data-busy-detail="Guarda bitacora local. No ejecuta ordenes.">
+        <input type="hidden" name="position_id" value="{position_id}">
+        <input type="hidden" name="ticker" value="{ticker_raw}">
+        <input type="hidden" name="strategy" value="{strategy_raw}">
+        <input type="hidden" name="recommended_action" value="{recommended_action}">
+        <input type="hidden" name="recommended_state" value="{recommended_state}">
+        <input name="operator_reason" placeholder="Nota breve de revision">
+        <div class="actions">
+          <button class="secondary" name="operator_action" value="NO_ACTION_TAKEN">No tocar</button>
+          <button name="operator_action" value="MANUAL_CLOSE_REVIEWED">Revise cierre</button>
+          <button name="operator_action" value="MANUAL_ROLL_REVIEWED">Revise roll</button>
+          <button name="operator_action" value="ASSIGNMENT_REVIEWED">Asignacion</button>
+          <button name="operator_action" value="RISK_REDUCTION_REVIEWED">Riesgo</button>
+          <button class="secondary" name="operator_action" value="DATA_REFRESHED">Datos frescos</button>
+        </div>
+      </form>
+    </article>
+    """.format(
+        ticker=html_escape(item.get("ticker") or "UNKNOWN"),
+        ticker_raw=html_escape(item.get("ticker") or ""),
+        position_id=html_escape(item.get("position_id") or ""),
+        strategy_raw=html_escape(item.get("strategy") or ""),
+        recommended_action=html_escape(item.get("management_action") or ""),
+        recommended_state=html_escape(item.get("exit_state") or ""),
+        thesis_text=html_escape(thesis.get("text") or ""),
+        invalidation=html_escape(thesis.get("invalidation_level") or ""),
+        target=html_escape(thesis.get("target") or ""),
+        entry_credit=html_escape(item.get("entry_credit") or ""),
+        entry_date=html_escape(item.get("entry_date") or ""),
+        roll_plan=html_escape(thesis.get("roll_plan") or ""),
+        action=position_badge(item.get("management_action")),
+        state=position_badge(item.get("exit_state")),
+        contract=html_escape(" | ".join(str(bit) for bit in contract_bits if bit not in [None, ""])),
+        capture=html_escape(str(item.get("premium_capture_pct") if item.get("premium_capture_pct") is not None else "pendiente")),
+        pnl=html_escape(str(item.get("unrealized_pl") if item.get("unrealized_pl") is not None else "pendiente")),
+        weight=html_escape(str(item.get("portfolio_weight_pct") if item.get("portfolio_weight_pct") is not None else "pendiente")),
+        market=html_escape(" | ".join(market_bits)),
+        reason=html_escape(reason_text),
+        warnings=html_escape(", ".join(str(x) for x in warnings[:4]) or "none"),
+        blockers=html_escape(", ".join(str(x) for x in blockers[:4]) or "none"),
+    )
+
+
+def render_active_positions_panel(snapshot: dict[str, Any], v31_payloads: dict[str, dict[str, Any]], active: dict[str, Any]) -> str:
+    payload = console_active_position_management(snapshot, v31_payloads)
+    journal_summary = shared_position_management_journal.summary(POSITION_MANAGEMENT_JOURNAL_PATH)
+    journal_evaluation = shared_position_management_journal.evaluate_against_management(payload, path=POSITION_MANAGEMENT_JOURNAL_PATH)
+    positions = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    freshness = payload.get("freshness") if isinstance(payload.get("freshness"), dict) else {}
+    portfolio_risk = payload.get("portfolio_risk") if isinstance(payload.get("portfolio_risk"), dict) else {}
+    battle_plan = payload.get("battle_plan") if isinstance(payload.get("battle_plan"), dict) else {}
+    state_alerts = payload.get("state_change_alerts") if isinstance(payload.get("state_change_alerts"), dict) else {}
+    top_step = battle_plan.get("top_step") if isinstance(battle_plan.get("top_step"), dict) else {}
+    alias = active.get("account_alias") or ""
+    disabled = "" if alias else " disabled"
+    if positions:
+        cards = "".join(render_position_management_card(item) for item in positions[:8] if isinstance(item, dict))
+    else:
+        cards = """
+        <div class="tiles">
+          <div class="tile">Sin posiciones activas detectadas<span>Corre Refresh IBKR para leer posiciones del broker.</span></div>
+          <div class="tile">Fuente<span>{source}</span></div>
+        </div>
+        """.format(source=html_escape(payload.get("source") or "sin fuente"))
+    alert_rows = "".join(
+        "<li><strong>{ticker}</strong><small>{old} -> {new}</small></li>".format(
+            ticker=html_escape(alert.get("ticker") or "UNKNOWN"),
+            old=html_escape(alert.get("from_management_action") or "NONE"),
+            new=html_escape(alert.get("to_management_action") or "NONE"),
+        )
+        for alert in (state_alerts.get("latest_alerts") or [])[:5]
+        if isinstance(alert, dict)
+    )
+    alerts_html = ""
+    if alert_rows:
+        alerts_html = """
+        <div class="daily-open-summary summary-amber">
+          <h3>Cambios de estado detectados</h3>
+          <ol class="timeline">{rows}</ol>
+        </div>
+        """.format(rows=alert_rows)
+    next_text = "Sin accion inmediata; monitorear." if not payload.get("manual_review_required") else "Hay posicion(es) que requieren revision manual."
+    if summary.get("top_action"):
+        next_text = "{} Accion principal: {} en {}.".format(next_text, summary.get("top_action"), summary.get("top_ticker") or "N/D")
+    return """
+    <section class="panel positions-panel">
+      <div class="section-head">
+        <h2>Posiciones activas</h2>
+        <p>{next_text}</p>
+      </div>
+      <div class="tiles compact-status">
+        <a class="tile inline-link" href="/active-positions">Estado {status}<span>Fuente: {source}</span></a>
+        <div class="tile">Posiciones<span>{positions_found} detectada(s)</span></div>
+        <div class="tile">Revisar<span>{review_count} requieren atencion</span></div>
+        <div class="tile">Riesgo<span>{risk_count} en revision de riesgo</span></div>
+        <div class="tile">Portfolio<span>{portfolio_status} · puts ${short_put_notional}</span></div>
+        <div class="tile">Plan<span>{top_step}</span></div>
+        <div class="tile">Frescura<span>{freshness} · {age}</span></div>
+        <div class="tile">Bitacora<span>{journal_count} evento(s) registrados</span></div>
+        <div class="tile">Follow-up<span>{pending_followup} pendiente(s)</span></div>
+      </div>
+      <div class="alert-grid">{cards}</div>
+      {alerts_html}
+      <form method="post" action="/bridge" class="hero-actions" data-busy="Refrescando posiciones IBKR" data-busy-detail="Lee broker, posiciones, opciones y publica snapshot. No ejecuta ordenes.">
+        <input name="alias" value="{alias}" type="hidden">
+        <button{disabled}>Refresh posiciones IBKR</button>
+        <span>Usa esto antes de administrar posiciones si ves REFRESH_DATA, contexto viejo o datos faltantes.</span>
+      </form>
+    </section>
+    """.format(
+        next_text=html_escape(next_text),
+        status=html_escape(payload.get("status") or "UNKNOWN"),
+        source=html_escape(payload.get("source") or "unknown"),
+        positions_found=html_escape(payload.get("positions_found", 0)),
+        review_count=html_escape(payload.get("positions_requiring_review", 0)),
+        risk_count=html_escape(payload.get("risk_review_count", 0)),
+        portfolio_status=html_escape(portfolio_risk.get("status") or "UNKNOWN"),
+        short_put_notional=html_escape("{:,.0f}".format(float(portfolio_risk.get("short_put_notional") or 0))),
+        top_step=html_escape(top_step.get("label") or "sin accion inmediata"),
+        freshness=html_escape(freshness.get("status") or "UNKNOWN"),
+        age=html_escape(age_label(payload.get("generated_at"))),
+        journal_count=html_escape(journal_summary.get("event_count", 0)),
+        pending_followup=html_escape(journal_evaluation.get("pending_followup_count", 0)),
+        cards=cards,
+        alerts_html=alerts_html,
+        alias=html_escape(alias),
+        disabled=disabled,
+    )
+
+
+def render_gamma_context_panel() -> str:
+    summary = shared_gamma_context_store.summary(GAMMA_CONTEXTS_PATH)
+    latest = summary.get("latest_context") if isinstance(summary.get("latest_context"), dict) else {}
+    return """
+    <section class="panel embedded-support-panel">
+      <div class="section-head">
+        <h2>Gamma manual</h2>
+        <p>Usa JSON/manual cuando no hay fuente externa. Esto alimenta gamma_wall, call_wall, put_wall y zero_gamma al motor.</p>
+      </div>
+      <div class="tiles compact-status">
+        <div class="tile">Tickers<span>{tickers}</span></div>
+        <div class="tile">Ultimo<span>{latest}</span></div>
+      </div>
+      <form method="post" action="/gamma-context" class="hero-actions" data-busy="Guardando gamma manual" data-busy-detail="Actualiza runtime/gamma_contexts.json. No ejecuta ordenes.">
+        <input name="ticker" placeholder="Ticker">
+        <input name="gamma_wall" placeholder="Gamma wall">
+        <input name="call_wall" placeholder="Call wall">
+        <input name="put_wall" placeholder="Put wall">
+        <input name="zero_gamma" placeholder="Zero gamma">
+        <input name="notes" placeholder="Notas / fuente">
+        <button>Guardar gamma</button>
+      </form>
+    </section>
+    """.format(
+        tickers=html_escape(", ".join(summary.get("tickers") or []) or "sin gamma manual"),
+        latest=html_escape((latest.get("ticker") or "N/D") + " " + str(latest.get("as_of") or "")),
+    )
+
+
 def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> str:
     profile_cards = []
     for alias in sorted(profiles):
@@ -4198,6 +4547,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     admin_support = render_support_bundle(
         "Capacidad y administracion operativa",
         render_account_capacity_panel(operator_payload, snapshot),
+        render_gamma_context_panel(),
         render_console_actions(active, snapshot, operator_payload),
     )
 
@@ -4238,6 +4588,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         <title>Stock Ultimus Console</title>
         <style>
           :root {{ --ink:#111827; --muted:#5b6472; --paper:#f4f7fb; --card:#ffffff; --soft:#f8fafc; --accent:#11725f; --accent-strong:#0f5f50; --line:#d9e2ec; --warn:#a45f09; --risk:#b42318; --info:#2563eb; --display: ui-serif, Georgia, Cambria, "Times New Roman", serif; --body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+          *,*::before,*::after {{ box-sizing:border-box; }}
+          html,body {{ max-width:100%; overflow-x:clip; }}
           body {{ margin:0; font-family:var(--body); color:var(--ink); background:var(--paper); }}
           main {{ max-width:1180px; margin:0 auto; padding:28px 18px 60px; }}
           h1 {{ font-family:var(--display); font-size:3.25rem; line-height:1; margin:0 0 12px; letter-spacing:0; }}
@@ -4268,6 +4620,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .control-facts b {{ color:var(--muted); font-size:.66rem; text-transform:uppercase; margin-bottom:1px; }}
           .thinking-now {{ border-left:1px solid var(--line); padding-left:10px; }}
           .operator-next {{ grid-column:1 / -1; display:grid; grid-template-columns:180px 1fr auto; gap:10px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:9px 11px; background:#ffffff; }}
+          .signal,.thinking-now,.control-facts,.operator-next,.top-quick-actions {{ min-width:0; }}
+          .signal strong,.signal small,.thinking-now strong,.thinking-now small,.operator-next strong,.operator-next small,.top-quick-actions span {{ overflow-wrap:anywhere; }}
           .operator-next span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:900; }}
           .operator-next strong {{ font-size:1rem; line-height:1.25; }}
           .operator-next small {{ color:var(--muted); font-weight:800; }}
@@ -4314,6 +4668,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           button:disabled {{ opacity:.62; cursor:wait; }}
           button.secondary {{ background:#475569; }}
           .panel {{ padding:20px; margin-top:20px; }}
+          main,section,details,.panel,.support-bundle,.embedded-support-panel {{ min-width:0; max-width:100%; }}
+          details:not([open]) > :not(summary) {{ display:none; }}
+          details strong,details span,details small,details p {{ overflow-wrap:anywhere; }}
           .job-panel {{ border-color:#b88b2a; background:#fff8e7; }}
           .job-panel.status-done {{ border-color:#1d6b4f; background:#eef8ef; }}
           .job-panel.status-error {{ border-color:var(--risk); background:#fff1ef; }}
@@ -4326,6 +4683,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .compact-status .tile span {{ font-size:.84rem; line-height:1.28; }}
           .module-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }}
           .module-card {{ display:flex; gap:11px; align-items:flex-start; border:1px solid var(--line); background:var(--card); border-radius:8px; padding:12px; }}
+          .module-card > div,.timeline li > div {{ min-width:0; }}
           .module-card strong,.module-card span,.module-card small {{ display:block; }}
           .module-card span {{ color:var(--ink); margin-top:2px; }}
           .module-card small {{ color:var(--muted); margin-top:3px; }}
@@ -4341,6 +4699,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .market-panel {{ border-color:#bfd7ff; background:#f5f9ff; }}
           .intraday-panel {{ border-color:#8ecae6; background:#f5fbff; }}
           .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
+          .positions-panel {{ border-left:6px solid #2563eb; background:#f7fbff; }}
+          .position-card {{ border-color:#bfd7ff; }}
           .operator-alerts-panel {{ border-left:6px solid #d97706; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
@@ -4412,7 +4772,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           table {{ width:100%; border-collapse:collapse; }}
           th,td {{ padding:8px 9px; border-bottom:1px solid var(--line); text-align:left; font-size:.9rem; vertical-align:top; }}
           th {{ color:var(--muted); text-transform:uppercase; font-size:.72rem; }}
-          .table-scroll {{ overflow:auto; border:1px solid var(--line); border-radius:8px; background:#ffffff; }}
+          .table-scroll {{ overflow-x:auto; max-width:100%; min-width:0; border:1px solid var(--line); border-radius:8px; background:#ffffff; }}
           .badge {{ display:inline-flex; border-radius:999px; padding:5px 9px; color:white; font-size:12px; font-weight:900; }}
           .badge.ok {{ background:#047857; }} .badge.warn {{ background:#b45309; }} .badge.risk {{ background:#b42318; }} .badge.info {{ background:#2563eb; }} .badge.neutral {{ background:#64748b; }}
           .coberturas-panel {{ border-color:#8ecae6; background:#ffffff; }}
@@ -4433,7 +4793,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box strong,.busy-box span {{ display:block; }}
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
-          @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} }}
+          .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
+          @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ h1 {{ font-size:2.35rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .coberturas-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} }}
         </style>
       </head>
@@ -4445,12 +4806,14 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           </div>
         </div>
         <main>
+          <h1 class="sr-only">Stock Ultimus Console</h1>
           {health}
           {active_process}
           {today}
           {message}
           {job_panel}
           {alerts}
+          {active_positions}
           {coberturas_support}
           {v31_console_support}
           {question_support}
@@ -4593,6 +4956,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
         alerts=render_operator_alerts(operator_payload, snapshot),
+        active_positions=render_active_positions_panel(snapshot, v31_payloads, active),
         v31_learning=render_v31_learning_panel(v31_payloads),
         coberturas_support=coberturas_support,
         v31_console_support=v31_console_support,
@@ -4642,6 +5006,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         if path == "/coberturas/rsp":
             self.send_json(shared_coberturas_engine.build_recommendation(RUNTIME))
             return
+        if path == "/active-positions":
+            snapshot = latest_master_snapshot()
+            v31_payloads = console_v31_payloads(prefer_cache=True)
+            self.send_json(console_active_position_management(snapshot, v31_payloads))
+            return
         if path == "/coberturas":
             payload = render_coberturas_rsp_page(message=(params.get("message") or [""])[0])
             self.send_response(200)
@@ -4657,7 +5026,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         path = self.path.split("?", 1)[0]
-        status = 200 if path in ["/", "", "/console", "/coberturas", "/coberturas/rsp"] else 404
+        status = 200 if path in ["/", "", "/console", "/coberturas", "/coberturas/rsp", "/active-positions"] else 404
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -4978,6 +5347,65 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     }, indent=2, sort_keys=True)[:6000],
                     "stderr_tail": "" if result.get("ok") else str(result.get("error") or result.get("text") or ""),
                 }, status=200 if result.get("ok") else 400)
+            elif self.path == "/position-management-event":
+                operator_action = (params.get("operator_action") or [""])[0]
+                ticker_label = (params.get("ticker") or [""])[0] or "UNKNOWN"
+                try:
+                    shared_position_management_journal.record_event(
+                        {
+                            "position_id": (params.get("position_id") or [""])[0],
+                            "ticker": ticker_label,
+                            "strategy": (params.get("strategy") or [""])[0],
+                            "recommended_action": (params.get("recommended_action") or [""])[0],
+                            "recommended_state": (params.get("recommended_state") or [""])[0],
+                            "operator_action": operator_action,
+                            "operator_reason": (params.get("operator_reason") or [""])[0],
+                            "source": "stock_ultimus_console",
+                        },
+                        path=POSITION_MANAGEMENT_JOURNAL_PATH,
+                    )
+                    self.send_html("Gestion de posicion registrada: {} {}. No autoriza ordenes.".format(operator_action, ticker_label))
+                except Exception as exc:
+                    self.send_html("No pude registrar gestion de posicion: {}".format(str(exc)[:160]), status=400)
+            elif self.path == "/position-context":
+                ticker_label = (params.get("ticker") or [""])[0] or "UNKNOWN"
+                try:
+                    shared_position_context_store.upsert_context(
+                        {
+                            "position_id": (params.get("position_id") or [""])[0],
+                            "ticker": ticker_label,
+                            "strategy": (params.get("strategy") or [""])[0],
+                            "thesis_text": (params.get("thesis_text") or [""])[0],
+                            "invalidation_level": (params.get("invalidation_level") or [""])[0],
+                            "target": (params.get("target") or [""])[0],
+                            "entry_credit": (params.get("entry_credit") or [""])[0],
+                            "entry_date": (params.get("entry_date") or [""])[0],
+                            "roll_plan": (params.get("roll_plan") or [""])[0],
+                            "source": "stock_ultimus_console",
+                        },
+                        path=POSITION_CONTEXTS_PATH,
+                    )
+                    self.send_html("Tesis/entrada guardada para {}. El motor la usara en la proxima lectura de posiciones.".format(ticker_label))
+                except Exception as exc:
+                    self.send_html("No pude guardar tesis de posicion: {}".format(str(exc)[:160]), status=400)
+            elif self.path == "/gamma-context":
+                ticker_label = (params.get("ticker") or [""])[0] or "UNKNOWN"
+                try:
+                    shared_gamma_context_store.upsert_context(
+                        {
+                            "ticker": ticker_label,
+                            "gamma_wall": (params.get("gamma_wall") or [""])[0],
+                            "call_wall": (params.get("call_wall") or [""])[0],
+                            "put_wall": (params.get("put_wall") or [""])[0],
+                            "zero_gamma": (params.get("zero_gamma") or [""])[0],
+                            "notes": (params.get("notes") or [""])[0],
+                            "source": "stock_ultimus_console_manual",
+                        },
+                        path=GAMMA_CONTEXTS_PATH,
+                    )
+                    self.send_html("Gamma manual guardada para {}. Se aplicara en el siguiente calculo.".format(ticker_label))
+                except Exception as exc:
+                    self.send_html("No pude guardar gamma manual: {}".format(str(exc)[:160]), status=400)
             elif self.path == "/operator-event":
                 action = (params.get("action") or [""])[0]
                 reason = (params.get("reason") or [""])[0].strip()

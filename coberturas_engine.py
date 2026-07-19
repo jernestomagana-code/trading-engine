@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "runtime"
 MANUAL_CONTEXT_PATH = RUNTIME / "coberturas_rsp_manual_context.json"
+JOURNAL_PATH = RUNTIME / "coberturas_rsp_journal.json"
 TICKER = "RSP"
 TARGET_WEEKLY_PREMIUM = 100.0
 MAX_CONTRACTS = 1
@@ -59,6 +60,18 @@ def load_json(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def load_json_list(path: Path) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict) and isinstance(data.get("entries"), list):
+        return [item for item in data.get("entries") if isinstance(item, dict)]
+    return []
 
 
 def parse_levels(raw: Any) -> list[float]:
@@ -279,6 +292,22 @@ def scan_dicts(obj: Any):
             yield from scan_dicts(item)
 
 
+def extract_manual_context(runtime_data: dict[str, Any]) -> dict[str, Any]:
+    """Recover the RSP context embedded in a canonical snapshot after deploys."""
+    for payload in runtime_data.values():
+        for item in scan_dicts(payload):
+            nested = item.get("coberturas_rsp_manual_context")
+            if isinstance(nested, dict):
+                context = dict(nested)
+                context.setdefault("available", True)
+                return context
+            if item.get("context_version") == "coberturas_rsp_manual_context_v1":
+                context = dict(item)
+                context.setdefault("available", True)
+                return context
+    return {}
+
+
 def runtime_files(runtime_dir: Path) -> list[Path]:
     if not runtime_dir.exists():
         return []
@@ -314,6 +343,8 @@ def row_mid(row: dict[str, Any]) -> float | None:
 def extract_option_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for file_name, payload in runtime_data.items():
+        if file_name == "coberturas_rsp_margin_preview_latest.json":
+            continue
         for item in scan_dicts(payload):
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
             if ticker != TICKER:
@@ -421,6 +452,11 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
     shares = 0.0
     open_options: list[dict[str, Any]] = []
     for file_name, payload in runtime_data.items():
+        # What-if margin previews describe hypothetical orders, not broker
+        # positions.  Treating them as open options makes the operator surface
+        # report exposure that was never executed.
+        if file_name == "coberturas_rsp_margin_preview_latest.json":
+            continue
         for item in scan_dicts(payload):
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
             if ticker != TICKER:
@@ -431,7 +467,8 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
             if sec_type in {"STK", "STOCK", "ETF"} and qty is not None:
                 shares += qty
             looks_like_position_option = sec_type in {"OPT", "OPTION"} or (qty is not None and ("PUT" in klass or "CALL" in klass))
-            if looks_like_position_option:
+            is_preview = item.get("what_if") is True or safe_upper(item.get("status"), "").startswith("MARGIN_PREVIEW")
+            if looks_like_position_option and not is_preview:
                 option = dict(item)
                 option["source_file"] = file_name
                 open_options.append(option)
@@ -453,6 +490,32 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
         "shares": shares,
         "open_rsp_options": open_options[:10],
     }
+
+
+def extract_account_capacity(runtime_data: dict[str, Any]) -> dict[str, Any]:
+    """Recover sanitized capacity from canonical snapshots when no sidecar exists."""
+    candidates: list[dict[str, Any]] = []
+    capacity_fields = {
+        "available_funds", "available_capacity", "buying_power", "net_liquidation",
+        "excess_liquidity", "total_cash_value",
+    }
+    for payload in runtime_data.values():
+        for item in scan_dicts(payload):
+            if capacity_fields.intersection(item):
+                candidates.append(dict(item))
+    if not candidates:
+        return {}
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        present = sum(item.get(field) is not None for field in capacity_fields)
+        sanitized = int(bool(item.get("sensitive_identifiers_excluded")))
+        return present, sanitized
+
+    selected = max(candidates, key=score)
+    selected.setdefault("available", any(selected.get(field) is not None for field in capacity_fields))
+    selected.setdefault("source", "CANONICAL_SNAPSHOT_ACCOUNT_CONTEXT")
+    selected["sensitive_identifiers_excluded"] = True
+    return selected
 
 
 def strategy_for_position(position_state: str) -> tuple[str, str]:
@@ -684,6 +747,253 @@ def apply_probability_and_gamma(scenarios: dict[str, Any], manual_context: dict[
     return scenarios
 
 
+def clamp_pct(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(max(1.0, min(99.0, value)), 2)
+
+
+def composite_success_probability(scenario: dict[str, Any], manual_context: dict[str, Any]) -> dict[str, Any]:
+    base = scenario.get("success_probability") if isinstance(scenario.get("success_probability"), dict) else {}
+    strategy = safe_upper(scenario.get("strategy"), "")
+    target = safe_float(base.get("target_outcome_probability"), None)
+    components: list[dict[str, Any]] = []
+    if target is not None:
+        components.append({"name": "delta_proxy", "probability": target, "weight": 0.5})
+
+    gamma = scenario.get("gamma_alignment") if isinstance(scenario.get("gamma_alignment"), dict) else {}
+    gamma_status = safe_upper(gamma.get("status"), "")
+    gamma_probability = 62.0 if gamma_status == "SUPPORTIVE" else 52.0 if gamma_status == "MIXED" else 44.0
+    components.append({"name": "gamma_levels", "probability": gamma_probability, "weight": 0.25})
+
+    dte = safe_float(scenario.get("dte"), None)
+    dte_probability = 60.0 if dte is not None and 7 <= dte <= 14 else 50.0
+    components.append({"name": "dte_window", "probability": dte_probability, "weight": 0.1})
+
+    premium = safe_float(scenario.get("premium"), None)
+    max_profit = safe_float(scenario.get("max_profit") or scenario.get("max_profit_if_called"), None)
+    capital = safe_float(scenario.get("decision_capital_required"), None)
+    capital_return = safe_float(scenario.get("decision_return_on_capital_pct"), None)
+    payout_probability = 58.0 if capital_return is not None and capital_return >= 1.0 else 48.0
+    components.append({"name": "payout_vs_capital", "probability": payout_probability, "weight": 0.15})
+
+    total_weight = sum(safe_float(item.get("weight"), 0) or 0 for item in components)
+    composite = None
+    if total_weight:
+        composite = sum((safe_float(item.get("probability"), 0) or 0) * (safe_float(item.get("weight"), 0) or 0) for item in components) / total_weight
+    composite = clamp_pct(composite)
+    return {
+        "available": composite is not None,
+        "strategy": strategy,
+        "target_outcome": base.get("target_outcome") or "strategy_target",
+        "probability_pct": composite,
+        "components": components,
+        "method": "delta_gamma_dte_payout_composite",
+        "note": "Probabilidad compuesta para priorizar escenarios; no es garantia ni sustituto de preview IBKR.",
+        "premium": premium,
+        "max_profit": max_profit,
+        "decision_capital_required": capital,
+    }
+
+
+def estimate_downside(scenario: dict[str, Any], manual_context: dict[str, Any], spot: float | None) -> float | None:
+    strategy = safe_upper(scenario.get("strategy"), "")
+    strike = safe_float(scenario.get("strike"), None)
+    premium = safe_float(scenario.get("premium"), 0) or 0
+    expected_low = safe_float(manual_context.get("expected_move_low"), None)
+    expected_high = safe_float(manual_context.get("expected_move_high"), None)
+    if strategy == "SELL_PUT" and strike is not None:
+        reference = expected_low if expected_low is not None else (spot * 0.985 if spot else None)
+        if reference is None:
+            return None
+        return round(max(0.0, (strike - reference) * SHARES_PER_LOT - premium), 2)
+    if strategy == "BUY_100_SELL_CALL" and spot is not None:
+        reference = expected_low if expected_low is not None else spot * 0.985
+        return round(max(0.0, (spot - reference) * SHARES_PER_LOT - premium), 2)
+    return None
+
+
+def apply_expected_value(scenarios: dict[str, Any], manual_context: dict[str, Any], spot: float | None) -> dict[str, Any]:
+    for scenario in scenarios.values():
+        if not isinstance(scenario, dict):
+            continue
+        composite = composite_success_probability(scenario, manual_context)
+        max_profit = safe_float(scenario.get("max_profit") or scenario.get("max_profit_if_called"), None)
+        downside = estimate_downside(scenario, manual_context, spot)
+        p = safe_float(composite.get("probability_pct"), None)
+        ev = None
+        if p is not None and max_profit is not None and downside is not None:
+            ev = round((p / 100.0) * max_profit - (1.0 - p / 100.0) * downside, 2)
+        scenario["composite_success_probability"] = composite
+        scenario["expected_value"] = {
+            "available": ev is not None,
+            "estimated_value": ev,
+            "max_profit": max_profit,
+            "estimated_downside_to_expected_move": downside,
+            "probability_used_pct": p,
+            "method": "composite_probability_vs_expected_move_downside",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    return scenarios
+
+
+def exit_rules() -> dict[str, Any]:
+    return {
+        "sell_put": [
+            "Cerrar manualmente al capturar 50-70% de la prima si aun quedan varios dias.",
+            "Rolar abajo/afuera si RSP rompe soporte/expected low y la put entra en zona de asignacion.",
+            "Aceptar asignacion solo si sigue valido comprar RSP al breakeven y no hay evento de riesgo.",
+            "No abrir otra cobertura RSP si ya hay put corta activa.",
+        ],
+        "buy_100_sell_call": [
+            "Cerrar o rolar la call si se captura 50-70% de la prima rapidamente.",
+            "Dejar asignar si RSP llega al strike y la salida cumple la ganancia maxima planificada.",
+            "Rolar arriba/afuera solo si gamma/niveles siguen apoyando continuidad alcista y el credito neto compensa.",
+            "Cerrar acciones si RSP rompe soporte/expected low y el plan de covered call pierde ventaja.",
+        ],
+        "global": [
+            "No ejecutar automaticamente desde la consola.",
+            "Revisar delta, spread, bid/ask y margen antes de cualquier orden manual.",
+            "Registrar decision y resultado en bitacora para calibrar la estrategia.",
+        ],
+    }
+
+
+def management_plan(position: dict[str, Any], scenarios: dict[str, Any], manual_context: dict[str, Any], spot: float | None) -> dict[str, Any]:
+    state = safe_upper(position.get("state"), "UNKNOWN")
+    open_options = position.get("open_rsp_options") if isinstance(position.get("open_rsp_options"), list) else []
+    plan = {
+        "status": "NO_OPEN_RSP_POSITION",
+        "primary_action": "Evaluate new entry only if data quality and manual review are acceptable.",
+        "rules": exit_rules(),
+        "open_position_count": len(open_options),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if state == "SHORT_PUT_OPEN":
+        plan.update({
+            "status": "MANAGE_SHORT_PUT",
+            "primary_action": "Do not open a new RSP trade; evaluate close, roll, or assignment plan.",
+            "decision_tree": [
+                "If profit captured >=50%, consider closing.",
+                "If strike is threatened and gamma/niveles weaken, consider roll or accept assignment only by plan.",
+                "If DTE <=3 and ITM, decide assignment vs roll before expiration day.",
+            ],
+        })
+    elif state == "SHORT_CALL_OPEN":
+        plan.update({
+            "status": "MANAGE_SHORT_CALL",
+            "primary_action": "Do not sell another call; manage covered call or short call exposure first.",
+            "decision_tree": [
+                "If call is OTM and profit captured >=50%, consider closing.",
+                "If RSP approaches strike and assignment is acceptable, let it work.",
+                "If upside thesis remains strong, roll only for net credit and better strike.",
+            ],
+        })
+    elif state == "WITH_SHARES":
+        plan.update({
+            "status": "READY_FOR_COVERED_CALL_MANAGEMENT",
+            "primary_action": "Prioritize covered call management over naked put entry.",
+        })
+    elif state == "NO_SHARES":
+        plan.update({
+            "status": "ENTRY_COMPARISON_MODE",
+            "primary_action": "Compare sell put vs buy-write; use recommendation, EV, gamma and capacity checks.",
+        })
+    return plan
+
+
+def load_learning_journal(path: Path | None = None) -> dict[str, Any]:
+    path = path or JOURNAL_PATH
+    entries = load_json_list(path)
+    closed = [entry for entry in entries if safe_upper(entry.get("status"), "") in {"CLOSED", "EXPIRED", "ASSIGNED", "ROLLED"}]
+    wins = [entry for entry in closed if safe_float(entry.get("realized_pnl"), 0) and (safe_float(entry.get("realized_pnl"), 0) or 0) > 0]
+    total_pnl = round(sum(safe_float(entry.get("realized_pnl"), 0) or 0 for entry in closed), 2)
+    by_strategy: dict[str, dict[str, Any]] = {}
+    for entry in closed:
+        strategy = safe_upper(entry.get("strategy"), "UNKNOWN")
+        bucket = by_strategy.setdefault(strategy, {"count": 0, "wins": 0, "realized_pnl": 0.0})
+        bucket["count"] += 1
+        pnl = safe_float(entry.get("realized_pnl"), 0) or 0
+        bucket["realized_pnl"] = round(bucket["realized_pnl"] + pnl, 2)
+        if pnl > 0:
+            bucket["wins"] += 1
+    for bucket in by_strategy.values():
+        bucket["win_rate_pct"] = round(bucket["wins"] / bucket["count"] * 100, 2) if bucket["count"] else None
+    return {
+        "journal_path": str(path),
+        "entry_count": len(entries),
+        "closed_count": len(closed),
+        "win_rate_pct": round(len(wins) / len(closed) * 100, 2) if closed else None,
+        "realized_pnl": total_pnl,
+        "by_strategy": by_strategy,
+        "learning_ready": len(closed) >= 20,
+        "next_learning_goal": "Registrar al menos 20 operaciones cerradas para calibrar probabilidad/EV." if len(closed) < 20 else "Hay muestra suficiente para calibracion inicial.",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def record_journal_entry(payload: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    path = path or JOURNAL_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entries = load_json_list(path)
+    entry = {
+        "journal_entry_version": "coberturas_rsp_journal_entry_v1",
+        "recorded_at": now_iso(),
+        "ticker": TICKER,
+        "strategy": safe_upper(payload.get("strategy"), "UNKNOWN"),
+        "status": safe_upper(payload.get("status"), "OPEN"),
+        "decision": str(payload.get("decision") or "").strip(),
+        "realized_pnl": safe_float(payload.get("realized_pnl"), None),
+        "notes": str(payload.get("notes") or "").strip(),
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    entries.append(entry)
+    path.write_text(json.dumps(entries[-500:], indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "entry": entry,
+        "journal": load_learning_journal(path),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def strategy_operating_plan(
+    position: dict[str, Any],
+    scenarios: dict[str, Any],
+    recommendation: dict[str, Any],
+    manual_context: dict[str, Any],
+    spot: float | None,
+) -> dict[str, Any]:
+    return {
+        "plan_version": "rsp_strategy_operating_plan_v1",
+        "entry": {
+            "recommended_strategy": recommendation.get("recommended_strategy"),
+            "status": recommendation.get("status"),
+            "reason": recommendation.get("reason"),
+            "manual_review_required": True,
+        },
+        "management": management_plan(position, scenarios, manual_context, spot),
+        "exit_rules": exit_rules(),
+        "expected_value": {
+            "sell_put": scenarios.get("sell_put", {}).get("expected_value") if isinstance(scenarios.get("sell_put"), dict) else {},
+            "buy_100_sell_call": scenarios.get("buy_100_sell_call", {}).get("expected_value") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {},
+        },
+        "probability": {
+            "sell_put": scenarios.get("sell_put", {}).get("composite_success_probability") if isinstance(scenarios.get("sell_put"), dict) else {},
+            "buy_100_sell_call": scenarios.get("buy_100_sell_call", {}).get("composite_success_probability") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {},
+        },
+        "learning_journal": load_learning_journal(),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def margin_decision_sensitivity(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_strategy = {row.get("strategy"): row for row in rows if isinstance(row, dict)}
     sell_put = by_strategy.get("SELL_PUT") or {}
@@ -858,6 +1168,41 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
             "not_order_instruction": True,
         }
     if len(comparable) < 2:
+        capacity_blocked = [
+            row
+            for row in rows
+            if row["available"]
+            and row.get("decision_capital_required") is not None
+            and (
+                row.get("can_afford_by_buying_power") is False
+                or row.get("can_afford_by_available_funds") is False
+            )
+        ]
+        if capacity_blocked:
+            required = [
+                safe_float(row.get("decision_capital_required"), None)
+                for row in capacity_blocked
+            ]
+            required = [value for value in required if value is not None]
+            required_note = (
+                " Capital requerido estimado: ${:,.2f} a ${:,.2f}.".format(min(required), max(required))
+                if required
+                else ""
+            )
+            return {
+                "status": "WAIT_ACCOUNT_CAPACITY",
+                "recommended_strategy": None,
+                "reason": (
+                    "El capital conservador si esta calculado, pero los fondos disponibles o el poder de compra "
+                    "no alcanzan para comparar ambos caminos de forma operable."
+                    + required_note
+                ),
+                "blockers": ["INSUFFICIENT_ACCOUNT_CAPACITY"],
+                "comparison": rows,
+                "margin_decision_sensitivity": margin_decision_sensitivity(rows),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
         return {
             "status": "WAIT_CAPITAL_DATA",
             "recommended_strategy": None,
@@ -1035,8 +1380,10 @@ def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_c
 
 
 def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
-    manual_context = load_manual_context()
     runtime_data = load_runtime_jsons(runtime_dir)
+    manual_context = load_manual_context()
+    if not manual_context.get("available"):
+        manual_context = extract_manual_context(runtime_data) or manual_context
     option_rows = extract_option_rows(runtime_data)
     spot = extract_rsp_underlying_price(runtime_data, manual_context)
     position = extract_position_state(runtime_data, manual_context)
@@ -1063,6 +1410,11 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         candidate_rows = []
 
     account_capacity = load_json(runtime_dir / "ibkr_account_capacity_latest.json")
+    if not account_capacity.get("available") and not any(
+        account_capacity.get(key) is not None
+        for key in ("available_funds", "available_capacity", "buying_power")
+    ):
+        account_capacity = extract_account_capacity(runtime_data)
     margin_preview = load_json(runtime_dir / "coberturas_rsp_margin_preview_latest.json")
     scenarios = apply_probability_and_gamma(
         apply_margin_previews(
@@ -1072,6 +1424,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         ),
         manual_context,
     )
+    scenarios = apply_expected_value(scenarios, manual_context, spot)
 
     blockers: list[str] = []
     if position.get("state") == "UNKNOWN":
@@ -1087,12 +1440,14 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
 
     strategy_recommendation = build_strategy_recommendation(scenarios, blockers)
 
+    operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, manual_context, spot)
+
     if mode == "SELL_PUT" and put_candidates and call_candidates:
         recommendation_status = str(strategy_recommendation.get("status") or "")
         if recommendation_status.startswith("RECOMMEND_"):
             decision = recommendation_status
             next_action = strategy_recommendation.get("reason") or "Revisar recomendacion comparativa antes de preparar orden manual."
-        elif recommendation_status in {"WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA"}:
+        elif recommendation_status in {"WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA", "WAIT_ACCOUNT_CAPACITY"}:
             decision = recommendation_status
             next_action = strategy_recommendation.get("reason") or "Refrescar margen IBKR para comparar caminos."
         else:
@@ -1135,6 +1490,10 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "top_call_candidates": call_candidates[:5],
         "strategy_scenarios": scenarios,
         "strategy_recommendation": strategy_recommendation,
+        "position_manager": operating_plan.get("management"),
+        "exit_rules": operating_plan.get("exit_rules"),
+        "strategy_operating_plan": operating_plan,
+        "learning_journal": operating_plan.get("learning_journal"),
         "margin_preview": margin_preview,
         "all_rsp_option_rows_found": len(option_rows),
         "blockers": blockers,

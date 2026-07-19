@@ -121,18 +121,10 @@ def _is_position_like(item: dict[str, Any]) -> bool:
         return True
     if safe_upper(item.get("engine_layer")) == "IBKR_PORTFOLIO_COMMANDER":
         return True
-    return any(
-        key in item
-        for key in [
-            "position_size",
-            "position",
-            "quantity",
-            "qty",
-            "market_value",
-            "portfolio_weight_pct",
-            "avg_cost",
-        ]
-    ) and bool(item.get("ticker") or item.get("symbol"))
+    sec_type = safe_upper(item.get("sec_type") or item.get("security_type"))
+    if sec_type in ["STK", "STOCK", "EQUITY", "OPT", "OPTION", "FUT", "CONTFUT"]:
+        return any(key in item for key in ["position_size", "position", "qty", "market_value", "portfolio_weight_pct", "avg_cost"]) and bool(item.get("ticker") or item.get("symbol"))
+    return False
 
 
 def extract_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:

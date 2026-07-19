@@ -60,6 +60,7 @@ import evidence_quality as shared_evidence_quality
 import operational_edge as shared_operational_edge
 import alert_lifecycle as shared_alert_lifecycle
 import coberturas_engine as shared_coberturas_engine
+import position_management as shared_position_management
 
 # ============================================================
 # SUPER ENGINE BOLSA — APP MAIN V8
@@ -14815,8 +14816,7 @@ def v22_2_trade_decision(ticker: str):
 
 
 # === V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
-@app.post("/technical_snapshot")
-async def technical_snapshot(payload: dict):
+async def technical_snapshot_v223_legacy_helper(payload: dict):
     """
     Endpoint seguro para recibir snapshot técnico desde curl / TradingView / puente externo.
     Guarda el snapshot en runtime/technical_snapshot_by_ticker_safe.json.
@@ -14868,8 +14868,9 @@ async def technical_snapshot(payload: dict):
 
 
 @app.post("/technical-snapshot")
-async def technical_snapshot_dash(payload: dict):
-    return await technical_snapshot(payload)
+async def technical_snapshot_dash(request: Request):
+    """Compatibility spelling for the canonical technical snapshot ingest."""
+    return await technical_snapshot_ingest(request)
 # === END V22.3 SAFE TECHNICAL SNAPSHOT ENDPOINT ===
 
 
@@ -14993,7 +14994,6 @@ async def v224_get_technical_snapshot_safe_status():
     }
 
 
-@app.get("/technical_snapshot_safe/{ticker}")
 async def v224_get_technical_snapshot_safe_ticker(ticker: str):
     store = _v224_load_safe_technical_store()
     t = str(ticker or "").upper().strip()
@@ -15011,9 +15011,9 @@ async def v224_get_technical_snapshot_safe_ticker(ticker: str):
 
 
 # === V22.5 DEPLOY UNBLOCKER / COMPATIBILITY ALIAS ===
-@app.post("/technical-snapshot")
 async def technical_snapshot_dash_alias(payload: dict):
-    return await technical_snapshot(payload)
+    """Legacy helper retained without registering a duplicate FastAPI route."""
+    return await technical_snapshot_v223_legacy_helper(payload)
 
 @app.get("/v22_5_system_status")
 async def v22_5_system_status():
@@ -26053,12 +26053,92 @@ def _v31_account_context_from_master(master):
     return sanitized
 
 
+def _v31_active_position_management_payload(master=None):
+    master = master if isinstance(master, dict) else _v29_discover_master_snapshot()
+    data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    existing = data.get("active_position_management")
+    if isinstance(existing, dict) and existing.get("position_management_version"):
+        payload = dict(existing)
+        payload["recalculated"] = False
+    else:
+        context = dict(data)
+        context["generated_at"] = data.get("generated_at") or master.get("generated_at")
+        payload = shared_position_management.build_active_position_management(context)
+        payload["recalculated"] = True
+    payload["master_source"] = master.get("path")
+    payload["endpoint"] = "/v31_active_position_management"
+    payload["gpt_endpoint"] = "/gpt_v31_active_positions"
+    payload["manual_review_required"] = bool(payload.get("manual_review_required"))
+    payload["not_order_instruction"] = True
+    payload["execution_authorized"] = False
+    payload["can_operate"] = False
+    return payload
+
+
+def _v31_gpt_active_positions_payload(master=None, limit=10):
+    payload = _v31_active_position_management_payload(master)
+    positions = payload.get("positions") if isinstance(payload.get("positions"), list) else []
+    try:
+        limit = max(1, min(int(limit), 25))
+    except Exception:
+        limit = 10
+    compact = []
+    for item in positions[:limit]:
+        if not isinstance(item, dict):
+            continue
+        technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
+        compact.append({
+            "ticker": item.get("ticker"),
+            "strategy": item.get("strategy"),
+            "exit_state": item.get("exit_state"),
+            "management_action": item.get("management_action"),
+            "manual_review_required": item.get("manual_review_required"),
+            "urgency_rank": item.get("urgency_rank"),
+            "position_size": item.get("position_size"),
+            "strike": item.get("strike"),
+            "expiration": item.get("expiration"),
+            "dte": item.get("dte"),
+            "premium_capture_pct": item.get("premium_capture_pct"),
+            "underlying_price": item.get("underlying_price"),
+            "technical": {
+                "trend": technical.get("trend"),
+                "support": technical.get("support"),
+                "resistance": technical.get("resistance"),
+                "event_risk": technical.get("event_risk"),
+                "gamma_available": technical.get("gamma_available"),
+            },
+            "reasons": (item.get("reasons") or [])[:4],
+            "warnings": (item.get("warnings") or [])[:6],
+            "blockers": (item.get("blockers") or [])[:6],
+            "not_order_instruction": True,
+        })
+    return {
+        "position_management_version": payload.get("position_management_version"),
+        "generated_at": payload.get("generated_at"),
+        "status": payload.get("status"),
+        "summary": payload.get("summary") or {},
+        "freshness": payload.get("freshness") or {},
+        "portfolio_risk": payload.get("portfolio_risk") or {},
+        "battle_plan": payload.get("battle_plan") or {},
+        "positions_found": payload.get("positions_found"),
+        "positions_requiring_review": payload.get("positions_requiring_review"),
+        "risk_review_count": payload.get("risk_review_count"),
+        "positions": compact,
+        "source_endpoint": "/v31_active_position_management",
+        "manual_review_required": payload.get("manual_review_required"),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+        "can_operate": False,
+    }
+
+
 def _v31_system_status_payload(tickers=None):
     master = _v29_discover_master_snapshot()
     market = _v29_market_state(master)
     master_data = master.get("data") if isinstance(master.get("data"), dict) else {}
     broker_check_summary = master_data.get("broker_check_summary") if isinstance(master_data.get("broker_check_summary"), dict) else {}
     account_context = _v31_account_context_from_master(master)
+    active_position_management = _v31_active_position_management_payload(master)
     decisions = _v31_all_decisions(tickers)
     states = [
         "ENTRY_READY",
@@ -26093,6 +26173,17 @@ def _v31_system_status_payload(tickers=None):
         "account_scope": account_context.get("account_scope"),
         "account_alias": account_context.get("account_alias"),
         "broker_check_summary": broker_check_summary,
+        "active_position_management_summary": {
+            "status": active_position_management.get("status"),
+            "positions_found": active_position_management.get("positions_found"),
+            "positions_requiring_review": active_position_management.get("positions_requiring_review"),
+            "risk_review_count": active_position_management.get("risk_review_count"),
+            "top_action": (active_position_management.get("summary") or {}).get("top_action"),
+            "top_ticker": (active_position_management.get("summary") or {}).get("top_ticker"),
+            "endpoint": "/v31_active_position_management",
+            "gpt_endpoint": "/gpt_v31_active_positions",
+            "not_order_instruction": True,
+        },
         "outcome_tracking": {
             "version": "v31_entry_ready_signal_outcome_v1",
             "entry_ready_signals_are_recorded_as": "PENDING_PAPER_OUTCOMES",
@@ -26119,6 +26210,8 @@ def _v31_system_status_payload(tickers=None):
             "gpt_daily_brief": "/gpt_v31_daily_brief",
             "gpt_daily_plain": "/gpt_v31_daily_plain",
             "gpt_daily_now": "/gpt_v31_daily_now",
+            "active_position_management": "/v31_active_position_management",
+            "gpt_active_positions": "/gpt_v31_active_positions",
             "strategy_registry": "/strategy_registry",
             "strategy_input_contracts": "/strategy_input_contracts",
             "strategy_playbook": "/strategy_playbook",
@@ -28336,6 +28429,16 @@ async def gpt_v31_trade_decision(ticker: str):
 @app.get("/v31_system_status")
 async def v31_system_status():
     return _v31_system_status_payload()
+
+
+@app.get("/v31_active_position_management")
+async def v31_active_position_management():
+    return _v31_active_position_management_payload()
+
+
+@app.get("/gpt_v31_active_positions")
+async def gpt_v31_active_positions(limit: int = 10):
+    return _v31_gpt_active_positions_payload(limit=limit)
 
 
 @app.get("/v31_daily_recommendations")

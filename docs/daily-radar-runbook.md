@@ -407,9 +407,21 @@ python3 scripts/install_stock_ultimus_console_launchd.py --install --open
 python3 scripts/install_stock_ultimus_console_launchd.py --status
 ```
 
-After that, the local cockpit starts at login and the day-to-day entry point is
-just `http://127.0.0.1:8765`. The LaunchAgent plist contains no IBKR account IDs,
-read tokens, ingest tokens, or order execution permissions.
+If macOS privacy/TCC blocks the background LaunchAgent from reading the project
+under `~/Documents`, install the opener watchdog fallback instead. It checks
+whether port `8765` is already listening every 60 seconds and opens
+`Stock Ultimus Console.command` only when the port is down. It does not poll the
+full `/console` page, which avoids repeated sessions when remote data is slow:
+
+```bash
+python3 scripts/install_stock_ultimus_console_launchd.py --install-opener-fallback --open
+python3 scripts/install_stock_ultimus_console_launchd.py --status
+```
+
+After that, the local cockpit starts at login and is relaunched if the local
+port goes down. The day-to-day entry point is just `http://127.0.0.1:8765`.
+The LaunchAgent plist contains no IBKR account IDs, read tokens, ingest tokens,
+or order execution permissions.
 
 Operational flow:
 
@@ -599,6 +611,14 @@ local runtime/IBKR bars when available. It does not require a paid API, does not
 require CSV exports, and does not authorize orders. Set
 `STOCK_ULTIMUS_SEC_USER_AGENT` to a descriptive SEC user agent before scheduled
 runs.
+
+CANSLIM network guard: the builder also writes
+`runtime/canslim_network_error_state.json`. A one-off SEC/network miss is
+reported as `DEGRADED`; the same ticker failing repeatedly is escalated to
+`ACTION_REQUIRED` / `RECURRENT_ERROR`. Cached companyfacts are still used when
+available, so a temporary network issue does not silently remove already cached
+symbols from evaluation. `QQQ`, `SPY`, and `TLT` are intentionally skipped by
+the SEC companyfacts step because they are not company tickers.
 
 Current guardrails:
 

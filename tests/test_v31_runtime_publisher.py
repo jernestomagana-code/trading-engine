@@ -28,6 +28,17 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertGreaterEqual(freshness["age_minutes"], 0)
         self.assertEqual(freshness["file_count"], 1)
 
+    def test_publish_freshness_ignores_newer_notification_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "decision_desk_snapshot.json").write_text("{}")
+            (runtime / "v32_pushover_notify_state.json").write_text("{}")
+
+            freshness = publisher.publish_data_freshness(runtime)
+
+        self.assertTrue(freshness["newest_file"].endswith("decision_desk_snapshot.json"))
+        self.assertEqual(freshness["considered_files"], ["decision_desk_snapshot.json"])
+
     def test_build_payload_extracts_options_and_technical_without_ibkr(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
@@ -53,6 +64,13 @@ class V31RuntimePublisherTests(unittest.TestCase):
                         "score": 80,
                     }
                 },
+                "control_panel": {"ticker": "CONTROL_PANEL", "score": 100},
+                "RAW": {"score": 99, "trend": "UNKNOWN"},
+            }))
+            (runtime / "coberturas_rsp_manual_context.json").write_text(json.dumps({
+                "context_version": "coberturas_rsp_manual_context_v1",
+                "ticker": "RSP",
+                "spot": 215.15,
             }))
 
             payload = publisher.build_payload(runtime)
@@ -62,6 +80,9 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertEqual(payload["options_rows"][0]["ticker"], "QQQ")
         self.assertEqual(payload["options_rows"][0]["strategy"], "NAKED_PUT")
         self.assertIn("QQQ", payload["technical_snapshot"])
+        self.assertNotIn("CONTROL_PANEL", payload["technical_snapshot"])
+        self.assertNotIn("RAW", payload["technical_snapshot"])
+        self.assertEqual(payload["coberturas_rsp_manual_context"]["spot"], 215.15)
         self.assertFalse(payload["market"]["is_regular_market_open"])
         self.assertTrue(payload["not_order_instruction"])
         self.assertEqual(payload["bridge_status"], "PUBLISHED_FROM_LOCAL_RUNTIME_WITHOUT_IBKR_CONNECTION")

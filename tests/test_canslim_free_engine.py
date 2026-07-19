@@ -140,8 +140,78 @@ class CanslimFreeEngineTests(unittest.TestCase):
         self.assertTrue(summary["free_data_only"])
         self.assertEqual(payload["pass_count"], 1)
         self.assertEqual(payload["candidates"][0]["ticker"], "ACME")
+        self.assertEqual(payload["network_health"]["status"], "OK")
+
+    def test_network_errors_are_tracked_until_recurrent_then_reset_on_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "canslim_network_error_state.json"
+            universe = ["ACME", "QQQ"]
+            errors = {
+                "ACME": "<urlopen error [Errno 8] nodename nor servname provided>",
+                "QQQ": "NON_COMPANY_SYMBOL_SKIPPED",
+            }
+
+            for index in range(canslim_free_engine.RECURRENT_ERROR_THRESHOLD):
+                state = canslim_free_engine.update_error_state(
+                    universe=universe,
+                    successful_tickers=set(),
+                    errors=errors,
+                    path=state_path,
+                    generated_at=f"2026-07-16T00:00:0{index}+00:00",
+                )
+
+            acme = state["tickers"]["ACME"]
+            qqq = state["tickers"]["QQQ"]
+            self.assertEqual(acme["status"], "RECURRENT_ERROR")
+            self.assertEqual(acme["last_error_kind"], "NETWORK")
+            self.assertEqual(qqq["status"], "SKIPPED_NON_COMPANY_SYMBOL")
+            self.assertEqual(qqq["consecutive_failures"], 0)
+
+            health = canslim_free_engine.summarize_network_health(
+                universe=universe,
+                errors=errors,
+                error_state=state,
+            )
+            self.assertEqual(health["status"], "ACTION_REQUIRED")
+            self.assertEqual(health["recurrent_tickers"], ["ACME"])
+            self.assertEqual(health["skipped_non_company_symbols"], ["QQQ"])
+
+            state = canslim_free_engine.update_error_state(
+                universe=["ACME"],
+                successful_tickers={"ACME"},
+                errors={},
+                path=state_path,
+                generated_at="2026-07-16T00:01:00+00:00",
+            )
+            self.assertEqual(state["tickers"]["ACME"]["status"], "OK")
+            self.assertEqual(state["tickers"]["ACME"]["consecutive_failures"], 0)
+
+    def test_payload_exposes_degraded_canslim_network_health(self):
+        state = {
+            "version": 1,
+            "tickers": {
+                "ACME": {
+                    "status": "TRANSIENT_ERROR",
+                    "consecutive_failures": 1,
+                    "last_error_kind": "NETWORK",
+                    "last_error": "timed out",
+                }
+            },
+        }
+
+        payload = canslim_free_engine.build_payload(
+            universe=["ACME"],
+            companyfacts_by_ticker={},
+            runtime_data={},
+            errors={"ACME": "timed out"},
+            error_state=state,
+        )
+
+        self.assertEqual(payload["network_health"]["status"], "DEGRADED")
+        self.assertEqual(payload["network_health"]["transient_tickers"], ["ACME"])
+        self.assertFalse(payload["execution_authorized"])
+        self.assertTrue(payload["not_order_instruction"])
 
 
 if __name__ == "__main__":
     unittest.main()
-

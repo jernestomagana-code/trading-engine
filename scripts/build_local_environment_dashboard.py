@@ -19,6 +19,8 @@ DEFAULT_OUT = RUNTIME / "local_environment_dashboard.html"
 REPORTS = [
     ("market_open_readiness", "Market Open Readiness", "market_open_readiness_latest.json"),
     ("market_open_checklist", "Market Open Checklist", "market_open_checklist_latest.json"),
+    ("security_audit", "Security Audit", "security_audit_latest.json"),
+    ("dependency_audit", "Dependency Audit", "dependency_audit_latest.json"),
     ("tradingview_bundle", "TradingView Bundle", "tradingview_alert_bundle_health.json"),
     ("post_open_monitor", "Post Open Monitor", "post_open_monitor_latest.json"),
     ("environment_auth", "Environment Auth", "environment_auth_check_latest.json"),
@@ -87,6 +89,22 @@ def compact_summary(name: str, payload: dict[str, Any]) -> list[tuple[str, Any]]
     if name == "environment_auth":
         checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
         return [(key, (value or {}).get("ok")) for key, value in checks.items()]
+    if name == "security_audit":
+        return [
+            ("next", payload.get("next_required_action")),
+            ("actions", payload.get("action_count")),
+            ("watches", payload.get("watch_count")),
+            ("notify", payload.get("should_notify")),
+            ("secrets printed", payload.get("secrets_printed")),
+        ]
+    if name == "dependency_audit":
+        return [
+            ("next", payload.get("next_required_action")),
+            ("actions", payload.get("action_count")),
+            ("watches", payload.get("watch_count")),
+            ("exit", payload.get("audit_exit_code")),
+            ("notify", payload.get("should_notify")),
+        ]
     if name == "tradingview_bundle":
         return [
             ("coverage", payload.get("coverage_valid")),

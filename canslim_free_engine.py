@@ -26,6 +26,8 @@ SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 DEFAULT_OUTPUT = Path("runtime/canslim_candidates_latest.json")
 DEFAULT_SEC_CACHE = Path("runtime/sec_companyfacts_cache")
+DEFAULT_ERROR_STATE = Path("runtime/canslim_network_error_state.json")
+RECURRENT_ERROR_THRESHOLD = 3
 DEFAULT_UNIVERSE = [
     "QQQ", "SPY", "AAPL", "NVDA", "TSLA",
     "NFLX", "META", "AMZN", "MSFT", "GOOGL",
@@ -130,6 +132,182 @@ def load_runtime_jsons(runtime_dir: Path) -> dict[str, Any]:
     return out
 
 
+def load_error_state(path: Path = DEFAULT_ERROR_STATE) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 1, "tickers": {}}
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return {"version": 1, "tickers": {}}
+    if not isinstance(data, dict):
+        return {"version": 1, "tickers": {}}
+    tickers = data.get("tickers")
+    if not isinstance(tickers, dict):
+        data["tickers"] = {}
+    data.setdefault("version", 1)
+    return data
+
+
+def write_error_state(state: dict[str, Any], path: Path = DEFAULT_ERROR_STATE) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True, default=str) + "\n")
+    return path
+
+
+def _error_kind(error: str | None) -> str:
+    text = upper(error)
+    if not text:
+        return "NONE"
+    if text == "NON_COMPANY_SYMBOL_SKIPPED":
+        return "SKIPPED"
+    if text == "NO_SEC_CIK":
+        return "DATA_MAPPING"
+    if text.startswith("STALE_CACHE_USED_AFTER_REFRESH_ERROR"):
+        return "CACHE_FALLBACK"
+    network_markers = [
+        "URLOPEN ERROR",
+        "TIMEOUT",
+        "TIMED OUT",
+        "TEMPORARY FAILURE",
+        "NODE NAME",
+        "NODENAME",
+        "NETWORK",
+        "NAME OR SERVICE",
+        "HTTP ERROR",
+        "SSL",
+        "CONNECTION",
+    ]
+    if any(marker in text for marker in network_markers):
+        return "NETWORK"
+    return "OTHER"
+
+
+def update_error_state(
+    *,
+    universe: list[str],
+    successful_tickers: set[str],
+    errors: dict[str, str],
+    path: Path = DEFAULT_ERROR_STATE,
+    generated_at: str | None = None,
+    recurrent_threshold: int = RECURRENT_ERROR_THRESHOLD,
+) -> dict[str, Any]:
+    generated_at = generated_at or now_iso()
+    state = load_error_state(path)
+    tickers = state.setdefault("tickers", {})
+
+    for raw_ticker in universe:
+        ticker = upper(raw_ticker)
+        if not ticker:
+            continue
+        entry = tickers.get(ticker) if isinstance(tickers.get(ticker), dict) else {}
+        error = errors.get(ticker)
+        kind = _error_kind(error)
+
+        if ticker in successful_tickers and kind != "CACHE_FALLBACK":
+            entry.update({
+                "status": "OK",
+                "consecutive_failures": 0,
+                "last_success_at": generated_at,
+                "last_error": None,
+                "last_error_kind": None,
+            })
+        elif kind == "CACHE_FALLBACK":
+            entry.update({
+                "status": "CACHE_FALLBACK_USED",
+                "consecutive_failures": 0,
+                "last_success_at": generated_at,
+                "last_warning": error,
+                "last_warning_at": generated_at,
+                "last_error": None,
+                "last_error_kind": None,
+            })
+        elif kind == "SKIPPED":
+            entry.update({
+                "status": "SKIPPED_NON_COMPANY_SYMBOL",
+                "consecutive_failures": 0,
+                "last_error": error,
+                "last_error_kind": kind,
+                "last_failed_at": generated_at,
+            })
+        elif error:
+            consecutive = int(safe_float(entry.get("consecutive_failures")) or 0) + 1
+            entry.update({
+                "status": "RECURRENT_ERROR" if consecutive >= recurrent_threshold else "TRANSIENT_ERROR",
+                "consecutive_failures": consecutive,
+                "last_error": error,
+                "last_error_kind": kind,
+                "last_failed_at": generated_at,
+            })
+        tickers[ticker] = entry
+
+    state["updated_at"] = generated_at
+    state["recurrent_threshold"] = recurrent_threshold
+    write_error_state(state, path)
+    return state
+
+
+def summarize_network_health(
+    *,
+    universe: list[str],
+    errors: dict[str, str],
+    error_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    tickers = (error_state or {}).get("tickers") if isinstance(error_state, dict) else {}
+    tickers = tickers if isinstance(tickers, dict) else {}
+    recurrent = []
+    transient = []
+    cache_fallback = []
+    skipped = []
+    data_mapping = []
+    other = []
+
+    for raw_ticker in universe:
+        ticker = upper(raw_ticker)
+        entry = tickers.get(ticker) if isinstance(tickers.get(ticker), dict) else {}
+        status = upper(entry.get("status"))
+        kind = _error_kind(errors.get(ticker) or entry.get("last_error"))
+        if status == "RECURRENT_ERROR":
+            recurrent.append(ticker)
+        elif status == "TRANSIENT_ERROR":
+            transient.append(ticker)
+        elif status == "CACHE_FALLBACK_USED":
+            cache_fallback.append(ticker)
+        elif kind == "SKIPPED":
+            skipped.append(ticker)
+        elif kind == "DATA_MAPPING":
+            data_mapping.append(ticker)
+        elif errors.get(ticker):
+            other.append(ticker)
+
+    if recurrent:
+        status = "ACTION_REQUIRED"
+        action = "Review network/DNS/SEC availability and pre-warm SEC cache for recurrent CANSLIM tickers."
+    elif transient or cache_fallback:
+        status = "DEGRADED"
+        action = "Monitor next run; CANSLIM stayed operational for cached tickers."
+    else:
+        status = "OK"
+        action = "No CANSLIM network action required."
+
+    return {
+        "status": status,
+        "recurrent_error_count": len(recurrent),
+        "transient_error_count": len(transient),
+        "cache_fallback_count": len(cache_fallback),
+        "skipped_non_company_symbol_count": len(skipped),
+        "data_mapping_error_count": len(data_mapping),
+        "other_error_count": len(other),
+        "recurrent_tickers": recurrent,
+        "transient_tickers": transient,
+        "cache_fallback_tickers": cache_fallback,
+        "skipped_non_company_symbols": skipped,
+        "data_mapping_tickers": data_mapping,
+        "other_error_tickers": other,
+        "next_required_action": action,
+        "not_order_instruction": True,
+    }
+
+
 def sec_user_agent(value: str | None = None) -> str:
     if value:
         return value
@@ -205,6 +383,14 @@ def load_companyfacts(
         cache_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
         return data, None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        if cache_path.exists():
+            try:
+                return (
+                    json.loads(cache_path.read_text()),
+                    f"STALE_CACHE_USED_AFTER_REFRESH_ERROR: {exc}",
+                )
+            except Exception:
+                pass
         return None, str(exc)
 
 
@@ -454,6 +640,7 @@ def build_payload(
     companyfacts_by_ticker: dict[str, dict[str, Any]],
     runtime_data: dict[str, Any] | None = None,
     errors: dict[str, str] | None = None,
+    error_state: dict[str, Any] | None = None,
     minimum_score: float = 70.0,
 ) -> dict[str, Any]:
     bars_by_ticker = runtime_local_technical.extract_local_bar_sets(runtime_data or {})
@@ -473,6 +660,11 @@ def build_payload(
         ),
         reverse=True,
     )
+    network_health = summarize_network_health(
+        universe=universe,
+        errors=errors or {},
+        error_state=error_state,
+    )
     return {
         "engine": ENGINE,
         "engine_version": ENGINE_VERSION,
@@ -485,6 +677,8 @@ def build_payload(
         "candidates": rows,
         "by_ticker": {row["ticker"]: row for row in rows},
         "errors": errors or {},
+        "network_health": network_health,
+        "error_state_version": (error_state or {}).get("version"),
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,

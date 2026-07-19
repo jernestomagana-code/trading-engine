@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-dir", default=os.getenv("STOCK_ULTIMUS_RUNTIME_DIR", "runtime"))
     parser.add_argument("--output", default=str(engine.DEFAULT_OUTPUT))
     parser.add_argument("--sec-cache-dir", default=str(engine.DEFAULT_SEC_CACHE))
+    parser.add_argument("--error-state", default=str(engine.DEFAULT_ERROR_STATE))
     parser.add_argument("--universe", default=os.getenv("CANSLIM_UNIVERSE") or os.getenv("IBKR_OPTION_SYMBOLS") or "")
     parser.add_argument("--max-symbols", type=int, default=int(os.getenv("CANSLIM_MAX_SYMBOLS", "50")))
     parser.add_argument("--minimum-score", type=float, default=float(os.getenv("CANSLIM_MIN_SCORE", "70")))
@@ -66,17 +67,28 @@ def main() -> int:
             refresh=args.refresh_sec,
             timeout=args.timeout,
         )
-        if error:
-            errors[ticker] = error
-            continue
         if facts:
             companyfacts_by_ticker[ticker] = facts
+        if error:
+            errors[ticker] = error
+            if not facts:
+                continue
+
+    generated_at = engine.now_iso()
+    error_state = engine.update_error_state(
+        universe=universe,
+        successful_tickers=set(companyfacts_by_ticker),
+        errors=errors,
+        path=Path(args.error_state),
+        generated_at=generated_at,
+    )
 
     payload = engine.build_payload(
         universe=universe,
         companyfacts_by_ticker=companyfacts_by_ticker,
         runtime_data=runtime_data,
         errors=errors,
+        error_state=error_state,
         minimum_score=args.minimum_score,
     )
     engine.write_payload(payload, output)
@@ -86,6 +98,10 @@ def main() -> int:
         "candidate_count": payload.get("candidate_count"),
         "pass_count": payload.get("pass_count"),
         "errors": len(errors),
+        "network_health": (payload.get("network_health") or {}).get("status"),
+        "recurrent_error_count": (payload.get("network_health") or {}).get("recurrent_error_count"),
+        "transient_error_count": (payload.get("network_health") or {}).get("transient_error_count"),
+        "cache_fallback_count": (payload.get("network_health") or {}).get("cache_fallback_count"),
         "free_data_only": True,
         "not_order_instruction": True,
     }, indent=2, sort_keys=True))

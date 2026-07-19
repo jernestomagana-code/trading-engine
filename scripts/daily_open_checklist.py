@@ -54,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-stale-publish", action="store_true", help="Pass --allow-stale to the publisher.")
     parser.add_argument("--full-bridge", action="store_true", help="Do not enable DAILY_RADAR_FAST for the bridge.")
     parser.add_argument("--no-keychain", action="store_true", help="Use env vars only; do not read macOS Keychain.")
+    parser.add_argument("--soft-exit", action="store_true", help="Exit 0 when the checklist report is generated, even if action is required.")
     return parser.parse_args()
 
 
@@ -162,6 +163,8 @@ def request_json(url: str, token: str | None = None, timeout: int = 30) -> tuple
         return exc.code, payload
     except urllib.error.URLError as exc:
         return 0, {"detail": str(exc)}
+    except (socket.timeout, TimeoutError, OSError) as exc:
+        return 0, {"detail": str(exc), "error": exc.__class__.__name__}
 
 
 def run_command(name: str, command: list[str], timeout: int, env: dict[str, str]) -> dict[str, Any]:
@@ -435,6 +438,8 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print_human(report)
+    if args.soft_exit:
+        return 0
     return 0 if report.get("ok") else 1
 
 

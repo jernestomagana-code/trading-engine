@@ -81,13 +81,14 @@
   <main>
     <section class="hero" aria-label="Resumen Stock Ultimus">
       <div class="hero-inner">
-        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-07-05</div>
+        <div class="eyebrow">Stock Ultimus Dashboard | Actualizado 2026-07-16</div>
         <h1>Operativo sano; terceros bloqueado</h1>
         <p>
           Produccion, read-auth, GPT Action, manual review y no-order guardrails
-          siguen OK. Hoy el radar esta NO_DATA por MASTER_SNAPSHOT_MISSING:
-          falta refrescar IBKR/TWS y TradingView en una ventana util. La base
-          local ya tiene 140 decisiones y 69 ENTRY_READY historicos, pero
+          siguen OK. Hoy el radar esta READY_FOR_DECISION_REVIEW con
+          WAIT_MARKET_WINDOW: snapshot fresco, 123 option rows, 32 tecnicos,
+          entry_ready=0 y manual_review_ready=0. La base local tiene 52
+          decisiones y 5 ENTRY_READY historicos, pero
           foundation_health esta en WARN por outcomes/fuentes/datos incompletos.
           Terceros no esta liberado: requiere aislamiento, disclosures, audit
           durable y legal/compliance.
@@ -98,8 +99,8 @@
     <section class="top-grid" aria-label="Metricas principales">
       <article class="metric">
         <div class="metric-label">Prioridad activa</div>
-        <div class="metric-value">Refresh</div>
-        <div class="metric-note">Publicar snapshot fresco.</div>
+        <div class="metric-value">P0</div>
+        <div class="metric-note">Revisar guard readonly.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Preflight real</div>
@@ -109,7 +110,7 @@
       <article class="metric">
         <div class="metric-label">Ciclo operativo</div>
         <div class="metric-value">Wait</div>
-        <div class="metric-note">NO_DATA / WAIT_PIPELINE.</div>
+        <div class="metric-note">READY / WAIT_MARKET.</div>
       </article>
       <article class="metric">
         <div class="metric-label">Terceros</div>
@@ -123,7 +124,7 @@
         <section class="panel" aria-label="Falta exactamente esto">
           <div class="panel-title">
             <h2>Operativo Personal</h2>
-            <span class="status-pill is-work">Pipeline pendiente</span>
+            <span class="status-pill is-work">Espera mercado</span>
           </div>
           <ol class="missing-list">
             <li class="missing-item">
@@ -133,13 +134,13 @@
             </li>
             <li class="missing-item">
               <span class="missing-num">2</span>
-              <div><strong>Refrescar snapshot maestro</strong><p>Estado actual: <span class="code">MASTER_SNAPSHOT_MISSING</span>, opciones=0, tecnicos=0. Correr IBKR/TWS + bridge en ventana util.</p></div>
-              <span class="status-pill is-work">Siguiente</span>
+              <div><strong>Snapshot maestro fresco</strong><p>Estado actual: <span class="code">READY_FOR_DECISION_REVIEW</span>, opciones=123, tecnicos=32. No hay ENTRY_READY ni manual review listo.</p></div>
+              <span class="status-pill is-good">OK</span>
             </li>
             <li class="missing-item">
               <span class="missing-num">3</span>
-              <div><strong>Confirmar TradingView real</strong><p>Contrato integrado; hoy no hay tecnicos porque no hay snapshot maestro activo y el ledger tecnico espera payload.</p></div>
-              <span class="status-pill is-work">Refresh</span>
+              <div><strong>Confirmar TradingView real</strong><p>Produccion reporta 32 tecnicos; el ledger tecnico local sigue esperando payload/replay.</p></div>
+              <span class="status-pill is-work">Ledger</span>
             </li>
             <li class="missing-item">
               <span class="missing-num">4</span>
@@ -151,9 +152,14 @@
               <div><strong>Outcomes/manual reviews</strong><p>Dry-run responde 200; hay 1 outcome cerrado y 0 completos. Falta backfill y acumular minimo 30 outcomes completos por estrategia activa.</p></div>
               <span class="status-pill is-work">Muestra</span>
             </li>
+            <li class="missing-item">
+              <span class="missing-num">6</span>
+              <div><strong>P0 bridge readonly guard</strong><p>La prueba P0 actual corrio 39 tests y fallo 2 veces por expectativa <span class="code">readonly=True</span> en <span class="code">ibkr_bridge.py</span>.</p></div>
+              <span class="status-pill is-risk">Fix</span>
+            </li>
           </ol>
           <p class="area-text" style="margin-top:14px;">
-            Nota: no hay ENTRY_READY ahora; el motor esta bloqueado por pipeline/snapshot, asi que no hay oportunidades accionables.
+            Nota: no hay ENTRY_READY ahora; el motor esta en espera de mercado, asi que no hay oportunidades accionables.
           </p>
         </section>
 
@@ -177,8 +183,8 @@
           <div class="area-list">
             <div class="area-row">
               <div class="area-name">Operacion V31</div>
-              <span class="status-pill is-work">OK / refresh</span>
-            <div class="area-text">Preflight real pasa; radar actual NO_DATA por MASTER_SNAPSHOT_MISSING.</div>
+              <span class="status-pill is-work">OK / espera</span>
+            <div class="area-text">Preflight real pasa; radar READY_FOR_DECISION_REVIEW con WAIT_MARKET_WINDOW.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Manual Review</div>
@@ -192,18 +198,23 @@
             </div>
             <div class="area-row">
               <div class="area-name">IBKR/TWS</div>
-              <span class="status-pill is-work">Refresh</span>
-              <div class="area-text">Bridge listo; falta snapshot maestro activo hoy.</div>
+              <span class="status-pill is-good">OK</span>
+              <div class="area-text">Snapshot fresco en produccion; rows_found=123.</div>
             </div>
             <div class="area-row">
               <div class="area-name">TradingView</div>
-              <span class="status-pill is-work">Refresh</span>
-              <div class="area-text">Contrato integrado; hoy <span class="code">technical_count=0</span> por snapshot faltante y ledger sin payload nuevo.</div>
+              <span class="status-pill is-work">Ledger</span>
+              <div class="area-text">Produccion reporta <span class="code">technical_count=32</span>; ledger local sin payload nuevo.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Foundation</div>
               <span class="status-pill is-work">WARN</span>
-              <div class="area-text">140 decisiones, 69 ENTRY_READY locales, 106 option rows y 92.86% source coverage; faltan fuentes/outcomes completos.</div>
+              <div class="area-text">52 decisiones, 5 ENTRY_READY locales, 4 option rows diagnosticas y 80.77% source coverage; faltan fuentes/outcomes completos.</div>
+            </div>
+            <div class="area-row">
+              <div class="area-name">P0 Tests</div>
+              <span class="status-pill is-risk">Fail</span>
+              <div class="area-text">39 corridas, 2 fallas por guard readonly del bridge.</div>
             </div>
             <div class="area-row">
               <div class="area-name">Terceros</div>
@@ -221,7 +232,7 @@
         <section class="panel" aria-label="Ruta al 100 por ciento">
           <div class="panel-title">
             <h2>Ruta Al 100%</h2>
-            <span class="status-pill is-work">Personal listo; pipeline</span>
+            <span class="status-pill is-work">Personal listo; evidencia</span>
           </div>
           <div class="progress-track" aria-label="Progreso operativo estimado">
             <div class="progress-fill"></div>
@@ -232,7 +243,8 @@
             <div class="check-item"><span class="check">✓</span> No-order guardrails conservados.</div>
             <div class="check-item"><span class="check">✓</span> Produccion protegida verificada en Render.</div>
             <div class="check-item"><span class="check">✓</span> GPT Builder actualizado.</div>
-            <div class="check-item"><span class="check">•</span> Hoy falta snapshot maestro fresco: NO_DATA / WAIT_PIPELINE.</div>
+            <div class="check-item"><span class="check">✓</span> Snapshot maestro fresco: rows=123, tecnicos=32.</div>
+            <div class="check-item"><span class="check">•</span> Resolver 2 fallas P0 del guard readonly en bridge.</div>
             <div class="check-item"><span class="check">•</span> Reconfirmar TradingView y alimentar ledger tecnico.</div>
             <div class="check-item"><span class="check">•</span> Backfill outcomes y llegar a 30 completos por estrategia activa.</div>
             <div class="check-item"><span class="check">•</span> Terceros/comercial bloqueado por gobernanza.</div>
@@ -289,18 +301,20 @@
             <li>Ingest token local creado y verificado en Keychain.</li>
             <li>Commit f56ada7 subido por SSH y desplegado live en Render.</li>
             <li>Production read-auth: autorizado 200, sin token 401, readiness READY.</li>
+            <li>Cloud operational audit: PASS; 26/26 checks, 0 warnings.</li>
+            <li>Pipeline productivo OK: snapshot fresco, rows_found=123.</li>
             <li>Operational-100 real: PASS_WITH_WARNINGS; 6 gates, 0 fallas, 2 warnings.</li>
             <li>GPT/backend health OK: autorizado 200, sin token 401, no-order guardrails OK.</li>
-            <li>Radar actual: NO_DATA por MASTER_SNAPSHOT_MISSING; opciones=0, tecnicos=0.</li>
-            <li>Foundation health local WARN: 140 decisiones, 69 ENTRY_READY, 106 option rows.</li>
+            <li>Radar actual: READY_FOR_DECISION_REVIEW / WAIT_MARKET_WINDOW; opciones=123, tecnicos=32, ENTRY_READY=0.</li>
+            <li>Foundation health local WARN: 52 decisiones, 5 ENTRY_READY, 4 option rows diagnosticas.</li>
             <li>Outcomes: 1 cerrado, 0 completos; muestra insuficiente para parametros.</li>
             <li>TradingView ledger WAITING_FOR_DATA; falta replay/ingest de payload tecnico.</li>
-            <li>Daily operational audit: PASS_WITH_WARNINGS, 24/26 checks, warnings por snapshot faltante.</li>
+            <li>Daily operational audit: PASS, 26/26 checks; sin blockers.</li>
             <li>Outcome/manual-review dry-run responde 200 sin guardar cambios.</li>
             <li>Strategy performance: decision_count=48, outcome_count=12, closed_outcomes=0.</li>
             <li>No-order guardrails intactos.</li>
             <li>Manual review console/inbox guard OK.</li>
-            <li>20 pruebas operativas P0/operational OK.</li>
+            <li>P0 actual: 39 tests, 2 fallas por expectativa readonly=True en ibkr_bridge.py.</li>
             <li>8 pruebas de v31_operational_check OK.</li>
             <li>6 pruebas de daily operational audit OK.</li>
             <li>6 pruebas de market-open runner OK.</li>
@@ -313,11 +327,11 @@
             <h2>Proximas Acciones</h2>
           </div>
           <ol class="action-list">
-            <li><span class="number">1</span><span>Correr <span class="code">scripts/daily_open_checklist.py --refresh --publish</span> al inicio de la ventana util.</span></li>
-            <li><span class="number">2</span><span>Usar <span class="code">scripts/v32_operator_notify.py --macos-notify</span> para avisos ACTION/RISK/manual review sin ruido WAIT_MARKET.</span></li>
-            <li><span class="number">3</span><span>Confirmar alertas TradingView hacia technical_snapshot y ledger tecnico.</span></li>
-            <li><span class="number">4</span><span>Backfill/re-journal de outcomes incompletos y acumular 30 completos por estrategia activa.</span></li>
-            <li><span class="number">5</span><span>Para terceros: cerrar compliance, aislamiento, tokens, audit y disclosures.</span></li>
+            <li><span class="number">1</span><span>Corregir/revisar las 2 fallas P0 del guard readonly en <span class="code">ibkr_bridge.py</span>.</span></li>
+            <li><span class="number">2</span><span>Correr <span class="code">scripts/daily_open_checklist.py --refresh --publish</span> al inicio de la ventana util.</span></li>
+            <li><span class="number">3</span><span>Usar <span class="code">scripts/v32_operator_notify.py --macos-notify</span> para avisos ACTION/RISK/manual review sin ruido WAIT_MARKET.</span></li>
+            <li><span class="number">4</span><span>Confirmar alertas TradingView hacia technical_snapshot y ledger tecnico.</span></li>
+            <li><span class="number">5</span><span>Backfill/re-journal de outcomes incompletos y acumular 30 completos por estrategia activa.</span></li>
           </ol>
         </section>
 
@@ -327,8 +341,8 @@
           </div>
           <div class="risk-list">
             <div class="risk-row">
-              <strong>Pipeline sin snapshot</strong>
-              <p>Hoy no hay snapshot maestro activo; el GPT no debe inventar oportunidades.</p>
+              <strong>Bridge readonly guard</strong>
+              <p>Las pruebas P0 detectan 2 fallas por la expectativa readonly=True en ibkr_bridge.py.</p>
             </div>
             <div class="risk-row">
               <strong>Terceros no liberado</strong>
@@ -362,8 +376,8 @@
             Ciclo operativo PASS; radar queda READY_FOR_DECISION_REVIEW con WAIT_MARKET_WINDOW.
           </div>
           <div class="timeline-item">
-            <time>2026-07-05</time>
-            Produccion sigue OK; radar actual NO_DATA por snapshot faltante; foundation_health WARN por outcomes/fuentes incompletas; terceros bloqueado por gates comerciales.
+            <time>2026-07-16</time>
+            Produccion PASS con snapshot fresco; radar READY_FOR_DECISION_REVIEW / WAIT_MARKET_WINDOW; foundation_health WARN y P0 con 2 fallas.
           </div>
         </section>
       </aside>

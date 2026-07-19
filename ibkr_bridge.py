@@ -14,6 +14,7 @@ from pathlib import Path
 import runtime_local_technical
 import broker_check
 import ibkr_diagnostics
+import position_management
 
 
 # === V26 REMOTE MASTER SNAPSHOT PUBLISHER ===
@@ -420,6 +421,7 @@ def _v283_publish_to_v28():
     )
     broker_context = _bridge_broker_snapshot_context(rows, runtime_data, tech)
     broker_enriched = broker_check.merge_broker_checks(broker_context, rows=rows)
+    active_position_management = position_management.build_active_position_management(broker_context)
 
     payload = {
         "source": "IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET",
@@ -432,6 +434,7 @@ def _v283_publish_to_v28():
         "positions": broker_context.get("positions") or [],
         "broker_checks": broker_enriched.get("broker_checks") or [],
         "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
+        "active_position_management": active_position_management,
         "market": bridge_market_snapshot("IBKR_BRIDGE_V28_3_OFFICIAL_AFTER_V26_V31_TARGET"),
         "bridge_status": "LIVE_IBKR_AFTER_V26_PUBLISH",
         "runtime_files_seen": sorted(list(runtime_data.keys())),
@@ -629,6 +632,7 @@ def _v26_build_master_snapshot(extra_payload=None):
     broker_context = _bridge_broker_snapshot_context(options_rows, ctx, technical_snapshot)
     broker_context["runtime_context"] = ctx
     broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
+    active_position_management = position_management.build_active_position_management(broker_context)
 
     tickers = set()
 
@@ -661,6 +665,7 @@ def _v26_build_master_snapshot(extra_payload=None):
         "positions": broker_context.get("positions") or [],
         "broker_checks": broker_enriched.get("broker_checks") or [],
         "broker_check_summary": broker_enriched.get("broker_check_summary") or {},
+        "active_position_management": active_position_management,
         "tickers_detected": sorted(tickers),
         "diagnostics": {
             "options_rows_found": len(options_rows),
@@ -5494,8 +5499,24 @@ def _v28_publish_master_snapshot(extra_payload=None):
         options_rows=options_rows,
         timeframe="1d",
     )
+    # Runtime documents contain internal sections that can look like ticker
+    # dictionaries (for example ``GATE`` or ``TOP``).  Never publish those as
+    # market symbols in the canonical snapshot.
+    reserved_non_tickers = {
+        "CANSLIM", "CONTROL_PANEL", "GATE", "MARKET", "OPTIONS", "POST_MORTEM",
+        "RAW", "SCORE_CALIBRATION", "TECHNICAL", "TOP",
+    }
+    technical_snapshot = {
+        str(symbol).strip().upper(): value
+        for symbol, value in technical_snapshot.items()
+        if isinstance(value, dict)
+        and str(symbol).strip().upper() not in reserved_non_tickers
+        and str(symbol).strip().upper().replace(".", "").replace("-", "").isalnum()
+        and 1 <= len(str(symbol).strip().upper()) <= 12
+    }
     broker_context = _bridge_broker_snapshot_context(options_rows, runtime_data, technical_snapshot)
     broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
+    active_position_management = position_management.build_active_position_management(broker_context)
 
     payload = {
         "source": "IBKR_BRIDGE_V28_AUTO_PUBLISHER",
@@ -5508,6 +5529,7 @@ def _v28_publish_master_snapshot(extra_payload=None):
         "positions": _v28_bridge_json_safe(broker_context.get("positions") or []),
         "broker_checks": _v28_bridge_json_safe(broker_enriched.get("broker_checks") or []),
         "broker_check_summary": _v28_bridge_json_safe(broker_enriched.get("broker_check_summary") or {}),
+        "active_position_management": _v28_bridge_json_safe(active_position_management),
         "market": _v28_bridge_market_snapshot(),
         "runtime_files_seen": sorted(list(runtime_data.keys())),
         "bridge_status": "PUBLISHED_FROM_LOCAL_IBKR",

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,9 @@ if str(ROOT) not in sys.path:
 
 import runtime_local_technical
 import broker_check
+import gamma_context_store
+import position_management
+import position_context_store
 
 
 DEFAULT_REMOTE_URL = "https://trading-engine-p097.onrender.com"
@@ -32,6 +36,35 @@ DEFAULT_MAX_AGE_MINUTES = 90
 DEFAULT_PUBLISH_TIMEOUT_SECONDS = int(os.getenv("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "45"))
 DEFAULT_PUBLISH_RETRIES = max(1, int(os.getenv("TRADING_ENGINE_PUBLISH_RETRIES", "3")))
 DEFAULT_PUBLISH_RETRY_SLEEP_SECONDS = float(os.getenv("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "3"))
+PUBLISH_DATA_FILES = (
+    "decision_desk_snapshot.json",
+    "v32_ibkr_chain_coverage.json",
+    "stock_ultimus_console_bridge_latest.json",
+    "market_bridge_session_latest.json",
+    "daily_radar_latest.json",
+    "canslim_candidates_latest.json",
+    "technical_snapshot_by_ticker_safe.json",
+    "technical_snapshot_by_ticker.json",
+    "v26_local_master_snapshot.json",
+    "v28_master_snapshot.json",
+    "v25_master_snapshot.json",
+    "ibkr_account_capacity_latest.json",
+    "gamma_contexts.json",
+    "active_position_contexts.json",
+)
+RESERVED_NON_TICKERS = {
+    "CANSLIM",
+    "CONTROL_PANEL",
+    "GATE",
+    "MARKET",
+    "OPTIONS",
+    "POST_MORTEM",
+    "RAW",
+    "SCORE_CALIBRATION",
+    "TECHNICAL",
+    "TOP",
+}
+MARKET_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,8}(?:[.!-][A-Z0-9]{1,4})?!?$")
 
 
 def now_iso() -> str:
@@ -140,6 +173,34 @@ def runtime_freshness(runtime_dir: Path) -> dict[str, Any]:
     }
 
 
+def publish_data_freshness(runtime_dir: Path) -> dict[str, Any]:
+    """Freshness of market/account inputs, excluding monitor and notification state."""
+    files = [runtime_dir / name for name in PUBLISH_DATA_FILES if (runtime_dir / name).exists()]
+    if not files:
+        return {
+            "newest_file": None,
+            "newest_mtime": None,
+            "age_minutes": None,
+            "file_count": 0,
+            "considered_files": [],
+        }
+    newest = max(files, key=lambda path: path.stat().st_mtime)
+    newest_dt = datetime.fromtimestamp(newest.stat().st_mtime, tz=timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - newest_dt).total_seconds() / 60
+    return {
+        "newest_file": str(newest),
+        "newest_mtime": newest_dt.isoformat(),
+        "age_minutes": round(age_minutes, 2),
+        "file_count": len(files),
+        "considered_files": [path.name for path in files],
+    }
+
+
+def valid_market_symbol(value: Any) -> bool:
+    symbol = str(value or "").upper().strip()
+    return bool(symbol and symbol not in RESERVED_NON_TICKERS and MARKET_SYMBOL_RE.fullmatch(symbol))
+
+
 def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -197,7 +258,7 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     best_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
-        if not ticker:
+        if not valid_market_symbol(ticker):
             continue
 
         row["ticker"] = ticker
@@ -228,8 +289,9 @@ def extract_technical_snapshot(runtime_data: dict[str, Any]) -> dict[str, dict[s
         if not isinstance(value, dict):
             return
 
-        ticker = str(value.get("ticker") or value.get("symbol") or key or "").upper().strip()
-        if not ticker:
+        explicit_ticker = value.get("ticker") or value.get("symbol")
+        ticker = str(explicit_ticker or key or "").upper().strip()
+        if not valid_market_symbol(ticker):
             return
 
         looks_technical = any(
@@ -285,17 +347,28 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         options_rows=options_rows,
         timeframe="1d",
     )
-    broker_enriched = broker_check.merge_broker_checks(
-        {
-            "account_scope": account_context.get("account_scope"),
-            "account_alias": account_context.get("account_alias"),
-            "account_context": account_context,
-            "options_rows": options_rows,
-            "runtime_data": runtime_data,
-            **runtime_data,
-        },
-        rows=options_rows,
-    )
+    technical_snapshot = {
+        str(ticker).upper().strip(): value
+        for ticker, value in technical_snapshot.items()
+        if valid_market_symbol(ticker) and isinstance(value, dict)
+    }
+    broker_context = {
+        "account_scope": account_context.get("account_scope"),
+        "account_alias": account_context.get("account_alias"),
+        "account_context": account_context,
+        "options_rows": options_rows,
+        "technical_snapshot": technical_snapshot,
+        "runtime_data": runtime_data,
+        **runtime_data,
+    }
+    active_position_contexts = runtime_data.get("active_position_contexts.json") or position_context_store.load_contexts(runtime_dir / "active_position_contexts.json")
+    broker_context["active_position_contexts"] = active_position_contexts
+    gamma_contexts = runtime_data.get("gamma_contexts.json") or gamma_context_store.load_contexts(runtime_dir / "gamma_contexts.json")
+    broker_context["gamma_contexts"] = gamma_contexts
+    positions = broker_check.extract_positions(broker_context)
+    broker_context["positions"] = positions
+    broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
+    active_position_management = position_management.build_active_position_management(broker_context)
 
     return {
         "source": "LOCAL_RUNTIME_V31_PUBLISHER",
@@ -303,10 +376,17 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         "account_scope": account_context.get("account_scope"),
         "account_alias": account_context.get("account_alias"),
         "account_context": json_safe(account_context),
+        "coberturas_rsp_manual_context": json_safe(
+            runtime_data.get("coberturas_rsp_manual_context.json") or {}
+        ),
+        "positions": json_safe(positions),
+        "active_position_contexts": json_safe(active_position_contexts),
+        "gamma_contexts": json_safe(gamma_contexts),
         "options_rows": json_safe(options_rows),
         "technical_snapshot": json_safe(technical_snapshot),
         "broker_checks": json_safe(broker_enriched.get("broker_checks") or []),
         "broker_check_summary": json_safe(broker_enriched.get("broker_check_summary") or {}),
+        "active_position_management": json_safe(active_position_management),
         "market": {
             "status": "MANUAL_RUNTIME_PUBLISH",
             "label": "Runtime snapshot publisher; validate market state manually.",
@@ -388,7 +468,7 @@ def main() -> int:
     ingest_path = args.ingest_path if args.ingest_path.startswith("/") else f"/{args.ingest_path}"
     url = args.remote_url.rstrip("/") + ingest_path
     runtime_dir = Path(args.runtime_dir)
-    freshness = runtime_freshness(runtime_dir)
+    freshness = publish_data_freshness(runtime_dir)
     payload = build_payload(runtime_dir)
     age = freshness.get("age_minutes")
     stale = bool(age is None or age > args.max_age_minutes)

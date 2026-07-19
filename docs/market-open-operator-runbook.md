@@ -30,6 +30,19 @@ Expected early status before live alerts fire:
 
 ## Live-open sequence
 
+Primary cockpit:
+
+```text
+http://127.0.0.1:8765/console
+```
+
+Use the local console as the single operator monitor during market hours. It
+consolidates account/capacity, IBKR bridge refresh, production/GPT status, V31
+manual review, V31 learning/performance, and local operational questions.
+Render remains the production backend/API and ChatGPT remains a conversational
+interface, but the operator should not need to jump between separate consoles
+for normal review.
+
 1. Confirm TradingView alert panel shows the expected alert set.
    - 5 active consolidated alerts total.
    - Futures: `MNQ1!` `5m` and `MES1!` `5m`, both using

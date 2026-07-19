@@ -156,6 +156,29 @@ class BrokerCheckTests(unittest.TestCase):
         self.assertFalse(freshness["ok"])
         self.assertIn("BROKER_CHECK_STALE", freshness["blockers"])
 
+    def test_option_candidate_quantity_is_not_extracted_as_broker_position(self):
+        snapshot = {
+            "runtime_data": {
+                "decision_desk_snapshot.json": {
+                    "top_candidates": [
+                        {
+                            "ticker": "RSP",
+                            "strategy": "SELL_PUT",
+                            "strike": 210,
+                            "expiration": "20260724",
+                            "quantity": 1,
+                            "bid": 1.2,
+                            "ask": 1.3,
+                        }
+                    ]
+                }
+            }
+        }
+
+        positions = broker_check.extract_positions(snapshot)
+
+        self.assertEqual(positions, [])
+
 
 if __name__ == "__main__":
     unittest.main()
