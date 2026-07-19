@@ -39,6 +39,21 @@ su confirmación de precauciones para órdenes API. La consola no acepta esa dec
 automáticamente: desactivar dichas precauciones es global y también afectaría
 posibles órdenes reales futuras.
 
+## Aislamiento del canal
+
+El preview utiliza el cliente IBKR exclusivo `87`; los clientes operativos
+`42`, `74`, `75` y `84` están prohibidos por política. Antes de conectar, el
+runner se audita a sí mismo y se bloquea si detecta capacidad `placeOrder`.
+La consola distingue dos niveles:
+
+- `Canal sin ejecución real`: cliente exclusivo y superficie limitada a
+  `whatIfOrder`.
+- `Sesión TWS dedicada`: instancia separada confirmada mediante
+  `STOCK_ULTIMUS_WHATIF_DEDICATED_TWS=1`.
+
+La política no permite recomendar el bypass global de precauciones mientras la
+sesión TWS dedicada siga en `NO`.
+
 ## Limitaciones
 
 Un preview puede ser parcial si TWS, permisos o el contrato no entregan margen o

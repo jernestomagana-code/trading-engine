@@ -91,6 +91,8 @@ CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_DAIL
 CONSOLE_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", "75")))
 CONSOLE_HISTORICAL_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_HISTORICAL_TIMEOUT_SECONDS", "4")))
 CONSOLE_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "75")))
+CONSOLE_WHATIF_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_WHATIF_IBKR_CLIENT_ID", "87")))
+CONSOLE_WHATIF_IBKR_PORT = int(float(os.getenv("STOCK_ULTIMUS_WHATIF_IBKR_PORT", os.getenv("IBKR_PORT", "7496"))))
 CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,SPY,AAPL,NVDA,TSLA,RSP")
 CONSOLE_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", "1")
 CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_OPTION_SYMBOLS", "RSP")
@@ -846,6 +848,10 @@ def portfolio_whatif_refresh_command(candidate_id: str = "") -> list[str]:
         "scripts/preview_portfolio_rebalance_whatif.py",
         "--json-out",
         "runtime/portfolio_rebalance_whatif_latest.json",
+        "--port",
+        str(CONSOLE_WHATIF_IBKR_PORT),
+        "--client-id",
+        str(CONSOLE_WHATIF_IBKR_CLIENT_ID),
     ]
     if candidate_id:
         command.extend(["--candidate-id", candidate_id])
@@ -5063,6 +5069,18 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
     status = payload.get("status") or "SIN_VALIDAR"
     unchanged = payload.get("open_order_fingerprint_unchanged")
     unchanged_label = "SÍ" if unchanged is True else "NO" if unchanged is False else "PENDIENTE"
+    isolation = payload.get("channel_isolation") if isinstance(payload.get("channel_isolation"), dict) else {}
+    if not isolation:
+        runner_path = ROOT / "scripts" / "preview_portfolio_rebalance_whatif.py"
+        isolation = shared_portfolio_whatif.evaluate_channel_isolation(
+            shared_portfolio_whatif.load_policy(PORTFOLIO_WHATIF_POLICY_PATH),
+            client_id=CONSOLE_WHATIF_IBKR_CLIENT_ID,
+            runner_source=runner_path.read_text(encoding="utf-8"),
+            dedicated_tws_session=str(os.getenv("STOCK_ULTIMUS_WHATIF_DEDICATED_TWS", "")).lower()
+            in {"1", "true", "yes"},
+        )
+    logical_label = "SÍ" if isolation.get("logical_isolation_ready") else "PENDIENTE"
+    physical_label = "SÍ" if isolation.get("physical_isolation_ready") else "NO"
     preview_rows = [row for row in (payload.get("previews") or []) if isinstance(row, dict)]
     timeout_only = bool(preview_rows) and all(
         str(row.get("status") or "") != "READY" and "TimeoutError" in str(row.get("error") or "")
@@ -5089,6 +5107,8 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         <div><span>Comisión estimada</span><strong>{commission}</strong></div>
         <div><span>Cambio margen mant.</span><strong>{maintenance}</strong></div>
         <div><span>Órdenes sin cambio</span><strong>{unchanged}</strong></div>
+        <div><span>Canal sin ejecución real</span><strong>{logical}</strong></div>
+        <div><span>Sesión TWS dedicada</span><strong>{physical}</strong></div>
       </div>
       {operator_notice}
       <div class="scenario-grid">{previews}</div>
@@ -5107,6 +5127,8 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         commission=html_escape(_tower_money(payload.get("estimated_commission_total"))),
         maintenance=html_escape(_tower_money(payload.get("independent_maintenance_margin_change_sum"))),
         unchanged=html_escape(unchanged_label),
+        logical=html_escape(logical_label),
+        physical=html_escape(physical_label),
         operator_notice=operator_notice,
         previews="".join(preview_cards) or '<p class="empty">Selecciona una alternativa para consultar el what-if oficial.</p>',
         action_form=action_form,

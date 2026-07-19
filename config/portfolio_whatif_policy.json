@@ -9,5 +9,9 @@
   ],
   "require_open_orders_unchanged": true,
   "ibkr_requires_transmit_true_for_whatif": true,
-  "require_what_if_true": true
+  "require_what_if_true": true,
+  "whatif_client_id": 87,
+  "forbidden_operational_client_ids": [42, 74, 75, 84],
+  "require_no_place_order_capability": true,
+  "require_dedicated_tws_before_bypassing_global_precautions": true
 }

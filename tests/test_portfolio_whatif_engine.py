@@ -121,6 +121,43 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
         self.assertIn("open_order_fingerprint", source)
         self.assertNotIn("ib.placeOrder", source)
 
+    def test_channel_isolation_requires_dedicated_client_and_no_live_order_surface(self):
+        safe = whatif.evaluate_channel_isolation(
+            self.policy,
+            client_id=87,
+            runner_source="state = ib.whatIfOrder(contract, order)",
+            dedicated_tws_session=False,
+        )
+        unsafe_client = whatif.evaluate_channel_isolation(
+            self.policy,
+            client_id=42,
+            runner_source="state = ib.whatIfOrder(contract, order)",
+            dedicated_tws_session=True,
+        )
+        unsafe_surface = whatif.evaluate_channel_isolation(
+            self.policy,
+            client_id=87,
+            runner_source="ib.whatIfOrder(contract, order)\nib.placeOrder(contract, order)",
+            dedicated_tws_session=True,
+        )
+
+        self.assertEqual(safe["status"], "LOGICALLY_ISOLATED")
+        self.assertTrue(safe["logical_isolation_ready"])
+        self.assertFalse(safe["global_precaution_bypass_allowed"])
+        self.assertEqual(unsafe_client["status"], "BLOCKED")
+        self.assertEqual(unsafe_surface["status"], "BLOCKED")
+
+    def test_dedicated_tws_session_completes_physical_isolation(self):
+        result = whatif.evaluate_channel_isolation(
+            self.policy,
+            client_id=87,
+            runner_source="state = ib.whatIfOrder(contract, order)",
+            dedicated_tws_session=True,
+        )
+
+        self.assertEqual(result["status"], "FULLY_ISOLATED")
+        self.assertTrue(result["global_precaution_bypass_allowed"])
+
     def test_console_renders_official_preview_and_safe_form(self):
         payload = whatif.summarize(
             whatif.build_preview_requests(self.rebalance, self.policy),

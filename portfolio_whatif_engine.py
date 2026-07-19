@@ -21,6 +21,10 @@ DEFAULT_POLICY: dict[str, Any] = {
     "require_open_orders_unchanged": True,
     "ibkr_requires_transmit_true_for_whatif": True,
     "require_what_if_true": True,
+    "whatif_client_id": 87,
+    "forbidden_operational_client_ids": [42, 74, 75, 84],
+    "require_no_place_order_capability": True,
+    "require_dedicated_tws_before_bypassing_global_precautions": True,
 }
 
 
@@ -163,6 +167,31 @@ def order_state_payload(order_state: Any) -> dict[str, Any]:
     }
 
 
+def evaluate_channel_isolation(
+    policy: dict[str, Any], *, client_id: int, runner_source: str, dedicated_tws_session: bool
+) -> dict[str, Any]:
+    required_client_id = int(policy.get("whatif_client_id") or 87)
+    forbidden = {int(value) for value in (policy.get("forbidden_operational_client_ids") or [])}
+    dedicated_client = client_id == required_client_id and client_id not in forbidden
+    has_whatif = "ib.whatIfOrder(" in runner_source
+    has_live_order_capability = ".placeOrder(" in runner_source
+    execution_surface_safe = has_whatif and not has_live_order_capability
+    logical_isolation_ready = dedicated_client and execution_surface_safe
+    physical_isolation_ready = logical_isolation_ready and bool(dedicated_tws_session)
+    return {
+        "status": "FULLY_ISOLATED" if physical_isolation_ready else "LOGICALLY_ISOLATED" if logical_isolation_ready else "BLOCKED",
+        "client_id": client_id,
+        "required_client_id": required_client_id,
+        "dedicated_client_id": dedicated_client,
+        "execution_surface_safe": execution_surface_safe,
+        "live_order_capability_present": has_live_order_capability,
+        "dedicated_tws_session": bool(dedicated_tws_session),
+        "logical_isolation_ready": logical_isolation_ready,
+        "physical_isolation_ready": physical_isolation_ready,
+        "global_precaution_bypass_allowed": physical_isolation_ready,
+    }
+
+
 def summarize(
     request_build: dict[str, Any],
     previews: list[dict[str, Any]],
@@ -170,9 +199,11 @@ def summarize(
     open_orders_before: int,
     open_orders_after: int,
     open_order_fingerprint_unchanged: bool,
+    channel_isolation: dict[str, Any] | None = None,
     reference: datetime | None = None,
 ) -> dict[str, Any]:
     reference = reference or datetime.now(timezone.utc)
+    channel_isolation = channel_isolation or {}
     ready = [item for item in previews if str(item.get("status") or "") == "READY"]
     failed = [item for item in previews if str(item.get("status") or "") != "READY"]
     commission_values = [_number(item.get("commission")) for item in ready]
@@ -227,6 +258,7 @@ def summarize(
         "automatic_rebalance_authorized": False,
         "sensitive_identifiers_excluded": True,
         "real_account_ids_excluded": True,
+        "channel_isolation": channel_isolation,
         "not_order_instruction": True,
     }
 

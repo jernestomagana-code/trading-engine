@@ -92,6 +92,11 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
     parser.add_argument("--client-id", type=int, default=87)
+    parser.add_argument(
+        "--dedicated-tws-session",
+        action="store_true",
+        default=str(os.getenv("STOCK_ULTIMUS_WHATIF_DEDICATED_TWS", "")).lower() in {"1", "true", "yes"},
+    )
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--json-out", default="runtime/portfolio_rebalance_whatif_latest.json")
     args = parser.parse_args()
@@ -99,10 +104,20 @@ def main() -> int:
     rebalance_payload = load_json(rooted(args.rebalance))
     policy = whatif_engine.load_policy(rooted(args.policy))
     request_build = whatif_engine.build_preview_requests(rebalance_payload, policy, candidate_id=args.candidate_id)
+    runner_source = Path(__file__).read_text(encoding="utf-8")
+    channel_isolation = whatif_engine.evaluate_channel_isolation(
+        policy,
+        client_id=args.client_id,
+        runner_source=runner_source,
+        dedicated_tws_session=args.dedicated_tws_session,
+    )
+    if not channel_isolation.get("logical_isolation_ready"):
+        request_build["status"] = "BLOCKED"
+        request_build["warnings"] = sorted(set((request_build.get("warnings") or []) + ["WHATIF_CHANNEL_NOT_ISOLATED"]))
     if request_build.get("status") != "READY":
         result = whatif_engine.summarize(
             request_build, [], open_orders_before=0, open_orders_after=0,
-            open_order_fingerprint_unchanged=True,
+            open_order_fingerprint_unchanged=True, channel_isolation=channel_isolation,
         )
         whatif_engine.write_result(rooted(args.json_out), result)
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -208,6 +223,7 @@ def main() -> int:
         open_orders_before=len(before_fingerprint),
         open_orders_after=len(after_fingerprint),
         open_order_fingerprint_unchanged=unchanged,
+        channel_isolation=channel_isolation,
     )
     whatif_engine.write_result(rooted(args.json_out), result)
     print(json.dumps({
