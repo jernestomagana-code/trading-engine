@@ -29276,6 +29276,21 @@ async def v32_strategy_performance(limit: int = 1000):
     return _v32_strategy_performance_payload(limit)
 
 
+@app.get("/v32_decisions")
+async def v32_decisions(limit: int = 1000):
+    bounded_limit = max(1, min(int(limit or 1000), 5000))
+    decisions = _strategy_performance_decisions(bounded_limit)
+    return {
+        "engine": "V32_DECISION_JOURNAL_READ",
+        "generated_at": _v29_now(),
+        "decision_count": len(decisions),
+        "decisions": decisions,
+        "sensitive_identifiers_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 @app.get("/v32_strategy_performance_dashboard", response_class=_V29HTMLResponse)
 async def v32_strategy_performance_dashboard(limit: int = 1000):
     return _V29HTMLResponse(_v32_strategy_performance_dashboard_html(limit=limit))

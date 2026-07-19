@@ -40,8 +40,18 @@ def build_intelligence(
         for item in outcomes
         if item.get("decision_id")
     }
+    outcome_by_signal = {
+        str(item.get("signal_id")): item
+        for item in outcomes
+        if item.get("signal_id")
+    }
+    def linked_outcome(decision: dict[str, Any]) -> dict[str, Any] | None:
+        decision_id = str(decision.get("decision_id") or "")
+        signal_id = str(decision.get("signal_id") or "")
+        return outcome_by_decision.get(decision_id) or outcome_by_signal.get(signal_id)
+
     actionable = [item for item in decisions if _upper(item.get("final_state")) in ACTIONABLE_STATES]
-    linked_actionable = [item for item in actionable if str(item.get("decision_id") or "") in outcome_by_decision]
+    linked_actionable = [item for item in actionable if linked_outcome(item)]
     complete = int(summary.get("complete_closed_outcomes") or 0)
     minimum = 30
     coverage = round((len(linked_actionable) / len(actionable)) * 100, 2) if actionable else None
@@ -49,7 +59,7 @@ def build_intelligence(
     recent_source = actionable or decisions
     recent_rows = []
     for decision in sorted(recent_source, key=_timestamp, reverse=True)[:max(1, int(recent_limit))]:
-        linked = outcome_by_decision.get(str(decision.get("decision_id") or ""))
+        linked = linked_outcome(decision)
         embedded = decision.get("latest_outcome") if isinstance(decision.get("latest_outcome"), dict) else {}
         outcome = linked or embedded
         recent_rows.append({

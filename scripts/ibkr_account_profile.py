@@ -73,6 +73,7 @@ PORTFOLIO_WHATIF_PATH = RUNTIME / "portfolio_rebalance_whatif_latest.json"
 PORTFOLIO_WHATIF_POLICY_PATH = ROOT / "config" / "portfolio_whatif_policy.json"
 DECISION_JOURNAL_PATH = RUNTIME / "v32_decision_journal.json"
 OUTCOME_JOURNAL_PATH = RUNTIME / "v32_outcomes_journal.json"
+DAILY_OUTCOME_EVALUATION_PATH = RUNTIME / "daily_outcome_evaluation_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -859,6 +860,19 @@ def portfolio_whatif_refresh_command(candidate_id: str = "") -> list[str]:
     if candidate_id:
         command.extend(["--candidate-id", candidate_id])
     return command
+
+
+def daily_outcome_evaluation_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/run_daily_outcome_evaluation.py",
+        "--json-out",
+        "runtime/daily_outcome_evaluation_latest.json",
+        "--outcomes-journal",
+        "runtime/v32_outcomes_journal.json",
+        "--decisions-journal",
+        "runtime/v32_decision_journal.json",
+    ]
 
 
 def portfolio_risk_operations_command(
@@ -5153,6 +5167,14 @@ def load_decision_outcome_intelligence() -> dict[str, Any]:
 
 def render_decision_outcome_panel() -> str:
     payload = load_decision_outcome_intelligence()
+    automation = shared_risk_operations.load_json(DAILY_OUTCOME_EVALUATION_PATH)
+    evaluation_rows = [row for row in (automation.get("evaluations") or []) if isinstance(row, dict)]
+    evaluated_total = sum(int(row.get("evaluated_count") or 0) for row in evaluation_rows)
+    saved_total = sum(int(row.get("saved_count") or 0) for row in evaluation_rows)
+    pending_total = sum(int(row.get("not_evaluated_count") or 0) for row in evaluation_rows)
+    sync = automation.get("local_outcome_sync") if isinstance(automation.get("local_outcome_sync"), dict) else {}
+    decision_sync = automation.get("local_decision_sync") if isinstance(automation.get("local_decision_sync"), dict) else {}
+    automation_installed = (Path.home() / "Library" / "LaunchAgents" / "com.stockultimus.v32-pushover-postclose.plist").exists()
     recent_rows = []
     for row in payload.get("recent_decisions") or []:
         recent_rows.append("""
@@ -5205,6 +5227,18 @@ def render_decision_outcome_panel() -> str:
         <div><span>Resultados completos</span><strong>{complete}/30</strong></div>
         <div><span>Avance de evidencia</span><strong>{progress}</strong></div>
       </div>
+      <div class="control-facts">
+        <div><span>Seguimiento automático</span><strong>{automation_status}</strong></div>
+        <div><span>Última evaluación</span><strong>{last_run}</strong></div>
+        <div><span>Evaluaciones procesadas</span><strong>{evaluated}</strong></div>
+        <div><span>Checkpoints guardados</span><strong>{saved}</strong></div>
+        <div><span>Pendientes de datos</span><strong>{pending}</strong></div>
+        <div><span>Resultados sincronizados</span><strong>{sync_status}</strong></div>
+        <div><span>Decisiones sincronizadas</span><strong>{decision_sync_status}</strong></div>
+      </div>
+      <form method="post" action="/daily-outcome-evaluation" data-busy="Actualizando seguimiento de resultados" data-busy-detail="Evalúa checkpoints y sincroniza el diario local; no toca IBKR ni crea órdenes.">
+        <button class="secondary">Actualizar seguimiento ahora</button>
+      </form>
       <h3>Rendimiento por estrategia</h3>
       <div class="table-scroll"><table><thead><tr><th>Estrategia</th><th>Decisiones</th><th>Cerrados</th><th>Completos</th><th>Acierto</th><th>Expectativa</th><th>Estado</th></tr></thead>
       <tbody>{strategies}</tbody></table></div>
@@ -5222,6 +5256,13 @@ def render_decision_outcome_panel() -> str:
         coverage=html_escape(f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else "Sin decisiones"),
         complete=html_escape(payload.get("complete_closed_outcomes") or 0),
         progress=html_escape(f"{float(payload.get('evidence_progress_pct') or 0):.1f}%"),
+        automation_status="ACTIVO" if automation_installed else "NO INSTALADO",
+        last_run=html_escape(age_label(automation.get("checked_at")) if automation.get("checked_at") else "Sin ejecución"),
+        evaluated=html_escape(evaluated_total),
+        saved=html_escape(saved_total),
+        pending=html_escape(pending_total),
+        sync_status=html_escape(sync.get("status") or "PENDIENTE DE PRIMER CICLO"),
+        decision_sync_status=html_escape(decision_sync.get("status") or "PENDIENTE DE PRIMER CICLO"),
         strategies="".join(strategy_rows) or '<tr><td colspan="7">Todavía no hay resultados por estrategia.</td></tr>',
         recent="".join(recent_rows) or '<tr><td colspan="5">Todavía no hay decisiones accionables registradas.</td></tr>',
     )
@@ -6234,6 +6275,34 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "status": "RUNNING", "message": "Daily open iniciado.", "job_id": job_id})
                     return
                 self.send_html("Daily open iniciado. La consola mostrara RUNNING hasta que termine.", job_id=job_id)
+            elif self.path == "/daily-outcome-evaluation":
+                existing_job = running_web_job_by_label("Seguimiento automático de resultados")
+                if existing_job:
+                    self.send_html(
+                        "El seguimiento de resultados ya está corriendo.",
+                        job_id=existing_job.get("job_id"),
+                    )
+                    return
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(
+                    selected_alias,
+                    daily_outcome_evaluation_command(),
+                    "Seguimiento automático de resultados",
+                )
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({
+                        "ok": True,
+                        "status": "RUNNING",
+                        "message": "Seguimiento automático iniciado.",
+                        "job_id": job_id,
+                        "execution_authorized": False,
+                        "not_order_instruction": True,
+                    })
+                    return
+                self.send_html(
+                    "Seguimiento iniciado: evalúa checkpoints y sincroniza resultados sin tocar IBKR.",
+                    job_id=job_id,
+                )
             elif self.path == "/diagnostic":
                 job_id = start_web_job(alias, console_diagnostic_command(), "Diagnostico completo")
                 if "application/json" in (self.headers.get("Accept") or ""):

@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 READ_KEYCHAIN_SERVICE = "stock-ultimus-read-access-token"
 DEFAULT_OUT = ROOT / "runtime" / "daily_outcome_evaluation_latest.json"
+DEFAULT_OUTCOMES_JOURNAL = ROOT / "runtime" / "v32_outcomes_journal.json"
+DEFAULT_DECISIONS_JOURNAL = ROOT / "runtime" / "v32_decision_journal.json"
+SENSITIVE_KEY_FRAGMENTS = ("account_id", "account_number", "token", "secret", "password", "credential")
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "45")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_EVAL_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--no-write", action="store_true")
+    parser.add_argument("--no-local-sync", action="store_true", help="Do not refresh the sanitized local outcomes journal.")
+    parser.add_argument("--outcomes-journal", default=str(DEFAULT_OUTCOMES_JOURNAL))
+    parser.add_argument("--decisions-journal", default=str(DEFAULT_DECISIONS_JOURNAL))
     return parser.parse_args()
 
 
@@ -108,6 +114,62 @@ def compact_eval_payload(endpoint: str, checkpoint: str, status_code: int, paylo
     }
 
 
+def sanitize_local_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [sanitize_local_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    clean = {}
+    for key, item in value.items():
+        normalized = str(key).lower()
+        if any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS):
+            continue
+        clean[str(key)] = sanitize_local_value(item)
+    return clean
+
+
+def sync_local_journal(
+    base: str, token: str, timeout: int, path: Path, *, endpoint: str, rows_key: str
+) -> dict[str, Any]:
+    status_code, payload = request_json(f"{base}{endpoint}", token, timeout)
+    rows = payload.get(rows_key) if isinstance(payload.get(rows_key), list) else []
+    guard_ok = payload.get("not_order_instruction") is True
+    result = {
+        "http_status": status_code,
+        "guard_ok": guard_ok,
+        "remote_outcome_count": len(rows),
+        "written_count": 0,
+        "path": str(path),
+        "sensitive_fields_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if status_code != 200 or not guard_ok:
+        result["status"] = "FAILED"
+        return result
+    sanitized = [sanitize_local_value(item) for item in rows if isinstance(item, dict)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(sanitized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    result.update({"status": "SYNCED", "written_count": len(sanitized)})
+    return result
+
+
+def sync_local_outcomes(base: str, token: str, timeout: int, path: Path) -> dict[str, Any]:
+    return sync_local_journal(
+        base, token, timeout, path, endpoint="/outcomes", rows_key="outcomes"
+    )
+
+
+def sync_local_decisions(base: str, token: str, timeout: int, path: Path) -> dict[str, Any]:
+    result = sync_local_journal(
+        base, token, timeout, path, endpoint="/v32_decisions?limit=1000", rows_key="decisions"
+    )
+    result["remote_decision_count"] = result.pop("remote_outcome_count", 0)
+    return result
+
+
 def main() -> int:
     args = parse_args()
     token = args.token or keychain_password(READ_KEYCHAIN_SERVICE)
@@ -137,6 +199,16 @@ def main() -> int:
     perf_status, perf = request_json(f"{base}/v32_strategy_performance", token, args.timeout)
     learning_status, learning = request_json(f"{base}/v31_manual_review_learning", token, args.timeout)
     answer_status, answer = request_json(f"{base}/gpt_v31_daily_answer?limit=3", token, args.timeout)
+    local_sync = (
+        {"status": "DISABLED", "execution_authorized": False, "not_order_instruction": True}
+        if args.no_local_sync or args.no_write
+        else sync_local_outcomes(base, token, args.timeout, Path(args.outcomes_journal))
+    )
+    local_decision_sync = (
+        {"status": "DISABLED", "execution_authorized": False, "not_order_instruction": True}
+        if args.no_local_sync or args.no_write
+        else sync_local_decisions(base, token, args.timeout, Path(args.decisions_journal))
+    )
     result = {
         "engine": "LOCAL_DAILY_OUTCOME_EVALUATION_RUNNER",
         "run_version": "daily_outcome_evaluation_v1",
@@ -167,6 +239,8 @@ def main() -> int:
             "execution_authorized": answer.get("execution_authorized"),
             "not_order_instruction": answer.get("not_order_instruction"),
         },
+        "local_outcome_sync": local_sync,
+        "local_decision_sync": local_decision_sync,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -177,7 +251,7 @@ def main() -> int:
         out_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+    return 1 if "FAILED" in {local_sync.get("status"), local_decision_sync.get("status")} else 0
 
 
 if __name__ == "__main__":

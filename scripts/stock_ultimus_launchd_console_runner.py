@@ -38,6 +38,7 @@ ENDPOINTS = {
     "portfolio-risk-monitor": ("/portfolio-risk-monitor", "Monitoreo de riesgo de cartera"),
     "portfolio-risk-preflight": ("/portfolio-risk-preflight", "Preflight de riesgo de cartera"),
     "portfolio-risk-digest": ("/portfolio-risk-digest", "Digest de riesgo de cartera"),
+    "daily-outcome-evaluation": ("/daily-outcome-evaluation", "Seguimiento automático de resultados"),
 }
 
 JOB_TIMEOUTS = {
@@ -47,6 +48,7 @@ JOB_TIMEOUTS = {
     "portfolio-risk-monitor": 900.0,
     "portfolio-risk-preflight": 600.0,
     "portfolio-risk-digest": 600.0,
+    "daily-outcome-evaluation": 900.0,
 }
 
 

@@ -2,9 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import decision_outcome_intelligence as intelligence
 from scripts import ibkr_account_profile as account_console
+from scripts import run_daily_outcome_evaluation as daily_runner
 
 
 class DecisionOutcomeIntelligenceTests(unittest.TestCase):
@@ -17,6 +19,7 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
             },
             {
                 "decision_id": "D2", "ticker": "MSFT", "strategy": "NAKED_PUT",
+                "signal_id": "S2",
                 "final_state": "MANUAL_REVIEW", "decision": "MANUAL_REVIEW",
                 "action": "Esperar confirmación", "recorded_at": "2026-07-02T10:00:00+00:00",
             },
@@ -34,6 +37,11 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
                 "recorded_at": "2026-07-05T10:00:00+00:00",
                 "selected_contract": {"expiration": "20260821", "strike": 200, "right": "P"},
                 "candidate_source": "IBKR", "confirmation_source": "TRADINGVIEW",
+            },
+            {
+                "outcome_id": "O2", "signal_id": "S2", "ticker": "MSFT",
+                "strategy": "NAKED_PUT", "outcome": "PENDING",
+                "recorded_at": "2026-07-05T11:00:00+00:00",
             }
         ]
 
@@ -44,11 +52,12 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
 
         self.assertEqual(payload["decision_count"], 3)
         self.assertEqual(payload["actionable_decision_count"], 2)
-        self.assertEqual(payload["linked_actionable_outcome_count"], 1)
-        self.assertEqual(payload["actionable_outcome_coverage_pct"], 50.0)
+        self.assertEqual(payload["linked_actionable_outcome_count"], 2)
+        self.assertEqual(payload["actionable_outcome_coverage_pct"], 100.0)
         self.assertEqual(payload["status"], "BUILDING_EVIDENCE")
         self.assertFalse(payload["automatic_parameter_changes_authorized"])
         self.assertEqual(payload["recent_decisions"][0]["ticker"], "MSFT")
+        self.assertEqual(payload["recent_decisions"][0]["outcome"], "PENDING")
         self.assertEqual(payload["recent_decisions"][1]["outcome"], "WIN")
 
     def test_console_renders_decision_outcome_panel(self):
@@ -67,9 +76,58 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
 
         self.assertIn("Historial de decisiones y resultados", rendered)
         self.assertIn("Cobertura accionable", rendered)
-        self.assertIn("50.0%", rendered)
+        self.assertIn("100.0%", rendered)
         self.assertIn("NAKED_PUT", rendered)
         self.assertIn("no cambia parámetros automáticamente", rendered)
+        self.assertIn("Seguimiento automático", rendered)
+        self.assertIn("Actualizar seguimiento ahora", rendered)
+
+    def test_remote_outcomes_sync_is_sanitized_and_atomic(self):
+        remote = {
+            "outcomes": [{
+                "outcome_id": "O1", "decision_id": "D1", "ticker": "AAPL",
+                "outcome": "WIN", "account_id": "SENSITIVE", "nested": {"api_token": "SECRET", "pnl_r": 1.0},
+            }],
+            "not_order_instruction": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "outcomes.json"
+            with patch.object(daily_runner, "request_json", return_value=(200, remote)):
+                result = daily_runner.sync_local_outcomes("https://example.test", "token", 5, target)
+            saved = json.loads(target.read_text())
+
+        self.assertEqual(result["status"], "SYNCED")
+        self.assertEqual(result["written_count"], 1)
+        self.assertNotIn("account_id", saved[0])
+        self.assertNotIn("api_token", saved[0]["nested"])
+        self.assertEqual(saved[0]["nested"]["pnl_r"], 1.0)
+        self.assertFalse(result["execution_authorized"])
+
+    def test_sync_refuses_payload_without_no_order_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "outcomes.json"
+            with patch.object(daily_runner, "request_json", return_value=(200, {"outcomes": [{}]})):
+                result = daily_runner.sync_local_outcomes("https://example.test", "token", 5, target)
+
+        self.assertEqual(result["status"], "FAILED")
+        self.assertFalse(target.exists())
+
+    def test_remote_decisions_sync_uses_protected_read_payload(self):
+        remote = {
+            "decisions": [{"decision_id": "D1", "ticker": "AAPL", "account_number": "SECRET"}],
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "decisions.json"
+            with patch.object(daily_runner, "request_json", return_value=(200, remote)) as request:
+                result = daily_runner.sync_local_decisions("https://example.test", "token", 5, target)
+            saved = json.loads(target.read_text())
+
+        self.assertEqual(result["status"], "SYNCED")
+        self.assertEqual(result["remote_decision_count"], 1)
+        self.assertNotIn("account_number", saved[0])
+        self.assertIn("/v32_decisions?limit=1000", request.call_args.args[0])
 
 
 if __name__ == "__main__":
