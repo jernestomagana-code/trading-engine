@@ -33,6 +33,12 @@ La salida se persiste en
 `runtime/portfolio_rebalance_whatif_latest.json` y está disponible en la API local
 `/portfolio-rebalance-whatif`.
 
+Si todos los previews vencen por tiempo de espera, la consola lo presenta como
+`TWS_CONFIRMATION_REQUIRED`. Esto normalmente significa que TWS mantiene abierta
+su confirmación de precauciones para órdenes API. La consola no acepta esa decisión
+automáticamente: desactivar dichas precauciones es global y también afectaría
+posibles órdenes reales futuras.
+
 ## Limitaciones
 
 Un preview puede ser parcial si TWS, permisos o el contrato no entregan margen o

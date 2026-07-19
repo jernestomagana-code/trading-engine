@@ -181,6 +181,10 @@ def summarize(
     initial_changes = [value for value in initial_changes if value is not None]
     maintenance_changes = [_number(item.get("maintenance_margin_change")) for item in ready]
     maintenance_changes = [value for value in maintenance_changes if value is not None]
+    failed_errors = [str(item.get("error") or "") for item in failed]
+    tws_precaution_confirmation_likely = bool(failed) and not ready and all(
+        "TimeoutError" in error for error in failed_errors
+    )
     if not open_order_fingerprint_unchanged:
         status = "SAFETY_VIOLATION"
     elif request_build.get("status") != "READY":
@@ -198,6 +202,13 @@ def summarize(
         "requested_preview_count": request_build.get("request_count") or 0,
         "ready_preview_count": len(ready),
         "failed_preview_count": len(failed),
+        "operator_state": "TWS_CONFIRMATION_REQUIRED" if tws_precaution_confirmation_likely else "",
+        "tws_precaution_confirmation_likely": tws_precaution_confirmation_likely,
+        "operator_message": (
+            "TWS está esperando una decisión sobre sus precauciones para órdenes API. "
+            "Revise la ventana de TWS; no desactive protecciones globales sin evaluar el impacto."
+            if tws_precaution_confirmation_likely else ""
+        ),
         "previews": previews,
         "estimated_commission_total": round(sum(commission_values), 4) if commission_values else None,
         "independent_init_margin_change_sum": round(sum(initial_changes), 4) if initial_changes else None,

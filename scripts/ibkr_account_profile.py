@@ -5063,6 +5063,20 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
     status = payload.get("status") or "SIN_VALIDAR"
     unchanged = payload.get("open_order_fingerprint_unchanged")
     unchanged_label = "SÍ" if unchanged is True else "NO" if unchanged is False else "PENDIENTE"
+    preview_rows = [row for row in (payload.get("previews") or []) if isinstance(row, dict)]
+    timeout_only = bool(preview_rows) and all(
+        str(row.get("status") or "") != "READY" and "TimeoutError" in str(row.get("error") or "")
+        for row in preview_rows
+    )
+    operator_notice = ""
+    if payload.get("operator_state") == "TWS_CONFIRMATION_REQUIRED" or timeout_only:
+        operator_notice = """
+        <div class="notice warn">
+          <strong>Acción requerida en TWS</strong>
+          <p>{message}</p>
+          <p>La consola no acepta automáticamente esta decisión porque desactivaría precauciones para todas las órdenes API, incluidas posibles órdenes reales futuras.</p>
+        </div>
+        """.format(message=html_escape(payload.get("operator_message") or "TWS está esperando una confirmación."))
     return """
     <section class="panel portfolio-whatif status-{status_class}">
       <div class="section-head">
@@ -5076,6 +5090,7 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         <div><span>Cambio margen mant.</span><strong>{maintenance}</strong></div>
         <div><span>Órdenes sin cambio</span><strong>{unchanged}</strong></div>
       </div>
+      {operator_notice}
       <div class="scenario-grid">{previews}</div>
       <div class="rebalance-custom">
         <h3>Validar una alternativa</h3>
@@ -5092,6 +5107,7 @@ def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, An
         commission=html_escape(_tower_money(payload.get("estimated_commission_total"))),
         maintenance=html_escape(_tower_money(payload.get("independent_maintenance_margin_change_sum"))),
         unchanged=html_escape(unchanged_label),
+        operator_notice=operator_notice,
         previews="".join(preview_cards) or '<p class="empty">Selecciona una alternativa para consultar el what-if oficial.</p>',
         action_form=action_form,
         orders=html_escape(payload.get("orders_created") if payload.get("orders_created") is not None else "N/D"),

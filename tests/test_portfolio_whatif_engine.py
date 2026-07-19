@@ -90,6 +90,24 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
         self.assertEqual(result["status"], "SAFETY_VIOLATION")
         self.assertIsNone(result["orders_created"])
 
+    def test_timeout_only_result_explains_tws_precaution_confirmation(self):
+        request_build = whatif.build_preview_requests(self.rebalance, self.policy)
+        result = whatif.summarize(
+            request_build,
+            [
+                {"status": "FAILED", "error": "TimeoutError"},
+                {"status": "FAILED", "error": "TimeoutError"},
+            ],
+            open_orders_before=0,
+            open_orders_after=0,
+            open_order_fingerprint_unchanged=True,
+        )
+
+        self.assertEqual(result["status"], "PARTIAL")
+        self.assertEqual(result["operator_state"], "TWS_CONFIRMATION_REQUIRED")
+        self.assertTrue(result["tws_precaution_confirmation_likely"])
+        self.assertIn("precauciones", result["operator_message"])
+
     def test_runner_redacts_real_account_and_has_hard_guards(self):
         error = runner.safe_error(RuntimeError("failed for REAL_ACCOUNT"), ["REAL_ACCOUNT"])
         source = (Path(__file__).resolve().parents[1] / "scripts" / "preview_portfolio_rebalance_whatif.py").read_text()
@@ -132,6 +150,32 @@ class PortfolioWhatIfEngineTests(unittest.TestCase):
         self.assertIn("Margen y comisiones sin transmitir órdenes", rendered)
         self.assertIn("whatIf=true y transmit=true solo para procesar el preview", rendered)
         self.assertIn("Validar margen y comisión", rendered)
+
+    def test_console_renders_tws_confirmation_notice(self):
+        payload = whatif.summarize(
+            whatif.build_preview_requests(self.rebalance, self.policy),
+            [{"status": "FAILED", "ticker": "NFLX", "error": "TimeoutError"}],
+            open_orders_before=0,
+            open_orders_after=0,
+            open_order_fingerprint_unchanged=True,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            original_whatif = account_console.PORTFOLIO_WHATIF_PATH
+            original_rebalance = account_console.PORTFOLIO_REBALANCE_PATH
+            account_console.PORTFOLIO_WHATIF_PATH = Path(tmp) / "whatif.json"
+            account_console.PORTFOLIO_REBALANCE_PATH = Path(tmp) / "rebalance.json"
+            tower.write_control_tower(account_console.PORTFOLIO_WHATIF_PATH, payload)
+            tower.write_control_tower(account_console.PORTFOLIO_REBALANCE_PATH, self.rebalance)
+            try:
+                rendered = account_console.render_portfolio_whatif_panel(
+                    {"primary": {"alias": "primary"}}, {"account_alias": "primary"}
+                )
+            finally:
+                account_console.PORTFOLIO_WHATIF_PATH = original_whatif
+                account_console.PORTFOLIO_REBALANCE_PATH = original_rebalance
+
+        self.assertIn("Acción requerida en TWS", rendered)
+        self.assertIn("posibles órdenes reales futuras", rendered)
 
 
 if __name__ == "__main__":
