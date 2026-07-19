@@ -13,6 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import broker_control_tower as control_tower
+import portfolio_risk_engine as risk_engine
+import portfolio_risk_store as risk_store
 from brokers.ibkr_readonly import IBKRReadOnlyAdapter
 from scripts import ibkr_account_profile as profiles
 
@@ -33,6 +35,10 @@ def main() -> int:
     parser.add_argument("--profiles-file", default="runtime/ibkr_account_profiles.local.json")
     parser.add_argument("--active-file", default="runtime/ibkr_account_active_profile.json")
     parser.add_argument("--json-out", default="runtime/broker_control_tower_latest.json")
+    parser.add_argument("--risk-policy", default="config/portfolio_risk_policy.json")
+    parser.add_argument("--risk-json-out", default="runtime/portfolio_risk_latest.json")
+    parser.add_argument("--risk-history-out", default="runtime/portfolio_risk_history.json")
+    parser.add_argument("--skip-risk-evaluation", action="store_true")
     args = parser.parse_args()
 
     runtime_dir = rooted_path(args.runtime_dir)
@@ -80,6 +86,17 @@ def main() -> int:
     payload = control_tower.consolidate(registry, snapshots, max_age_minutes=args.max_age_minutes)
     output_path = rooted_path(args.json_out)
     control_tower.write_control_tower(output_path, payload)
+    risk_evaluation = {}
+    risk_persistence = {}
+    if not args.skip_risk_evaluation:
+        policy = risk_engine.load_policy(rooted_path(args.risk_policy))
+        risk_evaluation = risk_engine.evaluate(payload, policy)
+        risk_persistence = risk_store.persist_evaluation(
+            runtime_dir,
+            risk_evaluation,
+            latest_path=rooted_path(args.risk_json_out),
+            history_path=rooted_path(args.risk_history_out),
+        )
     print(json.dumps({
         "status": payload.get("status"),
         "account_count": payload.get("account_count"),
@@ -88,6 +105,10 @@ def main() -> int:
         "failed_account_count": payload.get("failed_account_count"),
         "warnings": payload.get("warnings"),
         "output": args.json_out,
+        "risk_status": risk_evaluation.get("status") or "SKIPPED",
+        "risk_score": risk_evaluation.get("risk_score"),
+        "risk_alert_count": risk_evaluation.get("alert_count", 0),
+        "risk_new_event_count": risk_persistence.get("new_event_count", 0),
         "sensitive_identifiers_excluded": True,
         "execution_authorized": False,
         "not_order_instruction": True,

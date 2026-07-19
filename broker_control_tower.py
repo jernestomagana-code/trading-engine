@@ -226,6 +226,7 @@ def consolidate(
             "snapshot_age_minutes": age,
             "generated_at": snapshot.get("generated_at"),
             "capacity": capacity,
+            "positions": snapshot.get("positions") if isinstance(snapshot.get("positions"), list) else [],
             "position_count": int(snapshot.get("position_count") or 0),
             "error": snapshot.get("error") or "",
         })
