@@ -1037,7 +1037,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["reason"], "NO_ACTIONABLE_V32_ALERTS")
         send_push.assert_not_called()
 
-    def test_v32_operator_pushover_notifies_data_refresh_issue(self):
+    def test_v32_operator_pushover_suppresses_data_refresh_issue(self):
         summary = {
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
             "status": "WAIT_MARKET",
@@ -1067,21 +1067,22 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             main,
             "_v29_load_json_file",
             return_value={},
-        ), patch.object(main, "send_pushover_message", return_value={
-            "pushover_sent": True,
-            "provider": "pushover",
-            "status_code": 200,
-        }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True) as save_state:
+        ), patch.object(main, "send_pushover_message") as send_push, patch.object(
+            main,
+            "_v32_save_pushover_dedupe_state",
+            return_value=True,
+        ) as save_state:
             result = main._v32_operator_pushover_notify_payload(dry_run=False)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertTrue(result["would_notify"])
-        self.assertTrue(result["pushover_sent"])
-        self.assertEqual(result["notify_reason"], "DATA_REFRESH_REQUIRED")
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(result["would_notify"])
+        self.assertFalse(result["pushover_sent"])
+        self.assertEqual(result["notify_reason"], "DATA_REFRESH_SUPPRESSED")
+        self.assertEqual(result["reason"], "DATA_REFRESH_SUPPRESSED")
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
-        send_push.assert_called_once()
-        save_state.assert_called_once()
+        send_push.assert_not_called()
+        save_state.assert_not_called()
 
     def test_v32_operator_pushover_force_sends_decision_support_only(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
@@ -2682,6 +2683,15 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 303)
         self.assertEqual(response.url, "/read_auth_login?next=%2Fv32_project_command_center")
+
+    def test_read_auth_browser_cookie_is_long_lived_and_auditable(self):
+        html = main._read_auth_login_html(next_path="/v32_project_command_center")
+        summary = main._read_auth_summary()
+
+        self.assertEqual(main.READ_AUTH_COOKIE_MAX_AGE_SECONDS, 60 * 60 * 24 * 30)
+        self.assertIn("30 días", html)
+        self.assertEqual(summary["browser_cookie_max_age_seconds"], 60 * 60 * 24 * 30)
+        self.assertEqual(summary["browser_cookie_max_age_days"], 30)
 
     def test_read_auth_gpt_endpoint_does_not_redirect_to_login(self):
         request = _FakeBrowserRequest("/gpt_v31_daily_answer")

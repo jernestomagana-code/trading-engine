@@ -194,6 +194,7 @@ class SignalLedgerTests(unittest.TestCase):
     def test_tradingview_ledger_quarantines_legacy_payload_without_event_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "signals.json"
+            status_path = Path(tmp) / "webhook_status.json"
             payload = dict(tradingview_payload_contract.sample_payload())
             payload.pop("event_code", None)
 
@@ -202,14 +203,20 @@ class SignalLedgerTests(unittest.TestCase):
                 raw_text=json.dumps(payload),
                 endpoint="/technical_snapshot",
                 path=path,
+                status_path=status_path,
             )
             events = tradingview_signal_ledger.load_signal_events(path)
+            status = tradingview_signal_ledger.load_webhook_status(status_path)
 
         self.assertEqual(result["status"], "QUARANTINED")
         self.assertFalse(result["accepted_for_engine"])
         self.assertIn("MISSING_EVENT_CODE", result["quarantine_reasons"])
         self.assertEqual(events[0]["alert_contract_status"], "QUARANTINED")
         self.assertEqual(events[0]["delivery_status"], "QUARANTINED")
+        self.assertEqual(status["webhook_attempt_count"], 1)
+        self.assertEqual(status["quarantined_count"], 1)
+        self.assertEqual(status["last_webhook"]["status"], "QUARANTINED")
+        self.assertEqual(status["last_webhook"]["event_id"], result["event_id"])
 
     def test_tradingview_operational_health_tracks_real_event_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:

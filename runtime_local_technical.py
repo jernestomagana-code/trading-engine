@@ -6,6 +6,7 @@ without connecting to any broker and without weakening TradingView precedence.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import local_technical_engine
@@ -20,11 +21,40 @@ BAR_CONTAINER_KEYS = {
     "price_bars",
     "local_bars",
 }
+TICKER_RE = re.compile(r"^[A-Z][A-Z0-9]{0,4}$")
+NON_TICKER_KEYS = {
+    "RAW",
+    "TOP",
+    "GATE",
+    "TECHNICAL",
+    "OPTIONS_ROWS",
+    "CANSLIM",
+    "POST_MORTEM",
+    "CONTROL_PANEL",
+    "OPTION_OPTIMIZER",
+    "SCORE_CALIBRATION",
+    "CANSLIM_CONFIDENCE",
+    "CONTRACT_COMPLETENESS",
+    "MARKET_CONFIRMATION",
+    "INSTITUTIONAL_RANKING",
+    "CASH_SECURED_PUT",
+    "COVERED_CALL",
+    "NAKED_PUT",
+    "IRON_CONDOR",
+    "FUTURES",
+    "INTRADAY_INDEX_FUTURES",
+    "CANSLIM_GROWTH_FILTER",
+}
 
 
 def _upper(value: Any, default: str = "") -> str:
     text = str(value or "").strip().upper()
     return text or default
+
+
+def _is_ticker(value: Any) -> bool:
+    ticker = _upper(value)
+    return bool(TICKER_RE.match(ticker)) and ticker not in NON_TICKER_KEYS
 
 
 def _looks_like_bar(value: Any) -> bool:
@@ -54,7 +84,7 @@ def extract_local_bar_sets(runtime_data: dict[str, Any]) -> dict[str, list[dict[
 
     def add_bars(ticker: Any, bars: Any) -> None:
         ticker_key = _upper(ticker)
-        if not ticker_key or not _looks_like_bar_list(bars):
+        if not _is_ticker(ticker_key) or not _looks_like_bar_list(bars):
             return
         current = bars_by_ticker.get(ticker_key, [])
         # Prefer the richer/longer bar set for the same ticker.
@@ -143,4 +173,3 @@ def merge_local_technical_snapshot(
     )
     merged.update(local)
     return merged
-

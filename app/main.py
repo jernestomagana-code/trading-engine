@@ -162,6 +162,7 @@ READ_AUTH_CRITICAL_ENDPOINTS = (
     "/v32_operator_nudge_preflight",
     "/v32_actionable_signal_watch",
     "/v32_signal_events",
+    "/v32_tradingview_webhook_status",
     "/v32_parameter_review_report",
     "/v32_foundation_health",
     "/gpt_v32_operator_daily_cycle",
@@ -239,6 +240,22 @@ SNAPSHOT_INGEST_TOKEN = os.getenv("SNAPSHOT_INGEST_TOKEN") or os.getenv("DECISIO
 REQUIRE_SNAPSHOT_INGEST_TOKEN = os.getenv("REQUIRE_SNAPSHOT_INGEST_TOKEN", "true").lower() == "true"
 ADMIN_DEBUG_TOKEN = os.getenv("ADMIN_DEBUG_TOKEN", "")
 READ_ACCESS_TOKEN = os.getenv("READ_ACCESS_TOKEN", "")
+READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS = 60 * 60 * 24 * 30
+READ_AUTH_COOKIE_MAX_AGE_SECONDS_RAW = os.getenv(
+    "READ_AUTH_COOKIE_MAX_AGE_SECONDS",
+    str(READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS),
+)
+
+
+def _read_auth_cookie_max_age_seconds():
+    try:
+        value = int(READ_AUTH_COOKIE_MAX_AGE_SECONDS_RAW or READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS)
+    except (TypeError, ValueError):
+        value = READ_AUTH_COOKIE_DEFAULT_MAX_AGE_SECONDS
+    return min(max(value, 60 * 60), 60 * 60 * 24 * 90)
+
+
+READ_AUTH_COOKIE_MAX_AGE_SECONDS = _read_auth_cookie_max_age_seconds()
 _REQUIRE_READ_AUTH_RAW = os.getenv("REQUIRE_READ_AUTH", "").strip().lower()
 REQUIRE_READ_AUTH = (
     _REQUIRE_READ_AUTH_RAW == "true"
@@ -358,6 +375,7 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
         '<div class="error">{}</div>'.format(_v29_html_escape(error))
         if error else ""
     )
+    remembered_days = max(1, round(READ_AUTH_COOKIE_MAX_AGE_SECONDS / (60 * 60 * 24)))
     return """
     <!doctype html>
     <html>
@@ -379,7 +397,7 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
     <body>
       <div class="wrap">
         <h1>Stock Ultimus</h1>
-        <p class="note">Ingresa el READ_ACCESS_TOKEN para abrir la consola protegida en este navegador. No autoriza operaciones; solo permite ver y registrar revisión manual.</p>
+        <p class="note">Ingresa el READ_ACCESS_TOKEN una vez para recordar este navegador por hasta {remembered_days} días. No autoriza operaciones; solo permite ver y registrar revisión manual.</p>
         {error_html}
         <form method="post" action="/read_auth_login">
           <input type="hidden" name="next" value="{next_path}">
@@ -390,7 +408,11 @@ def _read_auth_login_html(error="", next_path="/v31_manual_review_console"):
       </div>
     </body>
     </html>
-    """.format(error_html=error_html, next_path=_v29_html_escape(next_path))
+    """.format(
+        error_html=error_html,
+        next_path=_v29_html_escape(next_path),
+        remembered_days=_v29_html_escape(remembered_days),
+    )
 
 
 @app.get("/read_auth_login", response_class=HTMLResponse)
@@ -412,7 +434,7 @@ async def read_auth_login_post(request: Request):
     response.set_cookie(
         "stock_ultimus_read_token",
         token,
-        max_age=60 * 60 * 10,
+        max_age=READ_AUTH_COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         secure=True,
         samesite="lax",
@@ -436,6 +458,8 @@ def _read_auth_summary():
         "deployment_scope": DEPLOYMENT_SCOPE,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
+        "browser_cookie_max_age_seconds": READ_AUTH_COOKIE_MAX_AGE_SECONDS,
+        "browser_cookie_max_age_days": round(READ_AUTH_COOKIE_MAX_AGE_SECONDS / (60 * 60 * 24), 2),
         "protected_prefixes": list(READ_AUTH_SENSITIVE_PREFIXES),
         "critical_endpoints": list(READ_AUTH_CRITICAL_ENDPOINTS),
         "critical_endpoints_protected": all(_path_requires_read_auth(path) for path in READ_AUTH_CRITICAL_ENDPOINTS),
@@ -13072,10 +13096,24 @@ async def technical_snapshot_ingest(request: Request):
         except Exception:
             payload = {}
     try:
-        shared_tradingview_signal_ledger.append_signal_event(
+        signal_ledger_result = shared_tradingview_signal_ledger.append_signal_event(
             payload if isinstance(payload, dict) else {"raw_text": str(payload or "")[:1000]},
             raw_text=str(payload or "")[:1000],
             endpoint="/technical_snapshot_legacy_ingest",
+        )
+        _record_audit_event(
+            "tradingview_webhook_received",
+            {
+                "event_id": signal_ledger_result.get("event_id"),
+                "status": signal_ledger_result.get("status"),
+                "accepted_for_engine": signal_ledger_result.get("accepted_for_engine"),
+                "quarantine_reasons": signal_ledger_result.get("quarantine_reasons") or [],
+                "event_count": signal_ledger_result.get("event_count"),
+                "path": signal_ledger_result.get("path"),
+                "status_path": signal_ledger_result.get("status_path"),
+                "not_order_instruction": True,
+            },
+            source="technical_snapshot",
         )
     except Exception:
         pass
@@ -24381,13 +24419,13 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     counts = summary.get("counts") or {}
     data_issue = _v32_summary_data_issue(summary)
     has_action_or_risk = bool(counts.get("action") or counts.get("risk"))
-    should_notify = bool(force or has_action_or_risk or data_issue)
+    should_notify = bool(force or has_action_or_risk)
     notify_reason = (
         "FORCED"
         if force else
         "ACTION_OR_RISK_ALERT"
         if has_action_or_risk else
-        "DATA_REFRESH_REQUIRED"
+        "DATA_REFRESH_SUPPRESSED"
         if data_issue else
         "NO_ACTIONABLE_V32_ALERTS"
     )
@@ -29257,6 +29295,22 @@ async def v32_signal_events(limit: int = 1000):
         "generated_at": _v29_now(),
         "event_count": len(events),
         "events": events,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+@app.get("/v32_tradingview_webhook_status")
+async def v32_tradingview_webhook_status():
+    status = shared_tradingview_signal_ledger.load_webhook_status()
+    events = shared_tradingview_signal_ledger.load_signal_events(limit=1)
+    return {
+        "engine": "TRADINGVIEW_WEBHOOK_STATUS",
+        "generated_at": _v29_now(),
+        "status": "RECEIVED" if status.get("last_webhook") else "NO_WEBHOOK_RECEIVED",
+        "webhook_status": status,
+        "latest_event": events[-1] if events else None,
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,

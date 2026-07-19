@@ -51,6 +51,7 @@ CHRIS_IA_CONTEXT_FIELDS = [
     "trend_state",
 ]
 DEFAULT_LEDGER_PATH = Path("runtime/v32_signal_events.json")
+DEFAULT_WEBHOOK_STATUS_PATH = Path("runtime/v32_tradingview_webhook_status.json")
 MAX_EVENTS = 20000
 DEFAULT_COVERAGE_PATH = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH
 DEFAULT_EXTRA_COVERAGE_PATHS = [
@@ -108,6 +109,66 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
 def _write_events(path: Path, events: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(events[-MAX_EVENTS:], indent=2, sort_keys=True, default=str) + "\n")
+
+
+def _read_webhook_status(path: Path) -> dict[str, Any]:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text())
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {
+        "status_version": "tradingview_webhook_status_v1",
+        "webhook_attempt_count": 0,
+        "accepted_count": 0,
+        "quarantined_count": 0,
+        "duplicate_count": 0,
+        "last_webhook": None,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _write_webhook_status(
+    path: Path,
+    *,
+    result_status: str,
+    event: dict[str, Any],
+    duplicate: bool,
+    event_count: int,
+) -> dict[str, Any]:
+    status = _read_webhook_status(path)
+    status["status_version"] = "tradingview_webhook_status_v1"
+    status["webhook_attempt_count"] = int(status.get("webhook_attempt_count") or 0) + 1
+    if duplicate:
+        status["duplicate_count"] = int(status.get("duplicate_count") or 0) + 1
+    elif event.get("accepted_for_engine"):
+        status["accepted_count"] = int(status.get("accepted_count") or 0) + 1
+    else:
+        status["quarantined_count"] = int(status.get("quarantined_count") or 0) + 1
+    status["last_webhook"] = {
+        "received_at": event.get("received_at"),
+        "endpoint": event.get("endpoint"),
+        "status": result_status,
+        "event_id": event.get("event_id"),
+        "ticker": event.get("ticker"),
+        "timeframe": event.get("timeframe"),
+        "strategy_context": event.get("strategy_context"),
+        "event_code": event.get("event_code"),
+        "accepted_for_engine": event.get("accepted_for_engine"),
+        "quarantine_reasons": event.get("quarantine_reasons") or [],
+        "payload_valid": (event.get("payload_validation") or {}).get("valid"),
+        "missing_fields": (event.get("payload_validation") or {}).get("missing_fields") or [],
+    }
+    status["ledger_event_count"] = event_count
+    status["updated_at"] = now_iso()
+    status["execution_authorized"] = False
+    status["not_order_instruction"] = True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(status, indent=2, sort_keys=True, default=str) + "\n")
+    return status
 
 
 def _required_context_fields(strategy_context: str) -> list[str]:
@@ -258,6 +319,7 @@ def append_signal_event(
     raw_text: str = "",
     endpoint: str = "",
     path: str | Path = DEFAULT_LEDGER_PATH,
+    status_path: str | Path = DEFAULT_WEBHOOK_STATUS_PATH,
     coverage_path: str | Path = DEFAULT_COVERAGE_PATH,
 ) -> dict[str, Any]:
     target = Path(path)
@@ -268,12 +330,22 @@ def append_signal_event(
     if not duplicate:
         events.append(event)
         _write_events(target, events)
+    result_status = "DUPLICATE" if duplicate else event["delivery_status"]
+    webhook_status = _write_webhook_status(
+        Path(status_path),
+        result_status=result_status,
+        event=event,
+        duplicate=duplicate,
+        event_count=len(events),
+    )
     return {
-        "status": "DUPLICATE" if duplicate else event["delivery_status"],
+        "status": result_status,
         "saved": not duplicate,
         "event_id": event["event_id"],
         "path": str(target),
+        "status_path": str(status_path),
         "event": event,
+        "webhook_status": webhook_status,
         "accepted_for_engine": event["accepted_for_engine"],
         "quarantine_reasons": event["quarantine_reasons"],
         "event_count": len(events),
@@ -288,3 +360,7 @@ def load_signal_events(path: str | Path = DEFAULT_LEDGER_PATH, limit: int = 1000
     except Exception:
         limit = 1000
     return _read_events(Path(path))[-limit:]
+
+
+def load_webhook_status(path: str | Path = DEFAULT_WEBHOOK_STATUS_PATH) -> dict[str, Any]:
+    return _read_webhook_status(Path(path))
