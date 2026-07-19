@@ -133,6 +133,13 @@ class PortfolioFactorEngineTests(unittest.TestCase):
         self.assertIn('path == "/portfolio-factors"', source)
         self.assertIn('self.path == "/portfolio-factor-refresh"', source)
 
+    def test_adapter_routes_factor_market_data_without_order_methods(self):
+        source = (Path(__file__).resolve().parents[1] / "brokers" / "ibkr_readonly.py").read_text()
+
+        self.assertIn('Stock(ticker, "SMART"', source)
+        self.assertIn('quote_contract.exchange = "SMART"', source)
+        self.assertNotIn("placeOrder", source)
+
 
 if __name__ == "__main__":
     unittest.main()

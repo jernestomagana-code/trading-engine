@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from typing import Any
 
 import broker_control_tower as control_tower
@@ -183,14 +184,17 @@ class IBKRReadOnlyAdapter:
             ticker = key[0]
             if ticker not in history_cache:
                 history_contract = contract
-                if key[1] in {"OPT", "FOP"} and Stock is not None:
+                if Stock is not None:
                     history_contract = Stock(ticker, "SMART", str(position.get("currency") or "USD"))
                 history_cache[ticker] = cls._historical_closes(ib, history_contract) if history_contract is not None else []
             position["historical_closes"] = list(history_cache.get(ticker) or [])
             if key[1] not in {"OPT", "FOP"} or contract is None:
                 continue
             try:
-                quote_rows = ib.reqTickers(contract)
+                quote_contract = copy(contract)
+                if key[1] == "OPT" and not str(getattr(quote_contract, "exchange", "") or "").strip():
+                    quote_contract.exchange = "SMART"
+                quote_rows = ib.reqTickers(quote_contract)
                 quote = quote_rows[0] if quote_rows else None
                 if quote is not None:
                     position.update(cls._option_greeks(quote))
