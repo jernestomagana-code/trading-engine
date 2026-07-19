@@ -140,13 +140,22 @@ class IBKRReadOnlyAdapter:
                         error="Configured account is not visible in the current TWS/IB Gateway session.",
                     )
                     continue
+                portfolio_rows = []
+                try:
+                    # accountSummary/positions do not necessarily populate
+                    # PortfolioItem market values in multi-account sessions.
+                    # This is still a read-only subscription and places no orders.
+                    ib.reqAccountUpdates(account_id)
+                    portfolio_rows = list(ib.portfolio(account_id) or [])
+                except Exception:
+                    portfolio_rows = []
                 output[alias] = control_tower.account_snapshot(
                     broker=self.broker,
                     alias=alias,
                     scope=item["account_scope"],
                     capacity=self._summary_capacity(summary, account_id),
                     positions=(
-                        self._portfolio_positions(ib.portfolio(account_id), account_id)
+                        self._portfolio_positions(portfolio_rows, account_id)
                         or self._positions(positions, account_id)
                     ),
                 )

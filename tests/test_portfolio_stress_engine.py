@@ -95,6 +95,13 @@ class PortfolioStressEngineTests(unittest.TestCase):
         self.assertEqual(positions[0]["unrealized_pl"], 50)
         self.assertNotIn("REAL_ACCOUNT", encoded)
 
+    def test_adapter_requests_read_only_account_updates_before_market_values(self):
+        source = (Path(__file__).resolve().parents[1] / "brokers" / "ibkr_readonly.py").read_text()
+
+        self.assertIn("ib.reqAccountUpdates(account_id)", source)
+        self.assertIn("ib.portfolio(account_id)", source)
+        self.assertNotIn("placeOrder", source)
+
     def test_console_renders_stress_scenarios_and_safe_route(self):
         snapshot = self.snapshot("primary", 100000, [
             {"ticker": "QQQ", "security_type": "STK", "quantity": 100, "market_value": 50000},
