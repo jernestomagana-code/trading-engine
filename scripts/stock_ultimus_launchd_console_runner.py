@@ -39,6 +39,8 @@ ENDPOINTS = {
     "portfolio-risk-preflight": ("/portfolio-risk-preflight", "Preflight de riesgo de cartera"),
     "portfolio-risk-digest": ("/portfolio-risk-digest", "Digest de riesgo de cartera"),
     "daily-outcome-evaluation": ("/daily-outcome-evaluation", "Seguimiento automático de resultados"),
+    "executive-report-daily": ("/executive-report-daily", "Reporte ejecutivo diario"),
+    "executive-report-weekly": ("/executive-report-weekly", "Reporte ejecutivo semanal"),
 }
 
 JOB_TIMEOUTS = {
@@ -49,6 +51,8 @@ JOB_TIMEOUTS = {
     "portfolio-risk-preflight": 600.0,
     "portfolio-risk-digest": 600.0,
     "daily-outcome-evaluation": 900.0,
+    "executive-report-daily": 600.0,
+    "executive-report-weekly": 600.0,
 }
 
 

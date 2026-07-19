@@ -32,6 +32,7 @@ import alert_effectiveness as shared_alert_effectiveness
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
 import decision_outcome_intelligence as shared_decision_outcomes
+import executive_reporting as shared_executive_reporting
 import gamma_context_store as shared_gamma_context_store
 import portfolio_risk_engine as shared_portfolio_risk
 import portfolio_risk_operations as shared_risk_operations
@@ -75,6 +76,8 @@ PORTFOLIO_WHATIF_POLICY_PATH = ROOT / "config" / "portfolio_whatif_policy.json"
 DECISION_JOURNAL_PATH = RUNTIME / "v32_decision_journal.json"
 OUTCOME_JOURNAL_PATH = RUNTIME / "v32_outcomes_journal.json"
 DAILY_OUTCOME_EVALUATION_PATH = RUNTIME / "daily_outcome_evaluation_latest.json"
+EXECUTIVE_DAILY_PATH = RUNTIME / "executive_report_daily_latest.json"
+EXECUTIVE_WEEKLY_PATH = RUNTIME / "executive_report_weekly_latest.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -874,6 +877,10 @@ def daily_outcome_evaluation_command() -> list[str]:
         "--decisions-journal",
         "runtime/v32_decision_journal.json",
     ]
+
+
+def executive_report_command(period: str) -> list[str]:
+    return [sys.executable, "scripts/build_executive_report.py", "--period", period]
 
 
 def portfolio_risk_operations_command(
@@ -5322,6 +5329,87 @@ def render_alert_effectiveness_panel() -> str:
     )
 
 
+def load_executive_reports() -> dict[str, Any]:
+    daily = shared_risk_operations.load_json(EXECUTIVE_DAILY_PATH)
+    weekly = shared_risk_operations.load_json(EXECUTIVE_WEEKLY_PATH)
+    if not daily.get("report_version"):
+        daily = shared_executive_reporting.build_report(RUNTIME, "daily")
+    if not weekly.get("report_version"):
+        weekly = shared_executive_reporting.build_report(RUNTIME, "weekly")
+    return {"daily": daily, "weekly": weekly, "execution_authorized": False, "not_order_instruction": True}
+
+
+def render_executive_report_panel() -> str:
+    reports = load_executive_reports()
+    daily = reports.get("daily") or {}
+    weekly = reports.get("weekly") or {}
+    portfolio = daily.get("portfolio") or {}
+    evidence = daily.get("decisions_and_results") or {}
+    weekly_activity = weekly.get("period_activity") or {}
+    pending_rows = []
+    for item in daily.get("pending_actions") or []:
+        pending_rows.append("""
+          <article class="scenario-card">
+            <div class="scenario-head"><strong>{title}</strong><span>{priority}</span></div>
+            <p>{detail}</p>
+          </article>
+        """.format(
+            title=html_escape(item.get("title") or "Pendiente"),
+            priority=html_escape(item.get("priority") or "REVIEW"),
+            detail=html_escape(item.get("detail") or ""),
+        ))
+    precision = evidence.get("verified_precision_pct")
+    return """
+    <section class="panel executive-report status-{status_class}">
+      <div class="section-head">
+        <div><h2>Reporte ejecutivo</h2><p>Resumen diario y semanal de cartera, riesgo, evidencia y mantenimiento.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="notice"><strong>{headline}</strong></div>
+      <div class="control-facts">
+        <div><span>Cuentas</span><strong>{accounts}</strong></div>
+        <div><span>Riesgo</span><strong>{risk}</strong></div>
+        <div><span>Score de riesgo</span><strong>{risk_score}</strong></div>
+        <div><span>Alertas prioritarias</span><strong>{alerts}</strong></div>
+        <div><span>Resultados completos</span><strong>{complete}/30</strong></div>
+        <div><span>Precisión verificada</span><strong>{precision}</strong></div>
+      </div>
+      <div class="control-facts">
+        <div><span>Eventos semanales</span><strong>{weekly_events}</strong></div>
+        <div><span>Riesgos abiertos semana</span><strong>{weekly_opened}</strong></div>
+        <div><span>Riesgos resueltos semana</span><strong>{weekly_resolved}</strong></div>
+        <div><span>Último diario</span><strong>{daily_age}</strong></div>
+        <div><span>Último semanal</span><strong>{weekly_age}</strong></div>
+        <div><span>Pendientes ejecutivos</span><strong>{pending_count}</strong></div>
+      </div>
+      <h3>Prioridades ejecutivas</h3>
+      <div class="scenario-grid">{pending}</div>
+      <div class="actions">
+        <form method="post" action="/executive-report-daily" data-busy="Generando reporte ejecutivo diario"><button class="secondary">Actualizar reporte diario</button></form>
+        <form method="post" action="/executive-report-weekly" data-busy="Generando reporte ejecutivo semanal"><button class="secondary">Actualizar reporte semanal</button></form>
+      </div>
+      <p class="muted">Los reportes quedan archivados localmente y se actualizan por horario. No envían mensajes, no cambian reglas y no autorizan órdenes.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(daily.get("status") or "unknown").lower()),
+        status=html_escape(daily.get("status") or "SIN REPORTE"),
+        headline=html_escape(daily.get("headline") or "Sin lectura ejecutiva."),
+        accounts=html_escape(portfolio.get("account_count") or 0),
+        risk=html_escape(portfolio.get("risk_status") or "UNKNOWN"),
+        risk_score=html_escape(portfolio.get("risk_score") if portfolio.get("risk_score") is not None else "N/D"),
+        alerts=html_escape(portfolio.get("critical_high_alert_count") or 0),
+        complete=html_escape(evidence.get("complete_closed_outcomes") or 0),
+        precision=html_escape(f"{precision:.1f}%" if isinstance(precision, (int, float)) else "Sin muestra"),
+        weekly_events=html_escape(weekly_activity.get("risk_event_count") or 0),
+        weekly_opened=html_escape(weekly_activity.get("risk_events_opened") or 0),
+        weekly_resolved=html_escape(weekly_activity.get("risk_events_resolved") or 0),
+        daily_age=html_escape(age_label(daily.get("generated_at")) if daily.get("generated_at") else "Sin reporte"),
+        weekly_age=html_escape(age_label(weekly.get("generated_at")) if weekly.get("generated_at") else "Sin reporte"),
+        pending_count=html_escape(daily.get("pending_action_count") or 0),
+        pending="".join(pending_rows) or '<p class="empty">Sin pendientes ejecutivos.</p>',
+    )
+
+
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5839,6 +5927,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {portfolio_operations}
           {decision_outcomes}
           {alert_effectiveness}
+          {executive_report}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
             {modules}
@@ -5977,6 +6066,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
         alert_effectiveness=render_alert_effectiveness_panel(),
+        executive_report=render_executive_report_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
@@ -6090,6 +6180,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         if path == "/alert-effectiveness":
             self.send_json(load_alert_effectiveness())
             return
+        if path == "/executive-report":
+            self.send_json(load_executive_reports())
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -6114,6 +6207,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-rebalance-whatif",
             "/decision-outcomes",
             "/alert-effectiveness",
+            "/executive-report",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -6363,6 +6457,26 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     "Seguimiento iniciado: evalúa checkpoints y sincroniza resultados sin tocar IBKR.",
                     job_id=job_id,
                 )
+            elif self.path in {"/executive-report-daily", "/executive-report-weekly"}:
+                period = "weekly" if self.path.endswith("weekly") else "daily"
+                label = f"Reporte ejecutivo {period}"
+                existing_job = running_web_job_by_label(label)
+                if existing_job:
+                    self.send_html("El reporte ejecutivo ya se está generando.", job_id=existing_job.get("job_id"))
+                    return
+                job_id = start_web_job(
+                    normalize_alias(alias or active_profile().get("account_alias") or ""),
+                    executive_report_command(period),
+                    label,
+                )
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json({
+                        "ok": True, "status": "RUNNING", "job_id": job_id,
+                        "message": f"Reporte ejecutivo {period} iniciado.",
+                        "execution_authorized": False, "not_order_instruction": True,
+                    })
+                    return
+                self.send_html(f"Reporte ejecutivo {period} iniciado.", job_id=job_id)
             elif self.path == "/diagnostic":
                 job_id = start_web_job(alias, console_diagnostic_command(), "Diagnostico completo")
                 if "application/json" in (self.headers.get("Accept") or ""):

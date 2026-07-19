@@ -104,6 +104,23 @@ JOBS = {
         "start_interval": 600,
         "description": "Refreshes the local static environment dashboard every 10 minutes.",
     },
+    "executive-report-daily": {
+        "label": "com.stockultimus.executive-report-daily",
+        "program": "scripts/build_executive_report.py",
+        "args": ["--period", "daily"],
+        "calendar": [
+            {"Weekday": day, "Hour": 17, "Minute": 45}
+            for day in range(1, 6)
+        ],
+        "description": "Builds the sanitized daily executive report after portfolio-risk digest.",
+    },
+    "executive-report-weekly": {
+        "label": "com.stockultimus.executive-report-weekly",
+        "program": "scripts/build_executive_report.py",
+        "args": ["--period", "weekly"],
+        "calendar": {"Weekday": 5, "Hour": 18, "Minute": 0},
+        "description": "Builds the sanitized weekly executive report every Friday.",
+    },
 }
 
 
