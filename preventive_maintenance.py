@@ -29,6 +29,7 @@ EXPECTED_JOBS = [
     "com.stockultimus.v32-pushover-postclose",
     "com.stockultimus.executive-report-daily",
     "com.stockultimus.executive-report-weekly",
+    "com.stockultimus.preventive-maintenance",
 ]
 
 
