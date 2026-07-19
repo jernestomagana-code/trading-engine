@@ -1,0 +1,13 @@
+{
+  "policy_version": "stock_ultimus_portfolio_whatif_policy_v1",
+  "maximum_preview_actions": 10,
+  "whole_share_stock_previews": true,
+  "allowed_simulation_actions": [
+    "VIRTUAL_REDUCTION",
+    "VIRTUAL_OPTION_CLOSE",
+    "VIRTUAL_LIQUIDITY_BUFFER"
+  ],
+  "require_open_orders_unchanged": true,
+  "require_transmit_false": true,
+  "require_what_if_true": true
+}

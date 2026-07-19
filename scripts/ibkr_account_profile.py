@@ -36,6 +36,7 @@ import portfolio_risk_operations as shared_risk_operations
 import portfolio_stress_engine as shared_portfolio_stress
 import portfolio_factor_engine as shared_portfolio_factors
 import portfolio_rebalance_engine as shared_portfolio_rebalance
+import portfolio_whatif_engine as shared_portfolio_whatif
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -67,6 +68,8 @@ PORTFOLIO_FACTOR_PATH = RUNTIME / "portfolio_factor_latest.json"
 PORTFOLIO_FACTOR_POLICY_PATH = ROOT / "config" / "portfolio_factor_policy.json"
 PORTFOLIO_REBALANCE_PATH = RUNTIME / "portfolio_rebalance_latest.json"
 PORTFOLIO_REBALANCE_POLICY_PATH = ROOT / "config" / "portfolio_rebalance_policy.json"
+PORTFOLIO_WHATIF_PATH = RUNTIME / "portfolio_rebalance_whatif_latest.json"
+PORTFOLIO_WHATIF_POLICY_PATH = ROOT / "config" / "portfolio_whatif_policy.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -834,6 +837,18 @@ def portfolio_rebalance_refresh_command(ticker: str = "", reduction_pct: str = "
         command.extend(["--ticker", ticker])
     if reduction_pct:
         command.extend(["--reduction-pct", reduction_pct])
+    return command
+
+
+def portfolio_whatif_refresh_command(candidate_id: str = "") -> list[str]:
+    command = [
+        sys.executable,
+        "scripts/preview_portfolio_rebalance_whatif.py",
+        "--json-out",
+        "runtime/portfolio_rebalance_whatif_latest.json",
+    ]
+    if candidate_id:
+        command.extend(["--candidate-id", candidate_id])
     return command
 
 
@@ -4991,6 +5006,96 @@ def render_portfolio_rebalance_panel(profiles: dict[str, Any], active: dict[str,
     )
 
 
+def load_portfolio_whatif() -> dict[str, Any]:
+    return shared_risk_operations.load_json(PORTFOLIO_WHATIF_PATH)
+
+
+def render_portfolio_whatif_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_portfolio_whatif()
+    rebalance_payload = load_portfolio_rebalance(profiles, active)
+    preview_cards = []
+    for preview in payload.get("previews") or []:
+        if not isinstance(preview, dict):
+            continue
+        preview_cards.append("""
+          <article class="scenario-card status-{status_class}">
+            <div class="scenario-head"><strong>{ticker} {action}</strong><span>{status}</span></div>
+            <p>{account} · {security_type} · cantidad {quantity}</p>
+            <div class="scenario-lines">
+              <div><span>Margen inicial</span><strong>{initial}</strong></div>
+              <div><span>Margen mantenimiento</span><strong>{maintenance}</strong></div>
+              <div><span>Comisión</span><strong>{commission}</strong></div>
+              <div><span>Transmit</span><strong>FALSE</strong></div>
+            </div>
+            <p class="muted">{warning}</p>
+          </article>
+        """.format(
+            status_class=html_escape(str(preview.get("status") or "failed").lower()),
+            ticker=html_escape(preview.get("ticker") or "N/D"),
+            action=html_escape(preview.get("action") or ""),
+            status=html_escape(preview.get("status") or "FAILED"),
+            account=html_escape(preview.get("account_alias") or "N/D"),
+            security_type=html_escape(preview.get("security_type") or "N/D"),
+            quantity=html_escape(preview.get("quantity") or 0),
+            initial=html_escape(_tower_money(preview.get("init_margin_change"))),
+            maintenance=html_escape(_tower_money(preview.get("maintenance_margin_change"))),
+            commission=html_escape(_tower_money(preview.get("commission") or preview.get("maximum_commission"))),
+            warning=html_escape(preview.get("warning_text") or preview.get("error") or "Preview oficial IBKR sin transmisión."),
+        ))
+    candidates = [row for row in (rebalance_payload.get("candidates") or []) if isinstance(row, dict)]
+    candidate_options = "".join(
+        '<option value="{candidate_id}"{selected}>{name}</option>'.format(
+            candidate_id=html_escape(row.get("candidate_id") or ""),
+            name=html_escape(row.get("name") or row.get("candidate_id") or "Simulación"),
+            selected=" selected" if str(row.get("candidate_id") or "") == str(rebalance_payload.get("preferred_simulation_id") or "") else "",
+        )
+        for row in candidates
+    )
+    alias = active.get("account_alias") or next(iter(profiles or {}), "")
+    action_form = (
+        '<form method="post" action="/portfolio-rebalance-whatif" data-busy="Consultando what-if oficial IBKR" '
+        'data-busy-detail="Envía únicamente previews whatIf=true y transmit=false; no crea órdenes.">'
+        f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
+        f'<label>Alternativa <select name="candidate_id" required>{candidate_options}</select></label>'
+        '<button>Validar margen y comisión</button></form>'
+        if alias and candidate_options else ""
+    )
+    status = payload.get("status") or "SIN_VALIDAR"
+    unchanged = payload.get("open_order_fingerprint_unchanged")
+    unchanged_label = "SÍ" if unchanged is True else "NO" if unchanged is False else "PENDIENTE"
+    return """
+    <section class="panel portfolio-whatif status-{status_class}">
+      <div class="section-head">
+        <div><h2>Validación oficial IBKR what-if</h2><p>Margen y comisiones sin transmitir órdenes.</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="control-facts">
+        <div><span>Alternativa</span><strong>{candidate}</strong></div>
+        <div><span>Previews listos</span><strong>{ready}/{requested}</strong></div>
+        <div><span>Comisión estimada</span><strong>{commission}</strong></div>
+        <div><span>Cambio margen mant.</span><strong>{maintenance}</strong></div>
+        <div><span>Órdenes sin cambio</span><strong>{unchanged}</strong></div>
+      </div>
+      <div class="scenario-grid">{previews}</div>
+      <div class="rebalance-custom">
+        <h3>Validar una alternativa</h3>
+        {action_form}
+      </div>
+      <p class="muted">Los cambios de margen se suman como previews independientes y no equivalen a una cesta combinada. whatIf=true · transmit=false · órdenes creadas {orders}.</p>
+    </section>
+    """.format(
+        status_class=html_escape(str(status).lower()),
+        status=html_escape(status),
+        candidate=html_escape(payload.get("candidate_name") or payload.get("candidate_id") or "Pendiente"),
+        ready=html_escape(payload.get("ready_preview_count") or 0),
+        requested=html_escape(payload.get("requested_preview_count") or 0),
+        commission=html_escape(_tower_money(payload.get("estimated_commission_total"))),
+        maintenance=html_escape(_tower_money(payload.get("independent_maintenance_margin_change_sum"))),
+        unchanged=html_escape(unchanged_label),
+        previews="".join(preview_cards) or '<p class="empty">Selecciona una alternativa para consultar el what-if oficial.</p>',
+        action_form=action_form,
+        orders=html_escape(payload.get("orders_created") if payload.get("orders_created") is not None else "N/D"),
+    )
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5504,6 +5609,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {portfolio_stress}
           {portfolio_factors}
           {portfolio_rebalance}
+          {portfolio_whatif}
           {portfolio_operations}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
@@ -5639,6 +5745,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_stress=render_portfolio_stress_panel(profiles, active),
         portfolio_factors=render_portfolio_factor_panel(profiles, active),
         portfolio_rebalance=render_portfolio_rebalance_panel(profiles, active),
+        portfolio_whatif=render_portfolio_whatif_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
@@ -5744,6 +5851,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_portfolio_rebalance(profile_map, active_profile()))
             return
+        if path == "/portfolio-rebalance-whatif":
+            self.send_json(load_portfolio_whatif())
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -5765,6 +5875,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/portfolio-stress",
             "/portfolio-factors",
             "/portfolio-rebalance",
+            "/portfolio-rebalance-whatif",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -5864,6 +5975,18 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 )
                 self.send_html(
                     "Simulación iniciada sobre una copia matemática. No se creó ni transmitió ninguna orden.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-rebalance-whatif":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                candidate_id = str((params.get("candidate_id") or [""])[0]).strip()
+                job_id = start_web_job(
+                    selected_alias,
+                    portfolio_whatif_refresh_command(candidate_id),
+                    "Validación oficial IBKR what-if",
+                )
+                self.send_html(
+                    "Validación what-if iniciada con transmit=false. No se creó ni transmitió ninguna orden.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-operations-run":
