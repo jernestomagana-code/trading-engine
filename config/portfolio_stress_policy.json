@@ -1,0 +1,45 @@
+{
+  "policy_version": "stock_ultimus_portfolio_stress_policy_v1",
+  "max_data_age_minutes": 15,
+  "minimum_valuation_coverage_ratio": 0.80,
+  "loss_thresholds": {
+    "watch_nav_ratio": 0.05,
+    "high_nav_ratio": 0.10,
+    "critical_nav_ratio": 0.20
+  },
+  "scenarios": [
+    {
+      "id": "equity_correction",
+      "name": "Corrección de mercado",
+      "description": "Caída general de 10% y expansión moderada de primas de opciones.",
+      "linear_return": -0.10,
+      "long_call_return": -0.50,
+      "short_call_return": 0.50,
+      "long_put_return": 0.50,
+      "short_put_return": -0.50,
+      "other_option_return": -0.35
+    },
+    {
+      "id": "severe_drawdown",
+      "name": "Drawdown severo",
+      "description": "Caída general de 20% con dislocación fuerte en opciones.",
+      "linear_return": -0.20,
+      "long_call_return": -0.80,
+      "short_call_return": 0.80,
+      "long_put_return": 1.00,
+      "short_put_return": -1.00,
+      "other_option_return": -0.60
+    },
+    {
+      "id": "volatility_spike",
+      "name": "Choque de volatilidad",
+      "description": "Movimiento adverso de 3% y encarecimiento abrupto de opciones.",
+      "linear_return": -0.03,
+      "long_call_return": 0.20,
+      "short_call_return": -0.50,
+      "long_put_return": 0.35,
+      "short_put_return": -0.65,
+      "other_option_return": -0.40
+    }
+  ]
+}

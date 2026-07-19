@@ -142,6 +142,9 @@ def account_snapshot(
             "expiration": str(item.get("expiration") or ""),
             "right": str(item.get("right") or "").upper(),
             "multiplier": str(item.get("multiplier") or ""),
+            "market_price": safe_float(item.get("market_price")),
+            "market_value": safe_float(item.get("market_value")),
+            "unrealized_pl": safe_float(item.get("unrealized_pl") or item.get("unrealized_pnl")),
         })
     ready = status == "READY" and any(value is not None for value in clean_capacity.values())
     effective_status = "READY" if ready else ("CAPACITY_UNAVAILABLE" if status == "READY" else status)
@@ -215,9 +218,15 @@ def consolidate(
                 bucket = aggregates.setdefault(key, {
                     **{name: position.get(name) for name in ("ticker", "security_type", "expiration", "strike", "right", "currency")},
                     "quantity": 0.0,
+                    "market_value": 0.0,
+                    "market_value_available": False,
                     "account_aliases": [],
                 })
                 bucket["quantity"] = round(bucket["quantity"] + (safe_float(position.get("quantity")) or 0.0), 4)
+                market_value = safe_float(position.get("market_value"))
+                if market_value is not None:
+                    bucket["market_value"] = round(bucket["market_value"] + market_value, 4)
+                    bucket["market_value_available"] = True
                 if alias not in bucket["account_aliases"]:
                     bucket["account_aliases"].append(alias)
         accounts.append({

@@ -82,6 +82,31 @@ class IBKRReadOnlyAdapter:
             })
         return clean
 
+    @staticmethod
+    def _portfolio_positions(rows: list[Any], account_id: str) -> list[dict[str, Any]]:
+        """Normalize IBKR PortfolioItem rows while excluding the real account id."""
+        clean = []
+        for row in rows or []:
+            row_account = str(getattr(row, "account", "") or "").strip()
+            if row_account and row_account != account_id:
+                continue
+            contract = getattr(row, "contract", None)
+            clean.append({
+                "ticker": getattr(contract, "symbol", None) or getattr(contract, "localSymbol", None) or "UNKNOWN",
+                "security_type": getattr(contract, "secType", None) or "UNKNOWN",
+                "currency": getattr(contract, "currency", None) or "",
+                "quantity": getattr(row, "position", None),
+                "average_cost": getattr(row, "averageCost", None),
+                "market_price": getattr(row, "marketPrice", None),
+                "market_value": getattr(row, "marketValue", None),
+                "unrealized_pl": getattr(row, "unrealizedPNL", None),
+                "strike": getattr(contract, "strike", None),
+                "expiration": getattr(contract, "lastTradeDateOrContractMonth", None) or "",
+                "right": getattr(contract, "right", None) or "",
+                "multiplier": getattr(contract, "multiplier", None) or "",
+            })
+        return clean
+
     def collect(self, accounts: list[dict[str, str]]) -> dict[str, dict[str, Any]]:
         try:
             from ib_insync import IB
@@ -120,7 +145,10 @@ class IBKRReadOnlyAdapter:
                     alias=alias,
                     scope=item["account_scope"],
                     capacity=self._summary_capacity(summary, account_id),
-                    positions=self._positions(positions, account_id),
+                    positions=(
+                        self._portfolio_positions(ib.portfolio(account_id), account_id)
+                        or self._positions(positions, account_id)
+                    ),
                 )
             return output
         except Exception as exc:

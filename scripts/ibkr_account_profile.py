@@ -33,6 +33,7 @@ import coberturas_engine as shared_coberturas_engine
 import gamma_context_store as shared_gamma_context_store
 import portfolio_risk_engine as shared_portfolio_risk
 import portfolio_risk_operations as shared_risk_operations
+import portfolio_stress_engine as shared_portfolio_stress
 import position_management as shared_position_management
 import position_management_journal as shared_position_management_journal
 import position_context_store as shared_position_context_store
@@ -58,6 +59,8 @@ PORTFOLIO_RISK_OUTBOX_PATH = RUNTIME / "portfolio_risk_outbox.json"
 PORTFOLIO_RISK_OPERATIONS_STATUS_PATH = RUNTIME / "portfolio_risk_operations_status.json"
 PORTFOLIO_RISK_DIGEST_PATH = RUNTIME / "portfolio_risk_digest_latest.json"
 PORTFOLIO_RISK_OBSERVATION_PATH = RUNTIME / "portfolio_risk_observation.json"
+PORTFOLIO_STRESS_PATH = RUNTIME / "portfolio_stress_latest.json"
+PORTFOLIO_STRESS_POLICY_PATH = ROOT / "config" / "portfolio_stress_policy.json"
 IBKR_BRIDGE_HEALTH_PATH = RUNTIME / "ibkr_bridge_health_latest.json"
 CONSOLE_BRIDGE_SESSION_PATH = RUNTIME / "stock_ultimus_console_bridge_latest.json"
 TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json"
@@ -793,6 +796,15 @@ def portfolio_risk_refresh_command() -> list[str]:
         "runtime/portfolio_risk_latest.json",
         "--history-out",
         "runtime/portfolio_risk_history.json",
+    ]
+
+
+def portfolio_stress_refresh_command() -> list[str]:
+    return [
+        sys.executable,
+        "scripts/evaluate_portfolio_stress.py",
+        "--json-out",
+        "runtime/portfolio_stress_latest.json",
     ]
 
 
@@ -4662,6 +4674,84 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
     )
 
 
+def load_portfolio_stress(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
+    tower = load_control_tower(profiles, active)
+    policy = shared_portfolio_stress.load_policy(PORTFOLIO_STRESS_POLICY_PATH)
+    return shared_portfolio_stress.evaluate(tower, policy)
+
+
+def render_portfolio_stress_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
+    payload = load_portfolio_stress(profiles, active)
+    scenario_cards = []
+    for scenario in payload.get("scenarios") or []:
+        if not isinstance(scenario, dict):
+            continue
+        pnl = console_float_or_none(scenario.get("estimated_pnl"))
+        loss_ratio = console_float_or_none(scenario.get("loss_nav_ratio"))
+        scenario_cards.append("""
+          <article class="scenario-card severity-{severity}">
+            <div class="scenario-head"><strong>{name}</strong><span>{severity_label}</span></div>
+            <p class="muted">{description}</p>
+            <div class="scenario-lines">
+              <div><span>Impacto estimado</span><strong>{pnl}</strong></div>
+              <div><span>Pérdida sobre NAV</span><strong>{loss}</strong></div>
+              <div><span>NAV proyectado</span><strong>{projected_nav}</strong></div>
+              <div><span>Cuenta más expuesta</span><strong>{account}</strong></div>
+            </div>
+          </article>
+        """.format(
+            severity=html_escape(str(scenario.get("severity") or "info").lower()),
+            severity_label=html_escape(scenario.get("severity") or "INFO"),
+            name=html_escape(scenario.get("name") or "Escenario"),
+            description=html_escape(scenario.get("description") or ""),
+            pnl=html_escape("N/D" if pnl is None else "${:,.2f}".format(pnl)),
+            loss=html_escape("N/D" if loss_ratio is None else "{:.1f}%".format(loss_ratio * 100)),
+            projected_nav=html_escape(_tower_money(scenario.get("projected_nav"))),
+            account=html_escape(scenario.get("most_exposed_account") or "N/D"),
+        ))
+    concentrations = ", ".join(
+        "{} ({:.1f}%)".format(item.get("ticker") or "UNKNOWN", (console_float_or_none(item.get("gross_share")) or 0) * 100)
+        for item in (payload.get("concentrations") or [])[:5]
+        if isinstance(item, dict)
+    ) or "sin posiciones valorables"
+    warnings = ", ".join(payload.get("warnings") or []) or "ninguna"
+    alias = active.get("account_alias") or next(iter(profiles or {}), "")
+    action = (
+        '<form method="post" action="/portfolio-stress-refresh" data-busy="Calculando escenarios de estrés" '
+        'data-busy-detail="Usa snapshots sanitizados; no consulta ni opera el broker.">'
+        f'<input type="hidden" name="alias" value="{html_escape(alias)}">'
+        '<button>Recalcular escenarios</button></form>'
+        if alias else ""
+    )
+    return """
+    <section class="panel portfolio-stress status-{status_class}">
+      <div class="section-head">
+        <div><h2>Estrés y escenarios multicuenta</h2><p>Impacto potencial agregado y por cuenta.</p></div>
+        <div class="risk-score"><span>Cobertura exacta</span><strong>{coverage}</strong></div>
+      </div>
+      <div class="control-facts">
+        <div><span>Estado</span><strong>{status}</strong></div>
+        <div><span>Peor impacto</span><strong>{worst_pnl}</strong></div>
+        <div><span>Peor pérdida/NAV</span><strong>{worst_loss}</strong></div>
+        <div><span>Escenarios</span><strong>{count}</strong></div>
+      </div>
+      <div class="scenario-grid">{scenarios}</div>
+      <p><strong>Mayor concentración:</strong> {concentrations}</p>
+      <p class="muted">Advertencias: {warnings}. Modelo determinista para apoyo de decisión; no es pronóstico ni VaR. Sin ejecución automática.</p>
+      <div class="actions">{action}</div>
+    </section>
+    """.format(
+        status_class=html_escape(str(payload.get("status") or "blocked").lower()),
+        status=html_escape(payload.get("status") or "BLOCKED"),
+        coverage=html_escape(_tower_percent(payload.get("valuation_coverage_ratio"))),
+        worst_pnl=html_escape(_tower_money(payload.get("worst_estimated_pnl"))),
+        worst_loss=html_escape(_tower_percent(payload.get("worst_loss_nav_ratio"))),
+        count=html_escape(payload.get("scenario_count") or 0),
+        scenarios="".join(scenario_cards) or '<p class="empty">No hay escenarios configurados.</p>',
+        concentrations=html_escape(concentrations),
+        warnings=html_escape(warnings),
+        action=action,
+    )
 def render_portfolio_operations_panel() -> str:
     status = shared_risk_operations.load_json(PORTFOLIO_RISK_OPERATIONS_STATUS_PATH)
     outbox = shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH)
@@ -5172,6 +5262,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {notifications}
           {control_tower}
           {portfolio_risk}
+          {portfolio_stress}
           {portfolio_operations}
           <details class="panel support-details">
             <summary>Ver diagnostico tecnico y salud de modulos</summary>
@@ -5304,6 +5395,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         timeline=render_timeline(snapshot, operator_payload, reports),
         control_tower=render_control_tower_panel(profiles, active),
         portfolio_risk=render_portfolio_risk_panel(profiles, active),
+        portfolio_stress=render_portfolio_stress_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
         message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
@@ -5394,6 +5486,11 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
             self.send_json(load_portfolio_risk(profile_map, active_profile()))
             return
+        if path == "/portfolio-stress":
+            profile_data = load_profiles()
+            profile_map = profile_data.get("profiles") if isinstance(profile_data.get("profiles"), dict) else {}
+            self.send_json(load_portfolio_stress(profile_map, active_profile()))
+            return
         if path == "/portfolio-risk-outbox":
             self.send_json(shared_risk_operations.load_json(PORTFOLIO_RISK_OUTBOX_PATH))
             return
@@ -5412,6 +5509,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             "/active-positions",
             "/control-tower",
             "/portfolio-risk",
+            "/portfolio-stress",
             "/portfolio-risk-outbox",
             "/portfolio-risk-operations",
         }
@@ -5484,6 +5582,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 job_id = start_web_job(selected_alias, portfolio_risk_refresh_command(), "Reevaluar riesgo de cartera")
                 self.send_html(
                     "Evaluación de riesgo iniciada sobre los snapshots sanitizados. No transmite ni ejecuta órdenes.",
+                    job_id=job_id,
+                )
+            elif self.path == "/portfolio-stress-refresh":
+                selected_alias = normalize_alias(alias or active_profile().get("account_alias") or "")
+                job_id = start_web_job(selected_alias, portfolio_stress_refresh_command(), "Estrés multicuenta")
+                self.send_html(
+                    "Cálculo de estrés iniciado sobre snapshots sanitizados. No transmite ni ejecuta órdenes.",
                     job_id=job_id,
                 )
             elif self.path == "/portfolio-risk-operations-run":

@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 import broker_control_tower as control_tower
 import portfolio_risk_engine as risk_engine
 import portfolio_risk_store as risk_store
+import portfolio_stress_engine as stress_engine
 from brokers.ibkr_readonly import IBKRReadOnlyAdapter
 from scripts import ibkr_account_profile as profiles
 
@@ -38,7 +39,10 @@ def main() -> int:
     parser.add_argument("--risk-policy", default="config/portfolio_risk_policy.json")
     parser.add_argument("--risk-json-out", default="runtime/portfolio_risk_latest.json")
     parser.add_argument("--risk-history-out", default="runtime/portfolio_risk_history.json")
+    parser.add_argument("--stress-policy", default="config/portfolio_stress_policy.json")
+    parser.add_argument("--stress-json-out", default="runtime/portfolio_stress_latest.json")
     parser.add_argument("--skip-risk-evaluation", action="store_true")
+    parser.add_argument("--skip-stress-evaluation", action="store_true")
     args = parser.parse_args()
 
     runtime_dir = rooted_path(args.runtime_dir)
@@ -97,6 +101,11 @@ def main() -> int:
             latest_path=rooted_path(args.risk_json_out),
             history_path=rooted_path(args.risk_history_out),
         )
+    stress_evaluation = {}
+    if not args.skip_stress_evaluation:
+        stress_policy = stress_engine.load_policy(rooted_path(args.stress_policy))
+        stress_evaluation = stress_engine.evaluate(payload, stress_policy)
+        stress_engine.write_result(rooted_path(args.stress_json_out), stress_evaluation)
     print(json.dumps({
         "status": payload.get("status"),
         "account_count": payload.get("account_count"),
@@ -109,6 +118,9 @@ def main() -> int:
         "risk_score": risk_evaluation.get("risk_score"),
         "risk_alert_count": risk_evaluation.get("alert_count", 0),
         "risk_new_event_count": risk_persistence.get("new_event_count", 0),
+        "stress_status": stress_evaluation.get("status") or "SKIPPED",
+        "stress_worst_scenario_id": stress_evaluation.get("worst_scenario_id"),
+        "stress_worst_loss_nav_ratio": stress_evaluation.get("worst_loss_nav_ratio"),
         "sensitive_identifiers_excluded": True,
         "execution_authorized": False,
         "not_order_instruction": True,
