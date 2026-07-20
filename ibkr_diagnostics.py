@@ -11,6 +11,7 @@ from typing import Any
 
 DIAGNOSTIC_VERSION = "ibkr_chain_coverage_v2"
 DEFAULT_DIAGNOSTIC_PATH = Path("runtime/v32_ibkr_chain_coverage.json")
+DEFAULT_POSITION_CHAIN_STORE_PATH = Path("runtime/active_position_option_chains_latest.json")
 MAX_DISCARDED_CONTRACTS = 500
 
 
@@ -32,6 +33,8 @@ def option_row_diagnostic(row: dict[str, Any]) -> dict[str, Any]:
     discard_reasons = option_discard_reasons(row)
     return {
         "ticker": safe_upper(row.get("ticker") or row.get("symbol"), "UNKNOWN"),
+        "underlying_price": row.get("underlying_price") or row.get("price") or row.get("stock_price"),
+        "underlying_price_source": row.get("underlying_price_source") or row.get("price_source"),
         "strategy": safe_upper(row.get("strategy") or row.get("strategy_hint"), "UNKNOWN"),
         "decision_id": row.get("decision_id"),
         "signal_id": row.get("signal_id"),
@@ -192,3 +195,67 @@ def write_cycle_diagnostic(payload: dict[str, Any], path: str | Path = DEFAULT_D
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+def merge_position_chain_store(
+    payload: dict[str, Any],
+    path: str | Path = DEFAULT_POSITION_CHAIN_STORE_PATH,
+) -> dict[str, Any]:
+    """Persist the latest non-empty option sample for every scanned ticker.
+
+    The ordinary cycle diagnostic is intentionally replaceable. Position
+    management needs per-symbol continuity, so an unrelated later scan must
+    not erase the last useful chain for an open position.
+    """
+    target = Path(path)
+    existing: dict[str, Any] = {}
+    try:
+        loaded = json.loads(target.read_text()) if target.exists() else {}
+        existing = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        existing = {}
+    by_ticker = existing.get("by_ticker") if isinstance(existing.get("by_ticker"), dict) else {}
+    by_ticker = {safe_upper(key): dict(value) for key, value in by_ticker.items() if isinstance(value, dict)}
+    generated_at = payload.get("generated_at") or now_iso()
+    rows = payload.get("option_rows") if isinstance(payload.get("option_rows"), list) else []
+    events = payload.get("chain_by_ticker") if isinstance(payload.get("chain_by_ticker"), dict) else {}
+    symbols = set(safe_upper(value) for value in (payload.get("symbols_requested") or []) if safe_upper(value))
+    symbols.update(safe_upper((row or {}).get("ticker") or (row or {}).get("symbol")) for row in rows if isinstance(row, dict))
+    symbols.update(safe_upper(key) for key in events.keys())
+    updated = []
+    for ticker in sorted(symbol for symbol in symbols if symbol):
+        ticker_rows = [dict(row) for row in rows if isinstance(row, dict) and safe_upper(row.get("ticker") or row.get("symbol")) == ticker]
+        previous = dict(by_ticker.get(ticker) or {})
+        item = {
+            **previous,
+            "ticker": ticker,
+            "last_attempt_at": generated_at,
+            "chain_event": events.get(ticker) if isinstance(events.get(ticker), dict) else previous.get("chain_event"),
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+        if ticker_rows:
+            item["option_rows"] = ticker_rows
+            item["option_row_count"] = len(ticker_rows)
+            item["last_successful_at"] = generated_at
+            item["data_status"] = "AVAILABLE"
+            updated.append(ticker)
+        elif not previous.get("option_rows"):
+            item["option_rows"] = []
+            item["option_row_count"] = 0
+            item["data_status"] = "WAIT_OPTION_CHAIN"
+        else:
+            item["data_status"] = "STALE_PRESERVED_AFTER_EMPTY_SCAN"
+        by_ticker[ticker] = item
+    store = {
+        "store_version": "active_position_option_chain_store_v1",
+        "generated_at": generated_at,
+        "by_ticker": by_ticker,
+        "ticker_count": len(by_ticker),
+        "updated_tickers": updated,
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(store, indent=2, sort_keys=True, default=str) + "\n")
+    return store

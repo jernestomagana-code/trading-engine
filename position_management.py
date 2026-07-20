@@ -16,7 +16,7 @@ import position_context_store
 import strategy_exit_playbook
 
 
-POSITION_MANAGEMENT_VERSION = "active_position_management_v2"
+POSITION_MANAGEMENT_VERSION = "active_position_management_v3"
 DEFAULT_MAX_CONTEXT_AGE_MINUTES = 15
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
@@ -210,8 +210,44 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     elif isinstance(raw, list):
         for item in raw:
             add(item)
-    for item in _walk_dicts(snapshot.get("runtime_data")):
+    runtime_data = snapshot.get("runtime_data") if isinstance(snapshot.get("runtime_data"), dict) else {}
+    for item in _walk_dicts(runtime_data):
         add(item)
+
+    # The per-position chain store is intentionally durable: a later generic
+    # scan may contain empty technical rows, while the last successful chain
+    # still has the broker-observed stock price. Apply that price last so open
+    # positions do not lose actionable sizing and moneyness context.
+    chain_stores: list[dict[str, Any]] = []
+    top_level_store = snapshot.get("active_position_option_chains")
+    if isinstance(top_level_store, dict):
+        chain_stores.append(top_level_store)
+    runtime_store = runtime_data.get("active_position_option_chains_latest.json")
+    if isinstance(runtime_store, dict):
+        chain_stores.append(runtime_store)
+    for store in chain_stores:
+        by_ticker = store.get("by_ticker") if isinstance(store.get("by_ticker"), dict) else {}
+        for raw_ticker, block in by_ticker.items():
+            if not isinstance(block, dict):
+                continue
+            ticker = safe_upper(raw_ticker)
+            event = block.get("chain_event") if isinstance(block.get("chain_event"), dict) else {}
+            price = safe_float(event.get("stock_price") or event.get("underlying_price"))
+            if price is None:
+                rows = block.get("option_rows") if isinstance(block.get("option_rows"), list) else []
+                for option_row in rows:
+                    if isinstance(option_row, dict):
+                        price = safe_float(option_row.get("underlying_price"))
+                    if price is not None:
+                        break
+            if not ticker or price is None:
+                continue
+            technical = dict(out.get(ticker) or {"ticker": ticker})
+            technical["ticker"] = ticker
+            technical["price"] = price
+            technical["underlying_price"] = price
+            technical["position_chain_generated_at"] = block.get("last_successful_at") or event.get("generated_at")
+            out[ticker] = technical
     gamma_payload = snapshot.get("gamma_contexts") if isinstance(snapshot.get("gamma_contexts"), dict) else None
     if gamma_payload is None and isinstance(snapshot.get("runtime_data"), dict):
         gamma_payload = snapshot["runtime_data"].get("gamma_contexts.json")
@@ -265,6 +301,71 @@ def _position_contexts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             rows = value.get("contexts") if isinstance(value.get("contexts"), list) else []
             candidates.extend(item for item in rows if isinstance(item, dict))
     return [position_context_store.normalize_context(item) for item in candidates]
+
+
+def _option_candidates_by_ticker(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    sources: list[dict[str, Any]] = []
+    runtime_data = snapshot.get("runtime_data") if isinstance(snapshot.get("runtime_data"), dict) else {}
+    for key in ["active_position_option_chains", "option_chain_coverage", "v32_ibkr_chain_coverage"]:
+        value = snapshot.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    for filename, value in runtime_data.items():
+        if isinstance(value, dict) and (
+            "chain" in str(filename).lower()
+            or value.get("store_version") == "active_position_option_chain_store_v1"
+            or value.get("diagnostic_version")
+        ):
+            sources.append(value)
+
+    def add(row: dict[str, Any], forced_ticker: str = "") -> None:
+        ticker = safe_upper(row.get("ticker") or row.get("symbol") or forced_ticker)
+        if not ticker:
+            return
+        right = safe_upper(row.get("right") or row.get("option_type"))
+        strategy = safe_upper(row.get("strategy") or row.get("strategy_hint"))
+        if not right:
+            right = "C" if "CALL" in strategy else "P" if "PUT" in strategy else ""
+        if right not in {"C", "P"}:
+            return
+        normalized = dict(row)
+        normalized.update({
+            "ticker": ticker,
+            "right": right,
+            "strike": safe_float(row.get("strike")),
+            "dte": safe_float(row.get("dte")),
+            "bid": safe_float(row.get("bid")),
+            "ask": safe_float(row.get("ask")),
+            "mid": safe_float(row.get("mid")),
+            "delta": safe_float(row.get("delta")),
+            "spread_pct": safe_float(row.get("spread_pct")),
+            "expiration": row.get("expiration") or row.get("expiry"),
+        })
+        out.setdefault(ticker, []).append(normalized)
+
+    for source in sources:
+        by_ticker = source.get("by_ticker") if isinstance(source.get("by_ticker"), dict) else {}
+        for ticker, block in by_ticker.items():
+            if isinstance(block, dict):
+                for row in block.get("option_rows") or []:
+                    if isinstance(row, dict):
+                        add(row, safe_upper(ticker))
+        for row in source.get("option_rows") or []:
+            if isinstance(row, dict):
+                add(row)
+
+    for ticker, rows in list(out.items()):
+        seen = set()
+        unique = []
+        for row in rows:
+            key = (row.get("right"), row.get("expiration"), row.get("strike"))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        out[ticker] = unique
+    return out
 
 
 def infer_strategy(row: dict[str, Any], group: dict[str, Any] | None = None) -> str:
@@ -341,7 +442,16 @@ def _premium_capture_pct(row: dict[str, Any]) -> float | None:
 def _technical_context(row: dict[str, Any], technical_store: dict[str, dict[str, Any]]) -> dict[str, Any]:
     ticker = safe_upper(row.get("ticker"))
     technical = dict(technical_store.get(ticker) or {})
-    price = safe_float(row.get("underlying_price") or technical.get("underlying_price") or technical.get("price"))
+    qty = safe_float(row.get("position_size"), 0.0) or 0.0
+    market_value = safe_float(row.get("market_value"))
+    implied_stock_price = abs(market_value / qty) if market_value is not None and qty else None
+    price = safe_float(
+        row.get("underlying_price")
+        or row.get("market_price")
+        or technical.get("underlying_price")
+        or technical.get("price")
+        or implied_stock_price
+    )
     support = safe_float(technical.get("support") or technical.get("support_level") or technical.get("nearest_support"))
     resistance = safe_float(technical.get("resistance") or technical.get("resistance_level") or technical.get("nearest_resistance"))
     trend = safe_upper(technical.get("trend") or technical.get("bias") or technical.get("technical_bias"), "UNKNOWN")
@@ -540,6 +650,194 @@ def _scenario_analysis(row: dict[str, Any], strategy: str, technical: dict[str, 
     }
 
 
+def _contract_review_status(row: dict[str, Any]) -> str:
+    critical = {"NO_BID_ASK", "NO_VALID_OPTION_PRICE", "NO_GREEKS", "NO_SPREAD"}
+    missing = set(row.get("missing_execution_fields") or [])
+    discard = set(row.get("discard_reasons") or [])
+    if row.get("bid") is None or row.get("ask") is None or row.get("mid") is None:
+        return "WAIT_MARKET_DATA"
+    if missing.intersection({"bid", "ask", "mid", "spread_pct", "delta"}) or discard.intersection(critical):
+        return "WAIT_MARKET_DATA"
+    spread = safe_float(row.get("spread_pct"))
+    if spread is not None and spread > 25:
+        return "WAIT_LIQUIDITY"
+    return "READY_FOR_MANUAL_REVIEW"
+
+
+def _contract_summary(row: dict[str, Any], price: float | None) -> dict[str, Any]:
+    strike = safe_float(row.get("strike"))
+    right = safe_upper(row.get("right"))
+    mid = safe_float(row.get("mid"))
+    moneyness = "UNKNOWN"
+    if strike is not None and price is not None and price > 0:
+        distance = (strike - price) / price
+        if abs(distance) <= 0.0025:
+            moneyness = "ATM"
+        elif (right == "C" and strike < price) or (right == "P" and strike > price):
+            moneyness = "ITM"
+        else:
+            moneyness = "OTM"
+    return {
+        "right": right,
+        "expiration": row.get("expiration"),
+        "dte": row.get("dte"),
+        "strike": strike,
+        "moneyness": moneyness,
+        "bid": row.get("bid"),
+        "ask": row.get("ask"),
+        "mid": mid,
+        "premium_per_contract": round(mid * DEFAULT_CONTRACT_MULTIPLIER, 2) if mid is not None else None,
+        "delta": row.get("delta"),
+        "spread_pct": row.get("spread_pct"),
+        "review_status": _contract_review_status(row),
+        "not_order_instruction": True,
+    }
+
+
+def _rank_contracts(rows: list[dict[str, Any]], right: str, price: float | None) -> list[dict[str, Any]]:
+    candidates = [_contract_summary(row, price) for row in rows if safe_upper(row.get("right")) == right]
+    status_rank = {"READY_FOR_MANUAL_REVIEW": 0, "WAIT_LIQUIDITY": 1, "WAIT_MARKET_DATA": 2}
+    target_distance = 0.02
+    candidates.sort(key=lambda row: (
+        status_rank.get(str(row.get("review_status")), 9),
+        abs(abs(((safe_float(row.get("strike"), price) or 0) - (price or 0)) / price) - target_distance) if price else 999,
+        safe_float(row.get("spread_pct"), 999) or 999,
+    ))
+    return candidates
+
+
+def _alternative(
+    alternative_id: str,
+    label: str,
+    category: str,
+    status: str,
+    reason: str,
+    *,
+    contracts: int | None = None,
+    candidates: list[dict[str, Any]] | None = None,
+    effects: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "alternative_id": alternative_id,
+        "label": label,
+        "category": category,
+        "status": status,
+        "reason": reason,
+        "contracts": contracts,
+        "contract_candidates": (candidates or [])[:5],
+        "effects": effects or [],
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _management_alternatives(
+    row: dict[str, Any],
+    strategy: str,
+    technical: dict[str, Any],
+    group: dict[str, Any],
+    option_rows: list[dict[str, Any]],
+    management_action: str,
+) -> dict[str, Any]:
+    price = safe_float(technical.get("price") or row.get("underlying_price") or row.get("market_price"))
+    qty = safe_float(row.get("position_size"), 0.0) or 0.0
+    shares = max(0.0, safe_float(group.get("shares"), 0.0) or 0.0)
+    share_lots = int(shares // DEFAULT_CONTRACT_MULTIPLIER)
+    short_calls = int(safe_float(group.get("short_calls"), 0.0) or 0.0)
+    uncovered_share_lots = max(0, share_lots - short_calls)
+    calls = _rank_contracts(option_rows, "C", price)
+    puts = _rank_contracts(option_rows, "P", price)
+
+    def option_status(candidates: list[dict[str, Any]]) -> str:
+        if not candidates:
+            return "WAIT_OPTION_CHAIN"
+        if any(item.get("review_status") == "READY_FOR_MANUAL_REVIEW" for item in candidates):
+            return "READY_FOR_MANUAL_REVIEW"
+        if any(item.get("review_status") == "WAIT_LIQUIDITY" for item in candidates):
+            return "WAIT_LIQUIDITY"
+        return "WAIT_MARKET_DATA"
+
+    price_status = "READY_FOR_MANUAL_REVIEW" if price is not None else "WAIT_UNDERLYING_PRICE"
+    hold_status = "RISK_BLOCKED" if strategy == "SHORT_CALL_UNCOVERED_REVIEW" else "READY_FOR_MANUAL_REVIEW"
+    hold_reason = (
+        "No se considera prudente mantener una call descubierta sin corregir primero la falta de cobertura."
+        if strategy == "SHORT_CALL_UNCOVERED_REVIEW"
+        else "Conservar la posición mientras la tesis y los límites de riesgo sigan válidos."
+    )
+    alternatives = [
+        _alternative("HOLD_MONITOR", "Mantener y monitorear", "BASE", hold_status, hold_reason, effects=["Mantiene exposición actual", "No genera prima nueva"]),
+    ]
+    if strategy == "LONG_STOCK":
+        call_status = option_status(calls)
+        put_status = option_status(puts)
+        partial_contracts = max(1, uncovered_share_lots // 2) if uncovered_share_lots else 0
+        alternatives.extend([
+            _alternative("COVERED_CALL_PARTIAL", "Covered call parcial", "INCOME", call_status if uncovered_share_lots else "NOT_AVAILABLE_ALREADY_COVERED", "Vender calls sobre parte de los lotes disponibles para generar prima sin limitar toda la posición.", contracts=partial_contracts, candidates=calls, effects=["Genera prima", "Limita upside sólo en lotes cubiertos", "Riesgo de asignación"]),
+            _alternative("COVERED_CALL_FULL", "Covered call sobre todos los lotes disponibles", "INCOME", call_status if uncovered_share_lots else "NOT_AVAILABLE_ALREADY_COVERED", "Cubrir con calls todos los lotes que todavía no tienen una call corta.", contracts=uncovered_share_lots, candidates=calls, effects=["Mayor prima", "Limita upside de todos los lotes cubiertos", "Riesgo de salida por asignación"]),
+            _alternative("PROTECTIVE_PUT", "Comprar protective put", "DEFENSE", put_status, "Comprar puts para definir protección bajista sin vender las acciones.", contracts=share_lots, candidates=puts, effects=["Define piso de protección", "Tiene costo de prima", "Conserva upside"]),
+            _alternative("COLLAR", "Construir collar", "DEFENSE_INCOME", "READY_FOR_MANUAL_REVIEW" if call_status == put_status == "READY_FOR_MANUAL_REVIEW" and uncovered_share_lots else ("WAIT_OPTION_CHAIN" if not calls or not puts else "WAIT_MARKET_DATA"), "Combinar call cubierta y protective put sobre lotes equivalentes.", contracts=uncovered_share_lots, candidates=(calls[:3] + puts[:3]), effects=["Reduce costo de protección", "Limita downside y upside", "Requiere vencimientos y cantidades compatibles"]),
+            _alternative("REDUCE_25", "Reducir 25% de las acciones", "REDUCE", price_status, "Disminuir parcialmente exposición y concentración conservando la mayor parte de la tesis.", effects=["Libera capital", "Reduce riesgo direccional", "Puede generar impacto fiscal"]),
+            _alternative("REDUCE_50", "Reducir 50% de las acciones", "REDUCE", price_status, "Reducir a la mitad la exposición cuando concentración o tesis lo justifiquen.", effects=["Libera más capital", "Reduce volatilidad de cartera", "Puede generar impacto fiscal"]),
+            _alternative("EXIT_FULL", "Cerrar la posición completa", "EXIT", price_status, "Revisar salida total sólo si la tesis quedó invalidada o la exposición ya no es deseada.", effects=["Elimina riesgo direccional", "Realiza P/L", "Puede generar impacto fiscal"]),
+        ])
+    elif strategy == "CASH_SECURED_PUT":
+        alternatives.extend([
+            _alternative("BUY_BACK_CLOSE", "Comprar para cerrar", "EXIT", price_status if _option_mark(row) is not None else "WAIT_OPTION_MARK", "Cerrar la put elimina obligación de asignación y riesgo abierto."),
+            _alternative("ROLL_PUT", "Rolar put en tiempo o strike", "ROLL", option_status(puts), "Comparar puts posteriores sólo si el roll no aumenta riesgo injustificadamente.", contracts=int(abs(qty)), candidates=puts),
+            _alternative("ACCEPT_ASSIGNMENT", "Aceptar posible asignación", "ASSIGNMENT", price_status, "Aceptar acciones únicamente si capital, tesis y tamaño siguen siendo adecuados."),
+            _alternative("DEFENSIVE_EXIT", "Salida defensiva", "DEFENSE", price_status, "Priorizar reducción de riesgo si soporte, evento o tesis se deterioran."),
+        ])
+    elif strategy == "COVERED_CALL":
+        alternatives.extend([
+            _alternative("BUY_BACK_CALL", "Comprar call para cerrar", "EXIT_OPTION", "READY_FOR_MANUAL_REVIEW" if _option_mark(row) is not None else "WAIT_OPTION_MARK", "Cerrar la call conserva las acciones y reabre su upside."),
+            _alternative("ROLL_CALL", "Rolar call", "ROLL", option_status(calls), "Comparar otro vencimiento o strike manteniendo siempre cobertura suficiente.", contracts=int(abs(qty)), candidates=calls),
+            _alternative("ACCEPT_CALLED_AWAY", "Aceptar salida por asignación", "ASSIGNMENT", price_status, "Permitir que las acciones sean llamadas si el precio de salida cumple el plan."),
+            _alternative("CLOSE_COMBINED", "Cerrar call y revisar acciones", "COMBINED", price_status, "Evaluar conjuntamente el cierre de la call y la permanencia o reducción de las acciones."),
+        ])
+    elif strategy == "SHORT_CALL_UNCOVERED_REVIEW":
+        alternatives.extend([
+            _alternative("BUY_BACK_UNCOVERED_CALL", "Cerrar call descubierta", "RISK_EXIT", "READY_FOR_MANUAL_REVIEW" if _option_mark(row) is not None else "WAIT_OPTION_MARK", "Eliminar primero el riesgo descubierto antes de considerar cualquier otra alternativa."),
+            _alternative("ADD_COVERING_SHARES_REVIEW", "Revisar cobertura con acciones", "RISK_REVIEW", price_status, "Sólo evaluar acciones suficientes si el aumento de exposición está expresamente justificado."),
+        ])
+    elif strategy in {"LONG_CALL", "LONG_PUT"}:
+        same_side = calls if strategy == "LONG_CALL" else puts
+        alternatives.extend([
+            _alternative("CLOSE_LONG_OPTION", "Cerrar opción larga", "EXIT_OPTION", "READY_FOR_MANUAL_REVIEW" if _option_mark(row) is not None else "WAIT_OPTION_MARK", "Realizar P/L o evitar pérdida adicional de valor temporal."),
+            _alternative("ROLL_LONG_OPTION", "Rolar opción larga", "ROLL", option_status(same_side), "Comparar extensión de vencimiento sin aumentar tamaño automáticamente.", contracts=int(abs(qty)), candidates=same_side),
+        ])
+    else:
+        alternatives.extend([
+            _alternative("REDUCE_POSITION", "Reducir posición", "REDUCE", price_status, "Reducir exposición mientras se completa la clasificación y la tesis."),
+            _alternative("EXIT_POSITION", "Cerrar posición", "EXIT", price_status, "Revisar salida completa si el instrumento o riesgo ya no son deseados."),
+        ])
+
+    primary_map = {
+        "NO_ACTION_RECOMMENDED": "HOLD_MONITOR",
+        "REVIEW_CLOSE_OR_BUY_BACK": "BUY_BACK_CLOSE" if strategy == "CASH_SECURED_PUT" else "BUY_BACK_CALL",
+        "REVIEW_ROLL": "ROLL_PUT" if strategy == "CASH_SECURED_PUT" else "ROLL_CALL",
+        "REVIEW_ASSIGNMENT": "ACCEPT_ASSIGNMENT" if strategy == "CASH_SECURED_PUT" else "ACCEPT_CALLED_AWAY",
+        "REVIEW_DEFENSIVE_EXIT": "DEFENSIVE_EXIT" if strategy == "CASH_SECURED_PUT" else "EXIT_FULL",
+    }
+    primary_id = primary_map.get(management_action)
+    for alternative in alternatives:
+        alternative["is_primary_management_path"] = alternative.get("alternative_id") == primary_id
+    return {
+        "alternatives_version": "position_management_alternatives_v1",
+        "strategy": strategy,
+        "alternative_count": len(alternatives),
+        "reviewable_count": sum(1 for item in alternatives if item.get("status") == "READY_FOR_MANUAL_REVIEW"),
+        "option_candidate_count": len(option_rows),
+        "underlying_price_available": price is not None,
+        "share_lots": share_lots,
+        "uncovered_share_lots": uncovered_share_lots,
+        "alternatives": alternatives,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _management_outcome_template(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "outcome_template_version": "position_management_outcome_v1",
@@ -641,12 +939,14 @@ def evaluate_position(
     technical_store: dict[str, dict[str, Any]] | None = None,
     account_context: dict[str, Any] | None = None,
     playbook: dict[str, Any] | None = None,
+    option_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     row = normalize_position(row)
     group = group if isinstance(group, dict) else {}
     technical_store = technical_store if isinstance(technical_store, dict) else {}
     account_context = account_context if isinstance(account_context, dict) else {}
     playbook = playbook if isinstance(playbook, dict) else strategy_exit_playbook.load_exit_playbook()
+    option_rows = [item for item in (option_rows or []) if isinstance(item, dict)]
     strategy = infer_strategy(row, group)
     technical = _technical_context(row, technical_store)
     report = _base_position_report(row, strategy, technical, account_context, playbook)
@@ -724,6 +1024,14 @@ def evaluate_position(
     if report["warnings"] and report["management_action"] == "NO_ACTION_RECOMMENDED":
         report["management_action"] = "REFRESH_DATA"
         report["manual_review_required"] = True
+    report["management_alternatives"] = _management_alternatives(
+        row,
+        strategy,
+        technical,
+        group,
+        option_rows,
+        report["management_action"],
+    )
     report["urgency_rank"] = ACTION_PRIORITY.get(report["management_action"], 0)
     report["management_outcome_template"] = _management_outcome_template(report)
     return report
@@ -851,6 +1159,7 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
     positions = [normalize_position(row) for row in raw_positions]
     positions = [row for row in positions if safe_float(row.get("position_size"), 0.0) not in [None, 0.0]]
     technical_store = _technical_by_ticker(snapshot)
+    option_candidates = _option_candidates_by_ticker(snapshot)
     account_context = snapshot.get("account_context") if isinstance(snapshot.get("account_context"), dict) else broker_check.extract_account_context(snapshot)
     policy = snapshot.get("position_management_policy") if isinstance(snapshot.get("position_management_policy"), dict) else {}
     max_age = int(safe_float(policy.get("max_context_age_minutes"), DEFAULT_MAX_CONTEXT_AGE_MINUTES) or DEFAULT_MAX_CONTEXT_AGE_MINUTES)
@@ -863,6 +1172,7 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
             technical_store=technical_store,
             account_context=account_context,
             playbook=playbook,
+            option_rows=option_candidates.get(safe_upper(row.get("ticker")), []),
         )
         for row in positions
     ]
@@ -908,6 +1218,19 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
         "position_context_summary": {
             "context_count": len(contexts),
             "contexts_applied": sum(1 for row in raw_positions if row.get("position_context_updated_at")),
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        },
+        "option_alternatives_summary": {
+            "tickers_with_preserved_chains": sorted(option_candidates.keys()),
+            "positions_with_option_candidates": sum(
+                1 for report in reports
+                if ((report.get("management_alternatives") or {}).get("option_candidate_count") or 0) > 0
+            ),
+            "total_alternatives": sum(
+                (report.get("management_alternatives") or {}).get("alternative_count") or 0
+                for report in reports
+            ),
             "not_order_instruction": True,
             "execution_authorized": False,
         },

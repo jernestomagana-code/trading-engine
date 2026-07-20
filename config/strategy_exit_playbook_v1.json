@@ -197,6 +197,73 @@
         "roll_count"
       ],
       "manual_review_text": "Covered call: toda salida, roll o asignacion requiere validar acciones cubriendo el contrato."
+    },
+    {
+      "id": "LONG_STOCK",
+      "aliases": ["EQUITY_LONG", "STOCK_LONG"],
+      "status": "ACTIVE_MANUAL_REVIEW",
+      "position_required": true,
+      "required_inputs": [
+        "long_stock_position",
+        "underlying_price",
+        "average_cost",
+        "position_size",
+        "portfolio_weight",
+        "technical_context",
+        "event_risk",
+        "option_chain_for_hedging"
+      ],
+      "take_profit_review": {
+        "state": "EXIT_REVIEW",
+        "review_text": "Revisar reducción o salida sólo contra la tesis, concentración, objetivo y contexto fiscal."
+      },
+      "roll_review": {
+        "state": "MONITOR",
+        "review_text": "Las acciones no se rolan; cualquier roll pertenece a una opción asociada y debe permanecer cubierto."
+      },
+      "assignment_review": {
+        "state": "MONITOR",
+        "review_text": "La asignación sólo aplica si existe una opción corta asociada."
+      },
+      "risk_review": {
+        "concentration_high": true,
+        "technical_breakdown": true,
+        "event_risk_active": true,
+        "state": "RISK_REVIEW",
+        "review_text": "Comparar mantener, cubrir, reducir o salir cuando concentración, evento o deterioro técnico eleven el riesgo."
+      },
+      "regime_exit_adjustments": {
+        "BULLISH_LOW_VOL": {
+          "risk_action": "PRESERVE_UPSIDE_AND_AVOID_OVERHEDGING",
+          "review_text": "En régimen alcista, comparar mantener contra cobertura parcial sin limitar automáticamente todo el upside."
+        },
+        "NEUTRAL_RANGE": {
+          "risk_action": "COMPARE_PARTIAL_COVERED_CALL_AND_COLLAR",
+          "review_text": "En rango neutral, evaluar generación de prima y protección parcial por lotes."
+        },
+        "BEARISH_OR_CORRECTION": {
+          "risk_action": "COMPARE_PROTECTIVE_PUT_COLLAR_AND_REDUCTION",
+          "review_text": "En corrección, priorizar protección, reducción y validez de la tesis antes que la prima."
+        },
+        "HIGH_VOL_EVENT_RISK": {
+          "risk_action": "REVIEW_EVENT_SIZE_AND_DEFINED_RISK_HEDGES",
+          "review_text": "Con evento o alta volatilidad, revisar tamaño y coberturas de riesgo definido sin perseguir prima."
+        },
+        "INTRADAY_TREND": {
+          "risk_action": "DEFER_TO_DAILY_THESIS_AND_POSITION_SIZE",
+          "review_text": "El movimiento intradía no debe reemplazar la tesis diaria ni justificar cambios de tamaño automáticos."
+        }
+      },
+      "outcome_metrics": [
+        "unrealized_pnl",
+        "realized_pnl",
+        "drawdown_pct",
+        "covered_share_pct",
+        "hedge_cost_pct",
+        "called_away_return_pct",
+        "days_held"
+      ],
+      "manual_review_text": "Acción larga: comparar mantener, cubrir, reducir o salir; ninguna alternativa autoriza una orden."
     }
   ],
   "promotion_policy": {

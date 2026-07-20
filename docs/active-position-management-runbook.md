@@ -73,8 +73,25 @@ The active-position payload now includes:
 - `battle_plan`: prioritized daily review steps.
 - `management_outcome_template`: fields expected when journaling what the
   operator did after reviewing the recommendation.
+- `management_alternatives`: a strategy-specific menu for every open
+  position. Long stock compares hold, partial/full covered calls, protective
+  put, collar, partial reductions, and full exit. Short puts, covered calls,
+  uncovered calls, and long options receive their own close, roll,
+  assignment, hedge, and risk-reduction paths.
+- `option_alternatives_summary`: coverage of preserved option chains and the
+  number of alternatives produced across the portfolio.
 - `position_context_summary`: how many locally saved position contexts were
   applied to the current broker rows.
+
+Every alternative has an independent data state such as
+`READY_FOR_MANUAL_REVIEW`, `WAIT_OPTION_CHAIN`, `WAIT_MARKET_DATA`,
+`WAIT_LIQUIDITY`, or `WAIT_UNDERLYING_PRICE`. Ready means that the alternative
+has enough evidence to inspect manually; it never authorizes an order.
+
+The bridge preserves the latest non-empty chain per ticker in
+`runtime/active_position_option_chains_latest.json`. Daily open prioritizes all
+symbols detected in open stock or option positions, in addition to the normal
+watchlist, so a later unrelated scan does not erase their management choices.
 
 Local console review events are stored in
 `runtime/active_position_management_journal.json`. These are process/outcome

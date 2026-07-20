@@ -4609,6 +4609,72 @@ def friendly_position_reason(text: str) -> str:
     return replacements.get(text, text)
 
 
+def render_position_alternatives(item: dict[str, Any]) -> str:
+    payload = item.get("management_alternatives") if isinstance(item.get("management_alternatives"), dict) else {}
+    alternatives = payload.get("alternatives") if isinstance(payload.get("alternatives"), list) else []
+    if not alternatives:
+        return '<div class="position-alternatives-empty">Alternativas pendientes de cálculo.</div>'
+    status_labels = {
+        "READY_FOR_MANUAL_REVIEW": "Lista para revisar",
+        "WAIT_OPTION_CHAIN": "Falta cadena",
+        "WAIT_MARKET_DATA": "Faltan datos",
+        "WAIT_LIQUIDITY": "Esperar liquidez",
+        "WAIT_UNDERLYING_PRICE": "Falta precio",
+        "WAIT_OPTION_MARK": "Falta precio de opción",
+        "NOT_AVAILABLE_ALREADY_COVERED": "Lotes ya cubiertos",
+    }
+
+    def card(alternative: dict[str, Any]) -> str:
+        candidates = alternative.get("contract_candidates") if isinstance(alternative.get("contract_candidates"), list) else []
+        contract = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        contract_text = ""
+        if contract:
+            contract_text = "Mejor contrato visible: {right} {strike} · {expiration} · {moneyness} · prima {premium}".format(
+                right=contract.get("right") or "",
+                strike=contract.get("strike") if contract.get("strike") is not None else "N/D",
+                expiration=contract.get("expiration") or "N/D",
+                moneyness=contract.get("moneyness") or "N/D",
+                premium=coberturas_money(contract.get("premium_per_contract")),
+            )
+        effects = alternative.get("effects") if isinstance(alternative.get("effects"), list) else []
+        return """
+          <div class="position-alternative {primary}">
+            <div><b>{label}</b><span>{status}</span></div>
+            <p>{reason}</p>
+            <small>{contracts}{contract}{effects}</small>
+          </div>
+        """.format(
+            primary="alternative-primary" if alternative.get("is_primary_management_path") else "",
+            label=html_escape(alternative.get("label") or alternative.get("alternative_id") or "Alternativa"),
+            status=html_escape(status_labels.get(str(alternative.get("status") or ""), friendly_operator_state(alternative.get("status")))),
+            reason=html_escape(alternative.get("reason") or ""),
+            contracts=html_escape(("Hasta {} contrato(s). ".format(alternative.get("contracts"))) if alternative.get("contracts") is not None else ""),
+            contract=html_escape((contract_text + ". ") if contract_text else ""),
+            effects=html_escape("Efectos: " + "; ".join(str(value) for value in effects[:3]) if effects else ""),
+        )
+
+    visible = alternatives[:3]
+    remaining = alternatives[3:]
+    more = ""
+    if remaining:
+        more = '<details class="position-alternatives-more"><summary>Ver las {} posibilidades restantes</summary>{}</details>'.format(
+            len(remaining),
+            "".join(card(value) for value in remaining if isinstance(value, dict)),
+        )
+    return """
+      <div class="position-alternatives">
+        <div class="position-alternatives-head"><b>Posibilidades de gestión</b><span>{reviewable} de {total} con datos para revisión</span></div>
+        {cards}
+        {more}
+      </div>
+    """.format(
+        reviewable=html_escape(payload.get("reviewable_count") or 0),
+        total=html_escape(payload.get("alternative_count") or len(alternatives)),
+        cards="".join(card(value) for value in visible if isinstance(value, dict)),
+        more=more,
+    )
+
+
 def render_position_management_card(item: dict[str, Any]) -> str:
     technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
     thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
@@ -4637,6 +4703,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
       <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
       <div class="review-line">{reason}</div>
       <p class="position-summary">{contract}</p>
+      {alternatives}
       <details class="position-details"{open_attr}>
         <summary>Ver detalles y registrar gestión</summary>
         <div class="position-detail-grid">
@@ -4710,6 +4777,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
         weight=html_escape(str(item.get("portfolio_weight_pct") if item.get("portfolio_weight_pct") is not None else "pendiente")),
         market=html_escape(" | ".join(market_bits)),
         reason=html_escape(reason_text),
+        alternatives=render_position_alternatives(item),
         warnings=html_escape(", ".join(str(x) for x in warnings[:4]) or "none"),
         blockers=html_escape(", ".join(str(x) for x in blockers[:4]) or "none"),
     )
@@ -6559,6 +6627,19 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
           .positions-panel {{ border-left:6px solid #2563eb; background:#f7fbff; }}
           .position-card {{ border-color:#bfd7ff; }}
+          .position-alternatives {{ display:grid; gap:7px; margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }}
+          .position-alternatives-head {{ display:flex; justify-content:space-between; gap:10px; align-items:baseline; }}
+          .position-alternatives-head span {{ margin:0; font-size:.76rem; }}
+          .position-alternative {{ border:1px solid var(--line); border-left:4px solid #94a3b8; border-radius:8px; padding:9px 10px; background:#fff; }}
+          .position-alternative.alternative-primary {{ border-left-color:#2563eb; background:#f5f9ff; }}
+          .position-alternative > div {{ display:flex; justify-content:space-between; gap:10px; }}
+          .position-alternative > div span {{ margin:0; font-size:.72rem; font-weight:850; }}
+          .position-alternative p {{ margin:5px 0; color:var(--muted); font-size:.82rem; line-height:1.3; }}
+          .position-alternative small {{ margin:0; font-size:.74rem; line-height:1.3; }}
+          .position-alternatives-more {{ margin-top:2px; }}
+          .position-alternatives-more > summary {{ cursor:pointer; color:var(--accent-strong); font-size:.8rem; font-weight:850; }}
+          .position-alternatives-more .position-alternative {{ margin-top:7px; }}
+          .position-alternatives-empty {{ margin-top:10px; color:var(--muted); font-size:.82rem; }}
           .operator-alerts-panel {{ border-left:6px solid #d97706; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}

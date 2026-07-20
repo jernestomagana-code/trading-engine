@@ -4259,6 +4259,7 @@ def send_options_intelligence():
         symbol_plan=symbol_plan,
     )
     saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
+    position_chain_store = ibkr_diagnostics.merge_position_chain_store(diagnostic)
     if COBERTURAS_RSP_WEEKLY:
         # Keep the dedicated weekly RSP chain independent from the general
         # option-universe diagnostic. A later general refresh must not erase a
@@ -4272,6 +4273,7 @@ def send_options_intelligence():
         f" | rows:{diagnostic.get('option_row_count')}"
         f" | gap:{diagnostic.get('primary_gap')}"
         f" | path:{saved.get('path')}"
+        f" | position_store_tickers:{position_chain_store.get('ticker_count')}"
     )
     return diagnostic
 

@@ -147,6 +147,9 @@ class PositionManagementTests(unittest.TestCase):
         item = payload["positions"][0]
 
         self.assertEqual(item["strategy"], "SHORT_CALL_UNCOVERED_REVIEW")
+        alternatives = {row["alternative_id"]: row for row in item["management_alternatives"]["alternatives"]}
+        self.assertEqual(alternatives["HOLD_MONITOR"]["status"], "RISK_BLOCKED")
+        self.assertFalse(alternatives["HOLD_MONITOR"]["is_primary_management_path"])
         self.assertEqual(item["exit_state"], "RISK_REVIEW")
         self.assertEqual(item["management_action"], "REVIEW_RISK")
         self.assertIn("UNCOVERED_SHORT_CALL", item["blockers"])
@@ -186,6 +189,89 @@ class PositionManagementTests(unittest.TestCase):
         self.assertEqual(item["management_action"], "NO_ACTION_RECOMMENDED")
         self.assertFalse(item["manual_review_required"])
         self.assertEqual(payload["status"], "MONITOR")
+
+    def test_long_stock_exposes_generic_management_alternatives_with_contracts(self):
+        snapshot = self.snapshot(
+            [{"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "avg_cost": 106.58, "market_price": 120}],
+            {"NFLX": {"ticker": "NFLX", "trend": "NEUTRAL", "price": 120, "support_level": 112}},
+        )
+        snapshot["active_position_option_chains"] = {
+            "store_version": "active_position_option_chain_store_v1",
+            "by_ticker": {
+                "NFLX": {
+                    "option_rows": [
+                        {"ticker": "NFLX", "right": "C", "strike": 125, "expiration": "20260828", "dte": 39, "bid": 2.9, "ask": 3.1, "mid": 3.0, "spread_pct": 6.67, "delta": 0.3},
+                        {"ticker": "NFLX", "right": "P", "strike": 110, "expiration": "20260828", "dte": 39, "bid": 1.9, "ask": 2.1, "mid": 2.0, "spread_pct": 10.0, "delta": -0.2},
+                    ]
+                }
+            },
+        }
+
+        payload = position_management.build_active_position_management(snapshot, playbook=self.playbook)
+        item = payload["positions"][0]
+        alternatives = {row["alternative_id"]: row for row in item["management_alternatives"]["alternatives"]}
+
+        self.assertEqual(item["exit_overlay"]["strategy_id"], "LONG_STOCK")
+        self.assertNotIn("EXIT_PLAYBOOK_NOT_REGISTERED", item["exit_overlay"]["exit_blockers"])
+        self.assertEqual(alternatives["COVERED_CALL_PARTIAL"]["contracts"], 5)
+        self.assertEqual(alternatives["COVERED_CALL_FULL"]["contracts"], 10)
+        self.assertEqual(alternatives["COVERED_CALL_FULL"]["contract_candidates"][0]["strike"], 125)
+        self.assertEqual(alternatives["PROTECTIVE_PUT"]["status"], "READY_FOR_MANUAL_REVIEW")
+        self.assertIn("COLLAR", alternatives)
+        self.assertGreaterEqual(payload["option_alternatives_summary"]["total_alternatives"], 8)
+
+    def test_durable_position_chain_supplies_underlying_price_after_empty_technical_refresh(self):
+        snapshot = self.snapshot(
+            [{"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "avg_cost": 106.58}],
+            {"NFLX": {"ticker": "NFLX", "trend": "NEUTRAL", "price": None}},
+        )
+        snapshot["runtime_data"] = {
+            "active_position_option_chains_latest.json": {
+                "store_version": "active_position_option_chain_store_v1",
+                "by_ticker": {
+                    "NFLX": {
+                        "last_successful_at": "2026-07-20T18:17:30+00:00",
+                        "chain_event": {"ticker": "NFLX", "stock_price": 67.415},
+                        "option_rows": [
+                            {"ticker": "NFLX", "right": "C", "strike": 71, "bid": 1.82, "ask": 1.89, "mid": 1.855, "spread_pct": 3.77},
+                        ],
+                    }
+                },
+            }
+        }
+
+        payload = position_management.build_active_position_management(snapshot, playbook=self.playbook)
+        item = payload["positions"][0]
+        alternatives = {row["alternative_id"]: row for row in item["management_alternatives"]["alternatives"]}
+
+        self.assertEqual(item["technical"]["price"], 67.415)
+        self.assertTrue(item["management_alternatives"]["underlying_price_available"])
+        self.assertEqual(alternatives["REDUCE_25"]["status"], "READY_FOR_MANUAL_REVIEW")
+        self.assertEqual(alternatives["COVERED_CALL_FULL"]["contract_candidates"][0]["moneyness"], "OTM")
+
+    def test_covered_call_and_short_put_expose_strategy_specific_paths(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "AAPL", "sec_type": "STK", "position_size": 100, "market_price": 200},
+                    {"ticker": "AAPL", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 205, "option_mark": 2, "entry_credit": 3, "dte": 10},
+                    {"ticker": "MSFT", "sec_type": "OPT", "right": "P", "position_size": -1, "strike": 400, "option_mark": 2, "entry_credit": 3, "dte": 10},
+                ],
+                {
+                    "AAPL": {"ticker": "AAPL", "price": 202, "trend": "NEUTRAL"},
+                    "MSFT": {"ticker": "MSFT", "price": 410, "trend": "NEUTRAL"},
+                },
+            ),
+            playbook=self.playbook,
+        )
+        by_strategy = {item["strategy"]: item for item in payload["positions"] if item["strategy"] != "LONG_STOCK"}
+        call_ids = {row["alternative_id"] for row in by_strategy["COVERED_CALL"]["management_alternatives"]["alternatives"]}
+        put_ids = {row["alternative_id"] for row in by_strategy["CASH_SECURED_PUT"]["management_alternatives"]["alternatives"]}
+
+        self.assertIn("ROLL_CALL", call_ids)
+        self.assertIn("ACCEPT_CALLED_AWAY", call_ids)
+        self.assertIn("ROLL_PUT", put_ids)
+        self.assertIn("ACCEPT_ASSIGNMENT", put_ids)
 
     def test_position_management_journal_records_manual_review_event(self):
         with tempfile.TemporaryDirectory() as tmp:

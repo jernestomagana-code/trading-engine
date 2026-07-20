@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -65,6 +66,44 @@ def parse_args() -> argparse.Namespace:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def active_position_option_symbols(runtime_dir: Path = RUNTIME) -> list[str]:
+    symbols = []
+    seen = set()
+    for filename in [
+        "broker_control_tower_latest.json",
+        "v28_master_snapshot.json",
+        "decision_desk_snapshot.json",
+        "v26_local_master_snapshot.json",
+    ]:
+        path = runtime_dir / filename
+        try:
+            payload = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            payload = {}
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                ticker = str(value.get("ticker") or value.get("symbol") or "").strip().upper()
+                sec_type = str(value.get("sec_type") or value.get("security_type") or "").strip().upper()
+                quantity = value.get("position_size", value.get("position", value.get("quantity")))
+                try:
+                    is_open = quantity is not None and float(quantity) != 0
+                except Exception:
+                    is_open = False
+                if ticker and is_open and sec_type in {"STK", "STOCK", "EQUITY", "OPT", "OPTION", "POSITION"} and re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", ticker):
+                    if ticker not in seen:
+                        seen.add(ticker)
+                        symbols.append(ticker)
+                for nested in value.values():
+                    walk(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    walk(nested)
+
+        walk(payload)
+    return symbols
 
 
 def age_minutes(value: Any) -> float | None:
@@ -233,15 +272,19 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
     env["IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS"] = "1"
     if not args.full_bridge:
         env.setdefault("DAILY_RADAR_FAST", "1")
-        daily_symbols = os.getenv(
+        configured_symbols = os.getenv(
             "STOCK_ULTIMUS_DAILY_OPEN_OPTION_SYMBOLS",
             "QQQ,SPY,NVDA,TSLA,META,NFLX,TLT,AAPL,AMZN,MSFT",
         )
+        configured = [value.strip().upper() for value in configured_symbols.split(",") if value.strip()]
+        active_symbols = active_position_option_symbols()
+        daily_symbols_list = list(dict.fromkeys(active_symbols + configured))
+        daily_symbols = ",".join(daily_symbols_list)
         env.setdefault("IBKR_WATCHLIST", daily_symbols)
         env.setdefault("IBKR_OPTION_SYMBOLS", daily_symbols)
-        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "10")
+        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", str(max(10, len(daily_symbols_list))))
         env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
-        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "40")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", str(max(40, len(daily_symbols_list) * 4)))
         env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "0")
         env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "0")
     return run_command(

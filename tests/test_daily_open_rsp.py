@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +36,21 @@ def base_report() -> dict:
 
 
 class DailyOpenRspTests(unittest.TestCase):
+    def test_active_position_symbols_are_added_to_daily_option_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "broker_control_tower_latest.json").write_text(json.dumps({
+                "positions": [
+                    {"ticker": "NFLX", "security_type": "STK", "quantity": 1000},
+                    {"ticker": "XYZ", "security_type": "OPT", "quantity": -1},
+                    {"ticker": "CASH", "security_type": "CASH", "quantity": 5000},
+                ]
+            }), encoding="utf-8")
+
+            symbols = daily_open.active_position_option_symbols(runtime)
+
+        self.assertEqual(symbols, ["NFLX", "XYZ"])
+
     def test_rsp_environment_uses_dedicated_alias_without_changing_general_profile(self):
         args = SimpleNamespace(rsp_account_alias="retiro")
         with mock.patch("scripts.ibkr_account_profile.profile_for", return_value={"alias": "retiro"}) as profile_for, mock.patch(

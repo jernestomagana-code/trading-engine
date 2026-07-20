@@ -353,6 +353,7 @@ class SignalLedgerTests(unittest.TestCase):
                 {
                     "ticker": "QQQ",
                     "strategy": "NAKED_PUT",
+                    "underlying_price": 712.5,
                     "bid": 1.0,
                     "ask": None,
                     "mid": 1.05,
@@ -371,10 +372,31 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(diagnostic["missing_execution_field_counts"]["ask"], 1)
         self.assertEqual(diagnostic["option_rows"][0]["iv"], 0.27)
         self.assertEqual(diagnostic["option_rows"][0]["delta"], -0.18)
+        self.assertEqual(diagnostic["option_rows"][0]["underlying_price"], 712.5)
         self.assertEqual(diagnostic["discard_reason_counts"]["NO_BID_ASK"], 1)
         self.assertEqual(diagnostic["discard_reason_counts"]["PRICE_WITH_GREEKS_NO_BIDASK"], 1)
         self.assertEqual(diagnostic["discarded_contract_count"], 1)
         self.assertFalse(diagnostic["execution_authorized"])
+
+    def test_position_chain_store_preserves_last_nonempty_ticker_sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "position_chains.json"
+            first = ibkr_diagnostics.build_cycle_diagnostic(
+                symbols=["NFLX"],
+                chain_events=[{"ticker": "NFLX", "status": "CHAIN_SELECTED"}],
+                option_rows=[{
+                    "ticker": "NFLX", "strategy": "COVERED_CALL", "bid": 2.9, "ask": 3.1,
+                    "mid": 3.0, "spread_pct": 6.67, "strike": 125, "expiration": "20260828",
+                    "dte": 39, "delta": 0.3, "iv": 0.25,
+                }],
+            )
+            ibkr_diagnostics.merge_position_chain_store(first, path)
+            empty = ibkr_diagnostics.build_cycle_diagnostic(symbols=["NFLX"], chain_events=[], option_rows=[])
+            preserved = ibkr_diagnostics.merge_position_chain_store(empty, path)
+
+        self.assertEqual(preserved["by_ticker"]["NFLX"]["option_row_count"], 1)
+        self.assertEqual(preserved["by_ticker"]["NFLX"]["data_status"], "STALE_PRESERVED_AFTER_EMPTY_SCAN")
+        self.assertEqual(preserved["by_ticker"]["NFLX"]["option_rows"][0]["strike"], 125)
 
 
 if __name__ == "__main__":

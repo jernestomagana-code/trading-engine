@@ -224,6 +224,10 @@ En **IBKR aplicada**, escribe una nota, el precio real de fill y la cantidad. Un
 
 Muestra primero las posiciones que requieren atención. Cada tarjeta enseña inicialmente sólo la acción recomendada, el motivo y el contrato. **Ver detalles y registrar gestión** abre datos, tesis y acciones secundarias.
 
+Cada posición incluye además **Posibilidades de gestión**. No es una lista genérica de botones: cambia según el instrumento. Las acciones largas comparan mantener, covered call parcial o total, protective put, collar, reducciones parciales y salida; las puts vendidas y covered calls comparan mantener, recomprar, rolar, asignación y defensa; las opciones largas y cualquier riesgo descubierto reciben rutas específicas. Cada posibilidad indica si está **lista para revisión**, si **falta cadena**, **falta precio**, **faltan datos** o conviene **esperar liquidez**.
+
+La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
+
 - estrategia, tipo de instrumento, cantidad, strike y DTE;
 - captura de prima, PnL y peso en cartera;
 - tendencia, precio, soporte, resistencia y gamma disponible;
