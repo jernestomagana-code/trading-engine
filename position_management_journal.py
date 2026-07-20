@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ ALLOWED_OPERATOR_ACTIONS = {
     "ASSIGNMENT_REVIEWED",
     "RISK_REDUCTION_REVIEWED",
     "DATA_REFRESHED",
+    "REVIEW_COMPLETED",
 }
 
 
@@ -72,6 +74,7 @@ def record_event(
         "strategy": event.get("strategy"),
         "recommended_action": event.get("recommended_action"),
         "recommended_state": event.get("recommended_state"),
+        "management_fingerprint": event.get("management_fingerprint"),
         "operator_action": action,
         "operator_reason": event.get("operator_reason") or "",
         "followup_required": bool(event.get("followup_required")),
@@ -86,6 +89,74 @@ def record_event(
     events = [recorded] + (journal.get("events") or [])
     journal["events"] = events[:max_events]
     return save_journal(journal, path)
+
+
+def management_fingerprint(position: dict[str, Any]) -> str:
+    alternatives = position.get("management_alternatives") if isinstance(position.get("management_alternatives"), dict) else {}
+    recommendation = alternatives.get("recommendation") if isinstance(alternatives.get("recommendation"), dict) else {}
+    call = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
+    put = recommendation.get("put_contract") if isinstance(recommendation.get("put_contract"), dict) else {}
+    stable = {
+        "position_id": position.get("position_id"),
+        "ticker": position.get("ticker"),
+        "strategy": position.get("strategy"),
+        "position_size": position.get("position_size"),
+        "strike": position.get("strike"),
+        "expiration": position.get("expiration"),
+        "management_action": position.get("management_action"),
+        "exit_state": position.get("exit_state"),
+        "recommendation": recommendation.get("alternative_id"),
+        "contracts": recommendation.get("contracts"),
+        "call_strike": call.get("strike"),
+        "call_expiration": call.get("expiration"),
+        "put_strike": put.get("strike"),
+        "put_expiration": put.get("expiration"),
+    }
+    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def acknowledged_position_reviews(
+    management_payload: dict[str, Any],
+    *,
+    path: str | Path = DEFAULT_JOURNAL_PATH,
+) -> dict[str, dict[str, Any]]:
+    events = load_journal(path).get("events") or []
+    positions = management_payload.get("positions") if isinstance(management_payload.get("positions"), list) else []
+    acknowledged: dict[str, dict[str, Any]] = {}
+    review_actions = {
+        "REVIEW_COMPLETED",
+        "NO_ACTION_TAKEN",
+        "MANUAL_CLOSE_REVIEWED",
+        "MANUAL_ROLL_REVIEWED",
+        "ASSIGNMENT_REVIEWED",
+        "RISK_REDUCTION_REVIEWED",
+    }
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        position_id = str(position.get("position_id") or "")
+        if not position_id or str(position.get("management_action") or "").upper() == "REFRESH_DATA":
+            continue
+        current_fingerprint = management_fingerprint(position)
+        latest = next(
+            (
+                event for event in events
+                if isinstance(event, dict)
+                and str(event.get("position_id") or "") == position_id
+            ),
+            None,
+        )
+        if not latest:
+            continue
+        if (
+            str(latest.get("operator_action") or "").upper() in review_actions
+            and str(latest.get("recommended_action") or "") == str(position.get("management_action") or "")
+            and str(latest.get("recommended_state") or "") == str(position.get("exit_state") or "")
+            and str(latest.get("management_fingerprint") or "") == current_fingerprint
+        ):
+            acknowledged[position_id] = latest
+    return acknowledged
 
 
 def summary(path: str | Path = DEFAULT_JOURNAL_PATH) -> dict[str, Any]:

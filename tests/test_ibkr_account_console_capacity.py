@@ -370,6 +370,33 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("700 acciones permanecen sin esta estructura", html)
         self.assertIn("C65 / P62 · 28 ago 2026 · 3 contrato(s)", html)
 
+        position_card = account_console.render_position_management_card({
+            **item,
+            "position_id": "NFLX|STK|0|||",
+            "ticker": "NFLX",
+            "strategy": "LONG_STOCK",
+            "sec_type": "STK",
+            "position_size": 1000,
+            "management_action": "REVIEW_RISK",
+            "exit_state": "RISK_REVIEW",
+        })
+        self.assertIn("Marcar revisión completada", position_card)
+        self.assertIn('name="management_fingerprint"', position_card)
+        self.assertNotIn("strike 0.0", position_card)
+
+        refresh_card = account_console.render_position_management_card({
+            "position_id": "MSFT|OPT|P|335|20261016|",
+            "ticker": "MSFT",
+            "strategy": "CASH_SECURED_PUT",
+            "sec_type": "OPT",
+            "position_size": -1,
+            "management_action": "REFRESH_DATA",
+            "exit_state": "MONITOR",
+            "management_alternatives": {"alternatives": []},
+        })
+        self.assertIn("requiere datos, no sólo confirmación", refresh_card)
+        self.assertIn('href="#position-refresh"', refresh_card)
+
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_runtime = account_console.RUNTIME

@@ -433,6 +433,70 @@ class PositionManagementTests(unittest.TestCase):
         self.assertEqual(summary["by_operator_action"]["MANUAL_CLOSE_REVIEWED"], 1)
         self.assertFalse(summary["execution_authorized"])
 
+    def test_completed_review_stays_acknowledged_until_recommendation_changes(self):
+        position = {
+            "position_id": "NFLX|STK|0|||",
+            "ticker": "NFLX",
+            "strategy": "LONG_STOCK",
+            "position_size": 1000,
+            "management_action": "REVIEW_RISK",
+            "exit_state": "RISK_REVIEW",
+            "management_alternatives": {
+                "recommendation": {
+                    "alternative_id": "COLLAR",
+                    "contracts": 3,
+                    "contract": {"strike": 65, "expiration": "20260828"},
+                    "put_contract": {"strike": 62, "expiration": "20260828"},
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "journal.json"
+            position_management_journal.record_event(
+                {
+                    "position_id": position["position_id"],
+                    "ticker": "NFLX",
+                    "strategy": "LONG_STOCK",
+                    "recommended_action": "REVIEW_RISK",
+                    "recommended_state": "RISK_REVIEW",
+                    "management_fingerprint": position_management_journal.management_fingerprint(position),
+                    "operator_action": "REVIEW_COMPLETED",
+                },
+                path=path,
+            )
+            acknowledged = position_management_journal.acknowledged_position_reviews({"positions": [position]}, path=path)
+            changed = {**position, "management_alternatives": {"recommendation": {**position["management_alternatives"]["recommendation"], "contract": {"strike": 68, "expiration": "20260828"}}}}
+            changed_acknowledgements = position_management_journal.acknowledged_position_reviews({"positions": [changed]}, path=path)
+
+        self.assertIn(position["position_id"], acknowledged)
+        self.assertNotIn(position["position_id"], changed_acknowledgements)
+
+    def test_refresh_data_cannot_be_dismissed_as_reviewed(self):
+        position = {
+            "position_id": "MSFT|OPT|P|335|20261016|",
+            "ticker": "MSFT",
+            "strategy": "CASH_SECURED_PUT",
+            "management_action": "REFRESH_DATA",
+            "exit_state": "MONITOR",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "journal.json"
+            position_management_journal.record_event(
+                {
+                    "position_id": position["position_id"],
+                    "ticker": "MSFT",
+                    "strategy": "CASH_SECURED_PUT",
+                    "recommended_action": "REFRESH_DATA",
+                    "recommended_state": "MONITOR",
+                    "management_fingerprint": position_management_journal.management_fingerprint(position),
+                    "operator_action": "REVIEW_COMPLETED",
+                },
+                path=path,
+            )
+            acknowledged = position_management_journal.acknowledged_position_reviews({"positions": [position]}, path=path)
+
+        self.assertEqual(acknowledged, {})
+
     def test_saved_position_context_enriches_thesis_and_entry_credit(self):
         payload = position_management.build_active_position_management(
             {

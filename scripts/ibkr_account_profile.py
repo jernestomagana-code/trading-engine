@@ -2158,11 +2158,17 @@ def build_unified_pending_items(
         })
 
     positions = position_payload.get("positions") if isinstance(position_payload.get("positions"), list) else []
+    acknowledged_positions = shared_position_management_journal.acknowledged_position_reviews(
+        position_payload,
+        path=POSITION_MANAGEMENT_JOURNAL_PATH,
+    )
     for item in positions:
         if not isinstance(item, dict):
             continue
         action = str(item.get("management_action") or "").upper()
         if action in {"", "NO_ACTION_RECOMMENDED", "MONITOR"}:
+            continue
+        if str(item.get("position_id") or "") in acknowledged_positions:
             continue
         ticker = str(item.get("ticker") or "Posición")
         detail = "Revisar los datos y registrar la decisión manual."
@@ -4834,7 +4840,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
     )
 
 
-def render_position_management_card(item: dict[str, Any]) -> str:
+def render_position_management_card(item: dict[str, Any], acknowledged_event: dict[str, Any] | None = None) -> str:
     technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
     thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
     reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
@@ -4859,12 +4865,39 @@ def render_position_management_card(item: dict[str, Any]) -> str:
     ]
     primary_action = friendly_operator_state(item.get("management_action"))
     needs_attention = any(word in str(item.get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW"))
+    management_fingerprint = shared_position_management_journal.management_fingerprint(item)
+    action_upper = str(item.get("management_action") or "").upper()
+    if acknowledged_event:
+        review_control = '<div class="position-review-confirmed"><b>Revisión registrada</b><span>Volverá a pendientes sólo si cambia la posición o la recomendación.</span></div>'
+    elif action_upper == "REFRESH_DATA":
+        review_control = '<div class="position-data-required"><b>Esta pendiente requiere datos, no sólo confirmación.</b><span>Actualiza IBKR; si los datos quedan completos desaparecerá automáticamente.</span><a href="#position-refresh">Ir a actualizar datos</a></div>'
+    else:
+        review_control = """
+        <form method="post" action="/position-management-event" class="position-review-control" data-busy="Registrando revisión" data-busy-detail="Marca esta lectura como revisada. No ejecuta órdenes.">
+          <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="ticker" value="{ticker}">
+          <input type="hidden" name="strategy" value="{strategy}">
+          <input type="hidden" name="recommended_action" value="{action}">
+          <input type="hidden" name="recommended_state" value="{state}">
+          <input type="hidden" name="management_fingerprint" value="{fingerprint}">
+          <button name="operator_action" value="REVIEW_COMPLETED">Marcar revisión completada</button>
+          <small>No ejecuta la recomendación; sólo confirma que ya la evaluaste.</small>
+        </form>
+        """.format(
+            position_id=html_escape(item.get("position_id") or ""),
+            ticker=html_escape(item.get("ticker") or ""),
+            strategy=html_escape(item.get("strategy") or ""),
+            action=html_escape(item.get("management_action") or ""),
+            state=html_escape(item.get("exit_state") or ""),
+            fingerprint=html_escape(management_fingerprint),
+        )
     return """
     <article class="alert-card position-card">
       <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
       <div class="review-line">{reason}</div>
       <p class="position-summary">{contract}</p>
       {alternatives}
+      {review_control}
       <details class="position-details"{open_attr}>
         <summary>Ver detalles y registrar gestión</summary>
         <div class="position-detail-grid">
@@ -4900,6 +4933,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
           <input type="hidden" name="strategy" value="{strategy_raw}">
           <input type="hidden" name="recommended_action" value="{recommended_action}">
           <input type="hidden" name="recommended_state" value="{recommended_state}">
+          <input type="hidden" name="management_fingerprint" value="{management_fingerprint}">
           <label>Nota de revisión</label>
           <input name="operator_reason" placeholder="Qué revisaste y por qué">
           <div class="actions">
@@ -4923,6 +4957,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
         strategy_raw=html_escape(item.get("strategy") or ""),
         recommended_action=html_escape(item.get("management_action") or ""),
         recommended_state=html_escape(item.get("exit_state") or ""),
+        management_fingerprint=html_escape(management_fingerprint),
         thesis_text=html_escape(thesis.get("text") or ""),
         invalidation=html_escape(thesis.get("invalidation_level") or ""),
         target=html_escape(thesis.get("target") or ""),
@@ -4939,6 +4974,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
         market=html_escape(" | ".join(market_bits)),
         reason=html_escape(reason_text),
         alternatives=render_position_alternatives(item),
+        review_control=review_control,
         warnings=html_escape(", ".join(str(x) for x in warnings[:4]) or "none"),
         blockers=html_escape(", ".join(str(x) for x in blockers[:4]) or "none"),
     )
@@ -4962,9 +4998,17 @@ def render_active_positions_panel(
     top_step = battle_plan.get("top_step") if isinstance(battle_plan.get("top_step"), dict) else {}
     alias = active.get("account_alias") or ""
     disabled = "" if alias else " disabled"
+    acknowledged_positions = shared_position_management_journal.acknowledged_position_reviews(
+        payload,
+        path=POSITION_MANAGEMENT_JOURNAL_PATH,
+    )
     if positions:
         priority = lambda item: 0 if any(word in str((item or {}).get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW")) else 1
-        cards = "".join(render_position_management_card(item) for item in sorted(positions, key=priority)[:8] if isinstance(item, dict))
+        cards = "".join(
+            render_position_management_card(item, acknowledged_positions.get(str(item.get("position_id") or "")))
+            for item in sorted(positions, key=priority)[:8]
+            if isinstance(item, dict)
+        )
     else:
         cards = """
         <div class="tiles">
@@ -5010,7 +5054,7 @@ def render_active_positions_panel(
       </div>
       <div class="alert-grid">{cards}</div>
       {alerts_html}
-      <form method="post" action="/bridge" class="hero-actions" data-busy="Refrescando posiciones IBKR" data-busy-detail="Lee broker, posiciones, opciones y publica snapshot. No ejecuta ordenes.">
+      <form id="position-refresh" method="post" action="/bridge" class="hero-actions" data-busy="Refrescando posiciones IBKR" data-busy-detail="Lee broker, posiciones, opciones y publica snapshot. No ejecuta ordenes.">
         <input name="alias" value="{alias}" type="hidden">
         <button{disabled}>Refresh posiciones IBKR</button>
         <span>Úsalo cuando la consola indique datos desactualizados o incompletos.</span>
@@ -6838,6 +6882,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-alternatives-more > summary {{ cursor:pointer; color:var(--accent-strong); font-size:.8rem; font-weight:850; }}
           .position-alternatives-more .position-alternative {{ margin-top:7px; }}
           .position-alternatives-empty {{ margin-top:10px; color:var(--muted); font-size:.82rem; }}
+          .position-review-control,.position-review-confirmed,.position-data-required {{ display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; margin-top:10px; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; }}
+          .position-review-control small,.position-review-confirmed span,.position-data-required span {{ flex:1 1 220px; margin:0; font-size:.74rem; }}
+          .position-review-confirmed {{ border-color:#86c99d; background:#f0fdf4; color:#166534; }}
+          .position-data-required {{ border-color:#f2c47c; background:#fff8e8; }}
+          .position-data-required a {{ color:#174ea6; font-weight:900; }}
           .operator-alerts-panel {{ border-left:6px solid #d97706; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
@@ -7833,6 +7882,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                             "strategy": (params.get("strategy") or [""])[0],
                             "recommended_action": (params.get("recommended_action") or [""])[0],
                             "recommended_state": (params.get("recommended_state") or [""])[0],
+                            "management_fingerprint": (params.get("management_fingerprint") or [""])[0],
                             "operator_action": operator_action,
                             "operator_reason": (params.get("operator_reason") or [""])[0],
                             "source": "stock_ultimus_console",
