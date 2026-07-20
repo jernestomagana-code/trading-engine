@@ -23,6 +23,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import coberturas_engine
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 INGEST_KEYCHAIN_SERVICE = "stock-ultimus-snapshot-ingest"
 READ_KEYCHAIN_SERVICE = "stock-ultimus-read-access-token"
@@ -265,6 +269,8 @@ def main() -> int:
     for index in range(max(1, args.max_runs)):
         print(f"Run {index + 1}/{args.max_runs}: refreshing IBKR snapshot...")
         run = run_bridge(args, ingest_token)
+        if args.coberturas_rsp_weekly and run.get("ok"):
+            run["rsp_reconciliation"] = coberturas_engine.reconcile_broker_position(ROOT / "runtime")
         if args.notify and run.get("ok") and read_token:
             suffix = "?force=true" if args.force_notify else ""
             notify = post_json(args.public_base_url.rstrip("/") + "/v31_monitor_notify" + suffix, read_token, args.read_timeout)

@@ -7,6 +7,77 @@ import coberturas_engine as ce
 
 
 class CoberturasEngineTests(unittest.TestCase):
+    def test_dedicated_rsp_positions_detect_covered_call_without_duplicates(self):
+        runtime_data = {
+            ce.RSP_POSITIONS_PATH: {
+                "account_alias": "retiro",
+                "positions": [
+                    {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "avg_cost": 213.29},
+                    {"ticker": "RSP", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 215, "expiration": "20260731"},
+                ],
+            },
+            "broker_control_tower_latest.json": {
+                "positions": [{"ticker": "RSP", "security_type": "STK", "quantity": 100}],
+            },
+        }
+
+        position = ce.extract_position_state(runtime_data, {"position_mode": "AUTO"})
+
+        self.assertEqual(position["state"], "COVERED_CALL_OPEN")
+        self.assertEqual(position["shares"], 100)
+        self.assertEqual(position["short_call_count"], 1)
+
+    def test_broker_reconciliation_creates_one_automatic_open_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            journal = runtime / "journal.json"
+            state = runtime / "sync.json"
+            (runtime / ce.RSP_POSITIONS_PATH).write_text(json.dumps({
+                "account_alias": "retiro",
+                "positions": [
+                    {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "avg_cost": 213.29},
+                    {"ticker": "RSP", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 215, "expiration": "20260731"},
+                ],
+            }), encoding="utf-8")
+            (runtime / ce.RSP_CHAIN_PATH).write_text(json.dumps({
+                "option_rows": [{"ticker": "RSP", "strategy": "COVERED_CALL", "right": "C", "strike": 215, "expiration": "20260731"}],
+            }), encoding="utf-8")
+
+            first = ce.reconcile_broker_position(runtime, journal, state)
+            second = ce.reconcile_broker_position(runtime, journal, state)
+            entries = json.loads(journal.read_text())
+
+        self.assertEqual(first["action"], "OPEN_POSITION_RECORDED")
+        self.assertEqual(second["action"], "NO_CHANGE")
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["strategy"], "BUY_100_SELL_CALL")
+        self.assertTrue(entries[0]["matched_motor_candidate"])
+        self.assertEqual(entries[0]["source"], "IBKR_AUTO_RECONCILIATION")
+
+    def test_broker_reconciliation_detects_close_without_manual_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            journal = runtime / "journal.json"
+            state = runtime / "sync.json"
+            positions_path = runtime / ce.RSP_POSITIONS_PATH
+            positions_path.write_text(json.dumps({
+                "account_alias": "retiro",
+                "positions": [
+                    {"ticker": "RSP", "sec_type": "STK", "position_size": 100},
+                    {"ticker": "RSP", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 215, "expiration": "20260731"},
+                ],
+            }), encoding="utf-8")
+            ce.reconcile_broker_position(runtime, journal, state)
+            positions_path.write_text(json.dumps({"account_alias": "retiro", "positions": []}), encoding="utf-8")
+
+            closed = ce.reconcile_broker_position(runtime, journal, state)
+            entries = json.loads(journal.read_text())
+
+        self.assertEqual(closed["action"], "CLOSE_DETECTED")
+        self.assertEqual(entries[0]["status"], "CLOSED_DETECTED")
+        self.assertEqual(closed["journal"]["pending_outcome_count"], 1)
     def test_rsp_capacity_prefers_dedicated_retirement_account_file(self):
         self.assertEqual(ce.RSP_ACCOUNT_ALIAS, "retiro")
         self.assertEqual(ce.RSP_CAPACITY_PATH, "coberturas_rsp_account_capacity_latest.json")

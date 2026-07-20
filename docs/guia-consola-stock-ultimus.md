@@ -251,6 +251,8 @@ RSP forma parte del flujo principal, inmediatamente después de Posiciones. El p
 
 La estrategia RSP tiene una asignación de cuenta independiente: **RSP → retiro**. La cuenta activa general puede seguir siendo otra. Tanto **Apertura diaria** como **Actualizar sólo RSP** consultan posiciones, capacidad, cadena y margen de RSP usando `retiro`, sin cambiar la selección general del operador.
 
+La gestión y la bitácora se reconcilian automáticamente con IBKR. Cuando aparece una posición RSP en `retiro`, la consola identifica acciones, put/call, cantidad, strike y vencimiento; crea el registro abierto y cambia el motor de búsqueda de entrada a gestión. Un cambio de contrato se registra como rolleo detectado y la desaparición de la posición como cierre detectado. Las notas manuales son opcionales y no son necesarias para que el motor gestione la posición.
+
 - **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
 - **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
 

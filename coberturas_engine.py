@@ -24,6 +24,8 @@ MAX_CONTRACTS = 1
 SHARES_PER_LOT = 100
 RSP_CHAIN_PATH = "coberturas_rsp_chain_coverage_latest.json"
 RSP_CAPACITY_PATH = "coberturas_rsp_account_capacity_latest.json"
+RSP_POSITIONS_PATH = "coberturas_rsp_positions_latest.json"
+RSP_RECONCILIATION_PATH = "coberturas_rsp_reconciliation_latest.json"
 RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
 RSP_CHAIN_MAX_AGE_HOURS = 24.0
 
@@ -470,9 +472,13 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
             "open_rsp_options": [],
         }
 
+    dedicated = runtime_data.get(RSP_POSITIONS_PATH)
+    position_sources = {RSP_POSITIONS_PATH: dedicated} if isinstance(dedicated, dict) else runtime_data
     shares = 0.0
+    stock_cost_total = 0.0
+    broker_spot = None
     open_options: list[dict[str, Any]] = []
-    for file_name, payload in runtime_data.items():
+    for file_name, payload in position_sources.items():
         # What-if margin previews describe hypothetical orders, not broker
         # positions.  Treating them as open options makes the operator surface
         # report exposure that was never executed.
@@ -482,21 +488,36 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
             if ticker != TICKER:
                 continue
-            sec_type = safe_upper(item.get("type") or item.get("secType") or item.get("security_type"), "")
+            sec_type = safe_upper(item.get("type") or item.get("secType") or item.get("sec_type") or item.get("security_type"), "")
             klass = safe_upper(item.get("class") or item.get("position_class") or item.get("strategy"), "")
-            qty = safe_float(item.get("size") or item.get("position") or item.get("quantity") or item.get("qty"), None)
+            qty = safe_float(item.get("size") or item.get("position") or item.get("position_size") or item.get("quantity") or item.get("qty"), None)
             if sec_type in {"STK", "STOCK", "ETF"} and qty is not None:
                 shares += qty
-            looks_like_position_option = sec_type in {"OPT", "OPTION"} or (qty is not None and ("PUT" in klass or "CALL" in klass))
+                avg_cost = safe_float(item.get("avg_cost") or item.get("average_cost") or item.get("avgCost"), None)
+                if avg_cost is not None:
+                    stock_cost_total += avg_cost * qty
+                market_price = safe_float(item.get("market_price") or item.get("marketPrice"), None)
+                if market_price is not None and market_price > 0:
+                    broker_spot = market_price
+            looks_like_position_option = sec_type in {"OPT", "OPTION"} or (
+                sec_type not in {"STK", "STOCK", "ETF"}
+                and qty is not None
+                and ("PUT" in klass or "CALL" in klass)
+            )
             is_preview = item.get("what_if") is True or safe_upper(item.get("status"), "").startswith("MARGIN_PREVIEW")
             if looks_like_position_option and not is_preview:
                 option = dict(item)
                 option["source_file"] = file_name
+                option["position_quantity"] = qty
                 open_options.append(option)
 
-    if any("SHORT_PUT" in safe_upper(item.get("class") or item.get("strategy"), "") for item in open_options):
+    short_puts = [item for item in open_options if (safe_upper(item.get("right"), "") == "P" or "SHORT_PUT" in safe_upper(item.get("class") or item.get("position_class") or item.get("strategy"), "")) and (safe_float(item.get("position_quantity"), 0) or 0) < 0]
+    short_calls = [item for item in open_options if (safe_upper(item.get("right"), "") == "C" or "SHORT_CALL" in safe_upper(item.get("class") or item.get("position_class") or item.get("strategy"), "")) and (safe_float(item.get("position_quantity"), 0) or 0) < 0]
+    if short_puts:
         state = "SHORT_PUT_OPEN"
-    elif any("SHORT_CALL" in safe_upper(item.get("class") or item.get("strategy"), "") for item in open_options):
+    elif short_calls and shares >= 100:
+        state = "COVERED_CALL_OPEN"
+    elif short_calls:
         state = "SHORT_CALL_OPEN"
     elif shares >= 100:
         state = "WITH_SHARES"
@@ -509,8 +530,59 @@ def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[st
         "state": state,
         "source": "runtime_scan" if runtime_data else "missing_runtime",
         "shares": shares,
+        "share_average_cost": round(stock_cost_total / shares, 4) if shares else None,
+        "broker_spot": broker_spot,
         "open_rsp_options": open_options[:10],
+        "short_put_count": len(short_puts),
+        "short_call_count": len(short_calls),
     }
+
+
+def enrich_open_position_market(position: dict[str, Any], option_rows: list[dict[str, Any]], spot: float | None) -> dict[str, Any]:
+    enriched = dict(position)
+    enriched_options = []
+    management_metrics = []
+    for raw in position.get("open_rsp_options") or []:
+        option = dict(raw)
+        right = safe_upper(option.get("right"), "")
+        strike = safe_float(option.get("strike"), None)
+        expiration = str(option.get("expiration") or "")
+        match = next((row for row in option_rows if candidate_side(row) == ("CALL" if right == "C" else "PUT" if right == "P" else "") and safe_float(row.get("strike"), None) == strike and str(row.get("expiration") or "") == expiration), None)
+        current_mid = row_mid(match or {})
+        avg_cost_total = safe_float(option.get("avg_cost") or option.get("average_cost") or option.get("avgCost"), None)
+        entry_price = round(avg_cost_total / SHARES_PER_LOT, 4) if avg_cost_total is not None and avg_cost_total > 20 else avg_cost_total
+        qty = safe_float(option.get("position_quantity") or option.get("position_size") or option.get("quantity"), 0) or 0
+        capture_pct = None
+        unrealized_estimate = None
+        if qty < 0 and entry_price and current_mid is not None:
+            capture_pct = round((entry_price - current_mid) / entry_price * 100, 2)
+            unrealized_estimate = round((entry_price - current_mid) * SHARES_PER_LOT * abs(qty), 2)
+        option.update({
+            "entry_price_per_share": entry_price,
+            "current_mid": current_mid,
+            "premium_capture_pct": capture_pct,
+            "unrealized_pnl_estimate": unrealized_estimate,
+            "current_dte": safe_int((match or {}).get("dte"), -1),
+            "current_delta": safe_float((match or {}).get("delta"), None),
+            "underlying_spot": spot,
+        })
+        enriched_options.append(option)
+        management_metrics.append({
+            "right": right,
+            "strike": strike,
+            "expiration": expiration,
+            "quantity": qty,
+            "entry_price_per_share": entry_price,
+            "current_mid": current_mid,
+            "premium_capture_pct": capture_pct,
+            "unrealized_pnl_estimate": unrealized_estimate,
+            "dte": safe_int((match or {}).get("dte"), -1),
+            "delta": safe_float((match or {}).get("delta"), None),
+            "spot": spot,
+        })
+    enriched["open_rsp_options"] = enriched_options
+    enriched["management_metrics"] = management_metrics
+    return enriched
 
 
 def extract_account_capacity(runtime_data: dict[str, Any]) -> dict[str, Any]:
@@ -544,7 +616,7 @@ def strategy_for_position(position_state: str) -> tuple[str, str]:
         return "SELL_PUT", "Sin acciones RSP: buscar venta de put asegurada por efectivo/margen."
     if position_state == "WITH_SHARES":
         return "SELL_COVERED_CALL", "Con 100+ acciones RSP: buscar covered call."
-    if position_state in {"SHORT_PUT_OPEN", "SHORT_CALL_OPEN"}:
+    if position_state in {"SHORT_PUT_OPEN", "SHORT_CALL_OPEN", "COVERED_CALL_OPEN"}:
         return "MANAGE_OPEN_POSITION", "Hay opcion RSP abierta: revisar cierre, rolleo o asignacion antes de abrir otra."
     return "WAIT_DATA", "Falta confirmar si tienes acciones u opcion RSP abierta."
 
@@ -884,11 +956,13 @@ def exit_rules() -> dict[str, Any]:
 def management_plan(position: dict[str, Any], scenarios: dict[str, Any], manual_context: dict[str, Any], spot: float | None) -> dict[str, Any]:
     state = safe_upper(position.get("state"), "UNKNOWN")
     open_options = position.get("open_rsp_options") if isinstance(position.get("open_rsp_options"), list) else []
+    metrics = position.get("management_metrics") if isinstance(position.get("management_metrics"), list) else []
     plan = {
         "status": "NO_OPEN_RSP_POSITION",
         "primary_action": "Evaluate new entry only if data quality and manual review are acceptable.",
         "rules": exit_rules(),
         "open_position_count": len(open_options),
+        "metrics": metrics,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -902,16 +976,28 @@ def management_plan(position: dict[str, Any], scenarios: dict[str, Any], manual_
                 "If DTE <=3 and ITM, decide assignment vs roll before expiration day.",
             ],
         })
-    elif state == "SHORT_CALL_OPEN":
+    elif state in {"SHORT_CALL_OPEN", "COVERED_CALL_OPEN"}:
         plan.update({
-            "status": "MANAGE_SHORT_CALL",
-            "primary_action": "Do not sell another call; manage covered call or short call exposure first.",
+            "status": "MANAGE_COVERED_CALL" if state == "COVERED_CALL_OPEN" else "MANAGE_SHORT_CALL",
+            "primary_action": "Manage the existing covered call; do not open another RSP call." if state == "COVERED_CALL_OPEN" else "Do not sell another call; manage short call exposure first.",
             "decision_tree": [
                 "If call is OTM and profit captured >=50%, consider closing.",
                 "If RSP approaches strike and assignment is acceptable, let it work.",
                 "If upside thesis remains strong, roll only for net credit and better strike.",
             ],
         })
+        call_metric = next((item for item in metrics if item.get("right") == "C"), {})
+        capture = safe_float(call_metric.get("premium_capture_pct"), None)
+        dte = safe_int(call_metric.get("dte"), -1)
+        strike = safe_float(call_metric.get("strike"), None)
+        if capture is not None and capture >= 50:
+            plan["primary_action"] = "La call alcanzó al menos 50% de captura estimada; revisar cierre manual antes de abrir otra cobertura."
+        elif strike is not None and spot is not None and spot >= strike:
+            plan["primary_action"] = "RSP está en o sobre el strike; revisar asignación o rolleo según el plan."
+        elif 0 <= dte <= 3:
+            plan["primary_action"] = "Quedan 3 días o menos; decidir asignación, cierre o rolleo antes del vencimiento."
+        else:
+            plan["primary_action"] = "Covered call detectado y sincronizado; continuar monitoreo de prima, strike y vencimiento."
     elif state == "WITH_SHARES":
         plan.update({
             "status": "READY_FOR_COVERED_CALL_MANAGEMENT",
@@ -929,6 +1015,8 @@ def load_learning_journal(path: Path | None = None) -> dict[str, Any]:
     path = path or JOURNAL_PATH
     entries = load_json_list(path)
     closed = [entry for entry in entries if safe_upper(entry.get("status"), "") in {"CLOSED", "EXPIRED", "ASSIGNED", "ROLLED"}]
+    open_entries = [entry for entry in entries if safe_upper(entry.get("status"), "") == "OPEN"]
+    pending_outcomes = [entry for entry in entries if safe_upper(entry.get("status"), "") in {"CLOSED_DETECTED", "ROLLED_DETECTED"}]
     wins = [entry for entry in closed if safe_float(entry.get("realized_pnl"), 0) and (safe_float(entry.get("realized_pnl"), 0) or 0) > 0]
     total_pnl = round(sum(safe_float(entry.get("realized_pnl"), 0) or 0 for entry in closed), 2)
     by_strategy: dict[str, dict[str, Any]] = {}
@@ -945,6 +1033,9 @@ def load_learning_journal(path: Path | None = None) -> dict[str, Any]:
     return {
         "journal_path": str(path),
         "entry_count": len(entries),
+        "open_count": len(open_entries),
+        "automatic_entry_count": sum(1 for entry in entries if entry.get("source") == "IBKR_AUTO_RECONCILIATION"),
+        "pending_outcome_count": len(pending_outcomes),
         "closed_count": len(closed),
         "win_rate_pct": round(len(wins) / len(closed) * 100, 2) if closed else None,
         "realized_pnl": total_pnl,
@@ -982,6 +1073,141 @@ def record_journal_entry(payload: dict[str, Any], path: Path | None = None) -> d
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+def _position_fingerprint(position: dict[str, Any], account_alias: str) -> str:
+    options = []
+    for item in position.get("open_rsp_options") or []:
+        sec_type = safe_upper(item.get("sec_type") or item.get("security_type") or item.get("type"), "")
+        if sec_type in {"STK", "STOCK", "ETF"}:
+            continue
+        qty = safe_float(item.get("position_quantity") or item.get("position_size") or item.get("quantity"), None)
+        if qty is None:
+            continue
+        options.append({
+            "right": safe_upper(item.get("right"), ""),
+            "strike": safe_float(item.get("strike"), None),
+            "expiration": str(item.get("expiration") or item.get("expiry") or ""),
+            "quantity": qty,
+        })
+    payload = {
+        "account_alias": str(account_alias or ""),
+        "shares": safe_float(position.get("shares"), 0) or 0,
+        "options": sorted(options, key=lambda item: (item["right"], str(item["expiration"]), item["strike"] or 0, item["quantity"])),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _position_matches_current_chain(position: dict[str, Any], runtime_data: dict[str, Any]) -> bool:
+    chain = runtime_data.get(RSP_CHAIN_PATH) if isinstance(runtime_data.get(RSP_CHAIN_PATH), dict) else {}
+    rows = chain.get("option_rows") if isinstance(chain.get("option_rows"), list) else []
+    for option in position.get("open_rsp_options") or []:
+        right = safe_upper(option.get("right"), "")
+        strike = safe_float(option.get("strike"), None)
+        expiration = str(option.get("expiration") or "")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if candidate_side(row) == ("CALL" if right == "C" else "PUT" if right == "P" else "") and safe_float(row.get("strike"), None) == strike and str(row.get("expiration") or "") == expiration:
+                return True
+    return False
+
+
+def reconcile_broker_position(
+    runtime_dir: Path = RUNTIME,
+    journal_path: Path | None = None,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    journal_path = journal_path or JOURNAL_PATH
+    state_path = state_path or (runtime_dir / RSP_RECONCILIATION_PATH)
+    runtime_data = load_runtime_jsons(runtime_dir)
+    snapshot = runtime_data.get(RSP_POSITIONS_PATH) if isinstance(runtime_data.get(RSP_POSITIONS_PATH), dict) else {}
+    account_alias = str(snapshot.get("account_alias") or snapshot.get("account_scope") or RSP_ACCOUNT_ALIAS)
+    if not snapshot:
+        return {
+            "ok": False,
+            "status": "WAITING_FOR_RSP_POSITION_SNAPSHOT",
+            "account_alias": RSP_ACCOUNT_ALIAS,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+    position = extract_position_state({RSP_POSITIONS_PATH: snapshot}, {"position_mode": "AUTO"})
+    state = safe_upper(position.get("state"), "UNKNOWN")
+    active = state not in {"NO_SHARES", "UNKNOWN"}
+    fingerprint = _position_fingerprint(position, account_alias) if active else ""
+    entries = load_json_list(journal_path)
+    previous = next(
+        (
+            entry for entry in reversed(entries)
+            if entry.get("source") == "IBKR_AUTO_RECONCILIATION" and safe_upper(entry.get("status"), "") == "OPEN"
+        ),
+        None,
+    )
+    changed = False
+    action = "NO_CHANGE"
+
+    previous_fingerprint = ""
+    if previous:
+        previous_position = previous.get("broker_position") if isinstance(previous.get("broker_position"), dict) else {}
+        previous_fingerprint = _position_fingerprint(previous_position, str(previous.get("account_alias") or account_alias)) if previous_position else str(previous.get("broker_fingerprint") or "")
+
+    if active and (not previous or previous_fingerprint != fingerprint):
+        if previous:
+            previous["status"] = "ROLLED_DETECTED"
+            previous["closed_detected_at"] = now_iso()
+            changed = True
+        strategy = "BUY_100_SELL_CALL" if state in {"COVERED_CALL_OPEN", "SHORT_CALL_OPEN", "WITH_SHARES"} else "SELL_PUT" if state == "SHORT_PUT_OPEN" else "MANAGE_OPEN_POSITION"
+        entry = {
+            "journal_entry_version": "coberturas_rsp_journal_entry_v2",
+            "journal_id": "RSP-AUTO-{}".format(datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")),
+            "recorded_at": now_iso(),
+            "ticker": TICKER,
+            "account_alias": account_alias,
+            "strategy": strategy,
+            "status": "OPEN",
+            "decision": "BROKER_POSITION_DETECTED",
+            "source": "IBKR_AUTO_RECONCILIATION",
+            "broker_fingerprint": fingerprint,
+            "matched_motor_candidate": _position_matches_current_chain(position, runtime_data),
+            "broker_position": position,
+            "realized_pnl": None,
+            "manual_review_required": True,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        entries.append(entry)
+        changed = True
+        action = "OPEN_POSITION_RECORDED" if not previous else "ROLLOVER_RECORDED"
+    elif not active and previous:
+        previous["status"] = "CLOSED_DETECTED"
+        previous["closed_detected_at"] = now_iso()
+        changed = True
+        action = "CLOSE_DETECTED"
+
+    if changed:
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        journal_path.write_text(json.dumps(entries[-500:], indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+
+    result = {
+        "reconciliation_version": "coberturas_rsp_reconciliation_v1",
+        "generated_at": now_iso(),
+        "ok": True,
+        "status": "SYNCHRONIZED",
+        "action": action,
+        "account_alias": account_alias,
+        "position_state": state,
+        "shares": position.get("shares"),
+        "open_option_count": len(position.get("open_rsp_options") or []),
+        "broker_fingerprint": fingerprint,
+        "journal_changed": changed,
+        "journal": load_learning_journal(journal_path),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    return result
 
 
 def strategy_operating_plan(
@@ -1439,6 +1665,8 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         for row in option_rows
         if candidate_side(row) == "CALL"
     ]
+    management_spot = safe_float(position.get("broker_spot"), spot)
+    position = enrich_open_position_market(position, scored_put_candidates + scored_call_candidates, management_spot)
 
     def eligible_current_candidate(row: dict[str, Any]) -> bool:
         return bool(
@@ -1482,6 +1710,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     ):
         account_capacity = extract_account_capacity(runtime_data)
     margin_preview = load_json(runtime_dir / "coberturas_rsp_margin_preview_latest.json")
+    reconciliation = load_json(runtime_dir / RSP_RECONCILIATION_PATH)
     scenarios = apply_probability_and_gamma(
         apply_margin_previews(
             scenario_summary(put_candidates, call_candidates, spot),
@@ -1510,7 +1739,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
 
     strategy_recommendation = build_strategy_recommendation(scenarios, blockers)
 
-    operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, manual_context, spot)
+    operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, manual_context, management_spot)
 
     if mode == "SELL_PUT" and put_candidates and call_candidates:
         recommendation_status = str(strategy_recommendation.get("status") or "")
@@ -1563,6 +1792,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "strategy_operating_plan": operating_plan,
         "learning_journal": operating_plan.get("learning_journal"),
         "margin_preview": margin_preview,
+        "broker_reconciliation": reconciliation,
         "all_rsp_option_rows_found": len(option_rows),
         "diagnostic_candidate_count": len(diagnostic_candidates),
         "diagnostic_candidates": diagnostic_candidates[:10],

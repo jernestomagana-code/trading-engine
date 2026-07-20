@@ -2841,6 +2841,29 @@ def send_positions():
         )
 
 
+def write_rsp_positions_snapshot():
+    if not COBERTURAS_RSP_WEEKLY:
+        return None
+    rows = _bridge_cycle_position_rows()
+    payload = {
+        "snapshot_version": "coberturas_rsp_positions_v1",
+        "generated_at": now_iso(),
+        "ticker": "RSP",
+        "account_alias": BRIDGE_ACCOUNT_ALIAS,
+        "account_scope": BRIDGE_ACCOUNT_SCOPE,
+        "positions": rows,
+        "position_count": len(rows),
+        "sensitive_identifiers_excluded": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    path = _v283_Path("runtime") / "coberturas_rsp_positions_latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_v283_json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+    print(f"RSP POSITIONS SNAPSHOT | rows:{len(rows)} | account:{BRIDGE_ACCOUNT_ALIAS} | path:{path}")
+    return payload
+
+
 # ============================================================
 # OPTIONS INTELLIGENCE
 # ============================================================
@@ -5247,6 +5270,7 @@ def run_bridge_cycle():
 
     if ENABLE_PORTFOLIO_COMMANDER:
         send_positions()
+        write_rsp_positions_snapshot()
 
     if ENABLE_OPTIONS_INTELLIGENCE:
         send_options_intelligence()

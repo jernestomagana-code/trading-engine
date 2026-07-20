@@ -2087,6 +2087,9 @@ FRIENDLY_OPERATOR_STATES = {
     "WAIT_ACCOUNT_CAPACITY": "Capacidad de cuenta insuficiente",
     "WAIT_MARGIN_PREVIEW": "Margen IBKR pendiente",
     "WAIT_CAPITAL_DATA": "Datos de capital pendientes",
+    "COVERED_CALL_OPEN": "Covered call abierto",
+    "SHORT_CALL_OPEN": "Call vendida abierta",
+    "SHORT_PUT_OPEN": "Put vendida abierta",
     "READY_FOR_MANUAL_REVIEW": "Listo para revisión manual",
     "ACTION_REQUIRED": "Atención requerida",
     "REVIEW_REQUIRED": "Revisión necesaria",
@@ -2176,7 +2179,11 @@ def build_unified_pending_items(
     rsp_ibkr = rsp_payload.get("ibkr") if isinstance(rsp_payload.get("ibkr"), dict) else {}
     rsp_blockers = rsp_payload.get("blockers") if isinstance(rsp_payload.get("blockers"), list) else []
     if rsp_blockers or not rsp_ibkr.get("chain_has_rsp"):
-        if "RSP_FRESH_CHAIN_MISSING" in rsp_blockers:
+        rsp_title = "Coberturas RSP necesita actualización"
+        if "OPEN_RSP_OPTION_REQUIRES_MANAGEMENT" in rsp_blockers:
+            rsp_title = "Gestionar covered call RSP abierto"
+            rsp_detail = str((rsp_payload.get("position_manager") or {}).get("primary_action") or "Monitorear prima, strike y vencimiento.")
+        elif "RSP_FRESH_CHAIN_MISSING" in rsp_blockers:
             rsp_detail = "La lectura está guardada, pero falta una cadena IBKR RSP fresca de 7 a 14 DTE."
         elif "RSP_7_14_DTE_CANDIDATES_MISSING" in rsp_blockers:
             rsp_detail = "La cadena no contiene candidatos válidos en la ventana de 7 a 14 DTE."
@@ -2187,7 +2194,7 @@ def build_unified_pending_items(
         items.append({
             "level": "watch",
             "area": "RSP",
-            "title": "Coberturas RSP necesita actualización",
+            "title": rsp_title,
             "detail": rsp_detail,
             "href": "#coberturas-rsp",
         })
@@ -3114,10 +3121,13 @@ def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = Fa
     plan = payload.get("strategy_operating_plan") if isinstance(payload.get("strategy_operating_plan"), dict) else {}
     manager = payload.get("position_manager") if isinstance(payload.get("position_manager"), dict) else {}
     journal = payload.get("learning_journal") if isinstance(payload.get("learning_journal"), dict) else {}
+    reconciliation = payload.get("broker_reconciliation") if isinstance(payload.get("broker_reconciliation"), dict) else {}
     scenarios = payload.get("strategy_scenarios") if isinstance(payload.get("strategy_scenarios"), dict) else {}
     sell_ev = ((scenarios.get("sell_put") or {}).get("expected_value") if isinstance(scenarios.get("sell_put"), dict) else {}) or {}
     buy_ev = ((scenarios.get("buy_100_sell_call") or {}).get("expected_value") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {}) or {}
     exit_rules = payload.get("exit_rules") if isinstance(payload.get("exit_rules"), dict) else {}
+    management_metrics = manager.get("metrics") if isinstance(manager.get("metrics"), list) else []
+    primary_metric = management_metrics[0] if management_metrics and isinstance(management_metrics[0], dict) else {}
     rule_items = []
     for item in (exit_rules.get("global") or [])[:2]:
         rule_items.append("<li>{}</li>".format(html_escape(item)))
@@ -3126,6 +3136,12 @@ def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = Fa
         <div class="scenario-card">
           <div class="scenario-head"><b>Gestion</b>{status}</div>
           <p class="muted">{action}</p>
+          <div class="scenario-lines">
+            <span>Strike / vencimiento <strong>{managed_contract}</strong></span>
+            <span>Prima entrada / actual <strong>{managed_premium}</strong></span>
+            <span>Captura estimada <strong>{managed_capture}</strong></span>
+            <span>P/L opción estimado <strong>{managed_pnl}</strong></span>
+          </div>
         </div>
         <div class="scenario-card">
           <div class="scenario-head"><b>Valor esperado</b></div>
@@ -3138,6 +3154,8 @@ def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = Fa
           <div class="scenario-head"><b>Bitacora</b></div>
           <div class="scenario-lines">
             <span>Cerradas <strong>{closed}</strong></span>
+            <span>Abiertas detectadas <strong>{open_count}</strong></span>
+            <span>Registros automáticos <strong>{automatic_count}</strong></span>
             <span>Win rate <strong>{win_rate}</strong></span>
           </div>
           <p class="muted">{learning}</p>
@@ -3147,9 +3165,15 @@ def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = Fa
     """.format(
         status=coberturas_badge(manager.get("status") or "UNKNOWN"),
         action=html_escape(manager.get("primary_action") or "Pendiente"),
+        managed_contract=html_escape("{} / {}".format(coberturas_plain(primary_metric.get("strike")), coberturas_plain(primary_metric.get("expiration")))),
+        managed_premium=html_escape("{} / {}".format(coberturas_money(primary_metric.get("entry_price_per_share")), coberturas_money(primary_metric.get("current_mid")))),
+        managed_capture=html_escape((str(primary_metric.get("premium_capture_pct")) + "%") if primary_metric.get("premium_capture_pct") is not None else "pendiente"),
+        managed_pnl=html_escape(coberturas_money(primary_metric.get("unrealized_pnl_estimate"))),
         sell_ev=html_escape(coberturas_money(sell_ev.get("estimated_value"))),
         buy_ev=html_escape(coberturas_money(buy_ev.get("estimated_value"))),
         closed=html_escape(journal.get("closed_count")),
+        open_count=html_escape(journal.get("open_count", 0)),
+        automatic_count=html_escape(journal.get("automatic_entry_count", 0)),
         win_rate=html_escape((str(journal.get("win_rate_pct")) + "%") if journal.get("win_rate_pct") is not None else "pendiente"),
         learning=html_escape(journal.get("next_learning_goal") or "Registrar operaciones para calibrar."),
         rules="".join(rule_items) or "<li>Sin reglas cargadas.</li>",
@@ -3378,8 +3402,11 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     }
     blocker_text = " ".join(blocker_messages.get(str(item), friendly_operator_state(item)) for item in blockers) if blockers else "Sin bloqueos de datos críticos."
     gamma_blob = coberturas_form_value(context, "gamma_blob") or coberturas_form_value(context, "gamma_notes")
+    managing_position = str(position.get("state") or "") in {"COVERED_CALL_OPEN", "SHORT_CALL_OPEN", "SHORT_PUT_OPEN"}
     scenarios_html = (
-        render_coberturas_scenarios(payload, compact=True)
+        '<div class="notice"><b>Posición detectada automáticamente.</b> El motor dejó de buscar una entrada nueva y está aplicando el plan de gestión del contrato abierto.</div>'
+        if managing_position
+        else render_coberturas_scenarios(payload, compact=True)
         if payload.get("candidate_count")
         else '<div class="empty-state"><strong>Sin comparación operable</strong><span>Primero se necesita una cadena RSP fresca con candidatos de 7 a 14 DTE.</span></div>'
     )
@@ -3387,11 +3414,15 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     ibkr = payload.get("ibkr") if isinstance(payload.get("ibkr"), dict) else {}
     context_age = friendly_age(context.get("updated_at") or context.get("generated_at"))
     chain_age = friendly_age(ibkr.get("chain_coverage_generated_at"))
-    data_ready = bool(not blockers and ibkr.get("chain_has_rsp") and payload.get("candidate_count"))
+    data_ready = bool(not blockers and ibkr.get("chain_has_rsp") and (payload.get("candidate_count") or managing_position))
     recommendation = payload.get("strategy_recommendation") if isinstance(payload.get("strategy_recommendation"), dict) else {}
     recommendation_status = str(recommendation.get("status") or "")
     ready = bool(data_ready and recommendation_status not in {"WAIT_ACCOUNT_CAPACITY", "WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA"})
-    if recommendation_status == "WAIT_ACCOUNT_CAPACITY":
+    if managing_position:
+        ready = True
+        status_title = "RSP en gestión automática"
+        status_badge = "Posición abierta"
+    elif recommendation_status == "WAIT_ACCOUNT_CAPACITY":
         status_title = "RSP actualizado; falta capacidad en la cuenta seleccionada"
         status_badge = "Capacidad pendiente"
     elif data_ready and not ready:
@@ -3420,6 +3451,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         <div><span>Precio RSP</span><strong>{spot}</strong><small>última lectura disponible</small></div>
         <div><span>Lectura de niveles</span><strong>{context_status}</strong><small>{context_age}</small></div>
         <div><span>Cadena 7–14 DTE</span><strong>{chain_status}</strong><small>{chain_age}</small></div>
+        <div><span>Seguimiento IBKR</span><strong>{sync_status}</strong><small>{sync_detail}</small></div>
       </div>
       <p class="review-line">{blockers}</p>
       <div class="rsp-decision-body">
@@ -3463,6 +3495,8 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         context_age=html_escape(context_age),
         chain_status=html_escape("Actualizada" if ibkr.get("chain_has_rsp") else "Pendiente"),
         chain_age=html_escape(chain_age),
+        sync_status=html_escape("Automático" if (payload.get("broker_reconciliation") or {}).get("ok") else "Pendiente"),
+        sync_detail=html_escape(friendly_operator_state((payload.get("broker_reconciliation") or {}).get("position_state") or "esperando refresco")),
         readiness="ready" if ready else "review",
         status_title=html_escape(status_title),
         status_badge=html_escape(status_badge),
