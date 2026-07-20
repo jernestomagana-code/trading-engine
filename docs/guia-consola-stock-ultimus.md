@@ -249,6 +249,8 @@ Muestra primero las posiciones que requieren atención. Cada tarjeta enseña ini
 
 RSP forma parte del flujo principal, inmediatamente después de Posiciones. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.
 
+La estrategia RSP tiene una asignación de cuenta independiente: **RSP → retiro**. La cuenta activa general puede seguir siendo otra. Tanto **Apertura diaria** como **Actualizar sólo RSP** consultan posiciones, capacidad, cadena y margen de RSP usando `retiro`, sin cambiar la selección general del operador.
+
 - **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
 - **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
 

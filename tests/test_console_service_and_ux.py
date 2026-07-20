@@ -94,6 +94,16 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(command[command.index("--read-timeout") + 1], "30")
         self.assertGreaterEqual(console.CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS, 600)
 
+    def test_rsp_has_a_dedicated_retirement_account(self):
+        source = CONSOLE_SOURCE.read_text(encoding="utf-8")
+        guide = OPERATOR_GUIDE.read_text(encoding="utf-8")
+
+        self.assertEqual(console.CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS, "retiro")
+        self.assertIn('selected_alias = CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS', source)
+        self.assertIn('if "--coberturas-rsp-weekly" not in command:', source)
+        self.assertIn("Cuenta RSP", source)
+        self.assertIn("RSP → retiro", guide)
+
     def test_completed_opening_with_only_foundation_gap_is_presented_as_evidence_collection(self):
         report = {
             "status": "ACTION_REQUIRED",

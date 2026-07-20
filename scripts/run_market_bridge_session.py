@@ -114,6 +114,7 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
         env["DAILY_RADAR_FAST"] = "1"
     if args.coberturas_rsp_weekly:
         env["COBERTURAS_RSP_WEEKLY"] = "1"
+        env["IBKR_SKIP_CANONICAL_PUBLISH"] = "1"
         env.setdefault("IBKR_WATCHLIST", "RSP")
         env.setdefault("IBKR_OPTION_SYMBOLS", "RSP")
         env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
@@ -169,6 +170,42 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     }
 
 
+def refresh_rsp_account_capacity(args: argparse.Namespace) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "ibkr_account_profile.py"),
+        "refresh-account-capacity",
+        "--host",
+        args.ibkr_host,
+        "--port",
+        str(args.ibkr_port),
+        "--client-id",
+        str(args.ibkr_client_id),
+        "--timeout",
+        "20",
+        "--json-out",
+        str(ROOT / "runtime" / "coberturas_rsp_account_capacity_latest.json"),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(ROOT),
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            timeout=35,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "status": "RSP_ACCOUNT_CAPACITY_TIMEOUT"}
+    return {
+        "ok": result.returncode == 0,
+        "status": "RSP_ACCOUNT_CAPACITY_READY" if result.returncode == 0 else "RSP_ACCOUNT_CAPACITY_FAILED",
+        "exit_code": result.returncode,
+        "output_tail": (result.stdout + "\n" + result.stderr)[-1200:],
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Stock Ultimus bridge repeatedly during market.")
     parser.add_argument("--public-base-url", default=os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL))
@@ -219,6 +256,9 @@ def main() -> int:
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+    if args.coberturas_rsp_weekly:
+        session["rsp_account_alias"] = os.getenv("IBKR_ACCOUNT_ALIAS") or os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE") or "unknown"
+        session["rsp_account_capacity"] = refresh_rsp_account_capacity(args)
     out_path = Path(args.json_out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -242,7 +282,8 @@ def main() -> int:
             time.sleep(max(1.0, args.interval_minutes * 60.0))
 
     session["finished_at"] = now_iso()
-    session["ok"] = all(bool(run.get("ok")) for run in session["runs"])
+    capacity_ok = not args.coberturas_rsp_weekly or bool((session.get("rsp_account_capacity") or {}).get("ok"))
+    session["ok"] = all(bool(run.get("ok")) for run in session["runs"]) and capacity_ok
     out_path.write_text(json.dumps(session, indent=2, sort_keys=True))
     return 0 if session["ok"] else 1
 

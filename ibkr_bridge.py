@@ -5278,10 +5278,13 @@ def run_bridge_cycle():
         except Exception as e:
             print(f"V17 summary error: {e}")
 
-    try:
-        _v283_publish_to_v28()
-    except Exception as publish_error:
-        print(f"V31 canonical publish call error: {publish_error}")
+    if str(_v283_os.environ.get("IBKR_SKIP_CANONICAL_PUBLISH", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        print("V31 CANONICAL PUBLISH SKIPPED | strategy-specific local refresh")
+    else:
+        try:
+            _v283_publish_to_v28()
+        except Exception as publish_error:
+            print(f"V31 canonical publish call error: {publish_error}")
 
 
 # ============================================================

@@ -108,6 +108,7 @@ CONSOLE_WHATIF_IBKR_PORT = int(float(os.getenv("STOCK_ULTIMUS_WHATIF_IBKR_PORT",
 CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,SPY,AAPL,NVDA,TSLA,RSP")
 CONSOLE_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", "1")
 CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_OPTION_SYMBOLS", "RSP")
+CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
 CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL", "4")
 CONSOLE_COBERTURAS_RSP_TARGET_DTE_MIN = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MIN", "7")
 CONSOLE_COBERTURAS_RSP_TARGET_DTE_MAX = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MAX", "14")
@@ -430,7 +431,10 @@ def run_with_profile(alias: str, command: list[str]) -> int:
 
 def run_with_profile_capture(alias: str, command: list[str]) -> dict[str, Any]:
     profile = profile_for(alias)
-    write_active_profile(profile)
+    # A strategy-specific RSP refresh must not replace the operator's general
+    # active account. It runs under its dedicated profile only for that job.
+    if "--coberturas-rsp-weekly" not in command:
+        write_active_profile(profile)
     env = environment_for(profile)
     if is_daily_open_command(command):
         env.setdefault("IBKR_CLIENT_ID", str(CONSOLE_IBKR_CLIENT_ID))
@@ -1114,8 +1118,8 @@ def account_summary_capacity(host: str, port: int, client_id: int, timeout: floa
         "account_context_version": "local_console_account_capacity_v1",
         "source": "IBKR_ACCOUNT_SUMMARY_SANITIZED",
         "generated_at": now_iso(),
-        "account_scope": active.get("account_scope") or os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE") or "unknown",
-        "account_alias": active.get("account_alias") or os.getenv("IBKR_ACCOUNT_ALIAS") or "unknown",
+        "account_scope": os.getenv("STOCK_ULTIMUS_ACCOUNT_SCOPE") or active.get("account_scope") or "unknown",
+        "account_alias": os.getenv("IBKR_ACCOUNT_ALIAS") or active.get("account_alias") or "unknown",
         "available": False,
         "currency": None,
         "net_liquidation": None,
@@ -1196,10 +1200,12 @@ def account_summary_capacity(host: str, port: int, client_id: int, timeout: floa
 def cmd_refresh_account_capacity(args: argparse.Namespace) -> int:
     context = account_summary_capacity(args.host, args.port, args.client_id, timeout=args.timeout)
     RUNTIME.mkdir(exist_ok=True)
-    ACCOUNT_CAPACITY_PATH.write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
+    capacity_path = Path(args.json_out)
+    capacity_path.parent.mkdir(parents=True, exist_ok=True)
+    capacity_path.write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
     result = {
         "account_capacity": context,
-        "capacity_file": str(ACCOUNT_CAPACITY_PATH.relative_to(ROOT)),
+        "capacity_file": str(capacity_path.relative_to(ROOT)) if capacity_path.is_relative_to(ROOT) else str(capacity_path),
         "publish_result": None,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -3410,6 +3416,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
       <div class="rsp-status-line status-{readiness}"><strong>{status_title}</strong><span>{status_detail}</span></div>
       <div class="position-overview rsp-overview">
         <div><span>Decisión</span><strong>{decision}</strong><small>revisión humana</small></div>
+        <div><span>Cuenta RSP</span><strong>{rsp_account}</strong><small>asignación permanente de estrategia</small></div>
         <div><span>Precio RSP</span><strong>{spot}</strong><small>última lectura disponible</small></div>
         <div><span>Lectura de niveles</span><strong>{context_status}</strong><small>{context_age}</small></div>
         <div><span>Cadena 7–14 DTE</span><strong>{chain_status}</strong><small>{chain_age}</small></div>
@@ -3450,6 +3457,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     """.format(
         gamma_blob=html_escape(gamma_blob),
         decision=html_escape(friendly_operator_state(payload.get("decision"))),
+        rsp_account=html_escape(ibkr.get("configured_account_alias") or CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS),
         spot=html_escape(payload.get("spot")),
         context_status=html_escape("Guardada" if context.get("available") else "Pendiente"),
         context_age=html_escape(context_age),
@@ -7098,7 +7106,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 self.send_html("Refresh profundo iniciado. Mayor timeout para contratos/opciones; usalo solo cuando TWS este estable.", job_id=job_id)
             elif self.path == "/coberturas/rsp/refresh":
                 wants_json = "application/json" in (self.headers.get("Accept") or "")
-                selected_alias = alias or active_profile().get("account_alias") or ""
+                selected_alias = CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS
                 if not selected_alias:
                     message = "Selecciona una cuenta antes de correr Refresh RSP semanal IBKR."
                     if wants_json:
@@ -7601,6 +7609,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_capacity.add_argument("--port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
     refresh_capacity.add_argument("--client-id", type=int, default=int(os.getenv("IBKR_CLIENT_ID", "74")))
     refresh_capacity.add_argument("--timeout", type=float, default=12.0)
+    refresh_capacity.add_argument("--json-out", default=str(ACCOUNT_CAPACITY_PATH))
     refresh_capacity.add_argument("--publish", action="store_true")
     refresh_capacity.set_defaults(func=cmd_refresh_account_capacity)
 

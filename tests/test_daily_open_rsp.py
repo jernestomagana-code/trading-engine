@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from scripts import daily_open_checklist as daily_open
 
@@ -32,11 +34,26 @@ def base_report() -> dict:
 
 
 class DailyOpenRspTests(unittest.TestCase):
+    def test_rsp_environment_uses_dedicated_alias_without_changing_general_profile(self):
+        args = SimpleNamespace(rsp_account_alias="retiro")
+        with mock.patch("scripts.ibkr_account_profile.profile_for", return_value={"alias": "retiro"}) as profile_for, mock.patch(
+            "scripts.ibkr_account_profile.environment_for",
+            return_value={"IBKR_ACCOUNT_ALIAS": "retiro", "IBKR_ACCOUNT_ID": "secret"},
+        ):
+            env = daily_open.rsp_account_environment(args)
+
+        profile_for.assert_called_once_with("retiro")
+        self.assertEqual(env["IBKR_ACCOUNT_ALIAS"], "retiro")
+        self.assertEqual(env["STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS"], "retiro")
+
     def test_bridge_can_defer_incremental_posts_to_final_publish(self):
         source = (Path(__file__).resolve().parents[1] / "ibkr_bridge.py").read_text(encoding="utf-8")
+        session_source = (Path(__file__).resolve().parents[1] / "scripts" / "run_market_bridge_session.py").read_text(encoding="utf-8")
 
         self.assertIn('if _env_bool("IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS", False):', source)
         self.assertIn('return "SKIPPED_FINAL_PUBLISH"', source)
+        self.assertIn('env["IBKR_SKIP_CANONICAL_PUBLISH"] = "1"', session_source)
+        self.assertIn('IBKR_SKIP_CANONICAL_PUBLISH', source)
 
     def test_rsp_refresh_failure_has_specific_operator_message(self):
         report = base_report()

@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
     parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "120")))
     parser.add_argument("--capacity-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_CAPACITY_TIMEOUT", "20")))
+    parser.add_argument("--rsp-account-alias", default=os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro"))
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "10")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_OPEN_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--refresh", action="store_true", help="Run ibkr_bridge.py --once before reading V32.")
@@ -214,6 +215,15 @@ def run_command(name: str, command: list[str], timeout: int, env: dict[str, str]
         }
 
 
+def rsp_account_environment(args: argparse.Namespace) -> dict[str, str]:
+    from scripts import ibkr_account_profile
+
+    profile = ibkr_account_profile.profile_for(args.rsp_account_alias)
+    env = ibkr_account_profile.environment_for(profile)
+    env["STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS"] = str(args.rsp_account_alias)
+    return env
+
+
 def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
@@ -243,7 +253,7 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
 
 
 def refresh_rsp_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
-    env = os.environ.copy()
+    env = rsp_account_environment(args)
     env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
     env["IBKR_HOST"] = args.ibkr_host
     env["IBKR_PORT"] = str(args.ibkr_port)
@@ -283,12 +293,14 @@ def refresh_account_capacity(args: argparse.Namespace) -> dict[str, Any]:
         os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "74"),
         "--timeout",
         str(args.capacity_timeout),
+        "--json-out",
+        str(RUNTIME / "coberturas_rsp_account_capacity_latest.json"),
     ]
     return run_command(
         "refresh_account_capacity",
         command,
         timeout=max(args.capacity_timeout + 15, 35),
-        env=os.environ.copy(),
+        env=rsp_account_environment(args),
     )
 
 
@@ -469,6 +481,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "publish_requested": bool(args.publish),
         "uses_ingest_token": bool(args.refresh or args.publish),
         "touches_ibkr": bool(args.refresh),
+        "rsp_account_alias": str(args.rsp_account_alias),
         "sends_email": False,
         "secrets_printed": False,
         "manual_review_required": True,

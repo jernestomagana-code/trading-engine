@@ -7,6 +7,10 @@ import coberturas_engine as ce
 
 
 class CoberturasEngineTests(unittest.TestCase):
+    def test_rsp_capacity_prefers_dedicated_retirement_account_file(self):
+        self.assertEqual(ce.RSP_ACCOUNT_ALIAS, "retiro")
+        self.assertEqual(ce.RSP_CAPACITY_PATH, "coberturas_rsp_account_capacity_latest.json")
+
     def test_configured_margin_estimate_is_separate_from_nominal_exposure(self):
         scenarios = {
             "sell_put": {
@@ -396,7 +400,7 @@ class CoberturasEngineTests(unittest.TestCase):
 
         self.assertEqual(recommendation["status"], "WAIT_ACCOUNT_CAPACITY")
         self.assertEqual(recommendation["blockers"], ["INSUFFICIENT_ACCOUNT_CAPACITY"])
-        self.assertIn("capital conservador si esta calculado", recommendation["reason"])
+        self.assertIn("margen requerido esta estimado", recommendation["reason"])
         self.assertNotIn("CAPITAL_DATA_MISSING", json.dumps(recommendation))
 
     def test_capacity_is_recovered_from_canonical_snapshot(self):

@@ -23,6 +23,8 @@ TARGET_WEEKLY_PREMIUM = 100.0
 MAX_CONTRACTS = 1
 SHARES_PER_LOT = 100
 RSP_CHAIN_PATH = "coberturas_rsp_chain_coverage_latest.json"
+RSP_CAPACITY_PATH = "coberturas_rsp_account_capacity_latest.json"
+RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
 RSP_CHAIN_MAX_AGE_HOURS = 24.0
 
 
@@ -1215,7 +1217,7 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
                 "status": "WAIT_ACCOUNT_CAPACITY",
                 "recommended_strategy": None,
                 "reason": (
-                    "El capital conservador si esta calculado, pero los fondos disponibles o el poder de compra "
+                    "El margen requerido esta estimado, pero los fondos disponibles o el poder de compra "
                     "no alcanzan para comparar ambos caminos de forma operable."
                     + required_note
                 ),
@@ -1228,7 +1230,7 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
         return {
             "status": "WAIT_CAPITAL_DATA",
             "recommended_strategy": None,
-            "reason": "Falta margen IBKR y tampoco hay capital/debito conservador suficiente para comparar ambos caminos.",
+            "reason": "Falta margen IBKR y tampoco hay una estimacion de margen suficiente para comparar ambos caminos.",
             "blockers": ["CAPITAL_DATA_MISSING"],
             "comparison": rows,
             "margin_decision_sensitivity": margin_decision_sensitivity(rows),
@@ -1258,7 +1260,7 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
         .format(best["strategy"], best.get("decision_return_on_capital_pct"), other.get("decision_return_on_capital_pct"))
     )
     if missing_ibkr_margin:
-        reason += " IBKR no devolvio margen what-if completo; use capital/debito conservador como fallback."
+        reason += " IBKR no devolvio margen what-if completo; se uso la estimacion configurada de $7,000 como referencia operativa."
     if conditional:
         reason += " Recomendacion condicionada porque faltan delta/spread, margen IBKR completo o calidad de datos ejecutables."
     return {
@@ -1468,7 +1470,12 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     else:
         candidate_rows = []
 
-    account_capacity = load_json(runtime_dir / "ibkr_account_capacity_latest.json")
+    account_capacity = load_json(runtime_dir / RSP_CAPACITY_PATH)
+    if not account_capacity:
+        general_capacity = load_json(runtime_dir / "ibkr_account_capacity_latest.json")
+        general_alias = safe_upper(general_capacity.get("account_alias") or general_capacity.get("account_scope"), "")
+        if general_alias == safe_upper(RSP_ACCOUNT_ALIAS, ""):
+            account_capacity = general_capacity
     if not account_capacity.get("available") and not any(
         account_capacity.get(key) is not None
         for key in ("available_funds", "available_capacity", "buying_power")
@@ -1572,6 +1579,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "ibkr": {
             "account_capacity_available": bool(account_capacity.get("available")),
             "account_alias": account_capacity.get("account_alias") or account_capacity.get("account_scope"),
+            "configured_account_alias": RSP_ACCOUNT_ALIAS,
             "available_funds": account_capacity.get("available_funds"),
             "buying_power": account_capacity.get("buying_power"),
             "chain_has_rsp": chain_has_rsp,
