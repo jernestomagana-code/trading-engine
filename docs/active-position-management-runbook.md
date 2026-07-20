@@ -81,6 +81,12 @@ The active-position payload now includes:
 - `recommendation`: one prioritized path for the operator, including hold/no
   change, its confidence, evidence-based reason, and preferred visible
   contract when applicable. Other paths remain secondary comparisons.
+- `strategy_comparison` for long stock: estimates hold, reduce 25%, partial
+  covered call, and matching partial collars from the current stock price
+  across deep-downside, support, flat, resistance, and strong-upside cases.
+  It reports one balanced winner plus separate leaders for capital protection,
+  income/recovery, and upside preservation. Scenario weights are review
+  weights, not probabilities.
 - `option_alternatives_summary`: coverage of preserved option chains and the
   number of alternatives produced across the portfolio.
 - `position_context_summary`: how many locally saved position contexts were
@@ -95,6 +101,10 @@ The bridge preserves the latest non-empty chain per ticker in
 `runtime/active_position_option_chains_latest.json`. Daily open prioritizes all
 symbols detected in open stock or option positions, in addition to the normal
 watchlist, so a later unrelated scan does not erase their management choices.
+For held stock, the call scan deliberately samples ITM, ATM, and OTM strikes
+instead of limiting management to OTM calls. Overlay sizing is based on real
+100-share lots; when 25% is not an exact number of contracts, both the lower
+and upper feasible contract counts are compared.
 
 The bridge also downloads daily historical bars for every held underlying even
 when a live quote is already available. It stores the result in
@@ -102,6 +112,10 @@ when a live quote is already available. It stores the result in
 RSI 14, ATR 14, trend, and 20/50-session support/resistance. Option premium is
 never accepted as the underlying price. If directional evidence is incomplete,
 the primary recommendation is to make no change until data is complete.
+Broken support overrides the overlay comparison in favor of defensive
+reduction review. Extreme stock concentration (60% or more of net liquidation)
+does the same. A new covered call is not prioritized for an oversold asset, and
+no stock reduction may leave an existing short call uncovered.
 
 Local console review events are stored in
 `runtime/active_position_management_journal.json`. These are process/outcome

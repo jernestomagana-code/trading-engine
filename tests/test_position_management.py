@@ -213,13 +213,57 @@ class PositionManagementTests(unittest.TestCase):
 
         self.assertEqual(item["exit_overlay"]["strategy_id"], "LONG_STOCK")
         self.assertNotIn("EXIT_PLAYBOOK_NOT_REGISTERED", item["exit_overlay"]["exit_blockers"])
-        self.assertEqual(alternatives["COVERED_CALL_PARTIAL"]["contracts"], 5)
+        self.assertIn(alternatives["COVERED_CALL_PARTIAL"]["contracts"], [2, 3])
+        self.assertEqual(alternatives["COVERED_CALL_PARTIAL"]["contract_choices"], [2, 3])
         self.assertEqual(alternatives["COVERED_CALL_FULL"]["contracts"], 10)
         self.assertEqual(alternatives["COVERED_CALL_FULL"]["contract_candidates"][0]["strike"], 125)
         self.assertEqual(alternatives["PROTECTIVE_PUT"]["status"], "READY_FOR_MANUAL_REVIEW")
         self.assertIn("COLLAR", alternatives)
-        self.assertEqual(item["management_alternatives"]["recommendation"]["alternative_id"], "COVERED_CALL_PARTIAL")
+        comparison = item["management_alternatives"]["strategy_comparison"]
+        self.assertTrue(comparison["available"])
+        self.assertEqual(len(comparison["scenarios"]), 5)
+        self.assertIn("balanced", comparison["profile_leaders"])
+        self.assertEqual(
+            item["management_alternatives"]["recommendation"]["alternative_id"],
+            comparison["profile_leaders"]["balanced"]["alternative_id"],
+        )
         self.assertGreaterEqual(payload["option_alternatives_summary"]["total_alternatives"], 8)
+
+    def test_bearish_stock_with_intact_support_uses_scenario_winner(self):
+        snapshot = self.snapshot(
+            [{"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "market_price": 67.48}],
+            {"NFLX": {"ticker": "NFLX", "trend": "BEARISH", "price": 67.48, "support_level": 65.08, "resistance_level": 78.44, "indicators": {"atr_14": 2.82, "rsi_14": 35.4}}},
+        )
+        snapshot["active_position_option_chains"] = {
+            "by_ticker": {"NFLX": {"option_rows": [
+                {"ticker": "NFLX", "right": "C", "strike": 65, "expiration": "20260828", "dte": 39, "bid": 4.1, "ask": 4.25, "mid": 4.175, "spread_pct": 3.6, "delta": 0.62},
+                {"ticker": "NFLX", "right": "C", "strike": 71, "expiration": "20260828", "dte": 39, "bid": 1.82, "ask": 1.89, "mid": 1.855, "spread_pct": 3.77, "delta": 0.36},
+                {"ticker": "NFLX", "right": "P", "strike": 60, "expiration": "20260828", "dte": 39, "bid": 0.7, "ask": 0.78, "mid": 0.74, "spread_pct": 10.8, "delta": -0.15},
+            ]}},
+        }
+
+        payload = position_management.build_active_position_management(snapshot, playbook=self.playbook)
+        management = payload["positions"][0]["management_alternatives"]
+        balanced = management["strategy_comparison"]["profile_leaders"]["balanced"]
+
+        self.assertEqual(management["recommendation"]["alternative_id"], balanced["alternative_id"])
+        self.assertNotEqual(management["recommendation"]["alternative_id"], "REDUCE_25")
+        self.assertEqual(payload["positions"][0]["management_action"], "REVIEW_RISK")
+        self.assertIn(management["strategy_comparison"]["profile_leaders"]["income_recovery"]["contracts"], [2, 3])
+        self.assertIn("cinco escenarios", management["recommendation"]["reason"])
+
+    def test_extreme_concentration_overrides_scenario_comparison(self):
+        snapshot = self.snapshot(
+            [{"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "market_value": 100000, "market_price": 100}],
+            {"NFLX": {"ticker": "NFLX", "price": 100, "trend": "BEARISH", "support_level": 90}},
+        )
+
+        payload = position_management.build_active_position_management(snapshot, playbook=self.playbook)
+        recommendation = payload["positions"][0]["management_alternatives"]["recommendation"]
+
+        self.assertEqual(recommendation["alternative_id"], "REDUCE_25")
+        self.assertEqual(recommendation["confidence"], "HIGH")
+        self.assertIn("concentración", recommendation["reason"])
 
     def test_option_market_price_is_never_used_as_underlying_price(self):
         snapshot = self.snapshot(
@@ -268,6 +312,7 @@ class PositionManagementTests(unittest.TestCase):
         self.assertIn("GAMMA_CONTEXT_MISSING", item["warnings"])
         self.assertEqual(item["management_action"], "NO_ACTION_RECOMMENDED")
         self.assertEqual(item["confidence"], "MEDIUM")
+        self.assertIsNone(item["management_alternatives"]["strategy_comparison"]["profile_leaders"]["income_recovery"])
 
     def test_oversold_stock_prioritizes_hold_over_new_covered_call(self):
         payload = position_management.build_active_position_management(

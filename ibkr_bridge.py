@@ -3304,6 +3304,23 @@ def pick_call_strikes(strikes, stock_price):
     return selected
 
 
+def pick_position_management_call_strikes(strikes, stock_price, limit=4):
+    """Represent ITM, ATM and OTM choices for already-held stock."""
+    eligible = [
+        float(strike)
+        for strike in strikes
+        if is_standard_strike(strike) and -0.10 <= (float(strike) - stock_price) / stock_price <= 0.18
+    ]
+    targets = [-0.08, -0.04, 0.0, 0.03, 0.07, 0.12]
+    selected = []
+    for target in targets:
+        remaining = [strike for strike in eligible if strike not in selected]
+        if not remaining:
+            break
+        selected.append(min(remaining, key=lambda strike: abs(((strike - stock_price) / stock_price) - target)))
+    return selected[:max(1, int(limit))]
+
+
 def build_option_candidates(symbol, stock_price):
     chain, expiry, dte = get_option_chain(symbol)
 
@@ -3331,11 +3348,17 @@ def build_option_candidates(symbol, stock_price):
         if ENABLE_COVERED_CALLS:
             calls = pick_rsp_weekly_strikes(strikes, stock_price, "C", per_side)
     else:
+        held_symbol = str(symbol or "").upper() in _bridge_held_underlying_symbols()
         if ENABLE_NAKED_PUTS:
             puts = pick_put_strikes(strikes, stock_price)
 
         if ENABLE_COVERED_CALLS:
-            calls = pick_call_strikes(strikes, stock_price)
+            held_call_limit = max(4, min(6, MAX_OPTIONS_PER_SYMBOL - len(puts)))
+            calls = (
+                pick_position_management_call_strikes(strikes, stock_price, limit=held_call_limit)
+                if held_symbol
+                else pick_call_strikes(strikes, stock_price)
+            )
 
     valid = []
     invalid_count = 0
@@ -3392,6 +3415,10 @@ def build_option_candidates(symbol, stock_price):
         "dte": dte,
         "put_strikes_selected": puts,
         "call_strikes_selected": calls,
+        "position_management_moneyness_scan": bool(
+            str(symbol or "").upper() in _bridge_held_underlying_symbols()
+            and not (COBERTURAS_RSP_WEEKLY and str(symbol or "").upper() == "RSP")
+        ),
         "valid_contract_count": len(valid),
         "invalid_contract_count": invalid_count,
         "max_options_per_symbol": MAX_OPTIONS_PER_SYMBOL,

@@ -325,6 +325,44 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("call_wall", html)
         self.assertIn("gamma_blob", html)
 
+    def test_console_renders_long_stock_scenario_comparison(self):
+        item = {
+            "management_alternatives": {
+                "recommendation": {
+                    "alternative_id": "COVERED_CALL_PARTIAL",
+                    "label": "Covered call parcial",
+                    "status": "READY_FOR_MANUAL_REVIEW",
+                    "confidence": "MEDIUM",
+                    "reason": "Ganó la comparación de cinco escenarios.",
+                    "contracts": 3,
+                    "coverage_pct": 30.0,
+                    "contract": {"right": "C", "strike": 65, "expiration": "20260828", "premium_per_contract": 475},
+                },
+                "alternatives": [
+                    {"alternative_id": "COVERED_CALL_PARTIAL", "label": "Covered call parcial", "status": "READY_FOR_MANUAL_REVIEW", "is_primary_management_path": True},
+                    {"alternative_id": "REDUCE_25", "label": "Reducir 25%", "status": "READY_FOR_MANUAL_REVIEW"},
+                ],
+                "strategy_comparison": {
+                    "available": True,
+                    "profile_leaders": {
+                        "balanced": {"variant_id": "COVERED_CALL_PARTIAL_3", "label": "Covered call parcial", "worst_case_pnl": -5375, "flat_pnl": 626},
+                        "capital_protection": {"variant_id": "REDUCE_25", "label": "Reducir 25%", "worst_case_pnl": -5062, "flat_pnl": 0},
+                    },
+                    "variants": [
+                        {"alternative_id": "COVERED_CALL_PARTIAL", "label": "Covered call parcial", "contracts": 3, "support_pnl": -1089, "flat_pnl": 626, "resistance_pnl": 8263, "worst_case_pnl": -5375},
+                        {"alternative_id": "REDUCE_25", "label": "Reducir 25%", "support_pnl": -1800, "flat_pnl": 0, "resistance_pnl": 8220, "worst_case_pnl": -5062},
+                    ],
+                },
+            },
+        }
+
+        html = account_console.render_position_alternatives(item)
+
+        self.assertIn("Mejor balance", html)
+        self.assertIn("Mayor protección", html)
+        self.assertIn("Ver comparación numérica y supuestos", html)
+        self.assertIn("3 contrato(s) · 30.0% de la posición", html)
+
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_runtime = account_console.RUNTIME

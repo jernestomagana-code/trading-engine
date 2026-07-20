@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any
+import math
 
 import broker_check
 import gamma_context_store
@@ -16,7 +17,7 @@ import position_context_store
 import strategy_exit_playbook
 
 
-POSITION_MANAGEMENT_VERSION = "active_position_management_v4"
+POSITION_MANAGEMENT_VERSION = "active_position_management_v5"
 DEFAULT_MAX_CONTEXT_AGE_MINUTES = 15
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
@@ -766,6 +767,9 @@ def _contract_summary(row: dict[str, Any], price: float | None) -> dict[str, Any
         "mid": mid,
         "premium_per_contract": round(mid * DEFAULT_CONTRACT_MULTIPLIER, 2) if mid is not None else None,
         "delta": row.get("delta"),
+        "implied_volatility": row.get("implied_volatility") or row.get("iv"),
+        "volume": row.get("volume"),
+        "open_interest": row.get("open_interest"),
         "spread_pct": row.get("spread_pct"),
         "review_status": _contract_review_status(row),
         "not_order_instruction": True,
@@ -810,6 +814,187 @@ def _alternative(
     }
 
 
+def _long_stock_strategy_comparison(
+    price: float | None,
+    shares: float,
+    uncovered_share_lots: int,
+    calls: list[dict[str, Any]],
+    puts: list[dict[str, Any]],
+    technical: dict[str, Any],
+) -> dict[str, Any]:
+    if price is None or price <= 0 or shares <= 0:
+        return {"available": False, "reason": "UNDERLYING_PRICE_MISSING", "variants": []}
+    indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
+    atr = safe_float(indicators.get("atr_14")) or price * 0.04
+    support = safe_float(technical.get("support"))
+    resistance = safe_float(technical.get("resistance"))
+    trend = safe_upper(technical.get("trend"), "UNKNOWN")
+    deep_down = max(0.01, min(price * 0.90, price - (2 * atr)))
+    support_case = support if support is not None and deep_down < support < price else max(deep_down, price - atr)
+    resistance_case = resistance if resistance is not None and resistance > price else price + max(2 * atr, price * 0.08)
+    strong_up = max(price * 1.20, resistance_case + atr)
+    if trend in {"BEARISH", "DOWN", "SELL", "NEUTRAL_TO_BEARISH"}:
+        weights = [0.25, 0.25, 0.20, 0.20, 0.10]
+    elif trend in {"BULLISH", "UP", "BUY", "NEUTRAL_TO_BULLISH"}:
+        weights = [0.10, 0.15, 0.20, 0.25, 0.30]
+    else:
+        weights = [0.15, 0.20, 0.25, 0.25, 0.15]
+    scenarios = [
+        {"scenario_id": "DEEP_DOWNSIDE", "label": "Caída fuerte", "price": round(deep_down, 2), "weight": weights[0]},
+        {"scenario_id": "SUPPORT", "label": "Zona de soporte", "price": round(support_case, 2), "weight": weights[1]},
+        {"scenario_id": "FLAT", "label": "Sin cambio", "price": round(price, 4), "weight": weights[2]},
+        {"scenario_id": "RESISTANCE", "label": "Rebote a resistencia", "price": round(resistance_case, 2), "weight": weights[3]},
+        {"scenario_id": "STRONG_UPSIDE", "label": "Subida fuerte", "price": round(strong_up, 2), "weight": weights[4]},
+    ]
+
+    def summarize(
+        alternative_id: str,
+        label: str,
+        pnl_fn: Any,
+        *,
+        contracts: int | None = None,
+        contract: dict[str, Any] | None = None,
+        put_contract: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        outcomes = []
+        for scenario in scenarios:
+            pnl = round(float(pnl_fn(float(scenario["price"]))), 2)
+            outcomes.append({**scenario, "estimated_pnl_from_now": pnl})
+        by_id = {item["scenario_id"]: item["estimated_pnl_from_now"] for item in outcomes}
+        weighted = round(sum(item["estimated_pnl_from_now"] * item["weight"] for item in outcomes), 2)
+        worst = min(item["estimated_pnl_from_now"] for item in outcomes)
+        return {
+            "variant_id": alternative_id + ("_{}".format(contracts) if contracts else ""),
+            "alternative_id": alternative_id,
+            "label": label,
+            "contracts": contracts,
+            "coverage_pct": round((contracts * DEFAULT_CONTRACT_MULTIPLIER / shares) * 100, 1) if contracts else None,
+            "contract": contract,
+            "put_contract": put_contract,
+            "weighted_pnl": weighted,
+            "worst_case_pnl": worst,
+            "flat_pnl": by_id.get("FLAT"),
+            "support_pnl": by_id.get("SUPPORT"),
+            "resistance_pnl": by_id.get("RESISTANCE"),
+            "strong_upside_pnl": by_id.get("STRONG_UPSIDE"),
+            "balanced_score": round(weighted + (0.12 * worst), 2),
+            "scenario_outcomes": outcomes,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+    variants = [
+        summarize("HOLD_MONITOR", "Mantener", lambda terminal: (terminal - price) * shares),
+    ]
+    reduction_shares = max(1, int(round(shares * 0.25)))
+    variants.append(summarize(
+        "REDUCE_25",
+        "Reducir 25%",
+        lambda terminal: (terminal - price) * max(0.0, shares - reduction_shares),
+    ))
+    target_contracts = uncovered_share_lots * 0.25
+    contract_choices = sorted({
+        max(1, min(uncovered_share_lots, int(math.floor(target_contracts)))),
+        max(1, min(uncovered_share_lots, int(math.ceil(target_contracts)))),
+    }) if uncovered_share_lots else []
+    ready_calls = [item for item in calls if item.get("review_status") == "READY_FOR_MANUAL_REVIEW" and safe_float(item.get("bid")) is not None]
+    ready_puts = [item for item in puts if item.get("review_status") == "READY_FOR_MANUAL_REVIEW" and safe_float(item.get("ask")) is not None]
+    for contracts in contract_choices:
+        covered_shares = contracts * DEFAULT_CONTRACT_MULTIPLIER
+        for call in ready_calls[:6]:
+            strike = safe_float(call.get("strike"))
+            premium = safe_float(call.get("bid"))
+            if strike is None or premium is None:
+                continue
+            variants.append(summarize(
+                "COVERED_CALL_PARTIAL",
+                "Covered call parcial",
+                lambda terminal, strike=strike, premium=premium, covered_shares=covered_shares: (
+                    (terminal - price) * shares
+                    + premium * covered_shares
+                    - max(0.0, terminal - strike) * covered_shares
+                ),
+                contracts=contracts,
+                contract=call,
+            ))
+        for call in ready_calls[:4]:
+            for put in ready_puts[:4]:
+                if call.get("expiration") and put.get("expiration") and call.get("expiration") != put.get("expiration"):
+                    continue
+                call_strike = safe_float(call.get("strike"))
+                put_strike = safe_float(put.get("strike"))
+                call_premium = safe_float(call.get("bid"))
+                put_cost = safe_float(put.get("ask"))
+                if None in [call_strike, put_strike, call_premium, put_cost]:
+                    continue
+                protected_shares = contracts * DEFAULT_CONTRACT_MULTIPLIER
+                variants.append(summarize(
+                    "COLLAR",
+                    "Collar parcial",
+                    lambda terminal, cs=call_strike, ps=put_strike, cp=call_premium, pc=put_cost, protected=protected_shares: (
+                        (terminal - price) * shares
+                        + (cp - pc) * protected
+                        - max(0.0, terminal - cs) * protected
+                        + max(0.0, ps - terminal) * protected
+                    ),
+                    contracts=contracts,
+                    contract=call,
+                    put_contract=put,
+                ))
+
+    def score_value(item: dict[str, Any], score_key: str) -> float:
+        value = safe_float(item.get(score_key))
+        return value if value is not None else -1e18
+
+    def best(rows: list[dict[str, Any]], score_key: str) -> dict[str, Any] | None:
+        return max(rows, key=lambda item: score_value(item, score_key)) if rows else None
+
+    call_variants = [item for item in variants if item.get("alternative_id") == "COVERED_CALL_PARTIAL"]
+    collar_variants = [item for item in variants if item.get("alternative_id") == "COLLAR"]
+    preferred_call = best(call_variants, "balanced_score")
+    profile_candidates = {
+        "capital_protection": max(variants, key=lambda item: score_value(item, "worst_case_pnl")),
+        "balanced": best(variants, "balanced_score"),
+        "income_recovery": (
+            max(
+                call_variants,
+                key=lambda item: (
+                    (item.get("flat_pnl") or 0) * 0.30
+                    + (item.get("support_pnl") or 0) * 0.20
+                    + (item.get("resistance_pnl") or 0) * 0.35
+                    + (item.get("worst_case_pnl") or 0) * 0.15
+                ),
+            )
+            if call_variants
+            else None
+        ),
+        "upside_preservation": max(variants, key=lambda item: score_value(item, "strong_upside_pnl")),
+    }
+    return {
+        "comparison_version": "long_stock_strategy_comparison_v1",
+        "available": True,
+        "price": round(price, 4),
+        "shares": shares,
+        "target_overlay_pct": 25.0,
+        "contract_choices": contract_choices,
+        "scenarios": scenarios,
+        "variants": sorted(variants, key=lambda item: score_value(item, "balanced_score"), reverse=True),
+        "preferred_covered_call": preferred_call,
+        "preferred_collar": best(collar_variants, "balanced_score"),
+        "profile_leaders": {
+            name: ({key: value for key, value in leader.items() if key != "scenario_outcomes"} if leader else None)
+            for name, leader in profile_candidates.items()
+        },
+        "limitations": [
+            "P/L is measured from the current underlying price, before commissions and taxes.",
+            "Selling calls uses bid and buying puts uses ask for conservative review.",
+            "Scenario weights are technical-review weights, not probabilities or return guarantees.",
+        ],
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def _management_alternatives(
     row: dict[str, Any],
     strategy: str,
@@ -826,6 +1011,21 @@ def _management_alternatives(
     uncovered_share_lots = max(0, share_lots - short_calls)
     calls = _rank_contracts(option_rows, "C", price)
     puts = _rank_contracts(option_rows, "P", price)
+    strategy_comparison = (
+        _long_stock_strategy_comparison(price, shares, uncovered_share_lots, calls, puts, technical)
+        if strategy == "LONG_STOCK"
+        else {"available": False, "variants": []}
+    )
+    preferred_call = strategy_comparison.get("preferred_covered_call") if isinstance(strategy_comparison.get("preferred_covered_call"), dict) else {}
+    preferred_collar = strategy_comparison.get("preferred_collar") if isinstance(strategy_comparison.get("preferred_collar"), dict) else {}
+    profile_leaders = strategy_comparison.get("profile_leaders") if isinstance(strategy_comparison.get("profile_leaders"), dict) else {}
+    balanced_leader = profile_leaders.get("balanced") if isinstance(profile_leaders.get("balanced"), dict) else {}
+    preferred_call_contract = preferred_call.get("contract") if isinstance(preferred_call.get("contract"), dict) else {}
+    if preferred_call_contract:
+        calls.sort(key=lambda item: 0 if (
+            item.get("strike") == preferred_call_contract.get("strike")
+            and item.get("expiration") == preferred_call_contract.get("expiration")
+        ) else 1)
 
     def option_status(candidates: list[dict[str, Any]]) -> str:
         if not candidates:
@@ -849,7 +1049,7 @@ def _management_alternatives(
     if strategy == "LONG_STOCK":
         call_status = option_status(calls)
         put_status = option_status(puts)
-        partial_contracts = max(1, uncovered_share_lots // 2) if uncovered_share_lots else 0
+        partial_contracts = int(preferred_call.get("contracts") or max(1, round(uncovered_share_lots * 0.25))) if uncovered_share_lots else 0
         reduction_status = price_status if short_calls == 0 else "RISK_BLOCKED_COVERAGE"
         reduction_reason = (
             "No reducir acciones sin cerrar o ajustar primero las calls cubiertas; hacerlo rompería la cobertura."
@@ -909,6 +1109,18 @@ def _management_alternatives(
     trend = safe_upper(technical.get("trend"), "UNKNOWN")
     directional_ready = trend not in {"", "UNKNOWN"} and price is not None
     by_id = {item.get("alternative_id"): item for item in alternatives}
+    if strategy_comparison.get("available"):
+        for alternative_id in ["HOLD_MONITOR", "REDUCE_25", "COVERED_CALL_PARTIAL", "COLLAR"]:
+            alternative = by_id.get(alternative_id)
+            if alternative:
+                alternative["quantitative_comparison_available"] = True
+        if by_id.get("COVERED_CALL_PARTIAL"):
+            by_id["COVERED_CALL_PARTIAL"]["contract_choices"] = strategy_comparison.get("contract_choices") or []
+            by_id["COVERED_CALL_PARTIAL"]["preferred_variant"] = preferred_call or None
+        if by_id.get("COLLAR"):
+            by_id["COLLAR"]["preferred_variant"] = preferred_collar or None
+            if preferred_collar.get("contracts"):
+                by_id["COLLAR"]["contracts"] = preferred_collar.get("contracts")
 
     def choose(alternative_id: str, reason: str, confidence: str = "MEDIUM") -> None:
         nonlocal primary_id, recommendation_reason, recommendation_confidence
@@ -931,17 +1143,37 @@ def _management_alternatives(
     elif management_action == "REFRESH_DATA":
         choose("HOLD_MONITOR", "No hacer cambios hasta completar los datos económicos de la posición y recalcular la recomendación.", "LOW")
     elif strategy == "LONG_STOCK":
-        weight = safe_float(row.get("portfolio_weight_pct"))
+        weight = safe_float(row.get("portfolio_weight_pct") or group.get("portfolio_stock_weight_pct"))
         indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
         rsi_14 = safe_float(indicators.get("rsi_14"))
         if short_calls and uncovered_share_lots == 0:
             choose("HOLD_MONITOR", "Las acciones ya respaldan calls cubiertas; mantener la cobertura y gestionar la operación desde la pata de covered call.", "HIGH")
-        elif technical.get("support_broken") or trend in {"BEARISH", "DOWN", "SELL"}:
-            choose("REDUCE_25", "La tendencia bajista o ruptura de soporte favorece reducir riesgo de forma gradual.", "HIGH" if technical.get("support_broken") else "MEDIUM")
-        elif weight is not None and weight >= 35:
-            choose("REDUCE_25", "La concentración supera el límite de revisión; reducir parcialmente domina a añadir exposición.", "HIGH")
-        elif rsi_14 is not None and rsi_14 < 40:
+        elif technical.get("support_broken"):
+            choose("REDUCE_25", "El soporte fue roto; la reducción ofrece protección bajista real que una covered call sólo compensa parcialmente.", "HIGH")
+        elif weight is not None and weight >= 60:
+            choose("REDUCE_25", "La concentración es extrema; liberar capital domina a conservar toda la exposición por una prima limitada.", "HIGH")
+        elif rsi_14 is not None and rsi_14 < 30:
             choose("HOLD_MONITOR", "El activo está sobrevendido; no conviene limitar un posible rebote con una call nueva sin confirmación adicional.", "MEDIUM")
+        elif trend in {"BEARISH", "DOWN", "SELL", "NEUTRAL_TO_BEARISH", "NEUTRAL"} and balanced_leader:
+            leader_id = str(balanced_leader.get("alternative_id") or "HOLD_MONITOR")
+            leader_contract = balanced_leader.get("contract") if isinstance(balanced_leader.get("contract"), dict) else {}
+            details = []
+            if balanced_leader.get("contracts"):
+                details.append("{} contrato(s)".format(balanced_leader.get("contracts")))
+            if balanced_leader.get("coverage_pct"):
+                details.append("{}% de cobertura".format(balanced_leader.get("coverage_pct")))
+            if leader_contract.get("strike") is not None:
+                details.append("strike {}".format(leader_contract.get("strike")))
+            choose(
+                leader_id,
+                "El soporte sigue intacto. La comparación de cinco escenarios favorece {}{}; reducir queda como defensa si rompe soporte.".format(
+                    balanced_leader.get("label") or leader_id,
+                    (" (" + ", ".join(details) + ")") if details else "",
+                ),
+                "MEDIUM",
+            )
+        elif trend in {"BEARISH", "DOWN", "SELL"}:
+            choose("HOLD_MONITOR", "La tendencia es bajista, pero sin soporte roto ni cadena comparable no hay evidencia suficiente para vender acciones o limitar el rebote.", "LOW")
         elif trend in {"NEUTRAL_TO_BEARISH", "NEUTRAL"} and uncovered_share_lots:
             choose("COVERED_CALL_PARTIAL", "El sesgo neutral favorece generar prima sobre una parte de las acciones sin limitar toda la posición.")
         elif directional_ready:
@@ -976,7 +1208,14 @@ def _management_alternatives(
         "status": primary.get("status"),
         "reason": recommendation_reason,
         "confidence": recommendation_confidence,
-        "contract": ((primary.get("contract_candidates") or [None])[0]),
+        "contract": (
+            balanced_leader.get("contract")
+            if primary.get("alternative_id") == balanced_leader.get("alternative_id") and isinstance(balanced_leader.get("contract"), dict)
+            else ((primary.get("contract_candidates") or [None])[0])
+        ),
+        "contracts": balanced_leader.get("contracts") if primary.get("alternative_id") == balanced_leader.get("alternative_id") else primary.get("contracts"),
+        "coverage_pct": balanced_leader.get("coverage_pct") if primary.get("alternative_id") == balanced_leader.get("alternative_id") else None,
+        "scenario_variant": balanced_leader if primary.get("alternative_id") == balanced_leader.get("alternative_id") else None,
         "data_complete": directional_ready,
         "can_recommend_no_action": True,
         "manual_review_required": True,
@@ -992,6 +1231,7 @@ def _management_alternatives(
         "underlying_price_available": price is not None,
         "share_lots": share_lots,
         "uncovered_share_lots": uncovered_share_lots,
+        "strategy_comparison": strategy_comparison,
         "recommendation": recommendation,
         "alternatives": alternatives,
         "manual_review_required": True,
@@ -1127,7 +1367,7 @@ def evaluate_position(
     premium_capture = safe_float(report.get("premium_capture_pct"))
     event_or_damage = bool(technical.get("event_risk") or technical.get("support_broken"))
     trend = safe_upper(technical.get("trend"))
-    if trend in ["BEARISH", "DOWN", "SELL"] and strategy in ["CASH_SECURED_PUT", "LONG_STOCK"]:
+    if trend in ["BEARISH", "DOWN", "SELL"] and strategy == "CASH_SECURED_PUT":
         event_or_damage = True
 
     def set_review(exit_state: str, action: str, reason: str, blocker: str | None = None) -> None:
@@ -1172,7 +1412,9 @@ def evaluate_position(
     elif strategy == "LONG_STOCK":
         weight = safe_float(row.get("portfolio_weight_pct"))
         if event_or_damage:
-            set_review("EXIT_REVIEW", "REVIEW_DEFENSIVE_EXIT", "Long-stock thesis may be damaged by event risk, bearish trend, or support break.", "LONG_STOCK_THESIS_RISK")
+            set_review("EXIT_REVIEW", "REVIEW_DEFENSIVE_EXIT", "Long-stock thesis may be damaged by event risk or a broken support level.", "LONG_STOCK_THESIS_RISK")
+        elif trend in ["BEARISH", "DOWN", "SELL"]:
+            set_review("RISK_REVIEW", "REVIEW_RISK", "Bearish trend with intact support requires comparing hold, income overlays, protection, and reduction.", "LONG_STOCK_BEARISH_REVIEW")
         elif weight is not None and weight >= 35:
             set_review("RISK_REVIEW", "REVIEW_RISK", "Long-stock position is a high portfolio concentration.", "LONG_STOCK_CONCENTRATION_HIGH")
         elif qty >= DEFAULT_CONTRACT_MULTIPLIER:
@@ -1330,6 +1572,12 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
     max_age = int(safe_float(policy.get("max_context_age_minutes"), DEFAULT_MAX_CONTEXT_AGE_MINUTES) or DEFAULT_MAX_CONTEXT_AGE_MINUTES)
     freshness = _context_freshness(snapshot, account_context if isinstance(account_context, dict) else {}, max_age)
     groups = _position_groups(positions)
+    total_stock_value = sum(safe_float(group.get("stock_value"), 0.0) or 0.0 for group in groups.values())
+    portfolio_value = safe_float(account_context.get("net_liquidation")) if isinstance(account_context, dict) else None
+    concentration_base = portfolio_value if portfolio_value is not None and portfolio_value > 0 else total_stock_value
+    for group in groups.values():
+        stock_value = safe_float(group.get("stock_value"), 0.0) or 0.0
+        group["portfolio_stock_weight_pct"] = round((stock_value / concentration_base) * 100, 2) if concentration_base > 0 and stock_value > 0 else None
     reports = [
         evaluate_position(
             row,

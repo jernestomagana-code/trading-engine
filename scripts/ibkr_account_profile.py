@@ -4656,17 +4656,71 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         )
 
     recommendation = payload.get("recommendation") if isinstance(payload.get("recommendation"), dict) else {}
+    comparison = payload.get("strategy_comparison") if isinstance(payload.get("strategy_comparison"), dict) else {}
     primary_id = recommendation.get("alternative_id")
     primary = next((value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") == primary_id), alternatives[0])
     contract = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
     contract_line = ""
     if contract:
-        contract_line = "Contrato preferido visible: {} {} · {} · prima {}.".format(
+        contract_line = "{}Contrato preferido visible: {} {} · {} · prima {}.".format(
+            ("{} contrato(s) · {}% de la posición. ".format(recommendation.get("contracts"), recommendation.get("coverage_pct")) if recommendation.get("contracts") else ""),
             contract.get("right") or "",
             contract.get("strike") if contract.get("strike") is not None else "N/D",
             contract.get("expiration") or "N/D",
             coberturas_money(contract.get("premium_per_contract")),
         )
+    profile_labels = {
+        "capital_protection": "Mayor protección",
+        "balanced": "Mejor balance",
+        "income_recovery": "Prima y recuperación",
+        "upside_preservation": "Mayor subida",
+    }
+    leaders = comparison.get("profile_leaders") if isinstance(comparison.get("profile_leaders"), dict) else {}
+    leader_cards = []
+    seen_leaders = set()
+    for profile_id, profile_label in profile_labels.items():
+        leader = leaders.get(profile_id) if isinstance(leaders.get(profile_id), dict) else {}
+        leader_key = (profile_id, leader.get("variant_id"))
+        if not leader or leader_key in seen_leaders:
+            continue
+        seen_leaders.add(leader_key)
+        leader_cards.append(
+            '<div class="position-profile"><span>{}</span><b>{}</b><small>Peor escenario {} · lateral {}</small></div>'.format(
+                html_escape(profile_label),
+                html_escape(leader.get("label") or leader.get("alternative_id") or "N/D"),
+                html_escape(coberturas_money(leader.get("worst_case_pnl"))),
+                html_escape(coberturas_money(leader.get("flat_pnl"))),
+            )
+        )
+    variants = comparison.get("variants") if isinstance(comparison.get("variants"), list) else []
+    comparison_rows = []
+    displayed_ids = set()
+    for variant in variants:
+        if not isinstance(variant, dict) or variant.get("alternative_id") in displayed_ids:
+            continue
+        displayed_ids.add(variant.get("alternative_id"))
+        comparison_rows.append(
+            "<tr><td>{label}</td><td>{contracts}</td><td>{support}</td><td>{flat}</td><td>{resistance}</td><td>{worst}</td></tr>".format(
+                label=html_escape(variant.get("label") or variant.get("alternative_id") or "N/D"),
+                contracts=html_escape(variant.get("contracts") if variant.get("contracts") is not None else "—"),
+                support=html_escape(coberturas_money(variant.get("support_pnl"))),
+                flat=html_escape(coberturas_money(variant.get("flat_pnl"))),
+                resistance=html_escape(coberturas_money(variant.get("resistance_pnl"))),
+                worst=html_escape(coberturas_money(variant.get("worst_case_pnl"))),
+            )
+        )
+    comparison_html = ""
+    if comparison.get("available") and leader_cards:
+        comparison_html = """
+        <div class="position-comparison">
+          <div class="position-profile-grid">{leaders}</div>
+          <details>
+            <summary>Ver comparación numérica y supuestos</summary>
+            <div class="position-comparison-scroll"><table><thead><tr><th>Alternativa</th><th>Contratos</th><th>Soporte</th><th>Lateral</th><th>Resistencia</th><th>Peor caso</th></tr></thead><tbody>{rows}</tbody></table></div>
+            <small>Estimación desde el precio actual; usa bid para calls vendidas y ask para puts compradas. No incluye comisiones ni impuestos. Las ponderaciones son de revisión, no probabilidades.</small>
+          </details>
+        </div>
+        """.format(leaders="".join(leader_cards), rows="".join(comparison_rows))
     secondary = [value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") != primary_id]
     more = '<details class="position-alternatives-more"><summary>Ver otras {} posibilidades</summary>{}</details>'.format(
         len(secondary),
@@ -4680,6 +4734,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
           <p>{reason}</p>
           <small>{contract}</small>
         </div>
+        {comparison}
         {more}
       </div>
     """.format(
@@ -4688,6 +4743,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         status=html_escape(status_labels.get(str(recommendation.get("status") or primary.get("status") or ""), friendly_operator_state(recommendation.get("status") or primary.get("status")))),
         reason=html_escape(recommendation.get("reason") or primary.get("reason") or ""),
         contract=html_escape(contract_line),
+        comparison=comparison_html,
         more=more,
     )
 
@@ -6659,6 +6715,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-recommendation > div span {{ font-size:.72rem; font-weight:900; color:#1d4ed8; }}
           .position-recommendation p {{ margin:7px 0; line-height:1.4; }}
           .position-recommendation small {{ color:var(--muted); }}
+          .position-comparison {{ display:grid; gap:7px; }}
+          .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:6px; }}
+          .position-profile {{ display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fbfdff; }}
+          .position-profile span {{ color:var(--muted); font-size:.68rem; font-weight:800; text-transform:uppercase; }}
+          .position-profile b {{ font-size:.8rem; }}
+          .position-profile small {{ font-size:.68rem; color:var(--muted); }}
+          .position-comparison details > summary {{ cursor:pointer; color:var(--accent-strong); font-size:.78rem; font-weight:850; }}
+          .position-comparison-scroll {{ overflow-x:auto; margin-top:7px; }}
+          .position-comparison table {{ width:100%; border-collapse:collapse; font-size:.72rem; }}
+          .position-comparison th, .position-comparison td {{ padding:5px 7px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }}
+          .position-comparison th:first-child, .position-comparison td:first-child {{ text-align:left; }}
+          .position-comparison details > small {{ display:block; margin-top:6px; color:var(--muted); font-size:.67rem; }}
           .position-alternative > div {{ display:flex; justify-content:space-between; gap:10px; }}
           .position-alternative > div span {{ margin:0; font-size:.72rem; font-weight:850; }}
           .position-alternative p {{ margin:5px 0; color:var(--muted); font-size:.82rem; line-height:1.3; }}

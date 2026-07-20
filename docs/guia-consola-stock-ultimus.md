@@ -226,9 +226,13 @@ Muestra primero las posiciones que requieren atención. Cada tarjeta enseña ini
 
 Cada posición incluye además **Posibilidades de gestión**. No es una lista genérica de botones: cambia según el instrumento. Las acciones largas comparan mantener, covered call parcial o total, protective put, collar, reducciones parciales y salida; las puts vendidas y covered calls comparan mantener, recomprar, rolar, asignación y defensa; las opciones largas y cualquier riesgo descubierto reciben rutas específicas. Cada posibilidad indica si está **lista para revisión**, si **falta cadena**, **falta precio**, **faltan datos** o conviene **esperar liquidez**.
 
+Para acciones largas, la tarjeta presenta una sola **Recomendación del motor** y debajo cuatro perspectivas compactas: **Mayor protección**, **Mejor balance**, **Prima y recuperación** y **Mayor subida**. Al abrir **Ver comparación numérica y supuestos** puedes comparar mantener, reducir 25%, covered call parcial y collar en cinco escenarios: caída fuerte, soporte, lateralidad, resistencia y subida fuerte. Los importes son estimaciones desde el precio actual, antes de comisiones e impuestos; las ponderaciones ayudan a revisar y no son probabilidades ni garantías.
+
 La tarjeta destaca primero una sola **Recomendación del motor**, que también puede ser **Mantener y monitorear**. Explica por qué la priorizó, su confianza y el contrato preferido cuando aplica. Las demás rutas quedan dentro de **Ver otras posibilidades** para no confundir la acción principal con una lista de opciones equivalentes.
 
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
+
+Para una acción ya abierta, el escaneo incluye calls **ITM, ATM y OTM**. El tamaño parcial se calcula con lotes reales de 100 acciones: por ejemplo, sobre 1,000 acciones, un objetivo cercano a 25% compara 2 contratos (20%) y 3 contratos (30%). La recomendación usa el ganador del balance; romper soporte o superar 60% del valor neto de la cuenta da prioridad a reducir, mientras que sobreventa y cobertura existente activan sus propios límites de seguridad.
 
 La misma apertura obtiene velas históricas de cada subyacente abierto aunque ya tenga precio vivo. Con ellas calcula tendencia, SMA 10/20/50, RSI 14, ATR 14 y soportes/resistencias de 20 y 50 sesiones. La prima de una opción nunca se usa como precio del activo. Si falta evidencia suficiente, la recomendación debe ser no hacer cambios hasta actualizar los datos.
 
