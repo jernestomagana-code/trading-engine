@@ -31,6 +31,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(result["service_root"], str(installer.SERVICE_ROOT))
         self.assertEqual(result["service_runtime"], str(installer.SERVICE_RUNTIME))
         self.assertIn("docs", installer.SERVICE_COPY_DIRS)
+        self.assertIn("tools", installer.SERVICE_COPY_DIRS)
 
     def test_opener_prefers_permanent_service_before_terminal_fallback(self):
         command = " ".join(installer.opener_plist_payload()["ProgramArguments"])
@@ -48,6 +49,8 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('id="resultados" class="panel operator-workspace"', source)
         self.assertIn('id="herramientas" class="panel operator-workspace"', source)
         self.assertIn('href="/guide">Guía</a>', source)
+        self.assertIn('"Ultima apertura"', source)
+        self.assertIn('"RSP OK"', source)
         self.assertIn("Ver {len(secondary_alerts)} alertas adicionales", source)
 
     def test_operator_guide_is_canonical_and_covers_navigation(self):
@@ -69,6 +72,31 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("<table>", payload)
         self.assertIn("<ol>", payload)
         self.assertNotIn("# Guía de uso", payload)
+
+    def test_daily_open_includes_rsp_and_resilient_timeouts(self):
+        command = console.daily_open_command()
+
+        self.assertIn("--rsp-bridge-timeout", command)
+        self.assertEqual(command[command.index("--bridge-timeout") + 1], "240")
+        self.assertEqual(command[command.index("--rsp-bridge-timeout") + 1], "120")
+        self.assertEqual(command[command.index("--read-timeout") + 1], "30")
+        self.assertGreaterEqual(console.CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS, 600)
+
+    def test_completed_opening_with_only_foundation_gap_is_presented_as_evidence_collection(self):
+        report = {
+            "status": "ACTION_REQUIRED",
+            "refresh_step": {"ok": True},
+            "rsp_refresh_step": {"ok": True},
+            "coberturas_rsp": {"ok": True},
+            "publish_step": {"ok": True},
+            "checks": {
+                "production_auth": {"ok": True},
+                "v32_operator_today": {"ok": True},
+                "foundation_health": {"status": "FAIL"},
+            },
+        }
+
+        self.assertEqual(console.effective_daily_open_status(report), "EVIDENCE_COLLECTION_ONLY")
 
 
 if __name__ == "__main__":

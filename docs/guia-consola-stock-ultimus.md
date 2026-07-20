@@ -58,10 +58,15 @@ El navegador puede cerrarse sin apagar el servicio. Volver a abrir el acceso dir
 1. Abre TWS/IB Gateway y confirma que la sesión esté desbloqueada.
 2. Abre la consola.
 3. Mira primero el semáforo superior.
-4. Presiona **Apertura diaria**.
-5. Espera a que el proceso muestre `DONE`. No vuelvas a presionar el botón mientras esté trabajando.
-6. Lee **Modo Hoy** y el **Siguiente paso recomendado**.
-7. Atiende en este orden: **Riesgo**, **Alertas**, **Posiciones**.
+4. Pega y guarda primero la lectura diaria de Coberturas RSP cuando tengas un JSON nuevo de gamma/niveles.
+5. Presiona **Apertura diaria**. El ciclo valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
+6. Espera a que el proceso muestre `DONE`. No vuelvas a presionar el botón mientras esté trabajando.
+7. Lee **Modo Hoy** y el **Siguiente paso recomendado**.
+8. Atiende en este orden: **Riesgo**, **Alertas**, **Posiciones**.
+
+La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. Mientras la consola muestre que está trabajando, no inicies una segunda apertura.
+
+Durante la apertura, el puente reúne primero precios, posiciones y contratos en el entorno local. La publicación se realiza después como un snapshot consolidado; así una respuesta lenta de producción no detiene cada contrato individual.
 
 ### Durante la sesión
 
@@ -109,7 +114,7 @@ El color no es una señal de compra o venta. Indica la salud operativa de la con
 | Botón | Para qué sirve | Qué no hace |
 |---|---|---|
 | Actualizar estado | Relee producción, GPT y alertas. | No cambia cuenta y no consulta profundamente IBKR. |
-| Apertura diaria | Ejecuta la preparación completa: CANSLIM, validaciones, refresh/publicación y reporte. | No autoriza órdenes. |
+| Apertura diaria | Ejecuta CANSLIM, refresh principal de IBKR, refresh RSP 7–14 DTE, publicación, validaciones y reporte. | No autoriza órdenes. |
 | Validar IBKR | Prueba rápidamente TWS/API, cuenta y capacidad. | No hace un escaneo profundo de opciones. |
 | Alinear/Publicar rápido | Corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
 
@@ -142,6 +147,7 @@ Los primeros cuatro bloques son de uso diario. Cartera, Resultados y Herramienta
 | Esperando mercado | El sistema espera una sesión o evento válido. | Mantener monitoreo; no convertirlo en entrada. |
 | Fuera de mercado | La sesión estadounidense está cerrada. | Preparar y diagnosticar, no forzar datos de mercado. |
 | Bloqueado | Falta una conexión, credencial o dato esencial. | Resolver el bloqueo antes de operar. |
+| Acumulando evidencia | La apertura técnica terminó, pero faltan eventos reales o resultados cerrados para confiar en `ENTRY_READY`. | Mantener seguimiento y no cambiar parámetros todavía. |
 
 Debajo aparecen cuatro lecturas:
 
@@ -149,6 +155,7 @@ Debajo aparecen cuatro lecturas:
 - **Está esperando:** principal dato, evidencia o acción pendiente.
 - **Última alerta viva:** la alerta pendiente de mayor prioridad.
 - **Mercado:** sesión abierta/cerrada y nivel de madurez operativa (`edge`).
+- **Última apertura:** conserva el resultado del último ciclo aunque después corran notificaciones o mantenimiento; también indica si RSP quedó actualizado.
 
 El `edge` mide madurez y calidad de evidencia del sistema; **no es una probabilidad de ganancia ni una señal de entrada**.
 
@@ -300,6 +307,17 @@ Solicita a IBKR una vista previa de margen y comisión. El modo `what-if` impide
 ### Operación y mantenimiento
 
 Muestra automatizaciones locales de riesgo, outbox, digest, acciones humanas y sesiones limpias de observación. Recalcula y archiva; no consulta ni opera el broker al ejecutar el mantenimiento local.
+
+### Coberturas RSP dentro de la apertura
+
+La lectura manual que pegas en **Coberturas RSP** y la cadena consultada a IBKR son dos piezas diferentes:
+
+- **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
+- **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
+
+Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta inmediatamente. A partir de ahora, **Apertura diaria** también comprueba que esa lectura sea fresca y ejecuta un refresh exclusivo de RSP para vencimientos de 7–14 DTE. El resultado de apertura muestra por separado `contexto`, `cadena` y `candidatos`.
+
+Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. Un contrato viejo, fuera de 7–14 DTE o sin bid/ask no debe usarse como candidato actualizado.
 
 ## 12. Resultados y aprendizaje
 

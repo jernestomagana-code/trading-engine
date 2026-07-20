@@ -99,7 +99,7 @@ REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIME
 REMOTE_VERIFY_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_VERIFY_TIMEOUT_SECONDS", "20"))
 REMOTE_CACHE_MAX_AGE_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_CACHE_MAX_AGE_SECONDS", "900"))
 LOCAL_JOB_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", "90"))
-CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS", "420"))
+CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS", "720"))
 CONSOLE_BRIDGE_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_BRIDGE_TIMEOUT_SECONDS", "75")))
 CONSOLE_HISTORICAL_TIMEOUT_SECONDS = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_HISTORICAL_TIMEOUT_SECONDS", "4")))
 CONSOLE_IBKR_CLIENT_ID = int(float(os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "75")))
@@ -735,9 +735,11 @@ def daily_open_command() -> list[str]:
         "--allow-stale-publish",
         "--soft-exit",
         "--bridge-timeout",
-        "90",
+        "240",
+        "--rsp-bridge-timeout",
+        "120",
         "--read-timeout",
-        "10",
+        "30",
     ]
 
 
@@ -1982,6 +1984,10 @@ def console_today_summary(active: dict[str, Any], snapshot: dict[str, Any], oper
     notify = reports.get("notify") or {}
     edge = reports.get("edge") or {}
     tradingview = reports.get("tradingview") or {}
+    daily_open = reports.get("daily_open") or {}
+    daily_open_status = effective_daily_open_status(daily_open) if daily_open else "SIN APERTURA"
+    daily_open_label = "ACUMULANDO EVIDENCIA" if daily_open_status == "EVIDENCE_COLLECTION_ONLY" else daily_open_status
+    rsp_open = daily_open.get("coberturas_rsp") if isinstance(daily_open.get("coberturas_rsp"), dict) else {}
     next_actions = data.get("next_actions") if isinstance(data.get("next_actions"), list) else []
     next_action = next_actions[0] if next_actions else {}
 
@@ -2027,6 +2033,9 @@ def console_today_summary(active: dict[str, Any], snapshot: dict[str, Any], oper
         "edge_score": edge.get("overall_edge_score"),
         "notify_reason": (notify.get("classification") if isinstance(notify.get("classification"), dict) else {}).get("notify_reason") or notify.get("status") or "N/D",
         "tv_status": tradingview.get("status") or "N/D",
+        "daily_open_status": daily_open_label,
+        "daily_open_generated_at": daily_open.get("generated_at"),
+        "daily_open_rsp": "RSP OK" if rsp_open.get("ok") else "RSP pendiente",
         "counts": counts,
         "execution_authorized": False,
         "not_order_instruction": True,
@@ -2052,6 +2061,7 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
         {waiting}
         {alert}
         {market}
+        {daily_open}
       </div>
     </section>
     """.format(
@@ -2061,6 +2071,11 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
         waiting=render_metric("Esta esperando", today["waiting"], "TradingView=" + str(today.get("tv_status"))),
         alert=render_metric("Ultima alerta viva", today["last_alert"], "notify=" + str(today.get("notify_reason"))),
         market=render_metric("Mercado", today["market_session"], "edge=" + edge_text),
+        daily_open=render_metric(
+            "Ultima apertura",
+            today["daily_open_status"],
+            "{} · {}".format(today["daily_open_rsp"], age_label(today.get("daily_open_generated_at"))),
+        ),
     )
 
 
@@ -4446,6 +4461,20 @@ def is_daily_open_result(result: dict[str, Any]) -> bool:
     return "daily_open_checklist.py" in str(result.get("command") or "")
 
 
+def effective_daily_open_status(report: dict[str, Any]) -> str:
+    status = str(report.get("status") or "UNKNOWN")
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    foundation = checks.get("foundation_health") if isinstance(checks.get("foundation_health"), dict) else {}
+    mechanics_ok = all(
+        isinstance(report.get(key), dict) and report[key].get("ok") is True
+        for key in ["refresh_step", "rsp_refresh_step", "coberturas_rsp", "publish_step"]
+    )
+    production_ok = (checks.get("production_auth") or {}).get("ok") is True and (checks.get("v32_operator_today") or {}).get("ok") is True
+    if status == "ACTION_REQUIRED" and mechanics_ok and production_ok and foundation.get("status") == "FAIL":
+        return "EVIDENCE_COLLECTION_ONLY"
+    return status
+
+
 def status_word(ok: Any, good: str = "OK", bad: str = "REVISAR") -> str:
     if ok is True:
         return good
@@ -4465,6 +4494,8 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     canslim = report.get("canslim_step") if isinstance(report.get("canslim_step"), dict) else {}
     refresh = report.get("refresh_step") if isinstance(report.get("refresh_step"), dict) else {}
+    rsp_refresh = report.get("rsp_refresh_step") if isinstance(report.get("rsp_refresh_step"), dict) else {}
+    rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
     publish = report.get("publish_step") if isinstance(report.get("publish_step"), dict) else {}
     ibkr_port = checks.get("ibkr_port") if isinstance(checks.get("ibkr_port"), dict) else {}
     production_auth = checks.get("production_auth") if isinstance(checks.get("production_auth"), dict) else {}
@@ -4493,10 +4524,22 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     if "The read operation timed out" in str(publish.get("stdout_tail") or ""):
         publish_detail = "Render recibio solicitud, pero no confirmo respuesta antes del timeout."
     gpt_status = result.get("remote_verification_status") or ("OK" if operator_today.get("ok") else "NO CONFIRMADO")
-    overall = str(report.get("status") or "UNKNOWN")
+    overall = effective_daily_open_status(report)
+    overall_label = "ACUMULANDO EVIDENCIA" if overall == "EVIDENCE_COLLECTION_ONLY" else overall
+    next_action = report.get("next_required_action") or "Sin siguiente accion reportada."
+    if overall == "EVIDENCE_COLLECTION_ONLY":
+        next_action = "Apertura tecnica completa. Continuar acumulando evidencia; no cambiar parametros ni forzar ENTRY_READY."
     level = "green" if overall in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"} and refresh.get("ok") else "amber"
     if overall == "ACTION_REQUIRED" or refresh.get("ok") is False or publish.get("ok") is False:
         level = "red"
+    rsp_status = status_word(rsp_refresh.get("ok"), good="ACTUALIZADO")
+    if rsp_refresh.get("skipped"):
+        rsp_status = "OMITIDO"
+    rsp_detail = "contexto={} · cadena={} · candidatos={}".format(
+        "fresco" if rsp.get("manual_context_fresh") else "revisar",
+        "OK" if rsp.get("chain_has_rsp") else "pendiente",
+        rsp.get("candidate_count") or 0,
+    )
     return """
     <div class="daily-open-summary summary-{level}">
       <div class="section-head">
@@ -4509,6 +4552,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
       <div class="tiles compact-status">
         <div class="tile">CANSLIM<span>{canslim_status}. Candidatos actualizados si el paso marco OK.</span></div>
         <div class="tile">IBKR/TWS<span>{ibkr_status}: {ibkr_detail}</span></div>
+        <div class="tile">Coberturas RSP<span>{rsp_status}: {rsp_detail}</span></div>
         <div class="tile">Publicacion<span>{publish_status}: {publish_detail}</span></div>
         <div class="tile">GPT/Produccion<span>{gpt_status}. Auth={production_status}; operador={operator_status}.</span></div>
         <div class="tile">Foundation<span>{foundation_status}</span></div>
@@ -4517,11 +4561,13 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     </div>
     """.format(
         level=html_escape(level),
-        overall=html_escape(overall),
-        next_action=html_escape(report.get("next_required_action") or "Sin siguiente accion reportada."),
+        overall=html_escape(overall_label),
+        next_action=html_escape(next_action),
         canslim_status=html_escape(status_word(canslim.get("ok"))),
         ibkr_status=html_escape(ibkr_status),
         ibkr_detail=html_escape(ibkr_detail),
+        rsp_status=html_escape(rsp_status),
+        rsp_detail=html_escape(rsp_detail),
         publish_status=html_escape(status_word(publish.get("ok"))),
         publish_detail=html_escape(publish_detail),
         gpt_status=html_escape(gpt_status),
@@ -5643,10 +5689,10 @@ def console_last_action_status(result: dict[str, Any]) -> str:
     text = "\n".join([str(result.get("stdout_tail") or ""), str(result.get("stderr_tail") or "")])
     if is_daily_open_result(result):
         report = load_json_file(DAILY_OPEN_CHECKLIST_PATH)
-        status = str(report.get("status") or "UNKNOWN")
+        status = effective_daily_open_status(report)
         if status == "ACTION_REQUIRED":
             return "APERTURA: requiere revision"
-        if status in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"}:
+        if status in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED", "EVIDENCE_COLLECTION_ONLY"}:
             return "APERTURA: completada"
         return "APERTURA: " + status
     inferred_partial = "BRIDGE_TIMEOUT" in text and "FALLBACK_PUBLISHED" in text and "ok: True" in text
@@ -5663,10 +5709,12 @@ def console_last_action_summary(result: dict[str, Any]) -> str:
     text = "\n".join([str(result.get("stdout_tail") or ""), str(result.get("stderr_tail") or "")])
     if is_daily_open_result(result):
         report = load_json_file(DAILY_OPEN_CHECKLIST_PATH)
-        status = str(report.get("status") or "UNKNOWN")
+        status = effective_daily_open_status(report)
         next_action = report.get("next_required_action") or "Revisar el resumen operativo de Apertura diaria."
         if status == "ACTION_REQUIRED":
             return "Apertura diaria corrio, pero no quedo lista para confiar sin revision. Siguiente paso: " + str(next_action)
+        if status == "EVIDENCE_COLLECTION_ONLY":
+            return "Apertura tecnica completa. El sistema queda acumulando evidencia; no es un fallo de conexion ni publicacion."
         return "Apertura diaria genero reporte: {}. Siguiente paso: {}".format(status, next_action)
     inferred_partial = "BRIDGE_TIMEOUT" in text and "FALLBACK_PUBLISHED" in text and "ok: True" in text
     if result.get("partial_refresh_ok") or result.get("operator_status") == "PARTIAL_REFRESH_OK" or inferred_partial:

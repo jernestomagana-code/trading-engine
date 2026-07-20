@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 import foundation_health
 import operational_evidence_gate
+import coberturas_engine
 
 RUNTIME = ROOT / "runtime"
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
@@ -44,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ibkr-port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
+    parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "120")))
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "10")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_OPEN_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--refresh", action="store_true", help="Run ibkr_bridge.py --once before reading V32.")
@@ -53,6 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--publish", action="store_true", help="Publish runtime snapshot after refresh/check.")
     parser.add_argument("--allow-stale-publish", action="store_true", help="Pass --allow-stale to the publisher.")
     parser.add_argument("--full-bridge", action="store_true", help="Do not enable DAILY_RADAR_FAST for the bridge.")
+    parser.add_argument("--skip-rsp-refresh", action="store_true", help="Skip the dedicated RSP 7-14 DTE refresh during this opening.")
     parser.add_argument("--no-keychain", action="store_true", help="Use env vars only; do not read macOS Keychain.")
     parser.add_argument("--soft-exit", action="store_true", help="Exit 0 when the checklist report is generated, even if action is required.")
     return parser.parse_args()
@@ -60,6 +63,18 @@ def parse_args() -> argparse.Namespace:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def age_minutes(value: Any) -> float | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return round(max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 60.0), 2)
+    except Exception:
+        return None
 
 
 def keychain_password(service: str, disabled: bool = False) -> str | None:
@@ -204,14 +219,93 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
     env["IBKR_HOST"] = args.ibkr_host
     env["IBKR_PORT"] = str(args.ibkr_port)
     env["PYTHONUNBUFFERED"] = "1"
+    env["IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS"] = "1"
     if not args.full_bridge:
         env.setdefault("DAILY_RADAR_FAST", "1")
+        daily_symbols = os.getenv(
+            "STOCK_ULTIMUS_DAILY_OPEN_OPTION_SYMBOLS",
+            "QQQ,SPY,NVDA,TSLA,META,NFLX,TLT,AAPL,AMZN,MSFT",
+        )
+        env.setdefault("IBKR_WATCHLIST", daily_symbols)
+        env.setdefault("IBKR_OPTION_SYMBOLS", daily_symbols)
+        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "10")
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "40")
+        env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "0")
+        env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "0")
     return run_command(
         "refresh_ibkr_bridge",
         [sys.executable, "ibkr_bridge.py", "--once"],
         timeout=args.bridge_timeout,
         env=env,
     )
+
+
+def refresh_rsp_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
+    env["IBKR_HOST"] = args.ibkr_host
+    env["IBKR_PORT"] = str(args.ibkr_port)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS"] = "1"
+    command = [
+        sys.executable,
+        "scripts/run_market_bridge_session.py",
+        "--max-runs",
+        "1",
+        "--bridge-timeout",
+        str(args.rsp_bridge_timeout),
+        "--historical-data-timeout",
+        "6",
+        "--coberturas-rsp-weekly",
+        "--json-out",
+        str(RUNTIME / "stock_ultimus_coberturas_rsp_weekly_bridge_latest.json"),
+    ]
+    return run_command(
+        "refresh_coberturas_rsp",
+        command,
+        timeout=max(args.rsp_bridge_timeout + 45, 90),
+        env=env,
+    )
+
+
+def coberturas_rsp_summary() -> dict[str, Any]:
+    try:
+        payload = coberturas_engine.build_recommendation(RUNTIME)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "RSP_RECOMMENDATION_ERROR",
+            "error": str(exc)[:300],
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+    context = payload.get("manual_context") if isinstance(payload.get("manual_context"), dict) else {}
+    ibkr = payload.get("ibkr") if isinstance(payload.get("ibkr"), dict) else {}
+    updated_at = context.get("updated_at")
+    context_age_minutes = age_minutes(updated_at)
+    context_fresh = context_age_minutes is not None and context_age_minutes <= 24 * 60
+    chain_has_rsp = ibkr.get("chain_has_rsp") is True
+    context_available = context.get("available") is True
+    return {
+        "ok": bool(context_available and context_fresh and chain_has_rsp),
+        "status": "RSP_READY_FOR_MANUAL_REVIEW" if context_available and context_fresh and chain_has_rsp else "RSP_ACTION_REQUIRED",
+        "decision": payload.get("decision"),
+        "next_action": payload.get("next_action"),
+        "manual_context_available": context_available,
+        "manual_context_updated_at": updated_at,
+        "manual_context_age_minutes": context_age_minutes,
+        "manual_context_fresh": context_fresh,
+        "spot": payload.get("spot"),
+        "gamma_bias": context.get("gamma_bias"),
+        "chain_has_rsp": chain_has_rsp,
+        "chain_coverage_generated_at": ibkr.get("chain_coverage_generated_at"),
+        "candidate_count": payload.get("candidate_count") or 0,
+        "blockers": payload.get("blockers") or [],
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
 
 
 def build_canslim_candidates(args: argparse.Namespace) -> dict[str, Any]:
@@ -280,14 +374,26 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
     if not checks["production_auth"]["ok"]:
         return "ACTION_REQUIRED", "Revisar token/backend: produccion no acepta lectura autenticada."
     if report.get("refresh_step", {}).get("ok") is False:
-        return "ACTION_REQUIRED", "Abrir/desbloquear TWS-IBKR y reintentar refresh."
+        error = str(report.get("refresh_step", {}).get("error") or "")
+        if error in {"IBKR_PORT_CLOSED", "MISSING_INGEST_TOKEN"}:
+            return "ACTION_REQUIRED", "Abrir/desbloquear TWS-IBKR o revisar el token de ingest antes de reintentar."
+        return "ACTION_REQUIRED", "IBKR conecto, pero el escaneo principal no termino; revisar timeout/red de produccion y reintentar una sola vez."
+    if report.get("rsp_refresh_step", {}).get("ok") is False:
+        return "ACTION_REQUIRED", "Coberturas RSP no completo su refresh IBKR 7-14 DTE; revisar el detalle RSP antes de usar candidatos."
     if report.get("publish_step", {}).get("ok") is False:
         return "ACTION_REQUIRED", "Revisar publicador de snapshot antes de usar el GPT."
+    rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
+    if report.get("refresh_requested") and not report.get("rsp_refresh_step", {}).get("skipped") and rsp.get("ok") is False:
+        if not rsp.get("manual_context_available") or not rsp.get("manual_context_fresh"):
+            return "ACTION_REQUIRED", "Pegar/guardar una lectura RSP fresca antes de depender de Coberturas."
+        return "ACTION_REQUIRED", "La lectura RSP esta guardada, pero falta una cadena IBKR RSP fresca de 7-14 DTE."
+    if checks.get("v32_operator_today", {}).get("ok") is False:
+        return "ACTION_REQUIRED", "Produccion autentico correctamente, pero la lectura V32 fue lenta; reintentar solo Actualizar estado."
     foundation = checks.get("foundation_health") or {}
     if foundation.get("status") == "FAIL":
         priorities = foundation.get("priorities") if isinstance(foundation.get("priorities"), list) else []
         first_priority = priorities[0] if priorities else "Revisar runtime/foundation_health_latest.json."
-        return "ACTION_REQUIRED", "Resolver Foundation Health antes de depender del motor: " + first_priority
+        return "EVIDENCE_COLLECTION_ONLY", "Apertura tecnica completa; seguir acumulando evidencia antes de depender de ENTRY_READY: " + first_priority
     evidence_gate = checks.get("operational_evidence_gate") or {}
     if evidence_gate.get("state") == "FOUNDATION_BLOCKED":
         next_actions = evidence_gate.get("next_actions") if isinstance(evidence_gate.get("next_actions"), list) else []
@@ -354,6 +460,21 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["refresh_step"] = refresh_bridge(args, ingest_token)
             checks["runtime_freshness_after_refresh"] = runtime_freshness()
+        if args.skip_rsp_refresh:
+            report["rsp_refresh_step"] = {
+                "name": "refresh_coberturas_rsp",
+                "ok": True,
+                "skipped": True,
+                "detail": "SKIPPED_BY_OPERATOR",
+                "not_order_instruction": True,
+            }
+        elif not ingest_token:
+            report["rsp_refresh_step"] = {"name": "refresh_coberturas_rsp", "ok": False, "error": "MISSING_INGEST_TOKEN"}
+        elif not ibkr_open:
+            report["rsp_refresh_step"] = {"name": "refresh_coberturas_rsp", "ok": False, "error": "IBKR_PORT_CLOSED"}
+        else:
+            report["rsp_refresh_step"] = refresh_rsp_bridge(args, ingest_token)
+        report["coberturas_rsp"] = coberturas_rsp_summary()
 
     if args.publish:
         if not ingest_token:
@@ -390,7 +511,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
     status, next_action = classify(report)
     report["status"] = status
-    report["ok"] = status in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"}
+    report["ok"] = status in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED", "EVIDENCE_COLLECTION_ONLY"}
     report["next_required_action"] = next_action
     report["gpt_prompt"] = "que hago hoy?"
     report["operator_dashboard"] = base_url + "/v32_operator_dashboard"

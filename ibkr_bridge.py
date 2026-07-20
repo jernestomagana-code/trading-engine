@@ -1330,6 +1330,8 @@ def safe_round(x, digits=4):
 
 
 def post(payload):
+    if _env_bool("IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS", False):
+        return "SKIPPED_FINAL_PUBLISH"
     try:
         response = requests.post(
             ENGINE_URL,
