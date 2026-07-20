@@ -228,6 +228,30 @@ Cada posición incluye además **Posibilidades de gestión**. No es una lista ge
 
 Para acciones largas, la tarjeta presenta una sola **Recomendación del motor** y debajo cuatro perspectivas compactas: **Mayor protección**, **Mejor balance**, **Prima y recuperación** y **Mayor subida**. Al abrir **Ver comparación numérica y supuestos** puedes comparar mantener, reducir 25%, covered call parcial y collar en cinco escenarios: caída fuerte (estrés de al menos -20%, o tres ATR si resulta más severo), soporte, lateralidad, resistencia y subida fuerte. Los importes son estimaciones desde el precio actual, antes de comisiones e impuestos; las ponderaciones ayudan a revisar y no son probabilidades ni garantías.
 
+### Cómo leer un collar recomendado
+
+Un **collar** siempre tiene dos patas sobre la misma cantidad de acciones y, para esta comparación, el mismo vencimiento:
+
+| Pata | Qué aparece en la consola | Qué significa |
+|---|---|---|
+| Call vendida | `C`, strike, vencimiento y prima calculada con bid | Cobra prima, pero limita la subida de las acciones cubiertas por encima de ese strike. |
+| Put comprada | `P`, strike, vencimiento y costo calculado con ask | Protege las acciones cubiertas por debajo de ese strike hasta el vencimiento. |
+| Cantidad | Número de contratos y porcentaje de cobertura | Cada contrato corresponde a 100 acciones. |
+| Acciones sin collar | Acciones totales menos contratos × 100 | Conservan todo su riesgo y toda su subida; no tienen ni call ni put. |
+
+**Parcial** significa que sólo una parte de las acciones lleva ambas patas. **Total** significaría poner una call y una put por cada lote de 100 acciones. La consola actual compara cuantitativamente **collares parciales** cercanos al objetivo de 25%. La posibilidad denominada **Covered call sobre todos los lotes disponibles** no es un collar total: vende calls sobre todos los lotes, pero no compra puts protectoras.
+
+Ejemplo real capturado el **20 de julio de 2026** para explicar la lectura —no debe reutilizarse como recomendación futura—:
+
+- Posición: 1,000 acciones de NFLX.
+- Collar parcial: 3 contratos, equivalente a 300 acciones o 30% de la posición.
+- Pata de ingreso: vender 3 calls NFLX strike 65, vencimiento 28 de agosto de 2026; bid observado 4.60.
+- Pata de protección: comprar 3 puts NFLX strike 62, mismo vencimiento; ask observado 1.01.
+- Crédito neto indicativo: 4.60 − 1.01 = 3.59 por acción cubierta, aproximadamente $1,077 para 3 contratos antes de comisiones, deslizamiento e impuestos.
+- Resultado estructural: 300 acciones quedan protegidas por debajo de 62 y limitadas por encima de 65; las otras 700 permanecen sin collar y conservan toda su exposición.
+
+Los strikes, vencimiento, bid, ask, cantidad y ganador cambian con el precio, la cadena, la volatilidad, el soporte y la concentración. Para operar la lectura correcta usa siempre la línea **Contrato preferido visible** y **Put protectora** de la tarjeta actual, no los números históricos de este ejemplo.
+
 La tarjeta destaca primero una sola **Recomendación del motor**, que también puede ser **Mantener y monitorear**. Explica por qué la priorizó, su confianza y el contrato preferido cuando aplica. Las demás rutas quedan dentro de **Ver otras posibilidades** para no confundir la acción principal con una lista de opciones equivalentes.
 
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
