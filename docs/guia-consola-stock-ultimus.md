@@ -171,6 +171,8 @@ Este panel permanece cerrado cuando no hay una señal operable. La consola separ
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
+Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
+
 ### Severidades
 
 | Severidad | Interpretación |
@@ -203,6 +205,8 @@ Que una alerta aparezca como operable significa **“revisar ahora”**, no “e
 - checklist de Score, Técnico, Opciones, Volatilidad, Capacidad, CANSLIM y Riesgo.
 
 Un punto pendiente en el checklist no debe ignorarse. Si falta contrato, capacidad o validación de riesgo, la alerta no está completa.
+
+En una tarjeta de **Futuros Intradía**, la información cambia para evitar conceptos de opciones que no aplican. Muestra evento, dirección, entrada, stop, TP1/TP2, relación riesgo/beneficio, contratos permitidos y los estados de construcción, riesgo, portfolio y contexto pre-market. Usa **Visto**, **Revisando**, **Watch**, **Rechazar** o **Cerrar** para registrar qué hiciste; esos botones nunca envían una orden.
 
 ### Botones de seguimiento de alertas
 
@@ -474,6 +478,8 @@ Ejecuta un refresh de IBKR y espera a que termine. No tomes decisiones de contra
 ### No aparecen oportunidades
 
 Puede ser correcto. Revisa si el mercado está cerrado, si faltan eventos reales de TradingView o si las oportunidades quedaron ocultas como diagnóstico por no superar las puertas de calidad. La ausencia de alerta es preferible a forzar una señal débil.
+
+Para futuros, **Apertura diaria** también ejecuta la reconciliación de señales. Si TradingView recibió una señal pero la consola no pudo procesarla antes de un reinicio, la recupera desde el almacenamiento permanente, evita duplicarla y la incorpora a **Futuros Intradía** si todavía está vigente. Si esta comprobación falla, la apertura queda en `ACTION_REQUIRED` y no debe asumirse que “no hubo señales”.
 
 ### Una acción muestra error
 

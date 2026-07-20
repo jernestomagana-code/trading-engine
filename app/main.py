@@ -1577,6 +1577,7 @@ def row_to_intraday_futures_alert_event(row):
 
     for key in [
         "event_id",
+        "source_event_id",
         "received_at",
         "saved_at",
         "session_date",
@@ -2315,11 +2316,22 @@ def build_intraday_futures_price_point(payload):
     if not ticker or ticker == "UNKNOWN" or price is None:
         return None
 
-    return {
-        "point_id": "IFPX-{ticker}-{timestamp}".format(
+    source_event_id = str(
+        payload.get("source_event_id")
+        or payload.get("tradingview_event_id")
+        or ""
+    ).strip()
+    point_id = (
+        "IFPX-{source_event_id}".format(source_event_id=source_event_id)
+        if source_event_id
+        else "IFPX-{ticker}-{timestamp}".format(
             ticker=ticker,
             timestamp=int(now_utc().timestamp() * 1000),
-        ),
+        )
+    )
+
+    return {
+        "point_id": point_id,
         "received_at": payload.get("received_at") or now_utc().isoformat(),
         "saved_at": now_utc().isoformat(),
         "session_date": session_date_from_iso(payload.get("received_at") or now_utc().isoformat()),
@@ -2347,6 +2359,9 @@ def save_intraday_futures_price_point(payload):
         return {"saved": False, "reason": "NO_PRICE_POINT"}
 
     points = load_intraday_futures_price_points(limit=50000)
+    point_id = str(point.get("point_id") or "")
+    duplicate = any(str(item.get("point_id") or "") == point_id for item in points)
+    points = [item for item in points if str(item.get("point_id") or "") != point_id]
     points.append(point)
     save_intraday_futures_price_points_file(points)
     supabase_result = supabase_persist_intraday_price_point(point)
@@ -2357,6 +2372,7 @@ def save_intraday_futures_price_point(payload):
         "ticker": point.get("ticker"),
         "price": point.get("price"),
         "received_at": point.get("received_at"),
+        "duplicate": duplicate,
         "supabase": supabase_result,
     }
 
@@ -2374,14 +2390,24 @@ def build_intraday_futures_alert_event(payload):
     event_code = payload.get("event_code") or construction.get("event_code")
     event = payload.get("event") or construction.get("event")
 
-    event_id = "IFEV-{ticker}-{timestamp}-{event_code}".format(
-        ticker=ticker or "UNKNOWN",
-        timestamp=int(now_utc().timestamp() * 1000),
-        event_code=event_code if event_code is not None else "NA",
+    source_event_id = str(
+        payload.get("source_event_id")
+        or payload.get("tradingview_event_id")
+        or ""
+    ).strip()
+    event_id = (
+        "IFEV-{source_event_id}".format(source_event_id=source_event_id)
+        if source_event_id
+        else "IFEV-{ticker}-{timestamp}-{event_code}".format(
+            ticker=ticker or "UNKNOWN",
+            timestamp=int(now_utc().timestamp() * 1000),
+            event_code=event_code if event_code is not None else "NA",
+        )
     )
 
     return {
         "event_id": event_id,
+        "source_event_id": source_event_id or None,
         "received_at": received_at,
         "saved_at": now_utc().isoformat(),
         "session_date": session_date_from_iso(received_at),
@@ -2450,6 +2476,9 @@ def save_intraday_futures_alert_event(payload):
 
     event = build_intraday_futures_alert_event(payload)
     events = load_intraday_futures_alert_events(limit=10000)
+    event_id = str(event.get("event_id") or "")
+    duplicate = any(str(item.get("event_id") or "") == event_id for item in events)
+    events = [item for item in events if str(item.get("event_id") or "") != event_id]
     events.append(event)
     events = events[-10000:]
 
@@ -2464,6 +2493,7 @@ def save_intraday_futures_alert_event(payload):
         "event": event.get("event"),
         "ticker": event.get("ticker"),
         "evaluation_status": event.get("evaluation_status"),
+        "duplicate": duplicate,
         "supabase": supabase_result,
     }
 
@@ -5027,6 +5057,13 @@ def startup():
     restore = globals().get("_v31_restore_durable_snapshot")
     if callable(restore):
         restore()
+    reconcile_futures = globals().get("_v32_reconcile_intraday_futures_signal_events")
+    if callable(reconcile_futures):
+        try:
+            reconcile_futures(limit=2000, notify=False)
+        except Exception:
+            # Startup must remain available even if a remote durable store is temporarily unavailable.
+            pass
 
 
 # ============================================================
@@ -10761,7 +10798,131 @@ def _v32_load_tradingview_signal_events(limit=1000):
     return rows[-bounded_limit:]
 
 
-async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Optional[str] = Header(default=None)):
+def _v32_intraday_payload_from_signal_event(signal_event):
+    signal_event = signal_event if isinstance(signal_event, dict) else {}
+    raw_payload = signal_event.get("raw_payload") if isinstance(signal_event.get("raw_payload"), dict) else {}
+    payload = dict(raw_payload)
+    payload.setdefault("strategy", signal_event.get("strategy_context"))
+    payload.setdefault("strategy_context", signal_event.get("strategy_context"))
+    payload.setdefault("ticker", signal_event.get("ticker"))
+    payload.setdefault("timeframe", signal_event.get("timeframe"))
+    payload.setdefault("event", signal_event.get("event"))
+    payload.setdefault("event_code", signal_event.get("event_code"))
+    payload.setdefault("price", signal_event.get("price"))
+    payload.setdefault("vwap", signal_event.get("vwap"))
+    payload.setdefault("breakout_direction", signal_event.get("breakout_direction"))
+    payload.setdefault("logical_stop", signal_event.get("logical_stop"))
+    payload.setdefault("logical_target", signal_event.get("logical_target"))
+    payload.setdefault("not_order_instruction", True)
+    payload = enrich_stock_ultimus_technical_payload(payload)
+    source_event_id = signal_event.get("event_id") or signal_event.get("id")
+    original_source = payload.get("original_source") or payload.get("source") or "TradingView"
+    payload.update({
+        "ticker": signal_event.get("ticker") or payload.get("ticker"),
+        "timeframe": normalize_timeframe(signal_event.get("timeframe") or payload.get("timeframe") or "5m"),
+        "received_at": signal_event.get("received_at") or now_utc().isoformat(),
+        "saved_at": now_utc().isoformat(),
+        "source": "TECHNICAL_SNAPSHOT",
+        "original_source": original_source,
+        "source_event_id": source_event_id,
+        "tradingview_event_id": source_event_id,
+        "is_validation": intraday_futures_is_validation_event({
+            "source": original_source,
+            "raw_payload_preview": signal_event.get("raw_payload_preview"),
+        }),
+        "engine_layer": "TRADINGVIEW_TECHNICAL_SNAPSHOT_V15_2_FAST_ACK",
+        "raw_payload_preview": signal_event.get("raw_payload_preview"),
+    })
+    return payload
+
+
+def _v32_process_intraday_futures_alert(payload, notify=True):
+    payload = dict(payload or {})
+    event_storage = save_intraday_futures_alert_event(payload)
+    price_storage = save_intraday_futures_price_point(payload)
+    notify_result = (
+        _v32_intraday_futures_immediate_notify_payload(payload)
+        if notify
+        else {
+            "status": "skipped",
+            "reason": "RECONCILIATION_WITHOUT_STALE_NOTIFICATION",
+            "pushover_sent": False,
+            "not_order_instruction": True,
+        }
+    )
+    return {
+        "processed": bool(event_storage.get("saved")),
+        "event_storage": event_storage,
+        "price_point_storage": price_storage,
+        "immediate_notify": notify_result,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def _v32_reconcile_intraday_futures_signal_events(limit=1000, notify=False):
+    try:
+        bounded_limit = max(1, min(int(limit or 1000), 20000))
+    except Exception:
+        bounded_limit = 1000
+    existing_events = load_intraday_futures_alert_events(limit=10000)
+    existing_source_ids = {
+        str(event.get("source_event_id") or "").strip()
+        for event in existing_events
+        if str(event.get("source_event_id") or "").strip()
+    }
+    existing_event_ids = {
+        str(event.get("event_id") or "").strip()
+        for event in existing_events
+        if str(event.get("event_id") or "").strip()
+    }
+    candidates = _v32_load_tradingview_signal_events(limit=bounded_limit)
+    processed = []
+    skipped = []
+    for signal_event in candidates:
+        source_event_id = str(signal_event.get("event_id") or signal_event.get("id") or "").strip()
+        expected_event_id = "IFEV-{}".format(source_event_id) if source_event_id else ""
+        if signal_event.get("accepted_for_engine") is not True:
+            skipped.append({"event_id": source_event_id, "reason": "NOT_ACCEPTED_FOR_ENGINE"})
+            continue
+        if _v29_safe_upper(signal_event.get("strategy_context"), "") != "INTRADAY_INDEX_FUTURES":
+            skipped.append({"event_id": source_event_id, "reason": "NOT_INTRADAY_INDEX_FUTURES"})
+            continue
+        if source_event_id in existing_source_ids or expected_event_id in existing_event_ids:
+            skipped.append({"event_id": source_event_id, "reason": "ALREADY_PROCESSED"})
+            continue
+        payload = _v32_intraday_payload_from_signal_event(signal_event)
+        result = _v32_process_intraday_futures_alert(payload, notify=notify)
+        processed.append({
+            "source_event_id": source_event_id,
+            "event_id": (result.get("event_storage") or {}).get("event_id"),
+            "event_code": signal_event.get("event_code"),
+            "ticker": signal_event.get("ticker"),
+            "saved": (result.get("event_storage") or {}).get("saved") is True,
+        })
+        if source_event_id:
+            existing_source_ids.add(source_event_id)
+        if expected_event_id:
+            existing_event_ids.add(expected_event_id)
+    return {
+        "engine": "V32_INTRADAY_FUTURES_RECONCILIATION",
+        "generated_at": _v29_now(),
+        "candidate_count": len(candidates),
+        "processed_count": len(processed),
+        "skipped_count": len(skipped),
+        "processed": processed,
+        "skipped": skipped[-25:],
+        "notify": bool(notify),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+async def technical_snapshot_forced_v15_2(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_webhook_secret: Optional[str] = Header(default=None),
+):
     verify_webhook_secret(x_webhook_secret)
 
     parsed, raw_text = await parse_request_payload(request)
@@ -10802,6 +10963,10 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         endpoint="/technical_snapshot",
     )
     durable_signal_event = _v32_persist_tradingview_signal_event(signal_ledger, route="/technical_snapshot")
+    ledger_event = signal_ledger.get("event") if isinstance(signal_ledger, dict) else {}
+    source_event_id = ledger_event.get("event_id") if isinstance(ledger_event, dict) else None
+    parsed["source_event_id"] = source_event_id
+    parsed["tradingview_event_id"] = source_event_id
 
     trade_store.setdefault(ticker, {})
     trade_store[ticker][timeframe] = parsed
@@ -10813,6 +10978,12 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
         and str(original_source or parsed.get("original_source") or "").upper() == "TRADINGVIEW"
     )
     if is_structured_tradingview_alert:
+        queue_intraday_processing = (
+            signal_ledger.get("accepted_for_engine") is True
+            and is_intraday_futures_signal(parsed)
+        )
+        if queue_intraday_processing:
+            background_tasks.add_task(_v32_process_intraday_futures_alert, dict(parsed), True)
         return {
             "status": "ok",
             "engine": "v15.2_technical_snapshot_fast_ack",
@@ -10829,7 +11000,11 @@ async def technical_snapshot_forced_v15_2(request: Request, x_webhook_secret: Op
             "main_blocker": parsed.get("main_blocker"),
             "accepted": signal_ledger.get("accepted_for_engine") is True,
             "fast_ack": True,
-            "storage": {"mode": "ledger_and_durable_fast_ack"},
+            "storage": {
+                "mode": "ledger_durable_and_background_operational_processing",
+                "operational_processing": "QUEUED" if queue_intraday_processing else "NOT_APPLICABLE_OR_QUARANTINED",
+                "reconciliation_available": True,
+            },
             "manual_review_required": True,
             "execution_authorized": False,
             "not_order_instruction": True,
@@ -23513,6 +23688,95 @@ def _v32_operator_alert_from_decision(item):
     return alert
 
 
+def _v32_operator_alert_from_intraday_event(event, operator_events=None):
+    event = event if isinstance(event, dict) else {}
+    operator_events = operator_events or []
+    alert_id = str(event.get("event_id") or "").strip()
+    latest = _v32_latest_operator_event_by_alert(operator_events).get(alert_id) or {}
+    state = _v29_safe_upper(
+        event.get("final_state") or event.get("decision_max_state"),
+        "MANUAL_REVIEW",
+    )
+    if state == "ENTRY_READY":
+        severity = "ACTION"
+    elif state == "RISK_BLOCKED":
+        severity = "RISK"
+    else:
+        severity = "WATCH"
+    received_at = event.get("received_at") or event.get("saved_at")
+    alert = {
+        "alert_id": alert_id,
+        "source_event_id": event.get("source_event_id"),
+        "ticker": event.get("ticker") or event.get("symbol"),
+        "strategy": "INTRADAY_INDEX_FUTURES",
+        "alert_created_at": received_at,
+        "alert_date": _v32_alert_date(received_at),
+        "received_at": received_at,
+        "severity": severity,
+        "state": state,
+        "final_state": state,
+        "main_blocker": event.get("main_blocker"),
+        "manual_review_ready": state in {"ENTRY_READY", "MANUAL_REVIEW"},
+        "alert_delivery_eligible": state == "ENTRY_READY",
+        "event": event.get("event"),
+        "event_code": event.get("event_code"),
+        "direction": event.get("direction"),
+        "timeframe": event.get("timeframe"),
+        "price": event.get("price"),
+        "entry_price": event.get("entry_price"),
+        "stop_price": event.get("stop_price"),
+        "stop_points": event.get("stop_points"),
+        "tp1_price": event.get("tp1_price"),
+        "tp2_price": event.get("tp2_price"),
+        "rr_ratio": event.get("rr_ratio"),
+        "target_instrument": event.get("target_instrument"),
+        "contracts_allowed": event.get("contracts_allowed"),
+        "construction_status": event.get("construction_status"),
+        "risk_status": event.get("risk_status"),
+        "portfolio_status": event.get("portfolio_status"),
+        "premarket_context_found": event.get("premarket_context_found"),
+        "premarket_blockers": event.get("premarket_blockers") or [],
+        "required_missing_fields": event.get("required_missing_fields") or [],
+        "warnings": event.get("warnings") or [],
+        "next_required_action": event.get("decision_explanation")
+        or (event.get("decision") or {}).get("explanation")
+        or "Revisar la senal intradia, su riesgo y el contexto de sesion.",
+        "operator_status": latest.get("operator_status") or "NEW",
+        "last_operator_action": latest.get("action"),
+        "last_operator_reason": latest.get("reason"),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    alert["alert_lifecycle"] = shared_alert_lifecycle.alert_lifecycle_state(alert)
+    alert["performance_eligible"] = alert["alert_lifecycle"].get("performance_eligible")
+    alert["backtesting_bucket"] = alert["alert_lifecycle"].get("backtesting_bucket")
+    alert["quality_score"] = _v32_alert_quality_score(alert)
+    alert["operator_visibility"] = "INTRADAY"
+    return alert
+
+
+def _v32_operator_intraday_alerts(operator_events=None, max_age_hours=18):
+    now = now_utc()
+    alerts = []
+    for event in filter_intraday_futures_validation_events(
+        load_intraday_futures_alert_events(limit=1000),
+        include_validation=False,
+    ):
+        received_at = parse_iso_datetime(event.get("received_at") or event.get("saved_at"))
+        if received_at is None:
+            continue
+        age_hours = max(0.0, (now - received_at.astimezone(timezone.utc)).total_seconds() / 3600.0)
+        if age_hours > float(max_age_hours):
+            continue
+        alert = _v32_operator_alert_from_intraday_event(event, operator_events=operator_events)
+        if not alert.get("alert_id"):
+            continue
+        if _v29_safe_upper(alert.get("operator_status"), "NEW") in _V32_OPERATOR_CLOSED_STATUSES:
+            continue
+        alerts.append(alert)
+    return alerts
+
+
 def _v32_alert_quality_score(alert):
     alert = alert if isinstance(alert, dict) else {}
     lifecycle = alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}
@@ -23596,6 +23860,10 @@ def _v32_operator_alerts_from_context(command, events=None):
 
 def _v32_operator_active_alerts(command, events=None, limit=12):
     alerts = _v32_operator_alerts_from_context(command, events=events)
+    return _v32_visible_operator_alerts(alerts, limit=limit)
+
+
+def _v32_visible_operator_alerts(alerts, limit=12):
     visible = [
         alert for alert in alerts
         if _v29_safe_upper(alert.get("operator_visibility"), "DIAGNOSTIC") in {"HIGH_PROBABILITY", "RADAR", "INTRADAY"}
@@ -23781,8 +24049,15 @@ def _v32_operator_today_payload(limit=12):
         item for item in tracked if str(item.get("outcome") or "").upper() == "PENDING"
     ])
     events = _v32_load_operator_events()
-    all_operator_alerts = _v32_operator_alerts_from_context(command, events=events)
-    active_alerts = _v32_operator_active_alerts(command, events=events, limit=limit)
+    command_alerts = _v32_operator_alerts_from_context(command, events=events)
+    intraday_event_alerts = _v32_operator_intraday_alerts(operator_events=events)
+    merged_alerts = {}
+    for alert in command_alerts + intraday_event_alerts:
+        alert_id = alert.get("alert_id")
+        if alert_id:
+            merged_alerts[str(alert_id)] = alert
+    all_operator_alerts = list(merged_alerts.values())
+    active_alerts = _v32_visible_operator_alerts(all_operator_alerts, limit=limit)
     active_ids = {alert.get("alert_id") for alert in active_alerts}
     diagnostic_alerts = [
         alert for alert in all_operator_alerts
@@ -23826,6 +24101,7 @@ def _v32_operator_today_payload(limit=12):
         "diagnostic_alerts": diagnostic_alerts[:25],
         "intraday_futures": {
             "active_alert_count": len(intraday_futures_alerts),
+            "fresh_operational_event_count": len(intraday_event_alerts),
             "status": "ACTIVE_ALERTS" if intraday_futures_alerts else "NO_ACTIVE_INTRADAY_FUTURES_ALERTS",
             "message": (
                 "Hay alertas intradia de futuros en el payload actual."
@@ -25016,6 +25292,7 @@ def _v32_operator_nudge_preflight_payload():
 
 
 def _v32_operator_daily_cycle_payload(force_preview=False):
+    futures_reconciliation = _v32_reconcile_intraday_futures_signal_events(limit=2000, notify=False)
     today = _v32_operator_today_payload(limit=12)
     summary = _v32_operator_daily_summary_payload(limit=12)
     tracking = _v32_operator_tracking_payload(limit=500)
@@ -25029,6 +25306,8 @@ def _v32_operator_daily_cycle_payload(force_preview=False):
             "label": "Leer estado operativo",
             "endpoint": "GET /gpt_v32_operator_today",
             "status": today.get("status"),
+            "futures_reconciliation_endpoint": "POST /v32_intraday_futures_reconcile",
+            "futures_reconciled_count": futures_reconciliation.get("processed_count"),
         },
         {
             "step": 2,
@@ -25076,6 +25355,7 @@ def _v32_operator_daily_cycle_payload(force_preview=False):
         "today": today,
         "summary": summary,
         "tracking": tracking,
+        "intraday_futures_reconciliation": futures_reconciliation,
         "pushover_preview": pushover_preview,
         "nudge_preview": nudge_preview,
         "backtesting_follow_up": {
@@ -29318,18 +29598,55 @@ async def v32_signal_events(limit: int = 1000):
 
 @app.get("/v32_tradingview_webhook_status")
 async def v32_tradingview_webhook_status():
-    status = shared_tradingview_signal_ledger.load_webhook_status()
-    events = shared_tradingview_signal_ledger.load_signal_events(limit=1)
+    local_status = shared_tradingview_signal_ledger.load_webhook_status()
+    events = _v32_load_tradingview_signal_events(limit=20000)
+    latest_event = events[-1] if events else None
+    accepted_count = len([event for event in events if event.get("accepted_for_engine") is True])
+    quarantined_count = len([event for event in events if event.get("accepted_for_engine") is not True])
+    status = dict(local_status or {})
+    durable_event_count = len(events)
+    status.update({
+        "status_version": "tradingview_webhook_status_v2_durable",
+        "webhook_attempt_count": (
+            accepted_count + quarantined_count + int(status.get("duplicate_count") or 0)
+            if durable_event_count
+            else int(status.get("webhook_attempt_count") or 0)
+        ),
+        "accepted_count": accepted_count if durable_event_count else int(status.get("accepted_count") or 0),
+        "quarantined_count": quarantined_count if durable_event_count else int(status.get("quarantined_count") or 0),
+        "ledger_event_count": durable_event_count if durable_event_count else int(status.get("ledger_event_count") or 0),
+        "rehydrated_from_durable_events": bool(events),
+    })
+    if latest_event:
+        status["last_webhook"] = {
+            "received_at": latest_event.get("received_at"),
+            "endpoint": latest_event.get("endpoint"),
+            "status": latest_event.get("delivery_status") or "RECEIVED",
+            "event_id": latest_event.get("event_id") or latest_event.get("id"),
+            "ticker": latest_event.get("ticker"),
+            "timeframe": latest_event.get("timeframe"),
+            "strategy_context": latest_event.get("strategy_context"),
+            "event_code": latest_event.get("event_code"),
+            "accepted_for_engine": latest_event.get("accepted_for_engine"),
+            "quarantine_reasons": latest_event.get("quarantine_reasons") or [],
+            "payload_valid": (latest_event.get("payload_validation") or {}).get("valid"),
+            "missing_fields": (latest_event.get("payload_validation") or {}).get("missing_fields") or [],
+        }
     return {
         "engine": "TRADINGVIEW_WEBHOOK_STATUS",
         "generated_at": _v29_now(),
         "status": "RECEIVED" if status.get("last_webhook") else "NO_WEBHOOK_RECEIVED",
         "webhook_status": status,
-        "latest_event": events[-1] if events else None,
+        "latest_event": latest_event,
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+@app.post("/v32_intraday_futures_reconcile")
+async def v32_intraday_futures_reconcile(limit: int = 1000):
+    return _v32_reconcile_intraday_futures_signal_events(limit=limit, notify=False)
 
 
 @app.get("/v32_tradingview_alert_health")

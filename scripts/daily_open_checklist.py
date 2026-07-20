@@ -201,11 +201,16 @@ def local_operational_evidence_gate() -> dict[str, Any]:
     }
 
 
-def request_json(url: str, token: str | None = None, timeout: int = 30) -> tuple[int, dict[str, Any]]:
+def request_json(
+    url: str,
+    token: str | None = None,
+    timeout: int = 30,
+    method: str = "GET",
+) -> tuple[int, dict[str, Any]]:
     headers = {"Accept": "application/json"}
     if token:
         headers["X-Stock-Ultimus-Read-Token"] = token
-    request = urllib.request.Request(url, headers=headers)
+    request = urllib.request.Request(url, headers=headers, method=str(method or "GET").upper())
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
@@ -462,6 +467,8 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         return "ACTION_REQUIRED", "Coberturas RSP no completo su refresh IBKR 7-14 DTE; revisar el detalle RSP antes de usar candidatos."
     if report.get("publish_step", {}).get("ok") is False:
         return "ACTION_REQUIRED", "Revisar publicador de snapshot antes de usar el GPT."
+    if checks.get("intraday_futures_reconciliation", {}).get("ok") is False:
+        return "ACTION_REQUIRED", "No se pudo reconciliar la bandeja de futuros con las señales recibidas; revisar producción antes de operar intradía."
     rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
     if report.get("refresh_requested") and not report.get("rsp_refresh_step", {}).get("skipped") and rsp.get("ok") is False:
         if not rsp.get("manual_context_available") or not rsp.get("manual_context_fresh"):
@@ -579,6 +586,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "unauthorized_status": denied_status,
             "authorized_status": allowed_status,
         }
+        reconcile_status, reconciliation = request_json(
+            f"{base_url}/v32_intraday_futures_reconcile?limit=2000",
+            token=read_token,
+            timeout=args.read_timeout,
+            method="POST",
+        )
+        checks["intraday_futures_reconciliation"] = {
+            "ok": reconcile_status == 200,
+            "status_code": reconcile_status,
+            "processed_count": reconciliation.get("processed_count") if isinstance(reconciliation, dict) else None,
+            "candidate_count": reconciliation.get("candidate_count") if isinstance(reconciliation, dict) else None,
+        }
+        report["intraday_futures_reconciliation"] = reconciliation
         operator_status, operator = request_json(
             f"{base_url}/gpt_v32_operator_today?limit={max(1, args.limit)}",
             token=read_token,
@@ -592,6 +612,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             report["operator_today_error"] = operator
     else:
         checks["production_auth"] = {"ok": False, "error": "MISSING_READ_TOKEN"}
+        checks["intraday_futures_reconciliation"] = {"ok": False, "error": "MISSING_READ_TOKEN"}
         checks["v32_operator_today"] = {"ok": False, "error": "MISSING_READ_TOKEN"}
 
     status, next_action = classify(report)
@@ -611,7 +632,7 @@ def print_human(report: dict[str, Any]) -> None:
     print(f"Siguiente accion: {report.get('next_required_action')}")
     checks = report.get("checks") or {}
     print("\nChecks:")
-    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "foundation_health", "operational_evidence_gate", "production_auth", "v32_operator_today"]:
+    for name in ["ibkr_port", "read_token_available", "ingest_token_available", "foundation_health", "operational_evidence_gate", "production_auth", "intraday_futures_reconciliation", "v32_operator_today"]:
         check = checks.get(name) or {}
         marker = "OK" if check.get("ok") else "FAIL"
         detail = check.get("detail") or check.get("error") or ""

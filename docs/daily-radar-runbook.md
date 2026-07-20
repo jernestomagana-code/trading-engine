@@ -124,12 +124,17 @@ Actionable V32 notifications:
 Intraday futures immediate path:
 
 ```text
-TradingView Pine alert() -> /technical_snapshot -> immediate Pushover attempt
+TradingView Pine alert() -> /technical_snapshot -> durable ledger -> fast acknowledgement
+                                                     -> background operational event + Pushover
+Daily open / service startup -> idempotent reconciliation -> recover any missing operational event
 ```
 
 For `MNQ1!` and `MES1!`, entry triggers and risk invalidations are evaluated as
 soon as the TradingView webhook arrives. This path dedupes repeated events and
-never authorizes execution. It is the preferred timing path for intraday futures.
+never authorizes execution. The durable TradingView event id is reused by the
+operational futures event, so a restart or repeated delivery cannot create a
+second alert. The opening checklist fails closed when reconciliation cannot be
+confirmed. It is the preferred timing path for intraday futures.
 
 Cloud immediate actionable-signal watch:
 
@@ -381,7 +386,9 @@ Simplified console alert lanes:
   decisions.
 - `Futuros Intradia` is always separate from stock/options alerts. If there is
   no live intraday futures trigger, the console says so directly instead of
-  mixing it with the regular radar.
+  mixing it with the regular radar. Fresh events are loaded directly from the
+  durable intraday event store and do not depend on appearing in the regular
+  stock/options ranking.
 - `Ver diagnostico tecnico y salud de modulos` and `Administrar cuentas y
   perfiles` are collapsed by default. The first-screen workflow is state,
   operable alerts, intraday futures, and actions.

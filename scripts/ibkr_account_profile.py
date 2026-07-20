@@ -3894,6 +3894,20 @@ def alert_date_label(alert: dict[str, Any]) -> str:
 
 
 def render_alert_contract(alert: dict[str, Any]) -> str:
+    if is_intraday_futures_alert(alert):
+        return (
+            "Señal: {event} | direccion {direction} | entrada {entry} | stop {stop} | "
+            "TP1 {tp1} | TP2 {tp2} | RR {rr} | contratos permitidos {contracts}"
+        ).format(
+            event=compact_contract_value(alert.get("event_code") or alert.get("event")),
+            direction=compact_contract_value(alert.get("direction")),
+            entry=compact_contract_value(alert.get("entry_price") or alert.get("price")),
+            stop=compact_contract_value(alert.get("stop_price")),
+            tp1=compact_contract_value(alert.get("tp1_price")),
+            tp2=compact_contract_value(alert.get("tp2_price")),
+            rr=compact_contract_value(alert.get("rr_ratio")),
+            contracts=compact_contract_value(alert.get("contracts_allowed")),
+        )
     contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
     strike = contract.get("strike") or alert.get("strike")
     expiration = contract.get("expiration") or alert.get("expiration") or alert.get("expiry")
@@ -3928,6 +3942,16 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
 
 
 def render_alert_economics(alert: dict[str, Any]) -> str:
+    if is_intraday_futures_alert(alert):
+        return (
+            "Motor futuros: construccion {construction} | riesgo {risk} | portfolio {portfolio} | "
+            "pre-market {premarket}"
+        ).format(
+            construction=html_escape(alert.get("construction_status") or "N/D"),
+            risk=html_escape(alert.get("risk_status") or "N/D"),
+            portfolio=html_escape(alert.get("portfolio_status") or "N/D"),
+            premarket="cargado" if alert.get("premarket_context_found") else "pendiente",
+        )
     economics = alert.get("economics") if isinstance(alert.get("economics"), dict) else {}
     contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
     capital = economics.get("capital_required", contract.get("capital_required"))
@@ -4015,6 +4039,13 @@ def console_alert_capital_required(alert: dict[str, Any]) -> float | None:
 
 
 def render_alert_capacity(alert: dict[str, Any], account_capacity: dict[str, Any]) -> str:
+    if is_intraday_futures_alert(alert):
+        contracts = alert.get("contracts_allowed")
+        if contracts not in [None, "", "None"]:
+            return "Tamaño máximo sugerido por el motor de riesgo: {} contrato(s); confirmar margen final en IBKR.".format(
+                html_escape(contracts),
+            )
+        return "Tamaño pendiente: el motor aún no confirmó contratos permitidos; no abrir hasta resolver riesgo/contexto."
     check = alert.get("account_capacity_check") if isinstance(alert.get("account_capacity_check"), dict) else {}
     capital = console_float_or_none(check.get("capital_required"))
     if capital is None:
@@ -4056,6 +4087,12 @@ def alert_review_guidance(alert: dict[str, Any]) -> str:
     state = str(alert.get("state") or "").upper()
     severity = str(alert.get("severity") or "").upper()
     blocker = str(alert.get("main_blocker") or "").upper()
+    if is_intraday_futures_alert(alert):
+        if severity == "RISK" or state == "RISK_BLOCKED":
+            return "Recomendación: no entrar; documentar el bloqueo o cerrar la alerta."
+        if state == "ENTRY_READY":
+            return "Recomendación: revisar ahora entrada, stop, objetivos, contratos y margen en IBKR; la consola no coloca la orden."
+        return "Recomendación: mantener en revisión/watch hasta completar los bloqueadores indicados."
     if severity == "RISK" or state == "RISK_BLOCKED":
         return "Revision: no aprobar. Documentar el bloqueo de riesgo o rechazar el setup."
     if state == "WAIT_TECHNICAL" or blocker == "WAIT_TECHNICAL":
@@ -4071,6 +4108,13 @@ def alert_reason_plain(alert: dict[str, Any]) -> str:
     state = str(alert.get("state") or "").upper()
     blocker = str(alert.get("main_blocker") or "").upper()
     missing = alert.get("required_missing_fields") if isinstance(alert.get("required_missing_fields"), list) else []
+    if is_intraday_futures_alert(alert):
+        event_label = alert.get("event_code") or alert.get("event") or "evento intradía"
+        if state == "ENTRY_READY":
+            return "TradingView detectó {} y el motor la dejó lista para revisión manual.".format(event_label)
+        if state == "RISK_BLOCKED":
+            return "TradingView detectó {}, pero el motor la bloqueó por {}.".format(event_label, blocker or "riesgo/contexto")
+        return "TradingView detectó {}; requiere revisión porque falta completar contexto o riesgo.".format(event_label)
     if state == "ENTRY_READY":
         return "Cumple lo suficiente para revision manual: aun falta confirmar orden/ticket en IBKR."
     if state == "WAIT_MARKET":
@@ -4087,6 +4131,19 @@ def alert_reason_plain(alert: dict[str, Any]) -> str:
 
 
 def alert_checklist_items(alert: dict[str, Any], account_capacity: dict[str, Any]) -> list[tuple[str, bool, str]]:
+    if is_intraday_futures_alert(alert):
+        state = str(alert.get("state") or "").upper()
+        missing = alert.get("required_missing_fields") if isinstance(alert.get("required_missing_fields"), list) else []
+        contracts = console_float_or_none(alert.get("contracts_allowed"))
+        return [
+            ("Señal", bool(alert.get("event_code") or alert.get("event")), "evento TradingView identificado"),
+            ("Estructura", str(alert.get("construction_status") or "").upper() in {"REVIEW_READY", "READY"}, str(alert.get("construction_status") or "pendiente")),
+            ("Riesgo", str(alert.get("risk_status") or "").upper() in {"READY", "PASS"} and state != "RISK_BLOCKED", str(alert.get("risk_status") or "pendiente")),
+            ("Portfolio", str(alert.get("portfolio_status") or "").upper() in {"READY", "PASS"}, str(alert.get("portfolio_status") or "pendiente")),
+            ("Pre-market", alert.get("premarket_context_found") is True, "contexto cargado" if alert.get("premarket_context_found") else "contexto pendiente"),
+            ("Tamaño", contracts is not None and contracts > 0, "{} contrato(s) máximo".format(int(contracts)) if contracts is not None and contracts > 0 else "sin tamaño autorizado"),
+            ("Datos", not missing, "completos" if not missing else "faltan: " + ", ".join(str(item) for item in missing[:3])),
+        ]
     contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
     state = str(alert.get("state") or "").upper()
     blocker = str(alert.get("main_blocker") or "").upper()

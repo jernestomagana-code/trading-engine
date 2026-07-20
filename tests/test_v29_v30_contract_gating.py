@@ -1518,6 +1518,141 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(validation_result["reason"], "VALIDATION_EVENT_SUPPRESSED")
         send_push.assert_not_called()
 
+    def test_fast_ack_queues_intraday_operational_processing(self):
+        parsed = {
+            "source": "TRADINGVIEW",
+            "action": "ALERT_ONLY",
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "strategy": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "price": 100.0,
+            "not_order_instruction": True,
+        }
+
+        class CapturingBackgroundTasks:
+            def __init__(self):
+                self.tasks = []
+
+            def add_task(self, fn, *args, **kwargs):
+                self.tasks.append((fn, args, kwargs))
+
+        async def fake_parse(_request):
+            return dict(parsed), "{}"
+
+        ledger_event = {
+            **parsed,
+            "event_id": "TV-fast-ack-1",
+            "received_at": "2026-07-20T14:35:00+00:00",
+            "accepted_for_engine": True,
+        }
+        background = CapturingBackgroundTasks()
+        with patch.object(main, "verify_webhook_secret", return_value=None), patch.object(
+            main, "parse_request_payload", new=fake_parse
+        ), patch.object(main, "enrich_stock_ultimus_technical_payload", side_effect=lambda payload: payload), patch.object(
+            main.shared_tradingview_signal_ledger,
+            "append_signal_event",
+            return_value={"event": ledger_event, "accepted_for_engine": True},
+        ), patch.object(main, "_v32_persist_tradingview_signal_event", return_value={"saved": True}):
+            result = asyncio.run(main.technical_snapshot_forced_v15_2(object(), background, None))
+
+        self.assertTrue(result["fast_ack"])
+        self.assertEqual(result["storage"]["operational_processing"], "QUEUED")
+        self.assertEqual(len(background.tasks), 1)
+        fn, args, _ = background.tasks[0]
+        self.assertIs(fn, main._v32_process_intraday_futures_alert)
+        self.assertEqual(args[0]["source_event_id"], "TV-fast-ack-1")
+        self.assertTrue(args[1])
+
+    def test_intraday_event_ids_are_deterministic_for_tradingview_retries(self):
+        payload = {
+            "strategy": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "source_event_id": "TV-deterministic-1",
+            "received_at": "2026-07-20T14:35:00+00:00",
+            "not_order_instruction": True,
+        }
+        first = main.build_intraday_futures_alert_event(payload)
+        second = main.build_intraday_futures_alert_event(payload)
+        first_point = main.build_intraday_futures_price_point({**payload, "price": 100.0})
+        second_point = main.build_intraday_futures_price_point({**payload, "price": 100.0})
+
+        self.assertEqual(first["event_id"], "IFEV-TV-deterministic-1")
+        self.assertEqual(first["event_id"], second["event_id"])
+        self.assertEqual(first_point["point_id"], "IFPX-TV-deterministic-1")
+        self.assertEqual(first_point["point_id"], second_point["point_id"])
+
+    def test_reconciliation_recovers_missing_accepted_futures_signal_once(self):
+        signal_event = {
+            "event_id": "TV-recovery-1",
+            "accepted_for_engine": True,
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "timeframe": "5",
+            "event_code": "MES_ORB_BREAKOUT_SHORT_5M",
+            "received_at": "2026-07-20T15:00:00+00:00",
+            "raw_payload": {"source": "TRADINGVIEW", "not_order_instruction": True},
+        }
+        with patch.object(main, "_v32_load_tradingview_signal_events", return_value=[signal_event]), patch.object(
+            main, "load_intraday_futures_alert_events", return_value=[]
+        ), patch.object(main, "_v32_intraday_payload_from_signal_event", return_value={
+            "strategy": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event_code": "MES_ORB_BREAKOUT_SHORT_5M",
+            "source_event_id": "TV-recovery-1",
+        }), patch.object(main, "_v32_process_intraday_futures_alert", return_value={
+            "event_storage": {"saved": True, "event_id": "IFEV-TV-recovery-1"},
+        }) as process:
+            result = main._v32_reconcile_intraday_futures_signal_events()
+
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(result["processed"][0]["event_id"], "IFEV-TV-recovery-1")
+        process.assert_called_once()
+
+        existing = [{"event_id": "IFEV-TV-recovery-1", "source_event_id": "TV-recovery-1"}]
+        with patch.object(main, "_v32_load_tradingview_signal_events", return_value=[signal_event]), patch.object(
+            main, "load_intraday_futures_alert_events", return_value=existing
+        ), patch.object(main, "_v32_process_intraday_futures_alert") as process:
+            deduped = main._v32_reconcile_intraday_futures_signal_events()
+
+        self.assertEqual(deduped["processed_count"], 0)
+        self.assertEqual(deduped["skipped"][0]["reason"], "ALREADY_PROCESSED")
+        process.assert_not_called()
+
+    def test_fresh_intraday_event_becomes_main_console_alert(self):
+        event = {
+            "event_id": "IFEV-TV-console-1",
+            "source_event_id": "TV-console-1",
+            "received_at": main.now_utc().isoformat(),
+            "strategy": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "direction": "LONG",
+            "entry_price": 100.0,
+            "stop_price": 98.0,
+            "tp1_price": 102.0,
+            "tp2_price": 104.0,
+            "final_state": "ENTRY_READY",
+            "construction_status": "REVIEW_READY",
+            "risk_status": "READY",
+            "portfolio_status": "READY",
+            "premarket_context_found": True,
+            "contracts_allowed": 1,
+            "is_validation": False,
+        }
+        with patch.object(main, "load_intraday_futures_alert_events", return_value=[event]):
+            alerts = main._v32_operator_intraday_alerts(operator_events=[])
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["alert_id"], "IFEV-TV-console-1")
+        self.assertEqual(alerts[0]["operator_visibility"], "INTRADAY")
+        self.assertEqual(alerts[0]["severity"], "ACTION")
+        self.assertEqual(alerts[0]["state"], "ENTRY_READY")
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",
