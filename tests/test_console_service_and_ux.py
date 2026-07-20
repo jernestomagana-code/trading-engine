@@ -64,6 +64,16 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertLess(positions_index, rsp_index)
         self.assertNotIn("{coberturas}", source[tools_index:source.index("</details>", tools_index)])
 
+    def test_position_recommendations_use_full_width_responsive_layout(self):
+        source = CONSOLE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn(".positions-panel > .alert-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
+        self.assertIn(".position-structure-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr));", source)
+        self.assertIn("@media (max-width:620px)", source)
+        self.assertIn(".position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
+        self.assertIn(".position-comparison-scroll {{ overflow-x:auto; max-width:100%;", source)
+        self.assertEqual(console.friendly_operator_state("REVIEW_RISK"), "Revisar riesgo")
+
     def test_operator_guide_is_canonical_and_covers_navigation(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")
         guide = OPERATOR_GUIDE.read_text(encoding="utf-8")

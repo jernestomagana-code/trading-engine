@@ -2093,6 +2093,8 @@ FRIENDLY_OPERATOR_STATES = {
     "READY_FOR_MANUAL_REVIEW": "Listo para revisión manual",
     "ACTION_REQUIRED": "Atención requerida",
     "REVIEW_REQUIRED": "Revisión necesaria",
+    "REVIEW_RISK": "Revisar riesgo",
+    "REVIEW_DEFENSIVE_EXIT": "Revisar defensa",
     "RISK_REVIEW": "Revisión de riesgo",
     "REVIEW_ASSIGNMENT": "Revisar posible asignación",
     "REFRESH_DATA": "Actualizar datos",
@@ -4605,6 +4607,8 @@ def friendly_position_reason(text: str) -> str:
     replacements = {
         "Underlying is below the short-put strike; assignment risk needs review.": "El precio está por debajo del strike de la put vendida; revisa el riesgo de asignación.",
         "Long stock is eligible for covered-call review, but no exit trigger is active.": "La posición permite evaluar un covered call, pero no existe una señal de salida activa.",
+        "Bearish trend with intact support requires comparing hold, income overlays, protection, and reduction.": "La tendencia es bajista, pero el soporte sigue intacto; comparar mantener, generar prima, proteger y reducir.",
+        "Long-stock thesis may be damaged by event risk or a broken support level.": "La tesis de las acciones puede estar dañada por un evento de riesgo o por ruptura de soporte.",
     }
     return replacements.get(text, text)
 
@@ -4837,11 +4841,13 @@ def render_position_management_card(item: dict[str, Any]) -> str:
     warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
     blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
     reason_text = "; ".join(friendly_position_reason(str(x)) for x in (reasons[:2] or warnings[:2] or blockers[:2])) or "Sin nota adicional."
+    stock_position = str(item.get("sec_type") or "").upper() in {"STK", "STOCK", "EQUITY"}
+    strike_value = console_float_or_none(item.get("strike"))
     contract_bits = [
         item.get("strategy"),
         item.get("sec_type"),
         ("qty " + str(item.get("position_size"))) if item.get("position_size") is not None else "",
-        ("strike " + str(item.get("strike"))) if item.get("strike") is not None else "",
+        ("strike " + str(item.get("strike"))) if not stock_position and strike_value not in [None, 0.0] else "",
         ("DTE " + str(item.get("dte"))) if item.get("dte") is not None else "",
     ]
     market_bits = [
@@ -6786,7 +6792,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .intraday-panel {{ border-color:#8ecae6; background:#f5fbff; }}
           .diagnostic-panel {{ border-color:#badbcc; background:#f7fff8; }}
           .positions-panel {{ border-left:6px solid #2563eb; background:#f7fbff; }}
-          .position-card {{ border-color:#bfd7ff; }}
+          .positions-panel > .alert-grid {{ grid-template-columns:minmax(0,1fr); }}
+          .position-card {{ border-color:#bfd7ff; min-width:0; overflow:hidden; }}
+          .position-card > *,.position-alternatives,.position-recommendation,.position-structure,.position-comparison {{ min-width:0; max-width:100%; }}
+          .position-card b,.position-card strong,.position-card span,.position-card small,.position-card p {{ overflow-wrap:anywhere; word-break:normal; }}
           .position-alternatives {{ display:grid; gap:7px; margin-top:12px; border-top:1px solid var(--line); padding-top:10px; }}
           .position-alternatives-head {{ display:flex; justify-content:space-between; gap:10px; align-items:baseline; }}
           .position-alternatives-head span {{ margin:0; font-size:.76rem; }}
@@ -6800,7 +6809,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-structure {{ display:grid; gap:8px; margin-top:10px; padding:10px; border:1px solid #bfdbfe; border-radius:8px; background:#fff; }}
           .position-structure-title {{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; align-items:baseline; }}
           .position-structure-title span {{ color:#1d4ed8; font-size:.74rem; font-weight:850; }}
-          .position-structure-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:7px; }}
+          .position-structure-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }}
           .position-structure-leg {{ display:grid; gap:2px; padding:9px; border-radius:7px; border-left:4px solid #2563eb; background:#eff6ff; }}
           .position-structure-leg.protection-leg {{ border-left-color:#16a34a; background:#f0fdf4; }}
           .position-structure-leg span {{ font-size:.7rem; font-weight:850; color:var(--muted); text-transform:uppercase; }}
@@ -6810,13 +6819,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-structure-result span {{ font-weight:900; font-size:.8rem; color:var(--ink); }}
           .position-structure-result small {{ font-size:.7rem; }}
           .position-comparison {{ display:grid; gap:7px; }}
-          .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:6px; }}
+          .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:6px; }}
           .position-profile {{ display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fbfdff; }}
           .position-profile span {{ color:var(--muted); font-size:.68rem; font-weight:800; text-transform:uppercase; }}
           .position-profile b {{ font-size:.8rem; }}
           .position-profile small {{ font-size:.68rem; color:var(--muted); }}
           .position-comparison details > summary {{ cursor:pointer; color:var(--accent-strong); font-size:.78rem; font-weight:850; }}
-          .position-comparison-scroll {{ overflow-x:auto; margin-top:7px; }}
+          .position-comparison-scroll {{ overflow-x:auto; max-width:100%; margin-top:7px; overscroll-behavior-inline:contain; -webkit-overflow-scrolling:touch; }}
           .position-comparison table {{ width:100%; border-collapse:collapse; font-size:.72rem; }}
           .position-comparison th, .position-comparison td {{ padding:5px 7px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }}
           .position-comparison th:first-child, .position-comparison td:first-child {{ text-align:left; }}
@@ -6853,13 +6862,14 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .section-head {{ display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }}
           .section-head p {{ margin:0; color:var(--muted); max-width:620px; }}
           .tiles,.alert-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }}
+          .tiles > *,.alert-grid > *,.module-grid > *,.scenario-grid > *,.coberturas-grid > * {{ min-width:0; }}
           .tile,.alert-card {{ border:1px solid var(--line); background:var(--card); border-radius:8px; padding:14px; text-decoration:none; color:var(--ink); }}
           .inline-link {{ display:inline-block; }}
           .tile {{ font-weight:800; }}
           .tile span,.alert-card span,.alert-card small {{ display:block; color:var(--muted); margin-top:6px; font-weight:400; }}
           .alert-card strong {{ font-size:1.35rem; }}
-          .alert-title {{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }}
-          .alert-title em {{ font-style:normal; border-radius:999px; padding:5px 8px; background:#e8efe7; color:#1d6b4f; font-size:.78rem; font-weight:900; white-space:nowrap; }}
+          .alert-title {{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-start; gap:10px; }}
+          .alert-title em {{ max-width:100%; font-style:normal; border-radius:999px; padding:5px 8px; background:#e8efe7; color:#1d6b4f; font-size:.78rem; font-weight:900; white-space:normal; overflow-wrap:anywhere; }}
           .success-line {{ display:inline-block; margin-top:8px; border-radius:999px; padding:6px 10px; background:#e8f7ee; color:#1d6b4f; font-weight:900; font-size:.9rem; }}
           .status-new .alert-title em {{ background:#fff4d6; color:#9f4b1b; }}
           .status-reviewing .alert-title em,.status-watchlist .alert-title em {{ background:#e8f1ff; color:#174ea6; }}
@@ -6946,8 +6956,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
-          @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
+          @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
+          @media (max-width:620px) {{ .section-head {{ display:block; }} .section-head p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>
