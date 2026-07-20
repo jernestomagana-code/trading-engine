@@ -4626,6 +4626,34 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         "RISK_BLOCKED_COVERAGE": "Rompería la cobertura",
     }
 
+    def expiration_label(value: Any) -> str:
+        raw = str(value or "").strip().replace("-", "")
+        if len(raw) == 8 and raw.isdigit():
+            months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+            try:
+                return "{} {} {}".format(int(raw[6:8]), months[int(raw[4:6]) - 1], raw[:4])
+            except (ValueError, IndexError):
+                pass
+        return str(value or "N/D")
+
+    def variant_structure(value: dict[str, Any]) -> str:
+        call = value.get("contract") if isinstance(value.get("contract"), dict) else {}
+        put = value.get("put_contract") if isinstance(value.get("put_contract"), dict) else {}
+        parts = []
+        if call.get("strike") is not None:
+            parts.append("C{}".format(call.get("strike")))
+        if put.get("strike") is not None:
+            parts.append("P{}".format(put.get("strike")))
+        expiration = call.get("expiration") or put.get("expiration")
+        contracts = value.get("contracts")
+        if not parts:
+            return "—"
+        return "{} · {}{}".format(
+            " / ".join(parts),
+            expiration_label(expiration),
+            (" · {} contrato(s)".format(contracts)) if contracts else "",
+        )
+
     def card(alternative: dict[str, Any]) -> str:
         candidates = alternative.get("contract_candidates") if isinstance(alternative.get("contract_candidates"), list) else []
         contract = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
@@ -4661,20 +4689,66 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
     primary = next((value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") == primary_id), alternatives[0])
     contract = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
     put_contract = recommendation.get("put_contract") if isinstance(recommendation.get("put_contract"), dict) else {}
-    contract_line = ""
+    structure_html = ""
     if contract:
-        contract_line = "{}Contrato preferido visible: {} {} · {} · prima {}.".format(
-            ("{} contrato(s) · {}% de la posición. ".format(recommendation.get("contracts"), recommendation.get("coverage_pct")) if recommendation.get("contracts") else ""),
-            contract.get("right") or "",
-            contract.get("strike") if contract.get("strike") is not None else "N/D",
-            contract.get("expiration") or "N/D",
-            coberturas_money(contract.get("bid_per_contract") if contract.get("bid_per_contract") is not None else contract.get("premium_per_contract")),
-        )
-    if put_contract:
-        contract_line += " Put protectora: P {} · {} · costo {}.".format(
-            put_contract.get("strike") if put_contract.get("strike") is not None else "N/D",
-            put_contract.get("expiration") or "N/D",
-            coberturas_money(put_contract.get("ask_per_contract") if put_contract.get("ask_per_contract") is not None else put_contract.get("premium_per_contract")),
+        contracts = int(console_float_or_none(recommendation.get("contracts")) or 0)
+        covered_shares = contracts * 100
+        total_shares = int(console_float_or_none(comparison.get("shares")) or 0)
+        free_shares = max(0, total_shares - covered_shares) if total_shares else None
+        call_value = contract.get("bid_per_contract") if contract.get("bid_per_contract") is not None else contract.get("premium_per_contract")
+        put_value = put_contract.get("ask_per_contract") if put_contract.get("ask_per_contract") is not None else put_contract.get("premium_per_contract")
+        net_per_share = None
+        if console_float_or_none(contract.get("bid")) is not None:
+            net_per_share = console_float_or_none(contract.get("bid"))
+            if put_contract and console_float_or_none(put_contract.get("ask")) is not None:
+                net_per_share -= console_float_or_none(put_contract.get("ask")) or 0.0
+        net_total = net_per_share * covered_shares if net_per_share is not None and covered_shares else None
+        put_leg = ""
+        if put_contract:
+            put_leg = """
+              <div class="position-structure-leg protection-leg">
+                <span>2 · Comprar put protectora</span>
+                <b>P {put_strike} · vence {put_expiration}</b>
+                <small>Ask usado: {put_cost} por contrato</small>
+              </div>
+            """.format(
+                put_strike=html_escape(put_contract.get("strike") if put_contract.get("strike") is not None else "N/D"),
+                put_expiration=html_escape(expiration_label(put_contract.get("expiration"))),
+                put_cost=html_escape(coberturas_money(put_value)),
+            )
+        structure_html = """
+          <div class="position-structure">
+            <div class="position-structure-title"><b>Estructura propuesta</b><span>{contracts} contratos · {covered} acciones · {coverage}%</span></div>
+            <div class="position-structure-grid">
+              <div class="position-structure-leg income-leg">
+                <span>1 · Vender call cubierta</span>
+                <b>C {call_strike} · vence {call_expiration}</b>
+                <small>Bid usado: {call_credit} por contrato</small>
+              </div>
+              {put_leg}
+            </div>
+            <div class="position-structure-result">
+              <span>{net}</span>
+              <small>{free}</small>
+            </div>
+          </div>
+        """.format(
+            contracts=html_escape(contracts or "N/D"),
+            covered=html_escape(covered_shares or "N/D"),
+            coverage=html_escape(recommendation.get("coverage_pct") or "N/D"),
+            call_strike=html_escape(contract.get("strike") if contract.get("strike") is not None else "N/D"),
+            call_expiration=html_escape(expiration_label(contract.get("expiration"))),
+            call_credit=html_escape(coberturas_money(call_value)),
+            put_leg=put_leg,
+            net=html_escape(
+                "Crédito neto estimado: {} por acción cubierta · {} total".format(
+                    coberturas_money(net_per_share), coberturas_money(net_total)
+                ) if net_per_share is not None else "Prima/costo neto pendiente"
+            ),
+            free=html_escape(
+                "{} acciones permanecen sin esta estructura y conservan toda su exposición.".format(free_shares)
+                if free_shares is not None else "Revisar las acciones restantes antes de ejecutar."
+            ),
         )
     profile_labels = {
         "capital_protection": "Mayor protección",
@@ -4692,9 +4766,10 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
             continue
         seen_leaders.add(leader_key)
         leader_cards.append(
-            '<div class="position-profile"><span>{}</span><b>{}</b><small>Peor escenario {} · lateral {}</small></div>'.format(
+            '<div class="position-profile"><span>{}</span><b>{}</b><small>{}</small><small>Peor escenario {} · lateral {}</small></div>'.format(
                 html_escape(profile_label),
                 html_escape(leader.get("label") or leader.get("alternative_id") or "N/D"),
+                html_escape(variant_structure(leader)),
                 html_escape(coberturas_money(leader.get("worst_case_pnl"))),
                 html_escape(coberturas_money(leader.get("flat_pnl"))),
             )
@@ -4707,9 +4782,9 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
             continue
         displayed_ids.add(variant.get("alternative_id"))
         comparison_rows.append(
-            "<tr><td>{label}</td><td>{contracts}</td><td>{support}</td><td>{flat}</td><td>{resistance}</td><td>{worst}</td></tr>".format(
+            "<tr><td>{label}</td><td>{structure}</td><td>{support}</td><td>{flat}</td><td>{resistance}</td><td>{worst}</td></tr>".format(
                 label=html_escape(variant.get("label") or variant.get("alternative_id") or "N/D"),
-                contracts=html_escape(variant.get("contracts") if variant.get("contracts") is not None else "—"),
+                structure=html_escape(variant_structure(variant)),
                 support=html_escape(coberturas_money(variant.get("support_pnl"))),
                 flat=html_escape(coberturas_money(variant.get("flat_pnl"))),
                 resistance=html_escape(coberturas_money(variant.get("resistance_pnl"))),
@@ -4723,7 +4798,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
           <div class="position-profile-grid">{leaders}</div>
           <details>
             <summary>Ver comparación numérica y supuestos</summary>
-            <div class="position-comparison-scroll"><table><thead><tr><th>Alternativa</th><th>Contratos</th><th>Soporte</th><th>Lateral</th><th>Resistencia</th><th>Peor caso</th></tr></thead><tbody>{rows}</tbody></table></div>
+            <div class="position-comparison-scroll"><table><thead><tr><th>Alternativa</th><th>Estructura</th><th>Soporte</th><th>Lateral</th><th>Resistencia</th><th>Peor caso</th></tr></thead><tbody>{rows}</tbody></table></div>
             <small>Estimación desde el precio actual; usa bid para calls vendidas y ask para puts compradas. No incluye comisiones ni impuestos. Las ponderaciones son de revisión, no probabilidades.</small>
           </details>
         </div>
@@ -4739,7 +4814,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         <div class="position-recommendation">
           <div><b>{label}</b><span>{status}</span></div>
           <p>{reason}</p>
-          <small>{contract}</small>
+          {structure}
         </div>
         {comparison}
         {more}
@@ -4749,7 +4824,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         label=html_escape(recommendation.get("label") or primary.get("label") or "Mantener y monitorear"),
         status=html_escape(status_labels.get(str(recommendation.get("status") or primary.get("status") or ""), friendly_operator_state(recommendation.get("status") or primary.get("status")))),
         reason=html_escape(recommendation.get("reason") or primary.get("reason") or ""),
-        contract=html_escape(contract_line),
+        structure=structure_html,
         comparison=comparison_html,
         more=more,
     )
@@ -6722,6 +6797,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-recommendation > div span {{ font-size:.72rem; font-weight:900; color:#1d4ed8; }}
           .position-recommendation p {{ margin:7px 0; line-height:1.4; }}
           .position-recommendation small {{ color:var(--muted); }}
+          .position-structure {{ display:grid; gap:8px; margin-top:10px; padding:10px; border:1px solid #bfdbfe; border-radius:8px; background:#fff; }}
+          .position-structure-title {{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; align-items:baseline; }}
+          .position-structure-title span {{ color:#1d4ed8; font-size:.74rem; font-weight:850; }}
+          .position-structure-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:7px; }}
+          .position-structure-leg {{ display:grid; gap:2px; padding:9px; border-radius:7px; border-left:4px solid #2563eb; background:#eff6ff; }}
+          .position-structure-leg.protection-leg {{ border-left-color:#16a34a; background:#f0fdf4; }}
+          .position-structure-leg span {{ font-size:.7rem; font-weight:850; color:var(--muted); text-transform:uppercase; }}
+          .position-structure-leg b {{ font-size:.9rem; }}
+          .position-structure-leg small {{ font-size:.7rem; }}
+          .position-structure-result {{ display:grid; gap:2px; padding-top:7px; border-top:1px solid var(--line); }}
+          .position-structure-result span {{ font-weight:900; font-size:.8rem; color:var(--ink); }}
+          .position-structure-result small {{ font-size:.7rem; }}
           .position-comparison {{ display:grid; gap:7px; }}
           .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:6px; }}
           .position-profile {{ display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fbfdff; }}

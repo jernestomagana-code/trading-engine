@@ -329,28 +329,29 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         item = {
             "management_alternatives": {
                 "recommendation": {
-                    "alternative_id": "COVERED_CALL_PARTIAL",
-                    "label": "Covered call parcial",
+                    "alternative_id": "COLLAR",
+                    "label": "Construir collar",
                     "status": "READY_FOR_MANUAL_REVIEW",
                     "confidence": "MEDIUM",
                     "reason": "Ganó la comparación de cinco escenarios.",
                     "contracts": 3,
                     "coverage_pct": 30.0,
-                    "contract": {"right": "C", "strike": 65, "expiration": "20260828", "premium_per_contract": 475},
-                    "put_contract": {"right": "P", "strike": 62, "expiration": "20260828", "premium_per_contract": 98},
+                    "contract": {"right": "C", "strike": 65, "expiration": "20260828", "bid": 4.60, "bid_per_contract": 460},
+                    "put_contract": {"right": "P", "strike": 62, "expiration": "20260828", "ask": 1.01, "ask_per_contract": 101},
                 },
                 "alternatives": [
-                    {"alternative_id": "COVERED_CALL_PARTIAL", "label": "Covered call parcial", "status": "READY_FOR_MANUAL_REVIEW", "is_primary_management_path": True},
+                    {"alternative_id": "COLLAR", "label": "Construir collar", "status": "READY_FOR_MANUAL_REVIEW", "is_primary_management_path": True},
                     {"alternative_id": "REDUCE_25", "label": "Reducir 25%", "status": "READY_FOR_MANUAL_REVIEW"},
                 ],
                 "strategy_comparison": {
                     "available": True,
+                    "shares": 1000,
                     "profile_leaders": {
-                        "balanced": {"variant_id": "COVERED_CALL_PARTIAL_3", "label": "Covered call parcial", "worst_case_pnl": -5375, "flat_pnl": 626},
+                        "balanced": {"variant_id": "COLLAR_3", "alternative_id": "COLLAR", "label": "Collar parcial", "contracts": 3, "contract": {"strike": 65, "expiration": "20260828"}, "put_contract": {"strike": 62, "expiration": "20260828"}, "worst_case_pnl": -5375, "flat_pnl": 626},
                         "capital_protection": {"variant_id": "REDUCE_25", "label": "Reducir 25%", "worst_case_pnl": -5062, "flat_pnl": 0},
                     },
                     "variants": [
-                        {"alternative_id": "COVERED_CALL_PARTIAL", "label": "Covered call parcial", "contracts": 3, "support_pnl": -1089, "flat_pnl": 626, "resistance_pnl": 8263, "worst_case_pnl": -5375},
+                        {"alternative_id": "COLLAR", "label": "Collar parcial", "contracts": 3, "contract": {"strike": 65, "expiration": "20260828"}, "put_contract": {"strike": 62, "expiration": "20260828"}, "support_pnl": -1089, "flat_pnl": 626, "resistance_pnl": 8263, "worst_case_pnl": -5375},
                         {"alternative_id": "REDUCE_25", "label": "Reducir 25%", "support_pnl": -1800, "flat_pnl": 0, "resistance_pnl": 8220, "worst_case_pnl": -5062},
                     ],
                 },
@@ -362,8 +363,12 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Mejor balance", html)
         self.assertIn("Mayor protección", html)
         self.assertIn("Ver comparación numérica y supuestos", html)
-        self.assertIn("3 contrato(s) · 30.0% de la posición", html)
-        self.assertIn("Put protectora: P 62", html)
+        self.assertIn("3 contratos · 300 acciones · 30.0%", html)
+        self.assertIn("C 65 · vence 28 ago 2026", html)
+        self.assertIn("P 62 · vence 28 ago 2026", html)
+        self.assertIn("Crédito neto estimado: $3.59 por acción cubierta · $1,077.00 total", html)
+        self.assertIn("700 acciones permanecen sin esta estructura", html)
+        self.assertIn("C65 / P62 · 28 ago 2026 · 3 contrato(s)", html)
 
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
