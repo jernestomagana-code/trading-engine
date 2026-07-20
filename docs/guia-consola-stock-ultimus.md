@@ -30,7 +30,7 @@ Fuentes de información
                          │
                          ▼
               Stock Ultimus Console
-  Hoy → Alertas → Posiciones → Riesgo → Cartera avanzada
+  Hoy → Alertas → Posiciones → RSP → Riesgo → Cartera avanzada
                     → Resultados → Herramientas
                          │
                          ▼
@@ -127,12 +127,13 @@ La barra fija permite saltar directamente a:
 1. **Hoy**
 2. **Alertas**
 3. **Posiciones**
-4. **Riesgo**
-5. **Cartera**
-6. **Resultados**
-7. **Herramientas**
+4. **RSP**
+5. **Riesgo**
+6. **Cartera**
+7. **Resultados**
+8. **Herramientas**
 
-Los primeros cuatro bloques son de uso diario. Cartera, Resultados y Herramientas permanecen cerrados para mantener la pantalla simple y se abren sólo cuando hacen falta.
+Los primeros cinco bloques son de uso diario. Coberturas RSP aparece como panel principal entre Posiciones y Riesgo. Cartera, Resultados y Herramientas permanecen cerrados para mantener la pantalla simple y se abren sólo cuando hacen falta.
 
 ## 7. Bloque Hoy
 
@@ -244,7 +245,18 @@ Muestra las posiciones activas detectadas y ayuda a administrarlas. Para cada po
 - **Datos frescos:** registra que se actualizó la información.
 - **Refresh posiciones IBKR:** vuelve a leer broker, posiciones y opciones. Úsalo si aparece información vieja o incompleta.
 
-## 10. Bloque Riesgo
+## 10. Bloque principal Coberturas RSP
+
+RSP forma parte del flujo principal, inmediatamente después de Posiciones. La lectura manual que pegas y la cadena consultada a IBKR son dos piezas diferentes:
+
+- **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
+- **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
+
+Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta inmediatamente. **Apertura diaria** comprueba que esa lectura sea fresca y ejecuta un refresh exclusivo de RSP para vencimientos de 7–14 DTE. El resultado muestra por separado `contexto`, `cadena` y `candidatos`.
+
+Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. Un contrato viejo, fuera de 7–14 DTE o sin bid/ask no debe usarse como candidato actualizado.
+
+## 11. Bloque Riesgo
 
 Es la prioridad principal antes de aumentar exposición. Incluye:
 
@@ -272,7 +284,7 @@ La consola muestra primero las tres alertas principales; las demás están en **
 - **Reabrir ahora:** devuelve una alerta reconocida o silenciada a atención inmediata.
 - **Reevaluar riesgo:** recalcula con los snapshots actuales. No liquida posiciones.
 
-## 11. Cartera avanzada
+## 12. Cartera avanzada
 
 Se abre sólo para análisis de cartera o multicuenta.
 
@@ -308,18 +320,7 @@ Solicita a IBKR una vista previa de margen y comisión. El modo `what-if` impide
 
 Muestra automatizaciones locales de riesgo, outbox, digest, acciones humanas y sesiones limpias de observación. Recalcula y archiva; no consulta ni opera el broker al ejecutar el mantenimiento local.
 
-### Coberturas RSP dentro de la apertura
-
-La lectura manual que pegas en **Coberturas RSP** y la cadena consultada a IBKR son dos piezas diferentes:
-
-- **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
-- **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
-
-Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta inmediatamente. A partir de ahora, **Apertura diaria** también comprueba que esa lectura sea fresca y ejecuta un refresh exclusivo de RSP para vencimientos de 7–14 DTE. El resultado de apertura muestra por separado `contexto`, `cadena` y `candidatos`.
-
-Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. Un contrato viejo, fuera de 7–14 DTE o sin bid/ask no debe usarse como candidato actualizado.
-
-## 12. Resultados y aprendizaje
+## 13. Resultados y aprendizaje
 
 Esta sección sirve para evaluar si las decisiones y alertas realmente funcionan con evidencia acumulada.
 
@@ -341,11 +342,10 @@ Resume diariamente y semanalmente cartera, riesgo, alertas, resultados y pendien
 
 Permite revisar desempeño y calidad por estrategia, fuente y régimen. El sistema no cambia parámetros por sí solo.
 
-## 13. Herramientas y administración
+## 14. Herramientas y administración
 
 Es una zona de uso ocasional. Incluye:
 
-- **Coberturas RSP:** análisis de coberturas y niveles; no ejecución.
 - **Estado Ejecutivo y Revisión Manual V31:** vista detallada de estados, bloqueos y contratos.
 - **Pregunta operativa local:** consulta explicaciones del motor desde la consola.
 - **Capacidad IBKR:** capital y margen disponibles.
@@ -364,7 +364,7 @@ En perfiles de cuenta:
 
 Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos.
 
-## 14. Diccionario de términos
+## 15. Diccionario de términos
 
 | Término | Significado sencillo |
 |---|---|
@@ -388,7 +388,7 @@ Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos
 | Paper | Seguimiento simulado, sin operación real. |
 | What-if | Vista previa oficial de margen/comisión sin crear una orden real. |
 
-## 15. Qué hacer ante problemas comunes
+## 16. Qué hacer ante problemas comunes
 
 ### La consola no abre
 
@@ -421,7 +421,7 @@ Puede ser correcto. Revisa si el mercado está cerrado, si faltan eventos reales
 
 Lee primero el resumen amigable de la última acción. Abre el detalle técnico únicamente si necesitas diagnóstico. No repitas acciones de publicación o refresh sin entender si la anterior terminó.
 
-## 16. Reglas de oro
+## 17. Reglas de oro
 
 1. **Riesgo antes que oportunidad.**
 2. **Dato viejo equivale a decisión pendiente.**
@@ -433,7 +433,7 @@ Lee primero el resumen amigable de la última acción. Abre el detalle técnico 
 8. **No cambies parámetros por resultados incompletos.**
 9. **La consola recomienda y registra; TWS ejecuta bajo decisión humana.**
 
-## 17. La versión más corta posible
+## 18. La versión más corta posible
 
 Si sólo recuerdas una secuencia, usa ésta:
 

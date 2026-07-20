@@ -45,6 +45,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
 
         self.assertIn('class="operator-nav"', source)
         self.assertIn('href="#hoy"', source)
+        self.assertIn('href="#coberturas-rsp">RSP</a>', source)
         self.assertIn('id="cartera" class="panel operator-workspace"', source)
         self.assertIn('id="resultados" class="panel operator-workspace"', source)
         self.assertIn('id="herramientas" class="panel operator-workspace"', source)
@@ -52,6 +53,13 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('"Ultima apertura"', source)
         self.assertIn('"RSP OK"', source)
         self.assertIn("Ver {len(secondary_alerts)} alertas adicionales", source)
+        positions_index = source.index('<div id="posiciones">{active_positions}</div>')
+        rsp_index = source.index("          {coberturas}\n", positions_index)
+        risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>', rsp_index)
+        tools_index = source.index('<details id="herramientas" class="panel operator-workspace">')
+        self.assertLess(positions_index, rsp_index)
+        self.assertLess(rsp_index, risk_index)
+        self.assertNotIn("{coberturas}", source[tools_index:source.index("</details>", tools_index)])
 
     def test_operator_guide_is_canonical_and_covers_navigation(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")

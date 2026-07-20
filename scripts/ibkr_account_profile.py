@@ -5885,10 +5885,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     result = result or web_last_result()
     refresh_meta, job_panel = render_job_panel(job_id)
     manual_review_html = render_v31_manual_review_panel(v31_payloads)
-    coberturas_support = render_support_bundle(
-        "Coberturas RSP",
-        render_coberturas_inline_panel(),
-    )
+    coberturas = render_coberturas_inline_panel()
     v31_console_support = render_support_bundle(
         "Estado Ejecutivo y Revision Manual V31",
         render_v31_executive_panel(v31_payloads),
@@ -6204,6 +6201,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             <a href="#hoy">Hoy</a>
             <a href="#alertas">Alertas</a>
             <a href="#posiciones">Posiciones</a>
+            <a href="#coberturas-rsp">RSP</a>
             <a href="#riesgo">Riesgo</a>
             <a href="#cartera">Cartera</a>
             <a href="#resultados">Resultados</a>
@@ -6216,6 +6214,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           {job_panel}
           <div id="alertas">{alerts}</div>
           <div id="posiciones">{active_positions}</div>
+          {coberturas}
           <div id="riesgo">{portfolio_risk}</div>
 
           <details id="cartera" class="panel operator-workspace">
@@ -6243,7 +6242,6 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <details id="herramientas" class="panel operator-workspace">
             <summary><span>Herramientas y administración<small>Diagnóstico, mantenimiento, cuentas y utilidades de uso ocasional.</small></span></summary>
             <div class="workspace-body">
-              {coberturas_support}
               {v31_console_support}
               {question_support}
               {admin_support}
@@ -6400,7 +6398,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         alerts=render_operator_alerts(operator_payload, snapshot),
         active_positions=render_active_positions_panel(snapshot, v31_payloads, active),
         v31_learning=render_v31_learning_panel(v31_payloads),
-        coberturas_support=coberturas_support,
+        coberturas=coberturas,
         v31_console_support=v31_console_support,
         question_support=question_support,
         admin_support=admin_support,
