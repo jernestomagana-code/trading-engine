@@ -27,6 +27,7 @@ RSP_CAPACITY_PATH = "coberturas_rsp_account_capacity_latest.json"
 RSP_POSITIONS_PATH = "coberturas_rsp_positions_latest.json"
 RSP_RECONCILIATION_PATH = "coberturas_rsp_reconciliation_latest.json"
 RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
+RSP_COVERED_CALL_PROFILE = os.getenv("STOCK_ULTIMUS_RSP_COVERED_CALL_PROFILE", "FLEXIBLE_TOTAL_RETURN").strip().upper()
 RSP_CHAIN_MAX_AGE_HOURS = 24.0
 
 
@@ -702,7 +703,9 @@ def build_buy_write_scenario(row: dict[str, Any] | None, spot: float | None) -> 
     premium = option_premium(row)
     stock_cost = round(spot * SHARES_PER_LOT, 2) if spot else None
     net_debit = round(stock_cost - premium, 2) if stock_cost is not None and premium is not None else None
-    max_profit = round(max(0.0, (strike - spot) * SHARES_PER_LOT) + premium, 2) if strike and spot and premium is not None else None
+    # For ITM covered calls the stock is called below entry, so the intrinsic
+    # stock loss must reduce the premium. Never clip that difference to zero.
+    max_profit = round((strike - spot) * SHARES_PER_LOT + premium, 2) if strike and spot and premium is not None else None
     scenario = {
         "available": bool(strike and spot and premium is not None),
         "strategy": "BUY_100_SELL_CALL",
@@ -718,6 +721,7 @@ def build_buy_write_scenario(row: dict[str, Any] | None, spot: float | None) -> 
         "max_profit_pct_on_net_debit": round(max_profit / net_debit * 100, 2) if max_profit is not None and net_debit else None,
         "breakeven": round(spot - premium / SHARES_PER_LOT, 2) if spot and premium is not None else None,
         "called_away_price": strike,
+        "moneyness": covered_call_moneyness(strike, spot),
         "probability": probability_from_delta(row, "CALL"),
         "candidate": row,
         "manual_review_required": True,
@@ -725,6 +729,119 @@ def build_buy_write_scenario(row: dict[str, Any] | None, spot: float | None) -> 
         "not_order_instruction": True,
     }
     return scenario
+
+
+def covered_call_moneyness(strike: float | None, spot: float | None) -> str:
+    if strike is None or spot is None or spot <= 0:
+        return "UNKNOWN"
+    if abs(strike - spot) / spot <= 0.0025:
+        return "ATM"
+    if strike < spot:
+        return "ITM"
+    return "OTM"
+
+
+def covered_call_candidate_evaluation(row: dict[str, Any], spot: float | None) -> dict[str, Any]:
+    scenario = build_buy_write_scenario(row, spot)
+    premium = safe_float(scenario.get("premium"), None)
+    max_profit = safe_float(scenario.get("max_profit_if_called"), None)
+    stock_cost = safe_float(scenario.get("stock_cost"), None)
+    strike = safe_float(scenario.get("strike"), None)
+    delta = abs(safe_float(row.get("delta"), 0) or 0)
+    spread_pct = safe_float(row.get("spread_pct"), 100) or 100
+    technical = safe_float(row.get("coberturas_score"), 0) or 0
+    premium_yield = round(premium / stock_cost * 100, 3) if premium is not None and stock_cost else None
+    total_return = round(max_profit / stock_cost * 100, 3) if max_profit is not None and stock_cost else None
+    downside_cushion = premium_yield
+    upside_retained = round(max(0.0, (strike or 0) - (spot or 0)) / spot * 100, 3) if strike is not None and spot else None
+    assignment_probability = round(delta * 100, 2) if delta else None
+
+    premium_score = min(100.0, max(0.0, (premium_yield or 0) / 2.0 * 100))
+    total_return_score = min(100.0, max(0.0, (total_return or 0) / 3.0 * 100))
+    cushion_score = min(100.0, max(0.0, (downside_cushion or 0) / 2.0 * 100))
+    upside_score = min(100.0, max(0.0, (upside_retained or 0) / 3.0 * 100))
+    liquidity_score = max(0.0, 100.0 - spread_pct * 2.0)
+    assignment_score = assignment_probability or 0.0
+    balanced_assignment_score = max(0.0, 100.0 - abs((assignment_probability or 50.0) - 50.0) * 2.0)
+
+    profiles = {
+        "INCOME_DEFENSIVE": round(
+            premium_score * 0.30 + cushion_score * 0.25 + assignment_score * 0.20 + liquidity_score * 0.15 + technical * 0.10,
+            2,
+        ),
+        "FLEXIBLE_TOTAL_RETURN": round(
+            total_return_score * 0.35 + cushion_score * 0.20 + premium_score * 0.10 + liquidity_score * 0.15 + technical * 0.10 + balanced_assignment_score * 0.10,
+            2,
+        ),
+        "UPSIDE_RETENTION": round(
+            upside_score * 0.35 + total_return_score * 0.20 + (100.0 - assignment_score) * 0.15 + liquidity_score * 0.15 + technical * 0.15,
+            2,
+        ),
+    }
+    return {
+        "moneyness": covered_call_moneyness(strike, spot),
+        "premium_yield_pct": premium_yield,
+        "downside_cushion_pct": downside_cushion,
+        "max_profit_if_called": max_profit,
+        "total_return_if_called_pct": total_return,
+        "upside_retained_pct": upside_retained,
+        "assignment_probability_pct": assignment_probability,
+        "spread_pct": spread_pct,
+        "profile_scores": profiles,
+        "selected_profile": RSP_COVERED_CALL_PROFILE,
+        "selected_score": profiles.get(RSP_COVERED_CALL_PROFILE, profiles["FLEXIBLE_TOTAL_RETURN"]),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def rank_covered_call_candidates(rows: list[dict[str, Any]], spot: float | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    evaluated = []
+    for raw in rows:
+        row = dict(raw)
+        row["covered_call_evaluation"] = covered_call_candidate_evaluation(row, spot)
+        evaluated.append(row)
+    evaluated.sort(
+        key=lambda row: safe_float((row.get("covered_call_evaluation") or {}).get("selected_score"), 0) or 0,
+        reverse=True,
+    )
+    winners = {}
+    for profile in ["INCOME_DEFENSIVE", "FLEXIBLE_TOTAL_RETURN", "UPSIDE_RETENTION"]:
+        winner = max(
+            evaluated,
+            key=lambda row: safe_float(((row.get("covered_call_evaluation") or {}).get("profile_scores") or {}).get(profile), 0) or 0,
+            default=None,
+        )
+        if winner:
+            winner_evaluation = winner.get("covered_call_evaluation") or {}
+            execution_blockers = [
+                blocker
+                for blocker in (winner.get("coberturas_blockers") or [])
+                if blocker in {"MISSING_PREMIUM", "MISSING_SPREAD", "SPREAD_TOO_WIDE"}
+            ]
+            winners[profile] = {
+                "strike": winner.get("strike"),
+                "expiration": winner.get("expiration"),
+                "moneyness": winner_evaluation.get("moneyness"),
+                "score": (winner_evaluation.get("profile_scores") or {}).get(profile),
+                "premium_yield_pct": winner_evaluation.get("premium_yield_pct"),
+                "total_return_if_called_pct": winner_evaluation.get("total_return_if_called_pct"),
+                "spread_pct": winner_evaluation.get("spread_pct"),
+                "execution_ready_for_review": not execution_blockers,
+                "execution_blockers": execution_blockers,
+            }
+    selected_winner = winners.get(RSP_COVERED_CALL_PROFILE) or winners.get("FLEXIBLE_TOTAL_RETURN")
+    return evaluated, {
+        "methodology_version": "rsp_covered_call_multi_objective_v1",
+        "selected_profile": RSP_COVERED_CALL_PROFILE,
+        "selected_winner": selected_winner,
+        "selection_status": "READY_FOR_MANUAL_REVIEW" if (selected_winner or {}).get("execution_ready_for_review") else "WAIT_EXECUTION_QUALITY",
+        "profile_winners": winners,
+        "itm_allowed": True,
+        "candidate_count": len(evaluated),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
 
 
 def first_scenario_candidate(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1690,6 +1807,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         key=lambda row: safe_float(row.get("coberturas_score"), 0),
         reverse=True,
     )
+    call_candidates, covered_call_methodology = rank_covered_call_candidates(call_candidates, spot)
 
     if mode == "SELL_PUT":
         candidate_rows = put_candidates
@@ -1785,6 +1903,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "call_candidate_count": len(call_candidates),
         "top_put_candidates": put_candidates[:5],
         "top_call_candidates": call_candidates[:5],
+        "covered_call_methodology": covered_call_methodology,
         "strategy_scenarios": scenarios,
         "strategy_recommendation": strategy_recommendation,
         "position_manager": operating_plan.get("management"),

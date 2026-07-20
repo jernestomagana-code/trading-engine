@@ -1537,6 +1537,21 @@ def pick_rsp_weekly_strikes(strikes, stock_price, right, limit):
             _append_unique_strike(selected, strike)
         if len(selected) >= limit:
             break
+
+    # A covered-call comparison is only meaningful when IBKR supplies actual
+    # contracts on both sides of spot. Reserve call coverage for ATM and two
+    # progressively ITM strikes, then use the remaining slots for the manual
+    # and technical OTM targets collected above.
+    if right == "C":
+        coverage = []
+        for target in [stock_price, stock_price * 0.985, stock_price * 0.97]:
+            strike = _nearest_available_strike(strikes, target)
+            if strike is not None:
+                _append_unique_strike(coverage, strike)
+        combined = []
+        for strike in coverage + selected:
+            _append_unique_strike(combined, strike)
+        selected = combined
     return selected[:limit]
 
 

@@ -268,6 +268,8 @@ En capital, la consola diferencia:
 - **Margen confirmado por IBKR:** tiene prioridad cuando el cálculo `what-if` devuelve un resultado completo.
 - **Margen estimado configurado:** si IBKR no devuelve margen, se usa una referencia operativa de $7,000 (`STOCK_ULTIMUS_RSP_MARGIN_ESTIMATE`). La consola la identifica como estimación y nunca como confirmación del broker.
 
+Para covered calls, los strikes **ITM, ATM y OTM están permitidos**. La cadena ampliada compara hasta 12 contratos y presenta tres lecturas: **Ingreso y defensa**, **Retorno total flexible** y **Conservar upside**. El perfil operativo predeterminado es **Retorno total flexible**; pondera prima, protección bajista, ganancia total si hay asignación, probabilidad aproximada, spread y participación alcista. La ganancia máxima de una call ITM descuenta correctamente la diferencia entre el precio pagado por las acciones y un strike inferior. El ganador de cada perfil es comparativo: si falta prima utilizable o el spread es demasiado amplio, la consola indica **esperar mejor liquidez** y no lo presenta como listo para revisión operativa.
+
 ## 11. Bloque Riesgo
 
 Es la prioridad principal antes de aumentar exposición. Incluye:

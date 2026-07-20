@@ -121,9 +121,9 @@ def run_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
         env["IBKR_SKIP_CANONICAL_PUBLISH"] = "1"
         env.setdefault("IBKR_WATCHLIST", "RSP")
         env.setdefault("IBKR_OPTION_SYMBOLS", "RSP")
-        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "12")
         env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "1")
-        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "4")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "12")
         env.setdefault("IBKR_TARGET_DTE_MIN", "7")
         env.setdefault("IBKR_TARGET_DTE_MAX", "14")
         env.setdefault("IBKR_TARGET_DTE_IDEAL", "8")

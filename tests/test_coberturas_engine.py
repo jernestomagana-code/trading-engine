@@ -7,6 +7,31 @@ import coberturas_engine as ce
 
 
 class CoberturasEngineTests(unittest.TestCase):
+    def test_itm_buy_write_includes_stock_loss_below_entry_in_max_profit(self):
+        scenario = ce.build_buy_write_scenario(
+            {"strike": 210, "expiration": "20260731", "dte": 11, "premium_100": 400, "delta": 0.7},
+            213,
+        )
+
+        self.assertEqual(scenario["moneyness"], "ITM")
+        self.assertEqual(scenario["max_profit_if_called"], 100)
+        self.assertEqual(scenario["breakeven"], 209)
+
+    def test_covered_call_profiles_consider_itm_and_otm_candidates(self):
+        rows = [
+            {"strike": 210, "expiration": "20260731", "dte": 11, "premium_100": 500, "delta": 0.72, "spread_pct": 8, "coberturas_score": 60},
+            {"strike": 216, "expiration": "20260731", "dte": 11, "premium_100": 100, "delta": 0.28, "spread_pct": 8, "coberturas_score": 90},
+        ]
+
+        ranked, methodology = ce.rank_covered_call_candidates(rows, 213)
+
+        self.assertEqual({row["covered_call_evaluation"]["moneyness"] for row in ranked}, {"ITM", "OTM"})
+        self.assertTrue(methodology["itm_allowed"])
+        self.assertEqual(methodology["candidate_count"], 2)
+        self.assertEqual(methodology["profile_winners"]["INCOME_DEFENSIVE"]["moneyness"], "ITM")
+        self.assertEqual(methodology["profile_winners"]["UPSIDE_RETENTION"]["moneyness"], "OTM")
+        self.assertTrue(methodology["profile_winners"]["INCOME_DEFENSIVE"]["execution_ready_for_review"])
+        self.assertEqual(methodology["selection_status"], "READY_FOR_MANUAL_REVIEW")
     def test_dedicated_rsp_positions_detect_covered_call_without_duplicates(self):
         runtime_data = {
             ce.RSP_POSITIONS_PATH: {

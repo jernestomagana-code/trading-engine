@@ -109,7 +109,7 @@ CONSOLE_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SYMBOLS", "QQQ,
 CONSOLE_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_CONSOLE_MAX_OPTIONS_PER_SYMBOL", "1")
 CONSOLE_COBERTURAS_RSP_OPTION_SYMBOLS = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_OPTION_SYMBOLS", "RSP")
 CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
-CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL", "4")
+CONSOLE_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_MAX_OPTIONS_PER_SYMBOL", "12")
 CONSOLE_COBERTURAS_RSP_TARGET_DTE_MIN = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MIN", "7")
 CONSOLE_COBERTURAS_RSP_TARGET_DTE_MAX = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_MAX", "14")
 CONSOLE_COBERTURAS_RSP_TARGET_DTE_IDEAL = os.getenv("STOCK_ULTIMUS_COBERTURAS_RSP_TARGET_DTE_IDEAL", "8")
@@ -3375,11 +3375,12 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     candidates = coberturas_display_candidates(payload)
     rows = []
     for item in candidates[:3]:
+        cc_eval = item.get("covered_call_evaluation") if isinstance(item.get("covered_call_evaluation"), dict) else {}
         rows.append(
             """
             <tr>
               <td>{side}</td><td>{exp}</td><td>{dte}</td><td>{strike}</td>
-              <td>{delta}</td><td>{premium}</td><td>{score}</td>
+              <td>{delta}</td><td>{premium}</td><td>{moneyness}</td><td>{method_score}</td><td>{score}</td>
             </tr>
             """.format(
                 side=html_escape(item.get("side")),
@@ -3388,6 +3389,8 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
                 strike=html_escape(item.get("strike")),
                 delta=html_escape(item.get("delta")),
                 premium=html_escape(item.get("premium_100")),
+                moneyness=html_escape(cc_eval.get("moneyness") or "-"),
+                method_score=html_escape(cc_eval.get("selected_score") if cc_eval else "-"),
                 score=html_escape(item.get("coberturas_score")),
             )
         )
@@ -3412,6 +3415,25 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     )
     operating_plan_html = render_coberturas_operating_plan(payload, compact=True)
     ibkr = payload.get("ibkr") if isinstance(payload.get("ibkr"), dict) else {}
+    methodology = payload.get("covered_call_methodology") if isinstance(payload.get("covered_call_methodology"), dict) else {}
+    methodology_labels = {
+        "INCOME_DEFENSIVE": "Ingreso y defensa",
+        "FLEXIBLE_TOTAL_RETURN": "Retorno total flexible",
+        "UPSIDE_RETENTION": "Conservar upside",
+    }
+    methodology_winners = methodology.get("profile_winners") if isinstance(methodology.get("profile_winners"), dict) else {}
+    methodology_cards = "".join(
+        '<div><span>{label}</span><strong>{strike} · {moneyness}</strong><small>score {score} · spread {spread}% · {quality}</small></div>'.format(
+            label=html_escape(methodology_labels.get(profile, profile)),
+            strike=html_escape((winner or {}).get("strike")),
+            moneyness=html_escape((winner or {}).get("moneyness")),
+            score=html_escape((winner or {}).get("score")),
+            spread=html_escape((winner or {}).get("spread_pct")),
+            quality="apto para revisión manual" if (winner or {}).get("execution_ready_for_review") else "esperar mejor liquidez",
+        )
+        for profile, winner in methodology_winners.items()
+        if isinstance(winner, dict)
+    )
     context_age = friendly_age(context.get("updated_at") or context.get("generated_at"))
     chain_age = friendly_age(ibkr.get("chain_coverage_generated_at"))
     data_ready = bool(not blockers and ibkr.get("chain_has_rsp") and (payload.get("candidate_count") or managing_position))
@@ -3454,12 +3476,17 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         <div><span>Seguimiento IBKR</span><strong>{sync_status}</strong><small>{sync_detail}</small></div>
       </div>
       <p class="review-line">{blockers}</p>
+      <details class="operator-subsection">
+        <summary>Cómo evalúa strikes ITM, ATM y OTM</summary>
+        <p class="muted">Perfil utilizado: <strong>{methodology_profile}</strong>. ITM está permitido; cada strike se compara por prima, protección bajista, ganancia total si es asignado, probabilidad, spread y upside conservado. Un ganador comparativo no queda apto para revisión operativa hasta que su prima y spread sean utilizables.</p>
+        <div class="position-overview rsp-overview">{methodology_cards}</div>
+      </details>
       <div class="rsp-decision-body">
         {scenarios}
         <details class="operator-subsection"{candidate_open}>
           <summary>Candidatos válidos de la cadena actual ({candidate_count})</summary>
           <div class="table-scroll"><table>
-            <thead><tr><th>Lado</th><th>Vencimiento</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Prima</th><th>Calidad</th></tr></thead>
+            <thead><tr><th>Lado</th><th>Vencimiento</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Prima</th><th>ITM/ATM/OTM</th><th>Score método</th><th>Score técnico</th></tr></thead>
             <tbody>{rows}</tbody>
           </table></div>
         </details>
@@ -3504,9 +3531,11 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         scenarios=scenarios_html,
         operating_plan=operating_plan_html,
         blockers=html_escape(blocker_text),
+        methodology_profile=html_escape(methodology_labels.get(str(methodology.get("selected_profile") or ""), methodology.get("selected_profile") or "Retorno total flexible")),
+        methodology_cards=methodology_cards or '<div><span>Comparación</span><strong>Pendiente</strong><small>Se completará con la próxima cadena ampliada.</small></div>',
         candidate_count=html_escape(payload.get("candidate_count") or 0),
         candidate_open=" open" if payload.get("candidate_count") else "",
-        rows="".join(rows) or '<tr><td colspan="7">No hay candidatos vigentes de 7 a 14 DTE. No uses contratos históricos.</td></tr>',
+        rows="".join(rows) or '<tr><td colspan="9">No hay candidatos vigentes de 7 a 14 DTE. No uses contratos históricos.</td></tr>',
     )
 
 
