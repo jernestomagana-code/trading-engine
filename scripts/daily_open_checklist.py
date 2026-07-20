@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
     parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "120")))
+    parser.add_argument("--capacity-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_CAPACITY_TIMEOUT", "20")))
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "10")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_OPEN_OUT", str(DEFAULT_OUT)))
     parser.add_argument("--refresh", action="store_true", help="Run ibkr_bridge.py --once before reading V32.")
@@ -269,6 +270,28 @@ def refresh_rsp_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str,
     )
 
 
+def refresh_account_capacity(args: argparse.Namespace) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        "scripts/ibkr_account_profile.py",
+        "refresh-account-capacity",
+        "--host",
+        args.ibkr_host,
+        "--port",
+        str(args.ibkr_port),
+        "--client-id",
+        os.getenv("STOCK_ULTIMUS_CONSOLE_IBKR_CLIENT_ID", "74"),
+        "--timeout",
+        str(args.capacity_timeout),
+    ]
+    return run_command(
+        "refresh_account_capacity",
+        command,
+        timeout=max(args.capacity_timeout + 15, 35),
+        env=os.environ.copy(),
+    )
+
+
 def coberturas_rsp_summary() -> dict[str, Any]:
     try:
         payload = coberturas_engine.build_recommendation(RUNTIME)
@@ -378,6 +401,8 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         if error in {"IBKR_PORT_CLOSED", "MISSING_INGEST_TOKEN"}:
             return "ACTION_REQUIRED", "Abrir/desbloquear TWS-IBKR o revisar el token de ingest antes de reintentar."
         return "ACTION_REQUIRED", "IBKR conecto, pero el escaneo principal no termino; revisar timeout/red de produccion y reintentar una sola vez."
+    if report.get("capacity_refresh_step", {}).get("ok") is False:
+        return "ACTION_REQUIRED", "IBKR conecto, pero no se pudo confirmar la capacidad actual de la cuenta para evaluar RSP."
     if report.get("rsp_refresh_step", {}).get("ok") is False:
         return "ACTION_REQUIRED", "Coberturas RSP no completo su refresh IBKR 7-14 DTE; revisar el detalle RSP antes de usar candidatos."
     if report.get("publish_step", {}).get("ok") is False:
@@ -460,6 +485,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["refresh_step"] = refresh_bridge(args, ingest_token)
             checks["runtime_freshness_after_refresh"] = runtime_freshness()
+        if not ibkr_open:
+            report["capacity_refresh_step"] = {"name": "refresh_account_capacity", "ok": False, "error": "IBKR_PORT_CLOSED"}
+        else:
+            report["capacity_refresh_step"] = refresh_account_capacity(args)
         if args.skip_rsp_refresh:
             report["rsp_refresh_step"] = {
                 "name": "refresh_coberturas_rsp",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,10 +22,27 @@ TICKER = "RSP"
 TARGET_WEEKLY_PREMIUM = 100.0
 MAX_CONTRACTS = 1
 SHARES_PER_LOT = 100
+RSP_CHAIN_PATH = "coberturas_rsp_chain_coverage_latest.json"
+RSP_CHAIN_MAX_AGE_HOURS = 24.0
+
+
+def configured_margin_estimate() -> float:
+    value = safe_float(os.getenv("STOCK_ULTIMUS_RSP_MARGIN_ESTIMATE", "7000"), 7000.0)
+    return value if value is not None and value > 0 else 7000.0
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def timestamp_age_hours(value: Any) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 3600.0)
+    except Exception:
+        return None
 
 
 def safe_float(value: Any, default: float | None = None) -> float | None:
@@ -373,8 +391,9 @@ def extract_option_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
             row["not_order_instruction"] = True
             rows.append(row)
     priority = {
-        "v32_ibkr_chain_coverage.json": 0,
-        "decision_desk_snapshot.json": 1,
+        RSP_CHAIN_PATH: 0,
+        "v32_ibkr_chain_coverage.json": 1,
+        "decision_desk_snapshot.json": 2,
     }
 
     def row_quality(row: dict[str, Any]) -> int:
@@ -1020,9 +1039,9 @@ def margin_decision_sensitivity(rows: list[dict[str, Any]]) -> dict[str, Any]:
         gap = abs(bw_return - sp_return)
         out["could_change_with_real_margin"] = gap < 1.0
         out["note"] = (
-            "Real margin could change decision only if it moves returns close enough to overcome the current return gap."
+            "El margen real de IBKR podría cambiar la preferencia si acerca suficientemente los retornos de ambas estrategias."
             if out["could_change_with_real_margin"]
-            else "Current return gap is wide; real IBKR margin is still preferred, but unlikely to flip unless margin differs dramatically."
+            else "La diferencia de retorno es amplia. El margen real de IBKR sigue teniendo prioridad, pero sólo cambiaría la preferencia si difiere de forma importante."
         )
     return out
 
@@ -1087,9 +1106,12 @@ def apply_margin_previews(scenarios: dict[str, Any], margin_payload: dict[str, A
         scenario["return_on_cash_or_debit_pct"] = (
             round(max_profit / cash_base * 100, 2) if max_profit is not None and cash_base and cash_base > 0 else None
         )
-        decision_capital = req if req is not None else cash_base
+        estimated_margin = configured_margin_estimate()
+        decision_capital = req if req is not None else estimated_margin
         scenario["decision_capital_required"] = decision_capital
-        scenario["decision_capital_source"] = "IBKR_WHAT_IF_MARGIN" if req is not None else "CONSERVATIVE_CASH_OR_DEBIT_FALLBACK"
+        scenario["decision_capital_source"] = "IBKR_WHAT_IF_MARGIN" if req is not None else "CONFIGURED_MARGIN_ESTIMATE"
+        scenario["estimated_margin_required"] = None if req is not None else estimated_margin
+        scenario["nominal_exposure"] = cash_base
         scenario["can_afford_by_available_funds"] = (
             available_funds >= decision_capital if available_funds is not None and decision_capital is not None else None
         )
@@ -1381,8 +1403,22 @@ def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_c
 
 def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     runtime_data = load_runtime_jsons(runtime_dir)
-    chain_coverage = load_json(runtime_dir / "v32_ibkr_chain_coverage.json")
-    chain_has_rsp = TICKER in ((chain_coverage.get("chain_by_ticker") or {}).keys())
+    dedicated_chain = load_json(runtime_dir / RSP_CHAIN_PATH)
+    general_chain = load_json(runtime_dir / "v32_ibkr_chain_coverage.json")
+    chain_coverage = dedicated_chain or general_chain
+    chain_source_file = RSP_CHAIN_PATH if dedicated_chain else "v32_ibkr_chain_coverage.json"
+    chain_age_hours = timestamp_age_hours(chain_coverage.get("generated_at"))
+    if chain_coverage and chain_age_hours is None:
+        try:
+            chain_path = runtime_dir / chain_source_file
+            chain_age_hours = max(0.0, (datetime.now(timezone.utc).timestamp() - chain_path.stat().st_mtime) / 3600.0)
+        except OSError:
+            chain_age_hours = None
+    chain_is_fresh = chain_age_hours is not None and chain_age_hours <= RSP_CHAIN_MAX_AGE_HOURS
+    chain_has_rsp = bool(
+        chain_is_fresh
+        and TICKER in ((chain_coverage.get("chain_by_ticker") or {}).keys())
+    )
     manual_context = load_manual_context()
     if not manual_context.get("available"):
         manual_context = extract_manual_context(runtime_data) or manual_context
@@ -1405,7 +1441,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     def eligible_current_candidate(row: dict[str, Any]) -> bool:
         return bool(
             chain_has_rsp
-            and str(row.get("source_file") or "") == "v32_ibkr_chain_coverage.json"
+            and str(row.get("source_file") or "") == chain_source_file
             and 7 <= safe_int(row.get("dte"), -1) <= 14
         )
 
@@ -1535,10 +1571,14 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         },
         "ibkr": {
             "account_capacity_available": bool(account_capacity.get("available")),
+            "account_alias": account_capacity.get("account_alias") or account_capacity.get("account_scope"),
             "available_funds": account_capacity.get("available_funds"),
             "buying_power": account_capacity.get("buying_power"),
             "chain_has_rsp": chain_has_rsp,
             "chain_coverage_generated_at": chain_coverage.get("generated_at"),
+            "chain_coverage_source": chain_source_file,
+            "chain_age_hours": round(chain_age_hours, 2) if chain_age_hours is not None else None,
+            "chain_is_fresh": chain_is_fresh,
         },
         "manual_review_required": True,
         "execution_authorized": False,

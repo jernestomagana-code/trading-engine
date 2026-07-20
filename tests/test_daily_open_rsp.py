@@ -10,6 +10,7 @@ def base_report() -> dict:
     return {
         "refresh_requested": True,
         "refresh_step": {"ok": True},
+        "capacity_refresh_step": {"ok": True},
         "rsp_refresh_step": {"ok": True},
         "publish_step": {"ok": True},
         "coberturas_rsp": {
@@ -46,6 +47,15 @@ class DailyOpenRspTests(unittest.TestCase):
         self.assertEqual(status, "ACTION_REQUIRED")
         self.assertIn("Coberturas RSP", action)
         self.assertIn("7-14 DTE", action)
+
+    def test_capacity_refresh_failure_blocks_rsp_assessment(self):
+        report = base_report()
+        report["capacity_refresh_step"] = {"ok": False, "error": "ACCOUNT_SUMMARY_FAILED"}
+
+        status, action = daily_open.classify(report)
+
+        self.assertEqual(status, "ACTION_REQUIRED")
+        self.assertIn("capacidad actual", action)
 
     def test_fresh_context_without_rsp_chain_is_not_reported_ready(self):
         report = base_report()

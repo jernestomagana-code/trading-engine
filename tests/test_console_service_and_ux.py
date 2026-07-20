@@ -90,6 +90,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("--rsp-bridge-timeout", command)
         self.assertEqual(command[command.index("--bridge-timeout") + 1], "240")
         self.assertEqual(command[command.index("--rsp-bridge-timeout") + 1], "120")
+        self.assertEqual(command[command.index("--capacity-timeout") + 1], "20")
         self.assertEqual(command[command.index("--read-timeout") + 1], "30")
         self.assertGreaterEqual(console.CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS, 600)
 
@@ -97,6 +98,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         report = {
             "status": "ACTION_REQUIRED",
             "refresh_step": {"ok": True},
+            "capacity_refresh_step": {"ok": True},
             "rsp_refresh_step": {"ok": True},
             "coberturas_rsp": {"ok": True},
             "publish_step": {"ok": True},

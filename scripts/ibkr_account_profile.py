@@ -738,6 +738,8 @@ def daily_open_command() -> list[str]:
         "240",
         "--rsp-bridge-timeout",
         "120",
+        "--capacity-timeout",
+        "20",
         "--read-timeout",
         "30",
     ]
@@ -2076,6 +2078,9 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
 FRIENDLY_OPERATOR_STATES = {
     "WAIT_MARKET": "Esperando nuevas señales",
     "WAIT_DATA": "Faltan datos",
+    "WAIT_ACCOUNT_CAPACITY": "Capacidad de cuenta insuficiente",
+    "WAIT_MARGIN_PREVIEW": "Margen IBKR pendiente",
+    "WAIT_CAPITAL_DATA": "Datos de capital pendientes",
     "READY_FOR_MANUAL_REVIEW": "Listo para revisión manual",
     "ACTION_REQUIRED": "Atención requerida",
     "REVIEW_REQUIRED": "Revisión necesaria",
@@ -3020,6 +3025,14 @@ def coberturas_plain(value: Any, fallback: str = "pendiente") -> str:
     return str(value)
 
 
+def coberturas_capital_source(value: Any) -> str:
+    return {
+        "IBKR_WHAT_IF_MARGIN": "Margen confirmado por IBKR",
+        "CONFIGURED_MARGIN_ESTIMATE": "Margen estimado configurado",
+        "CONSERVATIVE_CASH_OR_DEBIT_FALLBACK": "Valor nominal conservador",
+    }.get(str(value or ""), coberturas_plain(value))
+
+
 def coberturas_prob_label(probability: Any) -> str:
     if not isinstance(probability, dict) or not probability.get("available"):
         return "probabilidad pendiente"
@@ -3063,7 +3076,7 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
             capital=html_escape(coberturas_money(scenario.get(capital_key))),
             margin=html_escape(coberturas_money(scenario.get("ibkr_initial_margin_required"))),
             decision_capital=html_escape(coberturas_money(scenario.get("decision_capital_required"))),
-            capital_source=html_escape(coberturas_plain(scenario.get("decision_capital_source"))),
+            capital_source=html_escape(coberturas_capital_source(scenario.get("decision_capital_source"))),
             return_margin=html_escape((str(scenario.get("decision_return_on_capital_pct")) + "%") if scenario.get("decision_return_on_capital_pct") is not None else "pendiente"),
             max_profit=html_escape(coberturas_money(scenario.get(max_key))),
             breakeven=html_escape(coberturas_plain(scenario.get("breakeven"))),
@@ -3368,8 +3381,22 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     ibkr = payload.get("ibkr") if isinstance(payload.get("ibkr"), dict) else {}
     context_age = friendly_age(context.get("updated_at") or context.get("generated_at"))
     chain_age = friendly_age(ibkr.get("chain_coverage_generated_at"))
-    ready = bool(not blockers and ibkr.get("chain_has_rsp") and payload.get("candidate_count"))
-    status_title = "RSP listo para revisión manual" if ready else "RSP requiere información antes de decidir"
+    data_ready = bool(not blockers and ibkr.get("chain_has_rsp") and payload.get("candidate_count"))
+    recommendation = payload.get("strategy_recommendation") if isinstance(payload.get("strategy_recommendation"), dict) else {}
+    recommendation_status = str(recommendation.get("status") or "")
+    ready = bool(data_ready and recommendation_status not in {"WAIT_ACCOUNT_CAPACITY", "WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA"})
+    if recommendation_status == "WAIT_ACCOUNT_CAPACITY":
+        status_title = "RSP actualizado; falta capacidad en la cuenta seleccionada"
+        status_badge = "Capacidad pendiente"
+    elif data_ready and not ready:
+        status_title = "RSP actualizado; falta confirmar capital o margen"
+        status_badge = "Capital pendiente"
+    elif ready:
+        status_title = "RSP listo para revisión manual"
+        status_badge = "Listo"
+    else:
+        status_title = "RSP requiere información antes de decidir"
+        status_badge = "Revisión pendiente"
     status_detail = payload.get("next_action") or blocker_text
     return """
     <section id="coberturas-rsp" class="panel coberturas-panel">
@@ -3430,7 +3457,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         chain_age=html_escape(chain_age),
         readiness="ready" if ready else "review",
         status_title=html_escape(status_title),
-        status_badge="Listo" if ready else "Revisión pendiente",
+        status_badge=html_escape(status_badge),
         status_detail=html_escape(status_detail),
         scenarios=scenarios_html,
         operating_plan=operating_plan_html,
@@ -4737,7 +4764,7 @@ def effective_daily_open_status(report: dict[str, Any]) -> str:
     foundation = checks.get("foundation_health") if isinstance(checks.get("foundation_health"), dict) else {}
     mechanics_ok = all(
         isinstance(report.get(key), dict) and report[key].get("ok") is True
-        for key in ["refresh_step", "rsp_refresh_step", "coberturas_rsp", "publish_step"]
+        for key in ["refresh_step", "capacity_refresh_step", "rsp_refresh_step", "coberturas_rsp", "publish_step"]
     )
     production_ok = (checks.get("production_auth") or {}).get("ok") is True and (checks.get("v32_operator_today") or {}).get("ok") is True
     if status == "ACTION_REQUIRED" and mechanics_ok and production_ok and foundation.get("status") == "FAIL":
@@ -4764,6 +4791,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     canslim = report.get("canslim_step") if isinstance(report.get("canslim_step"), dict) else {}
     refresh = report.get("refresh_step") if isinstance(report.get("refresh_step"), dict) else {}
+    capacity_refresh = report.get("capacity_refresh_step") if isinstance(report.get("capacity_refresh_step"), dict) else {}
     rsp_refresh = report.get("rsp_refresh_step") if isinstance(report.get("rsp_refresh_step"), dict) else {}
     rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
     publish = report.get("publish_step") if isinstance(report.get("publish_step"), dict) else {}
@@ -4822,6 +4850,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
       <div class="tiles compact-status">
         <div class="tile">CANSLIM<span>{canslim_status}. Candidatos actualizados si el paso marco OK.</span></div>
         <div class="tile">IBKR/TWS<span>{ibkr_status}: {ibkr_detail}</span></div>
+        <div class="tile">Capacidad de cuenta<span>{capacity_status}. Lectura incluida en la apertura.</span></div>
         <div class="tile">Coberturas RSP<span>{rsp_status}: {rsp_detail}</span></div>
         <div class="tile">Publicacion<span>{publish_status}: {publish_detail}</span></div>
         <div class="tile">GPT/Produccion<span>{gpt_status}. Auth={production_status}; operador={operator_status}.</span></div>
@@ -4836,6 +4865,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
         canslim_status=html_escape(status_word(canslim.get("ok"))),
         ibkr_status=html_escape(ibkr_status),
         ibkr_detail=html_escape(ibkr_detail),
+        capacity_status=html_escape(status_word(capacity_refresh.get("ok"), good="ACTUALIZADA")),
         rsp_status=html_escape(rsp_status),
         rsp_detail=html_escape(rsp_detail),
         publish_status=html_escape(status_word(publish.get("ok"))),

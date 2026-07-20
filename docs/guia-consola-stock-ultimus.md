@@ -256,6 +256,14 @@ Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta i
 
 Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. El motor excluye de candidatos vigentes cualquier contrato que no provenga de la cadena RSP actual o quede fuera de 7–14 DTE. Los contratos históricos sólo pueden aparecer en diagnóstico técnico.
 
+La cadena semanal RSP se conserva en un archivo independiente: un refresco general ya no puede reemplazarla. La apertura también actualiza la capacidad de la cuenta antes de comparar estrategias.
+
+En capital, la consola diferencia:
+
+- **Exposición nominal:** valor total de las 100 acciones o del strike por 100; puede rondar los $21,000 y no representa necesariamente el margen exigido.
+- **Margen confirmado por IBKR:** tiene prioridad cuando el cálculo `what-if` devuelve un resultado completo.
+- **Margen estimado configurado:** si IBKR no devuelve margen, se usa una referencia operativa de $7,000 (`STOCK_ULTIMUS_RSP_MARGIN_ESTIMATE`). La consola la identifica como estimación y nunca como confirmación del broker.
+
 ## 11. Bloque Riesgo
 
 Es la prioridad principal antes de aumentar exposición. Incluye:

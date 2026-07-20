@@ -4221,6 +4221,14 @@ def send_options_intelligence():
         symbol_plan=symbol_plan,
     )
     saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
+    if COBERTURAS_RSP_WEEKLY:
+        # Keep the dedicated weekly RSP chain independent from the general
+        # option-universe diagnostic. A later general refresh must not erase a
+        # valid 7-14 DTE RSP reading.
+        ibkr_diagnostics.write_cycle_diagnostic(
+            diagnostic,
+            _v283_Path("runtime") / "coberturas_rsp_chain_coverage_latest.json",
+        )
     print(
         "IBKR CHAIN COVERAGE DIAGNOSTIC"
         f" | rows:{diagnostic.get('option_row_count')}"

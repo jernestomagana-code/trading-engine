@@ -7,6 +7,26 @@ import coberturas_engine as ce
 
 
 class CoberturasEngineTests(unittest.TestCase):
+    def test_configured_margin_estimate_is_separate_from_nominal_exposure(self):
+        scenarios = {
+            "sell_put": {
+                "available": True,
+                "cash_secured_notional": 21000,
+                "max_profit": 100,
+            }
+        }
+        updated = ce.apply_margin_previews(
+            scenarios,
+            {"status": "MARGIN_PREVIEW_INCOMPLETE", "previews": []},
+            {"available_funds": 8000, "buying_power": 8000},
+        )
+        sell_put = updated["sell_put"]
+        self.assertEqual(sell_put["nominal_exposure"], 21000)
+        self.assertEqual(sell_put["decision_capital_required"], 7000)
+        self.assertEqual(sell_put["estimated_margin_required"], 7000)
+        self.assertEqual(sell_put["decision_capital_source"], "CONFIGURED_MARGIN_ESTIMATE")
+        self.assertTrue(sell_put["can_afford_by_available_funds"])
+
     def test_write_manual_context_preserves_guardrails(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "manual.json"
@@ -129,6 +149,33 @@ class CoberturasEngineTests(unittest.TestCase):
             self.assertEqual(payload["top_candidates"], [])
             self.assertEqual(payload["diagnostic_candidate_count"], 1)
             self.assertIn("RSP_7_14_DTE_CANDIDATES_MISSING", payload["blockers"])
+
+    def test_dedicated_rsp_chain_survives_newer_empty_general_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            original = ce.MANUAL_CONTEXT_PATH
+            ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
+            try:
+                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES"})
+                (runtime / ce.RSP_CHAIN_PATH).write_text(json.dumps({
+                    "generated_at": ce.now_iso(),
+                    "option_rows": [
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 210, "delta": -0.18, "bid": 0.95, "ask": 1.05},
+                    ],
+                    "chain_by_ticker": {"RSP": {}},
+                }), encoding="utf-8")
+                (runtime / "v32_ibkr_chain_coverage.json").write_text(json.dumps({
+                    "generated_at": ce.now_iso(),
+                    "option_rows": [],
+                    "chain_by_ticker": {},
+                }), encoding="utf-8")
+                payload = ce.build_recommendation(runtime)
+            finally:
+                ce.MANUAL_CONTEXT_PATH = original
+            self.assertTrue(payload["ibkr"]["chain_has_rsp"])
+            self.assertEqual(payload["ibkr"]["chain_coverage_source"], ce.RSP_CHAIN_PATH)
+            self.assertEqual(payload["candidate_count"], 1)
 
     def test_recommendation_compares_sell_put_and_buy_write(self):
         with tempfile.TemporaryDirectory() as tmp:
