@@ -2,7 +2,7 @@
 
 Esta guía explica cómo quedó funcionando la consola, qué significa cada bloque y cómo operarla de forma segura. Está escrita para el operador; no hace falta conocer el código del proyecto.
 
-**Documento oficial del proyecto:** la consola muestra directamente este archivo mediante el botón **Guía**. Toda modificación que agregue, quite o cambie una sección, estado, botón o flujo operativo debe actualizar también esta guía. Las validaciones automáticas comprueban que las secciones principales de navegación continúen documentadas.
+**Documento oficial del proyecto:** la consola muestra directamente este archivo mediante el botón **Ayuda**. Toda modificación que agregue, quite o cambie una sección, estado, botón o flujo operativo debe actualizar también esta guía. Las validaciones automáticas comprueban que las secciones principales de navegación continúen documentadas.
 
 ## 1. Qué es la consola
 
@@ -30,8 +30,8 @@ Fuentes de información
                          │
                          ▼
               Stock Ultimus Console
-  Hoy → Alertas → Posiciones → RSP → Riesgo → Cartera avanzada
-                    → Resultados → Herramientas
+  Inicio → Pendientes → Riesgo → Posiciones → RSP
+                 → Análisis → Administración → Ayuda
                          │
                          ▼
                  Revisión humana
@@ -57,12 +57,12 @@ El navegador puede cerrarse sin apagar el servicio. Volver a abrir el acceso dir
 
 1. Abre TWS/IB Gateway y confirma que la sesión esté desbloqueada.
 2. Abre la consola.
-3. Mira primero el semáforo superior.
-4. Pega y guarda primero la lectura diaria de Coberturas RSP cuando tengas un JSON nuevo de gamma/niveles.
-5. Presiona **Apertura diaria**. El ciclo valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
+3. Mira primero el estado de conexión superior.
+4. Cuando tengas una nueva lectura de niveles/gamma, guárdala desde **RSP → Actualizar lectura de mercado RSP**.
+5. Presiona **Ejecutar apertura diaria**. El ciclo valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
 6. Espera a que el proceso muestre `DONE`. No vuelvas a presionar el botón mientras esté trabajando.
-7. Lee **Modo Hoy** y el **Siguiente paso recomendado**.
-8. Atiende en este orden: **Riesgo**, **Alertas**, **Posiciones**.
+7. Lee **Inicio** y sus **Pendientes priorizados**.
+8. Sigue el orden propuesto por la consola: **Riesgo**, **Posiciones**, **RSP** y después oportunidades/alertas.
 
 La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. Mientras la consola muestre que está trabajando, no inicies una segunda apertura.
 
@@ -70,7 +70,7 @@ Durante la apertura, el puente reúne primero precios, posiciones y contratos en
 
 ### Durante la sesión
 
-1. Usa **Actualizar estado** para releer producción y buscar alertas nuevas.
+1. Usa **Actualizar** para releer producción y buscar alertas nuevas.
 2. Si las posiciones o la capacidad se ven viejas, usa **Refresh posiciones IBKR**.
 3. Revisa primero alertas `RISK`, luego `ACTION` y después `WATCH`.
 4. Registra lo que hiciste con los botones de cada alerta o posición.
@@ -99,24 +99,25 @@ Este es el primer bloque que debe leerse.
 
 El color no es una señal de compra o venta. Indica la salud operativa de la consola.
 
-### Los cinco indicadores
+### Los cuatro indicadores visibles
 
 | Indicador | Qué significa | Si aparece `NO` o pendiente |
 |---|---|---|
 | Producción | La consola puede leer el estado protegido del motor publicado. | Usa **Actualizar estado**; si persiste, revisa conexión o acceso. |
 | IBKR | Hay evidencia de conexión local con TWS/IB Gateway. | Abre/desbloquea TWS y usa **Validar IBKR**. |
-| Contexto GPT | La cuenta y el contexto que consulta el GPT están alineados. | Usa **Alinear/Publicar rápido**. |
-| Datos snapshot | Existe un paquete local de datos para evaluar. | Ejecuta **Apertura diaria** o un refresh de IBKR. |
+| Datos | Existe un paquete local de datos para evaluar. | Ejecuta **Ejecutar apertura diaria** o un refresh de IBKR. |
 | Capacidad | Hay datos de capital, margen y disponibilidad de la cuenta. | Actualiza IBKR antes de evaluar tamaño o viabilidad. |
+
+Las acciones técnicas de conexión y publicación quedaron dentro de **Más opciones** para no competir con la apertura diaria.
 
 ### Botones rápidos
 
 | Botón | Para qué sirve | Qué no hace |
 |---|---|---|
-| Actualizar estado | Relee producción, GPT y alertas. | No cambia cuenta y no consulta profundamente IBKR. |
-| Apertura diaria | Ejecuta CANSLIM, refresh principal de IBKR, refresh RSP 7–14 DTE, publicación, validaciones y reporte. | No autoriza órdenes. |
-| Validar IBKR | Prueba rápidamente TWS/API, cuenta y capacidad. | No hace un escaneo profundo de opciones. |
-| Alinear/Publicar rápido | Corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
+| Ejecutar apertura diaria | Ejecuta CANSLIM, refresh principal de IBKR, refresh RSP 7–14 DTE, publicación, validaciones y reporte. | No autoriza órdenes. |
+| Actualizar | Relee producción, GPT y alertas. | No cambia cuenta y no consulta profundamente IBKR. |
+| Validar conexión IBKR | Dentro de **Más opciones**; prueba TWS/API, cuenta y capacidad. | No hace un escaneo profundo de opciones. |
+| Alinear contexto publicado | Dentro de **Más opciones**; corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
 
 Cuando aparezca **La consola está trabajando**, espera. Lanzar varios refresh simultáneos sólo duplica carga y dificulta interpretar qué resultado es el más reciente.
 
@@ -124,20 +125,27 @@ Cuando aparezca **La consola está trabajando**, espera. Lanzar varios refresh s
 
 La barra fija permite saltar directamente a:
 
-1. **Hoy**
-2. **Alertas**
-3. **Posiciones**
-4. **RSP**
-5. **Riesgo**
-6. **Cartera**
-7. **Resultados**
-8. **Herramientas**
+1. **Inicio**
+2. **Pendientes**
+3. **Riesgo**
+4. **Posiciones**
+5. **RSP**
+6. **Análisis**
+7. **Administración**
+8. **Ayuda**
 
-Los primeros cinco bloques son de uso diario. Coberturas RSP aparece como panel principal entre Posiciones y Riesgo. Cartera, Resultados y Herramientas permanecen cerrados para mantener la pantalla simple y se abren sólo cuando hacen falta.
+Los primeros cinco destinos forman el flujo diario. **Análisis** y **Administración** permanecen cerrados y se abren sólo cuando hacen falta. Las alertas técnicas completas continúan disponibles desde el panel secundario **Alertas y diagnósticos**.
 
-## 7. Bloque Hoy
+## 7. Inicio y Pendientes
 
-**Modo Hoy** resume la situación actual y evita que el operador tenga que interpretar toda la página antes de actuar.
+**Inicio** combina en una sola verdad el estado de conexión, riesgo consolidado, posiciones, RSP, alertas y última apertura. Ya no usa únicamente el conteo de un motor aislado.
+
+**Pendientes priorizados** convierte esas fuentes en una cola única. Cada elemento indica área, motivo y enlace **Revisar**. El orden es:
+
+1. riesgo crítico o alto;
+2. posiciones con asignación, defensa o revisión;
+3. RSP con lectura/cadena/capacidad pendiente;
+4. alertas u oportunidades con calidad suficiente.
 
 | Modo | Significado | Conducta recomendada |
 |---|---|---|
@@ -150,19 +158,11 @@ Los primeros cinco bloques son de uso diario. Coberturas RSP aparece como panel 
 | Bloqueado | Falta una conexión, credencial o dato esencial. | Resolver el bloqueo antes de operar. |
 | Acumulando evidencia | La apertura técnica terminó, pero faltan eventos reales o resultados cerrados para confiar en `ENTRY_READY`. | Mantener seguimiento y no cambiar parámetros todavía. |
 
-Debajo aparecen cuatro lecturas:
+Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Análisis.
 
-- **Estado operador:** estado general y conteo de pendientes.
-- **Está esperando:** principal dato, evidencia o acción pendiente.
-- **Última alerta viva:** la alerta pendiente de mayor prioridad.
-- **Mercado:** sesión abierta/cerrada y nivel de madurez operativa (`edge`).
-- **Última apertura:** conserva el resultado del último ciclo aunque después corran notificaciones o mantenimiento; también indica si RSP quedó actualizado.
+## 8. Alertas y diagnósticos
 
-El `edge` mide madurez y calidad de evidencia del sistema; **no es una probabilidad de ganancia ni una señal de entrada**.
-
-## 8. Bloque Alertas
-
-La consola separa las alertas para reducir ruido:
+Este panel permanece cerrado cuando no hay una señal operable. La consola separa:
 
 - **Alertas Operables:** configuraciones con suficiente calidad para revisión humana.
 - **Futuros Intradía:** señales rápidas de MNQ/MES recibidas desde TradingView.
@@ -222,7 +222,7 @@ En **IBKR aplicada**, escribe una nota, el precio real de fill y la cantidad. Un
 
 ## 9. Bloque Posiciones
 
-Muestra las posiciones activas detectadas y ayuda a administrarlas. Para cada posición presenta:
+Muestra primero las posiciones que requieren atención. Cada tarjeta enseña inicialmente sólo la acción recomendada, el motivo y el contrato. **Ver detalles y registrar gestión** abre datos, tesis y acciones secundarias.
 
 - estrategia, tipo de instrumento, cantidad, strike y DTE;
 - captura de prima, PnL y peso en cartera;
@@ -240,21 +240,21 @@ Muestra las posiciones activas detectadas y ayuda a administrarlas. Para cada po
 ### Acciones disponibles
 
 - **Editar tesis y datos de entrada:** guarda razón de entrada, invalidación, objetivo, crédito, fecha y plan de roll/asignación.
-- **No tocar:** registra que se revisó y no se actuó.
+- **Mantener sin cambios:** registra que se revisó y no se actuó.
 - **Revisé cierre / Revisé roll / Asignación / Riesgo:** deja evidencia de la revisión realizada; no ejecuta nada.
 - **Datos frescos:** registra que se actualizó la información.
 - **Refresh posiciones IBKR:** vuelve a leer broker, posiciones y opciones. Úsalo si aparece información vieja o incompleta.
 
 ## 10. Bloque principal Coberturas RSP
 
-RSP forma parte del flujo principal, inmediatamente después de Posiciones. La lectura manual que pegas y la cadena consultada a IBKR son dos piezas diferentes:
+RSP forma parte del flujo principal, inmediatamente después de Posiciones. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.
 
 - **Lectura manual:** spot, soportes, resistencias, expected move, gamma, call wall y put wall.
 - **Cadena IBKR:** contratos reales y actuales, bid/ask, delta, vencimiento y DTE.
 
 Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta inmediatamente. **Apertura diaria** comprueba que esa lectura sea fresca y ejecuta un refresh exclusivo de RSP para vencimientos de 7–14 DTE. El resultado muestra por separado `contexto`, `cadena` y `candidatos`.
 
-Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. Un contrato viejo, fuera de 7–14 DTE o sin bid/ask no debe usarse como candidato actualizado.
+Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. El motor excluye de candidatos vigentes cualquier contrato que no provenga de la cadena RSP actual o quede fuera de 7–14 DTE. Los contratos históricos sólo pueden aparecer en diagnóstico técnico.
 
 ## 11. Bloque Riesgo
 
@@ -266,7 +266,7 @@ Es la prioridad principal antes de aumentar exposición. Incluye:
 - métrica afectada, valor observado, límite y acción recomendada;
 - evaluación por cuenta y consolidada.
 
-El score resume severidad y cantidad de brechas. No es rendimiento esperado.
+**Nivel de riesgo** resume severidad y cantidad de brechas. Un valor alto significa más riesgo; no es salud ni rendimiento esperado.
 
 ### Niveles
 
@@ -279,8 +279,8 @@ La consola muestra primero las tres alertas principales; las demás están en **
 
 ### Acciones de ciclo de vida
 
-- **Confirmar 4 h:** reconoce la alerta durante cuatro horas; no elimina el riesgo.
-- **Silenciar 60 min:** reduce temporalmente la repetición; no resuelve la causa.
+- **Confirmar que lo revisé:** reconoce la alerta durante cuatro horas; no elimina el riesgo.
+- **Recordar en 60 min:** pospone temporalmente el recordatorio; no resuelve la causa.
 - **Reabrir ahora:** devuelve una alerta reconocida o silenciada a atención inmediata.
 - **Reevaluar riesgo:** recalcula con los snapshots actuales. No liquida posiciones.
 
@@ -438,8 +438,8 @@ Lee primero el resumen amigable de la última acción. Abre el detalle técnico 
 Si sólo recuerdas una secuencia, usa ésta:
 
 ```text
-Abrir TWS → Abrir consola → Apertura diaria → Esperar DONE
-→ Leer Modo Hoy → Atender Riesgo → Revisar Alertas
-→ Administrar Posiciones → Registrar lo realizado
+Abrir TWS → Abrir consola → Ejecutar apertura diaria → Esperar DONE
+→ Leer Inicio y Pendientes → Atender Riesgo
+→ Administrar Posiciones → Revisar RSP → Registrar lo realizado
 → Ejecutar manualmente en TWS sólo si tu revisión lo aprueba
 ```

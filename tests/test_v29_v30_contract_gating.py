@@ -1098,7 +1098,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "pushover_sent": True,
             "provider": "pushover",
             "status_code": 200,
-        }) as send_push:
+        }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True):
             result = main._v32_operator_pushover_notify_payload(force=True, dry_run=False)
 
         self.assertEqual(result["status"], "sent")

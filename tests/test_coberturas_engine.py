@@ -103,6 +103,33 @@ class CoberturasEngineTests(unittest.TestCase):
             self.assertEqual(payload["top_candidates"][0]["premium_100"], 100.0)
             self.assertFalse(payload["top_candidates"][0]["execution_authorized"])
 
+    def test_recommendation_never_presents_out_of_window_row_as_current_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            original = ce.MANUAL_CONTEXT_PATH
+            ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
+            try:
+                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES"})
+                (runtime / "v32_ibkr_chain_coverage.json").write_text(
+                    json.dumps({
+                        "option_rows": [
+                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260828", "dte": 40, "strike": 195, "delta": -0.09, "bid": 0.45, "ask": 0.51},
+                        ],
+                        "chain_by_ticker": {"RSP": {}},
+                        "not_order_instruction": True,
+                    }),
+                    encoding="utf-8",
+                )
+                payload = ce.build_recommendation(runtime)
+            finally:
+                ce.MANUAL_CONTEXT_PATH = original
+            self.assertEqual(payload["decision"], "WAIT_DATA")
+            self.assertEqual(payload["candidate_count"], 0)
+            self.assertEqual(payload["top_candidates"], [])
+            self.assertEqual(payload["diagnostic_candidate_count"], 1)
+            self.assertIn("RSP_7_14_DTE_CANDIDATES_MISSING", payload["blockers"])
+
     def test_recommendation_compares_sell_put_and_buy_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp) / "runtime"

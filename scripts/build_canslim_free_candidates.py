@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-dir", default=os.getenv("STOCK_ULTIMUS_RUNTIME_DIR", "runtime"))
     parser.add_argument("--output", default=str(engine.DEFAULT_OUTPUT))
     parser.add_argument("--sec-cache-dir", default=str(engine.DEFAULT_SEC_CACHE))
-    parser.add_argument("--error-state", default=str(engine.DEFAULT_ERROR_STATE))
+    parser.add_argument("--error-state", default="", help="Defaults to canslim_network_error_state.json inside --runtime-dir.")
     parser.add_argument("--universe", default=os.getenv("CANSLIM_UNIVERSE") or os.getenv("IBKR_OPTION_SYMBOLS") or "")
     parser.add_argument("--max-symbols", type=int, default=int(os.getenv("CANSLIM_MAX_SYMBOLS", "50")))
     parser.add_argument("--minimum-score", type=float, default=float(os.getenv("CANSLIM_MIN_SCORE", "70")))
@@ -36,6 +36,7 @@ def main() -> int:
     runtime_dir = Path(args.runtime_dir)
     cache_dir = Path(args.sec_cache_dir)
     output = Path(args.output)
+    error_state_path = Path(args.error_state) if args.error_state else runtime_dir / "canslim_network_error_state.json"
     universe = engine.parse_universe(args.universe)[: max(1, args.max_symbols)]
     runtime_data = engine.load_runtime_jsons(runtime_dir)
     errors: dict[str, str] = {}
@@ -79,7 +80,7 @@ def main() -> int:
         universe=universe,
         successful_tickers=set(companyfacts_by_ticker),
         errors=errors,
-        path=Path(args.error_state),
+        path=error_state_path,
         generated_at=generated_at,
     )
 

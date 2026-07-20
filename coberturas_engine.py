@@ -1381,6 +1381,8 @@ def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_c
 
 def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     runtime_data = load_runtime_jsons(runtime_dir)
+    chain_coverage = load_json(runtime_dir / "v32_ibkr_chain_coverage.json")
+    chain_has_rsp = TICKER in ((chain_coverage.get("chain_by_ticker") or {}).keys())
     manual_context = load_manual_context()
     if not manual_context.get("available"):
         manual_context = extract_manual_context(runtime_data) or manual_context
@@ -1389,18 +1391,39 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     position = extract_position_state(runtime_data, manual_context)
     mode, mode_reason = strategy_for_position(position.get("state"))
 
-    put_candidates = [
+    scored_put_candidates = [
         score_candidate(row, "SELL_PUT", spot, manual_context)
         for row in option_rows
         if candidate_side(row) == "PUT"
     ]
-    call_candidates = [
+    scored_call_candidates = [
         score_candidate(row, "SELL_COVERED_CALL", spot, manual_context)
         for row in option_rows
         if candidate_side(row) == "CALL"
     ]
-    put_candidates = sorted(put_candidates, key=lambda row: safe_float(row.get("coberturas_score"), 0), reverse=True)
-    call_candidates = sorted(call_candidates, key=lambda row: safe_float(row.get("coberturas_score"), 0), reverse=True)
+
+    def eligible_current_candidate(row: dict[str, Any]) -> bool:
+        return bool(
+            chain_has_rsp
+            and str(row.get("source_file") or "") == "v32_ibkr_chain_coverage.json"
+            and 7 <= safe_int(row.get("dte"), -1) <= 14
+        )
+
+    diagnostic_candidates = sorted(
+        scored_put_candidates + scored_call_candidates,
+        key=lambda row: safe_float(row.get("coberturas_score"), 0),
+        reverse=True,
+    )
+    put_candidates = sorted(
+        [row for row in scored_put_candidates if eligible_current_candidate(row)],
+        key=lambda row: safe_float(row.get("coberturas_score"), 0),
+        reverse=True,
+    )
+    call_candidates = sorted(
+        [row for row in scored_call_candidates if eligible_current_candidate(row)],
+        key=lambda row: safe_float(row.get("coberturas_score"), 0),
+        reverse=True,
+    )
 
     if mode == "SELL_PUT":
         candidate_rows = put_candidates
@@ -1433,6 +1456,10 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         blockers.append("RSP_SPOT_MISSING")
     if mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not option_rows:
         blockers.append("RSP_OPTION_CHAIN_MISSING")
+    elif mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not chain_has_rsp:
+        blockers.append("RSP_FRESH_CHAIN_MISSING")
+    elif mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not (put_candidates or call_candidates):
+        blockers.append("RSP_7_14_DTE_CANDIDATES_MISSING")
     if mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not manual_context.get("available"):
         blockers.append("MANUAL_GAMMA_CONTEXT_MISSING")
     if mode == "MANAGE_OPEN_POSITION":
@@ -1464,12 +1491,10 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         next_action = "No abrir nueva cobertura; revisar cierre, rolleo o asignacion de la opcion RSP abierta."
     else:
         decision = "WAIT_DATA"
-        next_action = "Cargar gamma/niveles manuales y refrescar bridge IBKR con RSP incluido."
+        next_action = "Actualizar la lectura RSP y obtener una cadena IBKR fresca de 7 a 14 DTE."
 
     if blockers:
         decision = "WAIT_DATA" if decision.startswith("REVIEW") else decision
-
-    chain_coverage = load_json(runtime_dir / "v32_ibkr_chain_coverage.json")
 
     return {
         "engine": "COBERTURAS_RSP_V0",
@@ -1496,6 +1521,8 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "learning_journal": operating_plan.get("learning_journal"),
         "margin_preview": margin_preview,
         "all_rsp_option_rows_found": len(option_rows),
+        "diagnostic_candidate_count": len(diagnostic_candidates),
+        "diagnostic_candidates": diagnostic_candidates[:10],
         "blockers": blockers,
         "next_action": next_action,
         "risk_limits": {
@@ -1510,7 +1537,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             "account_capacity_available": bool(account_capacity.get("available")),
             "available_funds": account_capacity.get("available_funds"),
             "buying_power": account_capacity.get("buying_power"),
-            "chain_has_rsp": TICKER in ((chain_coverage.get("chain_by_ticker") or {}).keys()),
+            "chain_has_rsp": chain_has_rsp,
             "chain_coverage_generated_at": chain_coverage.get("generated_at"),
         },
         "manual_review_required": True,

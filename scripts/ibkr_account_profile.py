@@ -1564,7 +1564,7 @@ def read_remote_cache(path: str, live_error: str = "", allow_stale: bool = False
 
 def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, prefer_cache: bool = False) -> dict[str, Any]:
     if prefer_cache:
-        cached = read_remote_cache(path, live_error="LIVE_REFRESH_SKIPPED_DURING_LOCAL_JOB")
+        cached = read_remote_cache(path, live_error="CACHE_FIRST_CONSOLE_RENDER", allow_stale=True)
         if cached:
             return cached
     token = read_access_token()
@@ -1867,67 +1867,61 @@ def render_console_health(
         else "falta generar/publicar datos frescos"
     )
     return """
-    <section class="control-strip health-{level}">
-      <div class="signal">
+    <header class="app-header health-{level}">
+      <div class="app-health">
         <span class="signal-dot"></span>
-        <div>
-          <strong>{label}</strong>
-          <small>{detail}</small>
-        </div>
+        <div><strong>{label}</strong><small>{friendly_detail}</small></div>
       </div>
-      <div class="control-facts">
-        <span><b>Produccion</b>{production}</span>
-        <span title="IBKR: {ibkr}"><b>IBKR</b>{ibkr}</span>
-        <span><b>Contexto GPT</b>{context}</span>
-        <span title="{snapshot_hint}"><b>Datos snapshot</b>{snapshot}</span>
-        <span><b>Capacidad</b>{capacity}</span>
+      <div class="app-health-chips" aria-label="Estado de conexiones">
+        <span class="health-chip {production_class}">Producción {production}</span>
+        <span class="health-chip {ibkr_class}">IBKR {ibkr}</span>
+        <span class="health-chip {snapshot_class}">Datos {snapshot}</span>
+        <span class="health-chip {capacity_class}">Capacidad {capacity}</span>
       </div>
-      <div class="thinking-now">
-        <strong>{running_text}</strong>
-        <small>{detail_text}</small>
-      </div>
-      <div class="operator-next next-{next_level}">
-        <span>Siguiente paso recomendado</span>
-        <strong>{next_action}</strong>
-        <small>Modo: {today_mode}</small>
-      </div>
-      <div class="top-quick-actions">
-        <form method="post" action="/refresh-remote" data-busy="Actualizando estado remoto" data-busy-detail="Leyendo GPT/alertas desde produccion. No cambia cuenta ni conecta con IBKR.">
-          <button>Actualizar estado</button>
-          <span>Relee produccion sin cambiar cuenta.</span>
-        </form>
-        <form method="post" action="/daily-open" data-busy="Corriendo apertura diaria" data-busy-detail="Construye CANSLIM, valida IBKR, intenta refresh/publicacion y deja reporte operativo. No autoriza ordenes.">
+      <div class="header-actions">
+        <form method="post" action="/daily-open" data-busy="Corriendo apertura diaria" data-busy-detail="Actualiza cuentas, posiciones, riesgo y RSP. No autoriza órdenes.">
           <input name="alias" value="{active_alias}" type="hidden">
-          <button{refresh_all_disabled}>Apertura diaria</button>
-          <span>CANSLIM + validaciones + reporte.</span>
+          <button class="primary-action"{refresh_all_disabled}>Ejecutar apertura diaria</button>
         </form>
-        <form method="post" action="/ibkr-quick-check" data-busy="Validando IBKR/TWS" data-busy-detail="Lee conexion API y AccountSummary/capacidad. No escanea opciones ni autoriza ordenes.">
-          <input name="alias" value="{active_alias}" type="hidden">
-          <button class="secondary"{refresh_all_disabled}>Validar IBKR</button>
-          <span>Prueba rapida TWS/API y cuenta.</span>
+        <form method="post" action="/refresh-remote" data-busy="Actualizando estado" data-busy-detail="Relee el estado publicado sin cambiar de cuenta.">
+          <button class="secondary">Actualizar</button>
         </form>
-        <form method="post" action="/refresh-all" data-busy="Alineando/Publicando rapido" data-busy-detail="Publica cuenta/contexto para GPT sin escaneo profundo de opciones. No autoriza ordenes.">
-          <input name="alias" value="{active_alias}" type="hidden">
-          <button{refresh_all_disabled}>Alinear/Publicar rapido</button>
-          <span>Corrige contexto GPT rapido.</span>
-        </form>
+        <details class="header-more">
+          <summary>Más opciones</summary>
+          <div>
+            <form method="post" action="/ibkr-quick-check" data-busy="Validando IBKR/TWS">
+              <input name="alias" value="{active_alias}" type="hidden">
+              <button class="secondary"{refresh_all_disabled}>Validar conexión IBKR</button>
+            </form>
+            <form method="post" action="/refresh-all" data-busy="Alineando y publicando contexto">
+              <input name="alias" value="{active_alias}" type="hidden">
+              <button class="secondary"{refresh_all_disabled}>Alinear contexto publicado</button>
+            </form>
+            <small>{running_text} · {detail_text}</small>
+          </div>
+        </details>
       </div>
-    </section>
+    </header>
     """.format(
         level=html_escape(health.get("level")),
         label=html_escape(health.get("label")),
-        detail=html_escape(health.get("detail")),
-        production="OK" if health.get("remote_ok") else "NO",
-        ibkr="OK" if health.get("ibkr_connected") else "NO",
-        context=html_escape(health.get("context_status")),
-        snapshot=html_escape(snapshot_label),
-        snapshot_hint=html_escape(snapshot_hint),
-        capacity="OK" if health.get("capacity_available") else "NO",
+        friendly_detail=html_escape(
+            "Datos locales listos. La producción se muestra desde la última actualización guardada; pulsa Actualizar para releerla."
+            if health.get("stale_cache") and health.get("local_core_ready")
+            else "Conexiones y datos principales disponibles para revisión manual."
+            if health.get("level") == "green"
+            else health.get("detail")
+        ),
+        production="guardada" if health.get("stale_cache") else "OK" if health.get("remote_ok") else "pendiente",
+        production_class="warn" if health.get("stale_cache") else "ok" if health.get("remote_ok") else "warn",
+        ibkr="OK" if health.get("ibkr_connected") else "pendiente",
+        ibkr_class="ok" if health.get("ibkr_connected") else "warn",
+        snapshot="listos" if health.get("snapshot_available") else "pendientes",
+        snapshot_class="ok" if health.get("snapshot_available") else "warn",
+        capacity="OK" if health.get("capacity_available") else "pendiente",
+        capacity_class="ok" if health.get("capacity_available") else "warn",
         running_text=html_escape(running_text),
         detail_text=html_escape(detail_text),
-        next_level=html_escape(next_step_level(today.get("mode"), health.get("level"))),
-        next_action=html_escape(today.get("action") or "Revisar estado y alertas operables."),
-        today_mode=html_escape(today.get("mode") or "N/D"),
         active_alias=html_escape(active_alias),
         refresh_all_disabled=refresh_all_disabled,
     )
@@ -2076,6 +2070,229 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
             today["daily_open_status"],
             "{} · {}".format(today["daily_open_rsp"], age_label(today.get("daily_open_generated_at"))),
         ),
+    )
+
+
+FRIENDLY_OPERATOR_STATES = {
+    "WAIT_MARKET": "Esperando nuevas señales",
+    "WAIT_DATA": "Faltan datos",
+    "READY_FOR_MANUAL_REVIEW": "Listo para revisión manual",
+    "ACTION_REQUIRED": "Atención requerida",
+    "REVIEW_REQUIRED": "Revisión necesaria",
+    "RISK_REVIEW": "Revisión de riesgo",
+    "REVIEW_ASSIGNMENT": "Revisar posible asignación",
+    "REFRESH_DATA": "Actualizar datos",
+    "ASSIGNMENT_REVIEW": "Revisar asignación",
+    "TAKE_PROFIT_REVIEW": "Revisar toma de ganancia",
+    "FRESH": "Actualizados",
+    "WATCH": "Vigilancia",
+    "MONITOR": "Monitoreo",
+    "BLOCKED": "Bloqueado",
+    "SELL_PUT": "Venta de put",
+    "SELL_COVERED_CALL": "Covered call",
+    "NO_SHARES": "Sin acciones RSP",
+    "ACUMULANDO EVIDENCIA": "Aprendizaje en curso",
+}
+
+
+def friendly_operator_state(value: Any, fallback: str = "Pendiente") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    return FRIENDLY_OPERATOR_STATES.get(raw.upper(), raw.replace("_", " ").capitalize())
+
+
+def friendly_age(value: Any) -> str:
+    label = age_label(value)
+    match = re.fullmatch(r"(\d+)s ago", label)
+    if match:
+        return "hace {} s".format(match.group(1))
+    match = re.fullmatch(r"(\d+)m ago", label)
+    if match:
+        return "hace {} min".format(match.group(1))
+    match = re.fullmatch(r"(\d+)h ago", label)
+    if match:
+        return "hace {} h".format(match.group(1))
+    match = re.fullmatch(r"(\d+)d ago", label)
+    if match:
+        return "hace {} d".format(match.group(1))
+    return label
+
+
+def build_unified_pending_items(
+    operator_payload: dict[str, Any],
+    position_payload: dict[str, Any],
+    risk_payload: dict[str, Any],
+    rsp_payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    risk_alerts = risk_payload.get("alerts") if isinstance(risk_payload.get("alerts"), list) else []
+    for alert in risk_alerts:
+        if not isinstance(alert, dict) or str(alert.get("operational_status") or "OPEN").upper() != "OPEN":
+            continue
+        severity = str(alert.get("severity") or "WATCH").upper()
+        if severity not in {"CRITICAL", "HIGH"}:
+            continue
+        items.append({
+            "level": "critical" if severity == "CRITICAL" else "high",
+            "area": "Riesgo",
+            "title": str(alert.get("title") or "Revisar alerta de riesgo"),
+            "detail": str(alert.get("recommended_action") or "Revisión manual requerida."),
+            "href": "#riesgo",
+        })
+
+    positions = position_payload.get("positions") if isinstance(position_payload.get("positions"), list) else []
+    for item in positions:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("management_action") or "").upper()
+        if action in {"", "NO_ACTION_RECOMMENDED", "MONITOR"}:
+            continue
+        ticker = str(item.get("ticker") or "Posición")
+        detail = "Revisar los datos y registrar la decisión manual."
+        if "ASSIGNMENT" in action:
+            detail = "El subyacente está bajo el strike de la put; revisar asignación, cierre o roll."
+        elif "REFRESH" in action:
+            detail = "Actualizar precios y contexto antes de decidir."
+        items.append({
+            "level": "high" if any(word in action for word in ("RISK", "ASSIGNMENT", "DEFENSIVE")) else "watch",
+            "area": "Posiciones",
+            "title": "{} — {}".format(ticker, friendly_operator_state(action)),
+            "detail": detail,
+            "href": "#posiciones",
+        })
+
+    rsp_ibkr = rsp_payload.get("ibkr") if isinstance(rsp_payload.get("ibkr"), dict) else {}
+    rsp_blockers = rsp_payload.get("blockers") if isinstance(rsp_payload.get("blockers"), list) else []
+    if rsp_blockers or not rsp_ibkr.get("chain_has_rsp"):
+        if "RSP_FRESH_CHAIN_MISSING" in rsp_blockers:
+            rsp_detail = "La lectura está guardada, pero falta una cadena IBKR RSP fresca de 7 a 14 DTE."
+        elif "RSP_7_14_DTE_CANDIDATES_MISSING" in rsp_blockers:
+            rsp_detail = "La cadena no contiene candidatos válidos en la ventana de 7 a 14 DTE."
+        elif "MANUAL_GAMMA_CONTEXT_MISSING" in rsp_blockers:
+            rsp_detail = "Falta guardar la lectura diaria de niveles y gamma."
+        else:
+            rsp_detail = "Revisar frescura, capacidad y datos antes de preparar una operación."
+        items.append({
+            "level": "watch",
+            "area": "RSP",
+            "title": "Coberturas RSP necesita actualización",
+            "detail": rsp_detail,
+            "href": "#coberturas-rsp",
+        })
+
+    operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    active_alerts = operator_data.get("active_alerts") if isinstance(operator_data.get("active_alerts"), list) else []
+    for alert in active_alerts:
+        if not isinstance(alert, dict) or is_handled_alert(alert):
+            continue
+        if alert_operator_visibility(alert) not in {"HIGH_PROBABILITY", "RADAR"}:
+            continue
+        items.append({
+            "level": "high" if str(alert.get("severity") or "").upper() == "ACTION" else "watch",
+            "area": "Alerta",
+            "title": "{} — {}".format(alert.get("ticker") or "Señal", friendly_operator_state(alert.get("state"))),
+            "detail": alert_review_guidance(alert),
+            "href": "#alertas",
+        })
+    rank = {"critical": 0, "high": 1, "watch": 2}
+    return sorted(items, key=lambda item: rank.get(item.get("level") or "watch", 3))
+
+
+def render_command_center(
+    active: dict[str, Any],
+    snapshot: dict[str, Any],
+    operator_payload: dict[str, Any],
+    reports: dict[str, dict[str, Any]],
+    position_payload: dict[str, Any],
+    risk_payload: dict[str, Any],
+    rsp_payload: dict[str, Any],
+) -> str:
+    health = console_health(active, snapshot, operator_payload)
+    pending = build_unified_pending_items(operator_payload, position_payload, risk_payload, rsp_payload)
+    running = active_web_jobs()
+    if health.get("level") == "red":
+        level, title = "red", "La consola necesita conexión"
+        summary = "Resuelve la conexión o publicación antes de usar información operativa."
+    elif running:
+        level, title = "blue", "La apertura está trabajando"
+        summary = "Espera a que termine; no inicies un segundo proceso."
+    elif pending:
+        level, title = "amber", "Hay {} {} prioritario{}".format(
+            len(pending),
+            "pendiente" if len(pending) == 1 else "pendientes",
+            "" if len(pending) == 1 else "s",
+        )
+        summary = pending[0]["title"] + ". " + pending[0]["detail"]
+    else:
+        level, title = "green", "Todo listo para monitorear"
+        summary = "No hay acciones prioritarias. Mantén el monitoreo y espera señales válidas."
+
+    daily = reports.get("daily_open") if isinstance(reports.get("daily_open"), dict) else {}
+    daily_status = effective_daily_open_status(daily) if daily else "SIN APERTURA"
+    if daily_status == "EVIDENCE_COLLECTION_ONLY":
+        opening_label = "Completada"
+    elif daily_status in {"ACTION_REQUIRED", "REVIEW_REQUIRED", "BLOCKED"}:
+        opening_label = "Terminó con pendientes"
+    else:
+        opening_label = friendly_operator_state(daily_status, "Sin apertura registrada")
+    rsp_open = daily.get("coberturas_rsp") if isinstance(daily.get("coberturas_rsp"), dict) else {}
+    opening_detail = "{} · RSP {}".format(
+        friendly_age(daily.get("generated_at")),
+        "actualizado" if rsp_open.get("ok") else "pendiente",
+    ) if daily else "Ejecuta Apertura diaria al comenzar la jornada."
+
+    task_rows = []
+    for index, item in enumerate(pending[:6], start=1):
+        task_rows.append(
+            '<a class="operator-task task-{level}" href="{href}"><span>{index}</span>'
+            '<div><small>{area}</small><strong>{title}</strong><p>{detail}</p></div>'
+            '<b>Revisar →</b></a>'.format(
+                level=html_escape(item.get("level") or "watch"),
+                href=html_escape(item.get("href") or "#hoy"),
+                index=index,
+                area=html_escape(item.get("area") or "Pendiente"),
+                title=html_escape(item.get("title") or "Revisión pendiente"),
+                detail=html_escape(item.get("detail") or ""),
+            )
+        )
+    if not task_rows:
+        task_rows.append('<div class="empty-state"><strong>Sin pendientes prioritarios</strong><span>La consola continuará monitoreando.</span></div>')
+
+    risk_counts = risk_payload.get("alert_counts") if isinstance(risk_payload.get("alert_counts"), dict) else {}
+    return """
+    <section id="hoy" class="panel command-center command-{level}">
+      <div class="command-head">
+        <div><p class="eyebrow">Inicio</p><h2>{title}</h2><p>{summary}</p></div>
+        <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
+      </div>
+      <div class="command-facts">
+        <div><span>Riesgo</span><strong>{risk_label}</strong><small>{high} alta(s) · {watch} vigilancia</small></div>
+        <div><span>Posiciones</span><strong>{positions}</strong><small>{reviews} requieren revisión</small></div>
+        <div><span>RSP</span><strong>{rsp_status}</strong><small>{rsp_candidates} candidato(s) válidos 7–14 DTE</small></div>
+        <div><span>Mercado</span><strong>{market}</strong><small>{operator_state}</small></div>
+      </div>
+      <div id="pendientes" class="pending-queue">
+        <div class="queue-head"><h3>Pendientes priorizados</h3><span>Primero riesgo, después gestión y oportunidades.</span></div>
+        {tasks}
+      </div>
+    </section>
+    """.format(
+        level=html_escape(level),
+        title=html_escape(title),
+        summary=html_escape(summary),
+        opening=html_escape(opening_label),
+        opening_detail=html_escape(opening_detail),
+        risk_label=html_escape("Alto" if (risk_counts.get("critical") or risk_counts.get("high")) else "Vigilancia" if risk_counts.get("watch") else "Controlado"),
+        high=html_escape(risk_counts.get("high") or 0),
+        watch=html_escape(risk_counts.get("watch") or 0),
+        positions=html_escape(position_payload.get("positions_found") or 0),
+        reviews=html_escape(position_payload.get("positions_requiring_review") or 0),
+        rsp_status=html_escape("Listo" if not rsp_payload.get("blockers") and (rsp_payload.get("ibkr") or {}).get("chain_has_rsp") else "Revisar"),
+        rsp_candidates=html_escape(rsp_payload.get("candidate_count") or 0),
+        market=html_escape("Abierto" if is_us_market_session_now() else "Cerrado"),
+        operator_state=html_escape(friendly_operator_state((operator_payload.get("data") or {}).get("status"))),
+        tasks="".join(task_rows),
     )
 
 
@@ -3108,8 +3325,8 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
     return body.encode("utf-8")
 
 
-def render_coberturas_inline_panel() -> str:
-    payload = shared_coberturas_engine.build_recommendation(RUNTIME)
+def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str:
+    payload = payload if isinstance(payload, dict) else shared_coberturas_engine.build_recommendation(RUNTIME)
     context = payload.get("manual_context") if isinstance(payload.get("manual_context"), dict) else {}
     position = payload.get("position") if isinstance(payload.get("position"), dict) else {}
     candidates = coberturas_display_candidates(payload)
@@ -3132,64 +3349,95 @@ def render_coberturas_inline_panel() -> str:
             )
         )
     blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
-    blocker_text = " · ".join(str(item) for item in blockers) if blockers else "Sin bloqueadores criticos detectados."
+    blocker_messages = {
+        "RSP_OPTION_CHAIN_MISSING": "No hay una cadena de opciones RSP disponible.",
+        "RSP_FRESH_CHAIN_MISSING": "Falta una cadena IBKR RSP fresca.",
+        "RSP_7_14_DTE_CANDIDATES_MISSING": "No hay candidatos válidos entre 7 y 14 DTE.",
+        "MANUAL_GAMMA_CONTEXT_MISSING": "Falta la lectura diaria de niveles y gamma.",
+        "RSP_SPOT_MISSING": "Falta el precio actual de RSP.",
+        "POSITION_STATE_UNKNOWN": "No se confirmó la posición actual en RSP.",
+    }
+    blocker_text = " ".join(blocker_messages.get(str(item), friendly_operator_state(item)) for item in blockers) if blockers else "Sin bloqueos de datos críticos."
     gamma_blob = coberturas_form_value(context, "gamma_blob") or coberturas_form_value(context, "gamma_notes")
-    scenarios_html = render_coberturas_scenarios(payload, compact=True)
+    scenarios_html = (
+        render_coberturas_scenarios(payload, compact=True)
+        if payload.get("candidate_count")
+        else '<div class="empty-state"><strong>Sin comparación operable</strong><span>Primero se necesita una cadena RSP fresca con candidatos de 7 a 14 DTE.</span></div>'
+    )
     operating_plan_html = render_coberturas_operating_plan(payload, compact=True)
+    ibkr = payload.get("ibkr") if isinstance(payload.get("ibkr"), dict) else {}
+    context_age = friendly_age(context.get("updated_at") or context.get("generated_at"))
+    chain_age = friendly_age(ibkr.get("chain_coverage_generated_at"))
+    ready = bool(not blockers and ibkr.get("chain_has_rsp") and payload.get("candidate_count"))
+    status_title = "RSP listo para revisión manual" if ready else "RSP requiere información antes de decidir"
+    status_detail = payload.get("next_action") or blocker_text
     return """
     <section id="coberturas-rsp" class="panel coberturas-panel">
       <div class="section-head">
         <div>
           <h2>Coberturas RSP</h2>
-          <p>Estrategia independiente dentro de esta misma consola: RSP, 1 lote inicial, recomendacion manual y sin ejecucion automatica.</p>
+          <p>Decisión, capacidad y candidatos válidos para una revisión manual. La consola nunca ejecuta la orden.</p>
         </div>
-        <a class="tile inline-link mini-tile" href="/coberturas/rsp">JSON</a>
+        <span class="readiness-pill readiness-{readiness}">{status_badge}</span>
       </div>
-      <div class="coberturas-grid">
-        <div class="coberturas-form">
+      <div class="rsp-status-line status-{readiness}"><strong>{status_title}</strong><span>{status_detail}</span></div>
+      <div class="position-overview rsp-overview">
+        <div><span>Decisión</span><strong>{decision}</strong><small>revisión humana</small></div>
+        <div><span>Precio RSP</span><strong>{spot}</strong><small>última lectura disponible</small></div>
+        <div><span>Lectura de niveles</span><strong>{context_status}</strong><small>{context_age}</small></div>
+        <div><span>Cadena 7–14 DTE</span><strong>{chain_status}</strong><small>{chain_age}</small></div>
+      </div>
+      <p class="review-line">{blockers}</p>
+      <div class="rsp-decision-body">
+        {scenarios}
+        <details class="operator-subsection"{candidate_open}>
+          <summary>Candidatos válidos de la cadena actual ({candidate_count})</summary>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Lado</th><th>Vencimiento</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Prima</th><th>Calidad</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table></div>
+        </details>
+        <details class="operator-subsection">
+          <summary>Actualizar lectura de mercado RSP</summary>
           <form method="post" action="/coberturas/rsp/manual_context" data-busy="Guardando lectura RSP">
             <input type="hidden" name="return_to" value="console">
             <input type="hidden" name="position_mode" value="AUTO">
-            <label>Lectura de gamma / screenshot</label>
-            <textarea name="gamma_blob" placeholder="Pega aqui una sola lectura: RSP spot, soportes, resistencias, expected move bajo/alto, call wall, put wall y sesgo gamma.">{gamma_blob}</textarea>
+            <label>Lectura de niveles y gamma</label>
+            <textarea name="gamma_blob" placeholder="Pega una lectura RSP con spot, soportes, resistencias, expected move, call wall, put wall y sesgo gamma.">{gamma_blob}</textarea>
             <p><button type="submit">Guardar lectura RSP</button></p>
           </form>
-          <p class="muted">Si me das una captura, primero la convertimos a este bloque de texto; despues lo pegamos aqui y la consola toma los niveles.</p>
-        </div>
-        <div class="coberturas-read">
-          <div class="capacity-grid">
-            <div class="metric status-metric"><span>Decision</span><strong>{decision}</strong></div>
-            <div class="metric"><span>Modo</span><strong>{mode}</strong></div>
-            <div class="metric"><span>Spot</span><strong>{spot}</strong></div>
-            <div class="metric status-metric"><span>Posicion</span><strong>{position}</strong></div>
-          </div>
-          <p class="why-line">{next_action}</p>
-          {scenarios}
-          {operating_plan}
-          <p class="review-line">{blockers}</p>
-          <div class="table-scroll"><table>
-            <thead><tr><th>Lado</th><th>Exp</th><th>DTE</th><th>Strike</th><th>Delta</th><th>Prima</th><th>Score</th></tr></thead>
-            <tbody>{rows}</tbody>
-          </table></div>
-          <form method="post" action="/coberturas/rsp/refresh" data-background-submit="true" data-status-target="rsp-refresh-status" data-busy="Consultando RSP semanal en IBKR" data-busy-detail="Lee RSP 7-14 DTE desde IBKR. No autoriza ordenes. Puedes seguir en esta pagina.">
-            <input type="hidden" name="return_to" value="console">
-            <button class="secondary" type="submit">Refresh RSP semanal IBKR</button>
-          </form>
-          <p id="rsp-refresh-status" class="muted">Sin refresh RSP corriendo.</p>
-        </div>
+        </details>
+        <details class="operator-subsection">
+          <summary>Gestión, valor esperado y bitácora</summary>{operating_plan}
+        </details>
+      </div>
+      <div class="section-actions">
+        <form method="post" action="/coberturas/rsp/refresh" data-background-submit="true" data-status-target="rsp-refresh-status" data-busy="Consultando RSP semanal en IBKR" data-busy-detail="Lee RSP 7-14 DTE desde IBKR. No autoriza ordenes. Puedes seguir en esta pagina.">
+          <input type="hidden" name="return_to" value="console">
+          <button class="secondary" type="submit">Actualizar sólo RSP</button>
+        </form>
+        <a class="text-link" href="/coberturas/rsp">Ver datos técnicos</a>
+        <span id="rsp-refresh-status" class="muted">La Apertura diaria ya incluye esta actualización.</span>
       </div>
     </section>
     """.format(
         gamma_blob=html_escape(gamma_blob),
-        decision=coberturas_badge(payload.get("decision")),
-        mode=html_escape(payload.get("mode")),
+        decision=html_escape(friendly_operator_state(payload.get("decision"))),
         spot=html_escape(payload.get("spot")),
-        position=coberturas_badge(position.get("state")),
-        next_action=html_escape(payload.get("next_action")),
+        context_status=html_escape("Guardada" if context.get("available") else "Pendiente"),
+        context_age=html_escape(context_age),
+        chain_status=html_escape("Actualizada" if ibkr.get("chain_has_rsp") else "Pendiente"),
+        chain_age=html_escape(chain_age),
+        readiness="ready" if ready else "review",
+        status_title=html_escape(status_title),
+        status_badge="Listo" if ready else "Revisión pendiente",
+        status_detail=html_escape(status_detail),
         scenarios=scenarios_html,
         operating_plan=operating_plan_html,
         blockers=html_escape(blocker_text),
-        rows="".join(rows) or '<tr><td colspan="7">Sin candidatos RSP todavia. Guarda gamma y corre Refresh RSP semanal IBKR.</td></tr>',
+        candidate_count=html_escape(payload.get("candidate_count") or 0),
+        candidate_open=" open" if payload.get("candidate_count") else "",
+        rows="".join(rows) or '<tr><td colspan="7">No hay candidatos vigentes de 7 a 14 DTE. No uses contratos históricos.</td></tr>',
     )
 
 
@@ -4193,7 +4441,7 @@ def console_active_position_management(snapshot: dict[str, Any] | None = None, v
     return payload
 
 
-def position_badge(value: Any) -> str:
+def position_badge(value: Any, label: str = "") -> str:
     text = str(value or "UNKNOWN").upper()
     klass = "neutral"
     if text in {"NO_ACTION_RECOMMENDED", "MONITOR", "NO_POSITION"}:
@@ -4204,7 +4452,15 @@ def position_badge(value: Any) -> str:
         klass = "risk"
     elif "REVIEW" in text:
         klass = "info"
-    return '<span class="badge {}">{}</span>'.format(klass, html_escape(text))
+    return '<span class="badge {}">{}</span>'.format(klass, html_escape(label or friendly_operator_state(text)))
+
+
+def friendly_position_reason(text: str) -> str:
+    replacements = {
+        "Underlying is below the short-put strike; assignment risk needs review.": "El precio está por debajo del strike de la put vendida; revisa el riesgo de asignación.",
+        "Long stock is eligible for covered-call review, but no exit trigger is active.": "La posición permite evaluar un covered call, pero no existe una señal de salida activa.",
+    }
+    return replacements.get(text, text)
 
 
 def render_position_management_card(item: dict[str, Any]) -> str:
@@ -4213,7 +4469,7 @@ def render_position_management_card(item: dict[str, Any]) -> str:
     reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
     warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
     blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
-    reason_text = "; ".join(str(x) for x in (reasons[:2] or warnings[:2] or blockers[:2])) or "Sin nota adicional."
+    reason_text = "; ".join(friendly_position_reason(str(x)) for x in (reasons[:2] or warnings[:2] or blockers[:2])) or "Sin nota adicional."
     contract_bits = [
         item.get("strategy"),
         item.get("sec_type"),
@@ -4228,17 +4484,24 @@ def render_position_management_card(item: dict[str, Any]) -> str:
         "resistencia=" + str(technical.get("resistance") or "pendiente"),
         "gamma=" + ("OK" if technical.get("gamma_available") else "pendiente"),
     ]
+    primary_action = friendly_operator_state(item.get("management_action"))
+    needs_attention = any(word in str(item.get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW"))
     return """
     <article class="alert-card position-card">
       <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
-      <div class="success-line">{state}</div>
-      <span>{contract}</span>
-      <div class="economics-line">Captura prima: {capture} | PnL: {pnl} | Peso: {weight}</div>
-      <div class="capacity-line">{market}</div>
       <div class="review-line">{reason}</div>
-      <small>warnings: {warnings} | blockers: {blockers}</small>
-      <details class="diagnostic-alerts">
-        <summary>Editar tesis y datos de entrada</summary>
+      <p class="position-summary">{contract}</p>
+      <details class="position-details"{open_attr}>
+        <summary>Ver detalles y registrar gestión</summary>
+        <div class="position-detail-grid">
+          <div><span>Estado</span><strong>{state}</strong></div>
+          <div><span>Prima capturada</span><strong>{capture}</strong></div>
+          <div><span>P&amp;L</span><strong>{pnl}</strong></div>
+          <div><span>Peso</span><strong>{weight}</strong></div>
+        </div>
+        <p class="capacity-line">{market}</p>
+        <details class="diagnostic-alerts">
+          <summary>Editar tesis y datos de entrada</summary>
         <form method="post" action="/position-context" class="alert-actions" data-busy="Guardando tesis de posicion" data-busy-detail="Actualiza contexto local para el motor. No ejecuta ordenes.">
           <input type="hidden" name="position_id" value="{position_id}">
           <input type="hidden" name="ticker" value="{ticker_raw}">
@@ -4256,23 +4519,28 @@ def render_position_management_card(item: dict[str, Any]) -> str:
           <input name="roll_plan" value="{roll_plan}" placeholder="Plan de roll / asignacion">
           <p><button>Guardar tesis</button></p>
         </form>
+        </details>
+        <form method="post" action="/position-management-event" class="alert-actions" data-busy="Registrando gestion de posicion" data-busy-detail="Guarda bitacora local. No ejecuta ordenes.">
+          <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="ticker" value="{ticker_raw}">
+          <input type="hidden" name="strategy" value="{strategy_raw}">
+          <input type="hidden" name="recommended_action" value="{recommended_action}">
+          <input type="hidden" name="recommended_state" value="{recommended_state}">
+          <label>Nota de revisión</label>
+          <input name="operator_reason" placeholder="Qué revisaste y por qué">
+          <div class="actions">
+            <button class="secondary" name="operator_action" value="NO_ACTION_TAKEN">Mantener sin cambios</button>
+            <button name="operator_action" value="ASSIGNMENT_REVIEWED">Revisé asignación</button>
+            <details class="advanced-actions"><summary>Más acciones</summary>
+              <button name="operator_action" value="MANUAL_CLOSE_REVIEWED">Revisé cierre</button>
+              <button name="operator_action" value="MANUAL_ROLL_REVIEWED">Revisé roll</button>
+              <button name="operator_action" value="RISK_REDUCTION_REVIEWED">Revisé reducción de riesgo</button>
+              <button class="secondary" name="operator_action" value="DATA_REFRESHED">Datos actualizados</button>
+            </details>
+          </div>
+        </form>
+        <details class="technical-details"><summary>Ver diagnóstico técnico</summary><small>Advertencias: {warnings} · Bloqueadores: {blockers}</small></details>
       </details>
-      <form method="post" action="/position-management-event" class="alert-actions" data-busy="Registrando gestion de posicion" data-busy-detail="Guarda bitacora local. No ejecuta ordenes.">
-        <input type="hidden" name="position_id" value="{position_id}">
-        <input type="hidden" name="ticker" value="{ticker_raw}">
-        <input type="hidden" name="strategy" value="{strategy_raw}">
-        <input type="hidden" name="recommended_action" value="{recommended_action}">
-        <input type="hidden" name="recommended_state" value="{recommended_state}">
-        <input name="operator_reason" placeholder="Nota breve de revision">
-        <div class="actions">
-          <button class="secondary" name="operator_action" value="NO_ACTION_TAKEN">No tocar</button>
-          <button name="operator_action" value="MANUAL_CLOSE_REVIEWED">Revise cierre</button>
-          <button name="operator_action" value="MANUAL_ROLL_REVIEWED">Revise roll</button>
-          <button name="operator_action" value="ASSIGNMENT_REVIEWED">Asignacion</button>
-          <button name="operator_action" value="RISK_REDUCTION_REVIEWED">Riesgo</button>
-          <button class="secondary" name="operator_action" value="DATA_REFRESHED">Datos frescos</button>
-        </div>
-      </form>
     </article>
     """.format(
         ticker=html_escape(item.get("ticker") or "UNKNOWN"),
@@ -4287,8 +4555,9 @@ def render_position_management_card(item: dict[str, Any]) -> str:
         entry_credit=html_escape(item.get("entry_credit") or ""),
         entry_date=html_escape(item.get("entry_date") or ""),
         roll_plan=html_escape(thesis.get("roll_plan") or ""),
-        action=position_badge(item.get("management_action")),
+        action=position_badge(item.get("management_action"), primary_action),
         state=position_badge(item.get("exit_state")),
+        open_attr=" open" if needs_attention else "",
         contract=html_escape(" | ".join(str(bit) for bit in contract_bits if bit not in [None, ""])),
         capture=html_escape(str(item.get("premium_capture_pct") if item.get("premium_capture_pct") is not None else "pendiente")),
         pnl=html_escape(str(item.get("unrealized_pl") if item.get("unrealized_pl") is not None else "pendiente")),
@@ -4300,8 +4569,13 @@ def render_position_management_card(item: dict[str, Any]) -> str:
     )
 
 
-def render_active_positions_panel(snapshot: dict[str, Any], v31_payloads: dict[str, dict[str, Any]], active: dict[str, Any]) -> str:
-    payload = console_active_position_management(snapshot, v31_payloads)
+def render_active_positions_panel(
+    snapshot: dict[str, Any],
+    v31_payloads: dict[str, dict[str, Any]],
+    active: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> str:
+    payload = payload if isinstance(payload, dict) else console_active_position_management(snapshot, v31_payloads)
     journal_summary = shared_position_management_journal.summary(POSITION_MANAGEMENT_JOURNAL_PATH)
     journal_evaluation = shared_position_management_journal.evaluate_against_management(payload, path=POSITION_MANAGEMENT_JOURNAL_PATH)
     positions = payload.get("positions") if isinstance(payload.get("positions"), list) else []
@@ -4314,7 +4588,8 @@ def render_active_positions_panel(snapshot: dict[str, Any], v31_payloads: dict[s
     alias = active.get("account_alias") or ""
     disabled = "" if alias else " disabled"
     if positions:
-        cards = "".join(render_position_management_card(item) for item in positions[:8] if isinstance(item, dict))
+        priority = lambda item: 0 if any(word in str((item or {}).get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW")) else 1
+        cards = "".join(render_position_management_card(item) for item in sorted(positions, key=priority)[:8] if isinstance(item, dict))
     else:
         cards = """
         <div class="tiles">
@@ -4339,46 +4614,41 @@ def render_active_positions_panel(snapshot: dict[str, Any], v31_payloads: dict[s
           <ol class="timeline">{rows}</ol>
         </div>
         """.format(rows=alert_rows)
-    next_text = "Sin accion inmediata; monitorear." if not payload.get("manual_review_required") else "Hay posicion(es) que requieren revision manual."
+    next_text = "Sin acción inmediata; mantener monitoreo." if not payload.get("manual_review_required") else "Hay posiciones que requieren revisión manual."
     if summary.get("top_action"):
-        next_text = "{} Accion principal: {} en {}.".format(next_text, summary.get("top_action"), summary.get("top_ticker") or "N/D")
+        next_text = "{} Prioridad: {} — {}.".format(
+            next_text,
+            summary.get("top_ticker") or "N/D",
+            friendly_operator_state(summary.get("top_action")),
+        )
     return """
     <section class="panel positions-panel">
       <div class="section-head">
         <h2>Posiciones activas</h2>
         <p>{next_text}</p>
       </div>
-      <div class="tiles compact-status">
-        <a class="tile inline-link" href="/active-positions">Estado {status}<span>Fuente: {source}</span></a>
-        <div class="tile">Posiciones<span>{positions_found} detectada(s)</span></div>
-        <div class="tile">Revisar<span>{review_count} requieren atencion</span></div>
-        <div class="tile">Riesgo<span>{risk_count} en revision de riesgo</span></div>
-        <div class="tile">Portfolio<span>{portfolio_status} · puts ${short_put_notional}</span></div>
-        <div class="tile">Plan<span>{top_step}</span></div>
-        <div class="tile">Frescura<span>{freshness} · {age}</span></div>
-        <div class="tile">Bitacora<span>{journal_count} evento(s) registrados</span></div>
-        <div class="tile">Follow-up<span>{pending_followup} pendiente(s)</span></div>
+      <div class="position-overview">
+        <div><span>Posiciones</span><strong>{positions_found}</strong><small>{review_count} requieren revisión</small></div>
+        <div><span>Riesgo inmediato</span><strong>{risk_count}</strong><small>{portfolio_status}</small></div>
+        <div><span>Datos</span><strong>{freshness}</strong><small>{age}</small></div>
+        <div><span>Seguimiento</span><strong>{pending_followup}</strong><small>pendiente(s)</small></div>
       </div>
       <div class="alert-grid">{cards}</div>
       {alerts_html}
       <form method="post" action="/bridge" class="hero-actions" data-busy="Refrescando posiciones IBKR" data-busy-detail="Lee broker, posiciones, opciones y publica snapshot. No ejecuta ordenes.">
         <input name="alias" value="{alias}" type="hidden">
         <button{disabled}>Refresh posiciones IBKR</button>
-        <span>Usa esto antes de administrar posiciones si ves REFRESH_DATA, contexto viejo o datos faltantes.</span>
+        <span>Úsalo cuando la consola indique datos desactualizados o incompletos.</span>
       </form>
     </section>
     """.format(
         next_text=html_escape(next_text),
-        status=html_escape(payload.get("status") or "UNKNOWN"),
-        source=html_escape(payload.get("source") or "unknown"),
         positions_found=html_escape(payload.get("positions_found", 0)),
         review_count=html_escape(payload.get("positions_requiring_review", 0)),
         risk_count=html_escape(payload.get("risk_review_count", 0)),
         portfolio_status=html_escape(portfolio_risk.get("status") or "UNKNOWN"),
-        short_put_notional=html_escape("{:,.0f}".format(float(portfolio_risk.get("short_put_notional") or 0))),
-        top_step=html_escape(top_step.get("label") or "sin accion inmediata"),
-        freshness=html_escape(freshness.get("status") or "UNKNOWN"),
-        age=html_escape(age_label(payload.get("generated_at"))),
+        freshness=html_escape(friendly_operator_state(freshness.get("status") or "UNKNOWN")),
+        age=html_escape(friendly_age(payload.get("generated_at"))),
         journal_count=html_escape(journal_summary.get("event_count", 0)),
         pending_followup=html_escape(journal_evaluation.get("pending_followup_count", 0)),
         cards=cards,
@@ -4706,8 +4976,12 @@ def _tower_percent(value: Any) -> str:
     return "N/D" if parsed is None else "{:.1f}%".format(parsed * 100)
 
 
-def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]) -> str:
-    payload = load_portfolio_risk(profiles, active)
+def render_portfolio_risk_panel(
+    profiles: dict[str, Any],
+    active: dict[str, Any],
+    payload: dict[str, Any] | None = None,
+) -> str:
+    payload = payload if isinstance(payload, dict) else load_portfolio_risk(profiles, active)
     counts = payload.get("alert_counts") if isinstance(payload.get("alert_counts"), dict) else {}
     alert_rows = []
     for alert in (payload.get("alerts") or [])[:10]:
@@ -4727,8 +5001,8 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
                 <input type="hidden" name="alert_id" value="{alert_id}">
                 <input name="reason" placeholder="Nota opcional de revisión">
                 <div class="actions">
-                  <button name="action" value="ACKNOWLEDGE">Confirmar 4 h</button>
-                  <button class="secondary" name="action" value="SNOOZE">Silenciar 60 min</button>
+                  <button name="action" value="ACKNOWLEDGE">Confirmar que lo revisé</button>
+                  <button class="secondary" name="action" value="SNOOZE">Recordar en 60 min</button>
                 </div>
               </form>
             """.format(alert_id=html_escape(alert_id))
@@ -4745,7 +5019,7 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
               <div class="risk-alert-title"><strong>{severity}</strong><span>{account} · {operational_status}</span></div>
               <h3>{title}</h3>
               <p>{message}</p>
-              <p class="muted">Métrica: {metric} · valor {value} · límite {threshold}</p>
+              <details class="technical-details"><summary>Ver cálculo</summary><p class="muted">Métrica: {metric} · valor {value} · límite {threshold}</p></details>
               <p><strong>Siguiente paso:</strong> {action}</p>
               {lifecycle_actions}
             </article>
@@ -4787,7 +5061,7 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
     <section class="panel portfolio-risk status-{status_class}">
       <div class="section-head">
         <div><h2>Riesgo de cartera</h2><p>{decision}</p></div>
-        <div class="risk-score"><span>Score</span><strong>{score}/100</strong></div>
+        <div class="risk-score"><span>Nivel de riesgo</span><strong>{risk_label}</strong><small>{score}/100</small></div>
       </div>
       <div class="control-facts">
         <div><span>Estado</span><strong>{status}</strong></div>
@@ -4795,15 +5069,16 @@ def render_portfolio_risk_panel(profiles: dict[str, Any], active: dict[str, Any]
         <div><span>Altas</span><strong>{high}</strong></div>
         <div><span>Vigilancia</span><strong>{watch}</strong></div>
       </div>
-      <p class="muted">Política {policy} · evaluación explicable · sin liquidación automática.</p>
+      <p class="muted">Las alertas están ordenadas por severidad. La consola explica y registra; cualquier ajuste de cartera sigue siendo manual.</p>
       <div class="risk-alert-list">{alerts}</div>
       <div class="actions">{action}</div>
     </section>
     """.format(
         status_class=html_escape(str(payload.get("status") or "blocked").lower()),
-        status=html_escape(payload.get("status") or "BLOCKED"),
-        decision=html_escape(payload.get("decision_support") or "NO_NEW_RISK"),
+        status=html_escape(friendly_operator_state(payload.get("status") or "BLOCKED")),
+        decision=html_escape(friendly_operator_state(payload.get("decision_support") or "NO_NEW_RISK")),
         score=html_escape(payload.get("risk_score") or 0),
+        risk_label=html_escape("Alto" if (counts.get("critical") or counts.get("high")) else "Vigilancia" if counts.get("watch") else "Controlado"),
         critical=html_escape(counts.get("critical") or 0),
         high=html_escape(counts.get("high") or 0),
         watch=html_escape(counts.get("watch") or 0),
@@ -5882,10 +6157,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     operator_payload = console_operator_payload(prefer_cache=prefer_cache)
     v31_payloads = console_v31_payloads(prefer_cache=prefer_cache)
     reports = console_reports()
+    position_payload = console_active_position_management(snapshot, v31_payloads)
+    risk_payload = load_portfolio_risk(profiles, active)
+    rsp_payload = shared_coberturas_engine.build_recommendation(RUNTIME)
     result = result or web_last_result()
     refresh_meta, job_panel = render_job_panel(job_id)
     manual_review_html = render_v31_manual_review_panel(v31_payloads)
-    coberturas = render_coberturas_inline_panel()
+    coberturas = render_coberturas_inline_panel(rsp_payload)
     v31_console_support = render_support_bundle(
         "Estado Ejecutivo y Revision Manual V31",
         render_v31_executive_panel(v31_payloads),
@@ -5955,6 +6233,72 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .today-panel .section-head h2 {{ margin-bottom:0; font-size:1.15rem; }}
           .today-panel .section-head p:last-child {{ font-size:.92rem; line-height:1.35; }}
           .today-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; }}
+          .app-header {{ display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:12px 18px; align-items:center; border:1px solid var(--line); border-left:6px solid #16a34a; border-radius:12px; padding:14px 16px; margin-bottom:14px; background:var(--card); box-shadow:0 8px 24px rgba(17,24,39,.06); }}
+          .app-header.health-amber {{ border-left-color:#d97706; }}
+          .app-header.health-red {{ border-left-color:#b42318; }}
+          .app-health {{ display:flex; align-items:center; gap:12px; min-width:0; }}
+          .app-health strong,.app-health small {{ display:block; }}
+          .app-health small {{ color:var(--muted); margin-top:3px; line-height:1.3; }}
+          .app-health-chips {{ display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }}
+          .health-chip {{ border:1px solid var(--line); border-radius:999px; padding:6px 9px; font-size:.76rem; font-weight:850; background:var(--soft); }}
+          .health-chip.ok {{ color:#05603a; border-color:#86d5aa; background:#f3fbf6; }}
+          .health-chip.warn {{ color:#7a3b09; border-color:#f4c58f; background:#fff8ed; }}
+          .header-actions {{ grid-column:1 / -1; display:flex; align-items:center; gap:8px; border-top:1px solid var(--line); padding-top:11px; }}
+          .header-actions form {{ margin:0; }}
+          button.primary-action {{ background:#0f6b57; padding:11px 16px; }}
+          .header-more {{ position:relative; }}
+          .header-more > summary {{ cursor:pointer; font-weight:800; color:var(--muted); padding:8px 10px; }}
+          .header-more > div {{ position:absolute; z-index:12; left:0; top:calc(100% + 6px); width:min(360px,80vw); display:grid; gap:8px; border:1px solid var(--line); border-radius:10px; padding:12px; background:white; box-shadow:0 16px 40px rgba(17,24,39,.16); }}
+          .header-more small {{ color:var(--muted); line-height:1.3; }}
+          .command-center {{ padding:0; overflow:hidden; border-left:6px solid #d97706; }}
+          .command-green {{ border-left-color:#16a34a; }} .command-red {{ border-left-color:#b42318; }} .command-blue {{ border-left-color:#2563eb; }}
+          .command-head {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(190px,.32fr); gap:20px; padding:20px; background:linear-gradient(135deg,#ffffff,#f8fafc); border-bottom:1px solid var(--line); }}
+          .command-head h2 {{ font-size:1.45rem; margin-bottom:6px; }}
+          .command-head p {{ margin:0; color:var(--muted); line-height:1.4; }}
+          .opening-status {{ border-left:1px solid var(--line); padding-left:18px; }}
+          .opening-status span,.opening-status strong,.opening-status small {{ display:block; }}
+          .opening-status span {{ color:var(--muted); text-transform:uppercase; font-size:.7rem; font-weight:900; }}
+          .opening-status strong {{ margin:5px 0 3px; font-size:1.1rem; }}
+          .opening-status small {{ color:var(--muted); }}
+          .command-facts,.position-overview {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; border-bottom:1px solid var(--line); }}
+          .command-facts > div,.position-overview > div {{ padding:14px 16px; border-right:1px solid var(--line); min-width:0; }}
+          .command-facts > div:last-child,.position-overview > div:last-child {{ border-right:0; }}
+          .command-facts span,.command-facts strong,.command-facts small,.position-overview span,.position-overview strong,.position-overview small {{ display:block; overflow-wrap:anywhere; }}
+          .command-facts span,.position-overview span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:850; }}
+          .command-facts strong,.position-overview strong {{ font-size:1.05rem; margin:4px 0; }}
+          .command-facts small,.position-overview small {{ color:var(--muted); line-height:1.25; }}
+          .pending-queue {{ padding:18px 20px 20px; }}
+          .queue-head {{ display:flex; align-items:baseline; justify-content:space-between; gap:14px; margin-bottom:10px; }}
+          .queue-head h3 {{ margin:0; }} .queue-head span {{ color:var(--muted); font-size:.84rem; }}
+          .operator-task {{ display:grid; grid-template-columns:30px minmax(0,1fr) auto; gap:12px; align-items:center; color:var(--ink); text-decoration:none; border:1px solid var(--line); border-left:5px solid #2563eb; border-radius:10px; padding:11px 13px; margin-top:8px; background:#fff; }}
+          .operator-task.task-critical {{ border-left-color:#b42318; }} .operator-task.task-high {{ border-left-color:#d97706; }}
+          .operator-task > span {{ display:grid; place-items:center; width:28px; height:28px; border-radius:999px; background:var(--soft); font-weight:900; }}
+          .operator-task small,.operator-task strong,.operator-task p {{ display:block; margin:0; }}
+          .operator-task small {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
+          .operator-task strong {{ margin-top:2px; }} .operator-task p {{ color:var(--muted); font-size:.84rem; margin-top:2px; line-height:1.3; }}
+          .operator-task > b {{ color:var(--accent-strong); font-size:.82rem; white-space:nowrap; }}
+          .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}
+          .empty-state span {{ color:var(--muted); }}
+          .secondary-workspace {{ margin-top:14px; }}
+          .position-overview {{ margin:14px 0; border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+          .position-summary {{ color:var(--muted); margin:10px 0 0; line-height:1.35; }}
+          .position-details,.operator-subsection {{ border:1px solid var(--line); border-radius:10px; margin-top:12px; background:#fff; overflow:hidden; }}
+          .position-details > summary,.operator-subsection > summary {{ cursor:pointer; padding:12px 14px; font-weight:850; color:var(--accent-strong); }}
+          .position-details[open] > summary,.operator-subsection[open] > summary {{ border-bottom:1px solid var(--line); background:var(--soft); }}
+          .position-details > :not(summary),.operator-subsection > :not(summary) {{ margin-left:12px; margin-right:12px; }}
+          .position-detail-grid {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; padding-top:12px; }}
+          .position-detail-grid span,.position-detail-grid strong {{ display:block; }}
+          .position-detail-grid span {{ color:var(--muted); font-size:.75rem; }}
+          .technical-details {{ margin-top:8px; color:var(--muted); }}
+          .technical-details > summary {{ cursor:pointer; font-size:.82rem; font-weight:800; }}
+          .readiness-pill {{ align-self:flex-start; border-radius:999px; padding:7px 10px; font-size:.78rem; font-weight:900; }}
+          .readiness-ready {{ color:#05603a; background:#e9f8ef; }} .readiness-review {{ color:#7a3b09; background:#fff3dd; }}
+          .rsp-status-line {{ display:flex; justify-content:space-between; gap:16px; border:1px solid #f4c58f; border-radius:10px; padding:12px 14px; background:#fff8ed; }}
+          .rsp-status-line.status-ready {{ border-color:#86d5aa; background:#f3fbf6; }}
+          .rsp-status-line span {{ color:var(--muted); text-align:right; }}
+          .rsp-decision-body {{ margin-top:12px; }}
+          .section-actions {{ display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:14px; }}
+          .text-link {{ color:var(--accent-strong); font-weight:800; }}
           .control-strip {{ display:grid; grid-template-columns:minmax(220px,.95fr) minmax(360px,1.45fr) minmax(190px,.8fr); gap:10px; align-items:center; border:1px solid var(--line); border-left-width:6px; border-radius:8px; padding:10px 12px; margin-bottom:14px; background:var(--card); box-shadow:0 8px 24px rgba(17,24,39,.06); }}
           .health-green {{ border-left-color:#16a34a; }}
           .health-amber {{ border-left-color:#d97706; }}
@@ -6183,8 +6527,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
-          @media (max-width:900px) {{ .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
-          @media (max-width:820px) {{ main {{ padding:14px 10px 44px; }} h1 {{ font-size:2.35rem; }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .coberturas-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 12px 12px; }} }}
+          @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
+          @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
         </style>
       </head>
       <body>
@@ -6198,49 +6542,51 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <h1 class="sr-only">Stock Ultimus Console</h1>
           {health}
           <nav class="operator-nav" aria-label="Navegación principal de la consola">
-            <a href="#hoy">Hoy</a>
-            <a href="#alertas">Alertas</a>
+            <a href="#hoy">Inicio</a>
+            <a href="#pendientes">Pendientes</a>
+            <a href="#riesgo">Riesgo</a>
             <a href="#posiciones">Posiciones</a>
             <a href="#coberturas-rsp">RSP</a>
-            <a href="#riesgo">Riesgo</a>
-            <a href="#cartera">Cartera</a>
-            <a href="#resultados">Resultados</a>
-            <a href="#herramientas">Herramientas</a>
-            <a href="/guide">Guía</a>
+            <a href="#analisis">Análisis</a>
+            <a href="#herramientas">Administración</a>
+            <a href="/guide">Ayuda</a>
           </nav>
           {active_process}
-          <div id="hoy">{today}</div>
+          {command_center}
           {message}
           {job_panel}
-          <div id="alertas">{alerts}</div>
+          <details id="alertas" class="panel operator-workspace secondary-workspace"{alert_open}>
+            <summary><span>Alertas y diagnósticos<small>Señales operables, futuros intradía y eventos descartados por baja calidad.</small></span></summary>
+            <div class="workspace-body">{alerts}</div>
+          </details>
+          <div id="riesgo">{portfolio_risk}</div>
           <div id="posiciones">{active_positions}</div>
           {coberturas}
-          <div id="riesgo">{portfolio_risk}</div>
 
-          <details id="cartera" class="panel operator-workspace">
-            <summary><span>Cartera avanzada<small>Control multicuenta, estrés, factores y alternativas virtuales.</small></span></summary>
+          <details id="analisis" class="panel operator-workspace">
+            <summary><span>Análisis<small>Cartera avanzada, escenarios, resultados y aprendizaje.</small></span></summary>
             <div class="workspace-body">
-              {control_tower}
-              {portfolio_stress}
-              {portfolio_factors}
-              {portfolio_rebalance}
-              {portfolio_whatif}
-              {portfolio_operations}
-            </div>
-          </details>
-
-          <details id="resultados" class="panel operator-workspace">
-            <summary><span>Resultados y aprendizaje<small>Desempeño, efectividad de alertas y reportes ejecutivos.</small></span></summary>
-            <div class="workspace-body">
-              {decision_outcomes}
-              {alert_effectiveness}
-              {executive_report}
-              {v31_learning}
+              <details id="cartera" class="operator-subsection">
+                <summary>Cartera, riesgo y escenarios avanzados</summary>
+                {control_tower}
+                {portfolio_stress}
+                {portfolio_factors}
+                {portfolio_rebalance}
+                {portfolio_whatif}
+                {portfolio_operations}
+              </details>
+              <details id="resultados" class="operator-subsection">
+                <summary>Resultados, reportes y aprendizaje</summary>
+                {decision_outcomes}
+                {alert_effectiveness}
+                {executive_report}
+                {v31_learning}
+              </details>
             </div>
           </details>
 
           <details id="herramientas" class="panel operator-workspace">
-            <summary><span>Herramientas y administración<small>Diagnóstico, mantenimiento, cuentas y utilidades de uso ocasional.</small></span></summary>
+            <summary><span>Administración<small>Cuentas, conexión, publicación, mantenimiento y diagnóstico técnico.</small></span></summary>
             <div class="workspace-body">
               {v31_console_support}
               {question_support}
@@ -6376,11 +6722,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         health=render_console_health(active, snapshot, operator_payload, reports),
         active_process=render_active_process_panel(),
         today=render_today_panel(active, snapshot, operator_payload, reports),
+        command_center=render_command_center(active, snapshot, operator_payload, reports, position_payload, risk_payload, rsp_payload),
         modules=render_module_health(active, snapshot, operator_payload, reports),
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),
         control_tower=render_control_tower_panel(profiles, active),
-        portfolio_risk=render_portfolio_risk_panel(profiles, active),
+        portfolio_risk=render_portfolio_risk_panel(profiles, active, risk_payload),
         portfolio_stress=render_portfolio_stress_panel(profiles, active),
         portfolio_factors=render_portfolio_factor_panel(profiles, active),
         portfolio_rebalance=render_portfolio_rebalance_panel(profiles, active),
@@ -6395,8 +6742,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         refresh_meta=refresh_meta,
         job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
-        alerts=render_operator_alerts(operator_payload, snapshot),
-        active_positions=render_active_positions_panel(snapshot, v31_payloads, active),
+        alerts=render_operator_alerts(operator_payload, snapshot, reports),
+        alert_open=" open" if any(alert_operator_visibility(alert) in {"HIGH_PROBABILITY", "RADAR"} and not is_handled_alert(alert) for alert in ((operator_payload.get("data") or {}).get("active_alerts") or []) if isinstance(alert, dict)) else "",
+        active_positions=render_active_positions_panel(snapshot, v31_payloads, active, position_payload),
         v31_learning=render_v31_learning_panel(v31_payloads),
         coberturas=coberturas,
         v31_console_support=v31_console_support,

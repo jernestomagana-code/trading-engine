@@ -323,6 +323,9 @@ def append_signal_event(
     coverage_path: str | Path = DEFAULT_COVERAGE_PATH,
 ) -> dict[str, Any]:
     target = Path(path)
+    resolved_status_path = Path(status_path)
+    if target != DEFAULT_LEDGER_PATH and resolved_status_path == DEFAULT_WEBHOOK_STATUS_PATH:
+        resolved_status_path = target.with_name("v32_tradingview_webhook_status.json")
     event = normalize_signal_event(payload, raw_text=raw_text, endpoint=endpoint, coverage_path=coverage_path)
     events = _read_events(target)
     existing_ids = {item.get("event_id") or item.get("id") for item in events}
@@ -332,7 +335,7 @@ def append_signal_event(
         _write_events(target, events)
     result_status = "DUPLICATE" if duplicate else event["delivery_status"]
     webhook_status = _write_webhook_status(
-        Path(status_path),
+        resolved_status_path,
         result_status=result_status,
         event=event,
         duplicate=duplicate,
@@ -343,7 +346,7 @@ def append_signal_event(
         "saved": not duplicate,
         "event_id": event["event_id"],
         "path": str(target),
-        "status_path": str(status_path),
+        "status_path": str(resolved_status_path),
         "event": event,
         "webhook_status": webhook_status,
         "accepted_for_engine": event["accepted_for_engine"],

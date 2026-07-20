@@ -404,8 +404,8 @@ class PortfolioRiskOperationsTests(unittest.TestCase):
                     setattr(account_console, key, value)
 
         self.assertIn("/portfolio-risk-action", risk_html)
-        self.assertIn("Confirmar 4 h", risk_html)
-        self.assertIn("Silenciar 60 min", risk_html)
+        self.assertIn("Confirmar que lo revisé", risk_html)
+        self.assertIn("Recordar en 60 min", risk_html)
         self.assertIn("Operación y mantenimiento", operations_html)
         self.assertIn("Outbox pendiente", operations_html)
         self.assertIn("Observación", operations_html)

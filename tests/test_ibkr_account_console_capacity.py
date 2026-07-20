@@ -222,7 +222,8 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertNotIn("GPT_CONTEXT_REFRESH_REQUIRED", health["warnings"])
         self.assertNotIn("REMOTE_CACHE_STALE", health["warnings"])
         self.assertIn("REMOTE_CACHE_STALE_LOCAL_CORE_READY", health["info"])
-        self.assertIn("IBKR: OK", rendered)
+        self.assertIn("IBKR OK", rendered)
+        self.assertIn("Producción guardada", rendered)
 
     def test_selected_vs_published_infers_local_account_when_remote_omits_account_fields(self):
         active = {"account_scope": "remanente", "account_alias": "remanente"}
@@ -305,12 +306,12 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Posiciones activas", html)
         self.assertIn("Refresh posiciones IBKR", html)
         self.assertIn("REVIEW_CLOSE_OR_BUY_BACK", html)
-        self.assertIn("Revise cierre", html)
+        self.assertIn("Revisé cierre", html)
         self.assertIn("Editar tesis y datos de entrada", html)
         self.assertIn('action="/position-context"', html)
-        self.assertIn("Portfolio", html)
-        self.assertIn("Plan", html)
-        self.assertIn("/active-positions", html)
+        self.assertIn("Riesgo inmediato", html)
+        self.assertIn("Seguimiento", html)
+        self.assertIn("Ver detalles y registrar gestión", html)
 
     def test_console_renders_manual_gamma_panel(self):
         html = account_console.render_gamma_context_panel()

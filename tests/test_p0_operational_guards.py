@@ -207,7 +207,7 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertIn("Solo usar cuenta</button>", source)
         self.assertIn("Publicando cuenta para GPT", source)
         self.assertIn("solo trae datos frescos del broker", source)
-        self.assertIn("LIVE_REFRESH_SKIPPED_DURING_LOCAL_JOB", source)
+        self.assertIn("CACHE_FIRST_CONSOLE_RENDER", source)
         self.assertIn("STOCK_ULTIMUS_CONSOLE_JOB_TIMEOUT_SECONDS", source)
         self.assertIn("subprocess.TimeoutExpired", source)
         self.assertIn("def process_output_text", source)
