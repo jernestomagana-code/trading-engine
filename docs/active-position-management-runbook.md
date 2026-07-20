@@ -84,6 +84,8 @@ The active-position payload now includes:
 - `strategy_comparison` for long stock: estimates hold, reduce 25%, partial
   covered call, and matching partial collars from the current stock price
   across deep-downside, support, flat, resistance, and strong-upside cases.
+  Deep downside stresses at least a 20% fall (or three ATR when more severe),
+  capped at a 35% fall for this review layer.
   It reports one balanced winner plus separate leaders for capital protection,
   income/recovery, and upside preservation. Scenario weights are review
   weights, not probabilities.

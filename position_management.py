@@ -765,6 +765,8 @@ def _contract_summary(row: dict[str, Any], price: float | None) -> dict[str, Any
         "bid": row.get("bid"),
         "ask": row.get("ask"),
         "mid": mid,
+        "bid_per_contract": round((safe_float(row.get("bid")) or 0.0) * DEFAULT_CONTRACT_MULTIPLIER, 2) if safe_float(row.get("bid")) is not None else None,
+        "ask_per_contract": round((safe_float(row.get("ask")) or 0.0) * DEFAULT_CONTRACT_MULTIPLIER, 2) if safe_float(row.get("ask")) is not None else None,
         "premium_per_contract": round(mid * DEFAULT_CONTRACT_MULTIPLIER, 2) if mid is not None else None,
         "delta": row.get("delta"),
         "implied_volatility": row.get("implied_volatility") or row.get("iv"),
@@ -829,7 +831,7 @@ def _long_stock_strategy_comparison(
     support = safe_float(technical.get("support"))
     resistance = safe_float(technical.get("resistance"))
     trend = safe_upper(technical.get("trend"), "UNKNOWN")
-    deep_down = max(0.01, min(price * 0.90, price - (2 * atr)))
+    deep_down = max(price * 0.65, min(price * 0.80, price - (3 * atr)))
     support_case = support if support is not None and deep_down < support < price else max(deep_down, price - atr)
     resistance_case = resistance if resistance is not None and resistance > price else price + max(2 * atr, price * 0.08)
     strong_up = max(price * 1.20, resistance_case + atr)
@@ -1164,6 +1166,9 @@ def _management_alternatives(
                 details.append("{}% de cobertura".format(balanced_leader.get("coverage_pct")))
             if leader_contract.get("strike") is not None:
                 details.append("strike {}".format(leader_contract.get("strike")))
+            leader_put = balanced_leader.get("put_contract") if isinstance(balanced_leader.get("put_contract"), dict) else {}
+            if leader_put.get("strike") is not None:
+                details.append("put de protección {}".format(leader_put.get("strike")))
             choose(
                 leader_id,
                 "El soporte sigue intacto. La comparación de cinco escenarios favorece {}{}; reducir queda como defensa si rompe soporte.".format(
@@ -1212,6 +1217,11 @@ def _management_alternatives(
             balanced_leader.get("contract")
             if primary.get("alternative_id") == balanced_leader.get("alternative_id") and isinstance(balanced_leader.get("contract"), dict)
             else ((primary.get("contract_candidates") or [None])[0])
+        ),
+        "put_contract": (
+            balanced_leader.get("put_contract")
+            if primary.get("alternative_id") == balanced_leader.get("alternative_id") and isinstance(balanced_leader.get("put_contract"), dict)
+            else None
         ),
         "contracts": balanced_leader.get("contracts") if primary.get("alternative_id") == balanced_leader.get("alternative_id") else primary.get("contracts"),
         "coverage_pct": balanced_leader.get("coverage_pct") if primary.get("alternative_id") == balanced_leader.get("alternative_id") else None,

@@ -4660,6 +4660,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
     primary_id = recommendation.get("alternative_id")
     primary = next((value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") == primary_id), alternatives[0])
     contract = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
+    put_contract = recommendation.get("put_contract") if isinstance(recommendation.get("put_contract"), dict) else {}
     contract_line = ""
     if contract:
         contract_line = "{}Contrato preferido visible: {} {} · {} · prima {}.".format(
@@ -4667,7 +4668,13 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
             contract.get("right") or "",
             contract.get("strike") if contract.get("strike") is not None else "N/D",
             contract.get("expiration") or "N/D",
-            coberturas_money(contract.get("premium_per_contract")),
+            coberturas_money(contract.get("bid_per_contract") if contract.get("bid_per_contract") is not None else contract.get("premium_per_contract")),
+        )
+    if put_contract:
+        contract_line += " Put protectora: P {} · {} · costo {}.".format(
+            put_contract.get("strike") if put_contract.get("strike") is not None else "N/D",
+            put_contract.get("expiration") or "N/D",
+            coberturas_money(put_contract.get("ask_per_contract") if put_contract.get("ask_per_contract") is not None else put_contract.get("premium_per_contract")),
         )
     profile_labels = {
         "capital_protection": "Mayor protección",

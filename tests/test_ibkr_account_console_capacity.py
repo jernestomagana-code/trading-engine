@@ -337,6 +337,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                     "contracts": 3,
                     "coverage_pct": 30.0,
                     "contract": {"right": "C", "strike": 65, "expiration": "20260828", "premium_per_contract": 475},
+                    "put_contract": {"right": "P", "strike": 62, "expiration": "20260828", "premium_per_contract": 98},
                 },
                 "alternatives": [
                     {"alternative_id": "COVERED_CALL_PARTIAL", "label": "Covered call parcial", "status": "READY_FOR_MANUAL_REVIEW", "is_primary_management_path": True},
@@ -362,6 +363,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Mayor protección", html)
         self.assertIn("Ver comparación numérica y supuestos", html)
         self.assertIn("3 contrato(s) · 30.0% de la posición", html)
+        self.assertIn("Put protectora: P 62", html)
 
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

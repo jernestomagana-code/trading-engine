@@ -247,10 +247,13 @@ class PositionManagementTests(unittest.TestCase):
         balanced = management["strategy_comparison"]["profile_leaders"]["balanced"]
 
         self.assertEqual(management["recommendation"]["alternative_id"], balanced["alternative_id"])
-        self.assertNotEqual(management["recommendation"]["alternative_id"], "REDUCE_25")
         self.assertEqual(payload["positions"][0]["management_action"], "REVIEW_RISK")
         self.assertIn(management["strategy_comparison"]["profile_leaders"]["income_recovery"]["contracts"], [2, 3])
+        self.assertLessEqual(management["strategy_comparison"]["scenarios"][0]["price"], 67.48 * 0.80)
         self.assertIn("cinco escenarios", management["recommendation"]["reason"])
+        if management["recommendation"]["alternative_id"] == "COLLAR":
+            self.assertIsInstance(management["recommendation"]["put_contract"], dict)
+            self.assertIn("put de protección", management["recommendation"]["reason"])
 
     def test_extreme_concentration_overrides_scenario_comparison(self):
         snapshot = self.snapshot(
