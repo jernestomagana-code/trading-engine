@@ -107,6 +107,60 @@ class CoberturasEngineTests(unittest.TestCase):
         self.assertEqual(ce.RSP_ACCOUNT_ALIAS, "retiro")
         self.assertEqual(ce.RSP_CAPACITY_PATH, "coberturas_rsp_account_capacity_latest.json")
 
+    def test_open_rsp_cycle_is_managed_while_another_entry_is_evaluated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            original_context = ce.MANUAL_CONTEXT_PATH
+            ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
+            try:
+                ce.write_manual_context({"spot": "213", "position_mode": "AUTO"})
+                (runtime / ce.RSP_POSITIONS_PATH).write_text(json.dumps({
+                    "account_alias": "retiro",
+                    "positions": [
+                        {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "market_price": 213},
+                        {"ticker": "RSP", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 215, "expiration": "20260731"},
+                    ],
+                }), encoding="utf-8")
+                (runtime / ce.RSP_CAPACITY_PATH).write_text(json.dumps({
+                    "available": True,
+                    "account_alias": "retiro",
+                    "available_funds": 25000,
+                    "buying_power": 25000,
+                }), encoding="utf-8")
+                (runtime / ce.RSP_CHAIN_PATH).write_text(json.dumps({
+                    "generated_at": ce.now_iso(),
+                    "chain_by_ticker": {"RSP": {}},
+                    "option_rows": [
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 0.9, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260731", "dte": 11, "strike": 215, "delta": 0.3, "bid": 0.9, "ask": 1.1},
+                    ],
+                }), encoding="utf-8")
+
+                payload = ce.build_recommendation(runtime)
+                (runtime / ce.RSP_CAPACITY_PATH).write_text(json.dumps({
+                    "available": True,
+                    "account_alias": "retiro",
+                    "available_funds": 1000,
+                    "buying_power": 1000,
+                }), encoding="utf-8")
+                capacity_limited = ce.build_recommendation(runtime)
+            finally:
+                ce.MANUAL_CONTEXT_PATH = original_context
+
+        self.assertEqual(payload["mode"], "MANAGE_OPEN_POSITION")
+        self.assertEqual(payload["decision"], "MANAGE_EXISTING_AND_REVIEW_NEW_ENTRY")
+        self.assertTrue(payload["strategy_recommendation"]["status"].startswith("RECOMMEND_"))
+        self.assertEqual(payload["candidate_count"], 2)
+        self.assertNotIn("OPEN_RSP_OPTION_REQUIRES_MANAGEMENT", payload["blockers"])
+        self.assertTrue(payload["new_entry_lane"]["evaluated_independently_from_management"])
+        self.assertEqual(payload["new_entry_lane"]["cycle_capacity"]["active_cycles"], 1)
+        self.assertEqual(payload["new_entry_lane"]["cycle_capacity"]["remaining_risk_slots"], 2)
+        self.assertEqual(capacity_limited["decision"], "MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_CAPACITY")
+        self.assertFalse(capacity_limited["new_entry_lane"]["can_review_new_entry"])
+        self.assertIn(capacity_limited["new_entry_lane"]["conditional_strategy"], {"SELL_PUT", "BUY_100_SELL_CALL"})
+        self.assertEqual(capacity_limited["new_entry_lane"]["strategy_role"], "CONDITIONAL_PREFERENCE")
+
     def test_configured_margin_estimate_is_separate_from_nominal_exposure(self):
         scenarios = {
             "sell_put": {

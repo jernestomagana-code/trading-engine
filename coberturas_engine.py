@@ -21,6 +21,7 @@ JOURNAL_PATH = RUNTIME / "coberturas_rsp_journal.json"
 TICKER = "RSP"
 TARGET_WEEKLY_PREMIUM = 100.0
 MAX_CONTRACTS = 1
+MAX_CONCURRENT_CYCLES = max(1, int(os.getenv("STOCK_ULTIMUS_RSP_MAX_CONCURRENT_CYCLES", "3")))
 SHARES_PER_LOT = 100
 RSP_CHAIN_PATH = "coberturas_rsp_chain_coverage_latest.json"
 RSP_CAPACITY_PATH = "coberturas_rsp_account_capacity_latest.json"
@@ -618,8 +619,87 @@ def strategy_for_position(position_state: str) -> tuple[str, str]:
     if position_state == "WITH_SHARES":
         return "SELL_COVERED_CALL", "Con 100+ acciones RSP: buscar covered call."
     if position_state in {"SHORT_PUT_OPEN", "SHORT_CALL_OPEN", "COVERED_CALL_OPEN"}:
-        return "MANAGE_OPEN_POSITION", "Hay opcion RSP abierta: revisar cierre, rolleo o asignacion antes de abrir otra."
+        return "MANAGE_OPEN_POSITION", "Hay una opción RSP abierta: gestionarla y evaluar por separado si existe capacidad para iniciar otro ciclo."
     return "WAIT_DATA", "Falta confirmar si tienes acciones u opcion RSP abierta."
+
+
+def rsp_cycle_capacity(position: dict[str, Any], scenarios: dict[str, Any]) -> dict[str, Any]:
+    shares = max(0.0, safe_float(position.get("shares"), 0) or 0)
+    share_lots = int(shares // SHARES_PER_LOT)
+    short_puts = max(0, safe_int(position.get("short_put_count"), 0))
+    short_calls = max(0, safe_int(position.get("short_call_count"), 0))
+    # A covered call belongs to its underlying share lot. Only calls beyond the
+    # available lots count as an additional (and anomalous) open cycle.
+    active_cycles = share_lots + short_puts + max(0, short_calls - share_lots)
+    remaining_risk_slots = max(0, MAX_CONCURRENT_CYCLES - active_cycles)
+    affordable_strategies = []
+    required_capital = []
+    for key, strategy in [("sell_put", "SELL_PUT"), ("buy_100_sell_call", "BUY_100_SELL_CALL")]:
+        scenario = scenarios.get(key) if isinstance(scenarios.get(key), dict) else {}
+        required = safe_float(scenario.get("decision_capital_required"), None)
+        if required is not None:
+            required_capital.append(required)
+        if (
+            scenario.get("available")
+            and scenario.get("can_afford_by_available_funds") is not False
+            and scenario.get("can_afford_by_buying_power") is not False
+        ):
+            affordable_strategies.append(strategy)
+    return {
+        "active_cycles": active_cycles,
+        "share_lots": share_lots,
+        "short_put_cycles": short_puts,
+        "covered_call_count": min(short_calls, share_lots),
+        "max_concurrent_cycles": MAX_CONCURRENT_CYCLES,
+        "remaining_risk_slots": remaining_risk_slots,
+        "risk_slot_available": remaining_risk_slots > 0,
+        "affordable_strategies": affordable_strategies,
+        "capital_available_for_new_cycle": bool(affordable_strategies),
+        "estimated_capital_required_min": min(required_capital) if required_capital else None,
+        "estimated_capital_required_max": max(required_capital) if required_capital else None,
+        "one_contract_per_new_entry": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
+def build_new_entry_lane(
+    position: dict[str, Any],
+    scenarios: dict[str, Any],
+    recommendation: dict[str, Any],
+    candidate_count: int,
+) -> dict[str, Any]:
+    cycle_capacity = rsp_cycle_capacity(position, scenarios)
+    recommendation_status = str(recommendation.get("status") or "WAIT_DATA")
+    risk_slot_available = bool(cycle_capacity.get("risk_slot_available"))
+    if not risk_slot_available:
+        status = "WAIT_RSP_CYCLE_LIMIT"
+        action = "Gestionar o cerrar un ciclo antes de considerar otra entrada RSP."
+    elif recommendation_status.startswith("RECOMMEND_"):
+        status = recommendation_status
+        action = recommendation.get("reason") or "Revisar manualmente el nuevo ciclo propuesto."
+    elif recommendation_status == "WAIT_ACCOUNT_CAPACITY":
+        status = "WAIT_ACCOUNT_CAPACITY"
+        action = recommendation.get("reason") or "Esperar capacidad suficiente antes de iniciar otro ciclo."
+    else:
+        status = recommendation_status
+        action = recommendation.get("reason") or "Completar datos antes de evaluar otro ciclo."
+    return {
+        "lane_version": "rsp_parallel_entry_lane_v1",
+        "evaluated_independently_from_management": True,
+        "status": status,
+        "recommended_strategy": recommendation.get("recommended_strategy"),
+        "conditional_strategy": recommendation.get("conditional_strategy"),
+        "display_strategy": recommendation.get("recommended_strategy") or recommendation.get("conditional_strategy"),
+        "strategy_role": "RECOMMENDATION_FOR_MANUAL_REVIEW" if recommendation.get("recommended_strategy") else "CONDITIONAL_PREFERENCE",
+        "reason": recommendation.get("reason"),
+        "primary_action": action,
+        "candidate_count": candidate_count,
+        "can_review_new_entry": bool(risk_slot_available and recommendation_status.startswith("RECOMMEND_")),
+        "cycle_capacity": cycle_capacity,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
 
 
 def candidate_side(row: dict[str, Any]) -> str:
@@ -1523,6 +1603,20 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
         and row.get("decision_return_on_capital_pct") is not None
         and row.get("can_afford_by_buying_power") is not False
     ]
+    indicative_rows = [
+        row for row in rows
+        if row["available"]
+        and row.get("decision_capital_required") is not None
+        and row.get("decision_return_on_capital_pct") is not None
+    ]
+    indicative_best = sorted(
+        indicative_rows,
+        key=lambda row: (
+            safe_float(row.get("decision_return_on_capital_pct"), -999),
+            safe_float(row.get("max_profit"), -999),
+        ),
+        reverse=True,
+    )[0] if indicative_rows else None
     if blockers:
         return {
             "status": "WAIT_DATA",
@@ -1559,6 +1653,8 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
             return {
                 "status": "WAIT_ACCOUNT_CAPACITY",
                 "recommended_strategy": None,
+                "conditional_strategy": (indicative_best or {}).get("strategy"),
+                "conditional_strategy_note": "Preferencia comparativa solamente; no es operable con la capacidad actual.",
                 "reason": (
                     "El margen requerido esta estimado, pero los fondos disponibles o el poder de compra "
                     "no alcanzan para comparar ambos caminos de forma operable."
@@ -1813,6 +1909,14 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         candidate_rows = put_candidates
     elif mode == "SELL_COVERED_CALL":
         candidate_rows = call_candidates
+    elif mode == "MANAGE_OPEN_POSITION":
+        # Management and expansion are parallel lanes. Keep fresh candidates
+        # visible even while an existing cycle is being managed.
+        candidate_rows = sorted(
+            put_candidates + call_candidates,
+            key=lambda row: safe_float(row.get("coberturas_score"), 0) or 0,
+            reverse=True,
+        )
     else:
         candidate_rows = []
 
@@ -1844,18 +1948,23 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         blockers.append("POSITION_STATE_UNKNOWN")
     if spot is None:
         blockers.append("RSP_SPOT_MISSING")
-    if mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not option_rows:
+    entry_evaluation_enabled = position.get("state") != "UNKNOWN"
+    if entry_evaluation_enabled and not option_rows:
         blockers.append("RSP_OPTION_CHAIN_MISSING")
-    elif mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not chain_has_rsp:
+    elif entry_evaluation_enabled and not chain_has_rsp:
         blockers.append("RSP_FRESH_CHAIN_MISSING")
-    elif mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not (put_candidates or call_candidates):
+    elif entry_evaluation_enabled and not (put_candidates or call_candidates):
         blockers.append("RSP_7_14_DTE_CANDIDATES_MISSING")
-    if mode in {"SELL_PUT", "SELL_COVERED_CALL"} and not manual_context.get("available"):
+    if entry_evaluation_enabled and not manual_context.get("available"):
         blockers.append("MANUAL_GAMMA_CONTEXT_MISSING")
-    if mode == "MANAGE_OPEN_POSITION":
-        blockers.append("OPEN_RSP_OPTION_REQUIRES_MANAGEMENT")
 
     strategy_recommendation = build_strategy_recommendation(scenarios, blockers)
+    new_entry_lane = build_new_entry_lane(
+        position,
+        scenarios,
+        strategy_recommendation,
+        len(candidate_rows),
+    )
 
     operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, manual_context, management_spot)
 
@@ -1877,8 +1986,19 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         decision = "REVIEW_COVERED_CALL_CANDIDATES"
         next_action = "Revisar candidatos de covered call y confirmar que aceptar asignacion/salida sea correcto."
     elif mode == "MANAGE_OPEN_POSITION":
-        decision = "MANAGE_EXISTING_RSP_OPTION"
-        next_action = "No abrir nueva cobertura; revisar cierre, rolleo o asignacion de la opcion RSP abierta."
+        entry_status = str(new_entry_lane.get("status") or "")
+        if entry_status.startswith("RECOMMEND_"):
+            decision = "MANAGE_EXISTING_AND_REVIEW_NEW_ENTRY"
+        elif entry_status == "WAIT_ACCOUNT_CAPACITY":
+            decision = "MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_CAPACITY"
+        elif entry_status == "WAIT_RSP_CYCLE_LIMIT":
+            decision = "MANAGE_EXISTING_AND_WAIT_CYCLE_SLOT"
+        else:
+            decision = "MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_DATA"
+        next_action = (
+            "Continuar la gestión de la opción abierta. Nueva posición: "
+            + str(new_entry_lane.get("primary_action") or "evaluación pendiente.")
+        )
     else:
         decision = "WAIT_DATA"
         next_action = "Actualizar la lectura RSP y obtener una cadena IBKR fresca de 7 a 14 DTE."
@@ -1906,6 +2026,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "covered_call_methodology": covered_call_methodology,
         "strategy_scenarios": scenarios,
         "strategy_recommendation": strategy_recommendation,
+        "new_entry_lane": new_entry_lane,
         "position_manager": operating_plan.get("management"),
         "exit_rules": operating_plan.get("exit_rules"),
         "strategy_operating_plan": operating_plan,
@@ -1919,6 +2040,8 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "next_action": next_action,
         "risk_limits": {
             "max_contracts": MAX_CONTRACTS,
+            "max_contracts_per_new_entry": MAX_CONTRACTS,
+            "max_concurrent_cycles": MAX_CONCURRENT_CYCLES,
             "target_weekly_premium": TARGET_WEEKLY_PREMIUM,
             "buy_write_supported": True,
             "sell_put_supported": True,

@@ -270,6 +270,8 @@ En capital, la consola diferencia:
 
 Para covered calls, los strikes **ITM, ATM y OTM están permitidos**. La cadena ampliada compara hasta 12 contratos y presenta tres lecturas: **Ingreso y defensa**, **Retorno total flexible** y **Conservar upside**. El perfil operativo predeterminado es **Retorno total flexible**; pondera prima, protección bajista, ganancia total si hay asignación, probabilidad aproximada, spread y participación alcista. La ganancia máxima de una call ITM descuenta correctamente la diferencia entre el precio pagado por las acciones y un strike inferior. El ganador de cada perfil es comparativo: si falta prima utilizable o el spread es demasiado amplio, la consola indica **esperar mejor liquidez** y no lo presenta como listo para revisión operativa.
 
+Una posición RSP abierta no detiene la búsqueda de oportunidades. La consola trabaja en dos carriles simultáneos: **Gestión actual**, para vigilar cierres, rollos y asignación de los contratos existentes; y **Nueva posición**, para comparar otro sell put contra otro bloque de 100 acciones + covered call. Cada entrada nueva se limita a un contrato. El máximo predeterminado es de tres ciclos RSP simultáneos (`STOCK_ULTIMUS_RSP_MAX_CONCURRENT_CYCLES`) y siempre queda subordinado a los fondos disponibles, poder de compra, margen estimado o confirmado por IBKR, calidad de la cadena y revisión humana. Que exista espacio dentro del límite no significa que exista capital suficiente.
+
 ## 11. Bloque Riesgo
 
 Es la prioridad principal antes de aumentar exposición. Incluye:
