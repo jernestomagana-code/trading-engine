@@ -218,7 +218,70 @@ class PositionManagementTests(unittest.TestCase):
         self.assertEqual(alternatives["COVERED_CALL_FULL"]["contract_candidates"][0]["strike"], 125)
         self.assertEqual(alternatives["PROTECTIVE_PUT"]["status"], "READY_FOR_MANUAL_REVIEW")
         self.assertIn("COLLAR", alternatives)
+        self.assertEqual(item["management_alternatives"]["recommendation"]["alternative_id"], "COVERED_CALL_PARTIAL")
         self.assertGreaterEqual(payload["option_alternatives_summary"]["total_alternatives"], 8)
+
+    def test_option_market_price_is_never_used_as_underlying_price(self):
+        snapshot = self.snapshot(
+                [{"ticker": "MSFT", "sec_type": "OPT", "right": "P", "position_size": -1, "strike": 400, "market_price": 8.95, "option_mark": 8.95, "dte": 20}],
+                {},
+            )
+        snapshot["runtime_data"] = {
+            "option_rows.json": {
+                "option_rows": [{"ticker": "MSFT", "sec_type": "OPT", "right": "P", "strike": 400, "price": 8.95, "market_price": 8.95}],
+            }
+        }
+        payload = position_management.build_active_position_management(
+            snapshot,
+            playbook=self.playbook,
+        )
+        item = payload["positions"][0]
+
+        self.assertIsNone(item["underlying_price"])
+        self.assertNotEqual(item["management_action"], "REVIEW_ASSIGNMENT")
+        self.assertEqual(item["management_alternatives"]["recommendation"]["alternative_id"], "HOLD_MONITOR")
+        self.assertEqual(item["management_alternatives"]["recommendation"]["confidence"], "LOW")
+
+    def test_bearish_long_stock_prioritizes_partial_risk_reduction(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [{"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "market_price": 67}],
+                {"NFLX": {"ticker": "NFLX", "price": 67, "trend": "BEARISH", "support_level": 70}},
+            ),
+            playbook=self.playbook,
+        )
+
+        recommendation = payload["positions"][0]["management_alternatives"]["recommendation"]
+        self.assertEqual(recommendation["alternative_id"], "REDUCE_25")
+        self.assertEqual(recommendation["confidence"], "HIGH")
+
+    def test_missing_gamma_alone_does_not_force_stock_data_refresh(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [{"ticker": "TLT", "sec_type": "STK", "position_size": 50, "market_price": 84}],
+                {"TLT": {"ticker": "TLT", "price": 84, "trend": "NEUTRAL_TO_BEARISH", "support_level": 83, "resistance_level": 88}},
+            ),
+            playbook=self.playbook,
+        )
+        item = payload["positions"][0]
+
+        self.assertIn("GAMMA_CONTEXT_MISSING", item["warnings"])
+        self.assertEqual(item["management_action"], "NO_ACTION_RECOMMENDED")
+        self.assertEqual(item["confidence"], "MEDIUM")
+
+    def test_oversold_stock_prioritizes_hold_over_new_covered_call(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [{"ticker": "TLT", "sec_type": "STK", "position_size": 700, "market_price": 84}],
+                {"TLT": {"ticker": "TLT", "price": 84, "trend": "NEUTRAL_TO_BEARISH", "support_level": 83, "resistance_level": 88, "indicators": {"rsi_14": 22}}},
+            ),
+            playbook=self.playbook,
+        )
+        recommendation = payload["positions"][0]["management_alternatives"]["recommendation"]
+
+        self.assertEqual(recommendation["alternative_id"], "HOLD_MONITOR")
+        self.assertEqual(recommendation["confidence"], "MEDIUM")
+        self.assertIn("sobrevendido", recommendation["reason"])
 
     def test_durable_position_chain_supplies_underlying_price_after_empty_technical_refresh(self):
         snapshot = self.snapshot(
@@ -272,6 +335,33 @@ class PositionManagementTests(unittest.TestCase):
         self.assertIn("ACCEPT_CALLED_AWAY", call_ids)
         self.assertIn("ROLL_PUT", put_ids)
         self.assertIn("ACCEPT_ASSIGNMENT", put_ids)
+
+    def test_fully_covered_stock_never_recommends_uncovering_share_reduction(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "market_price": 213, "portfolio_weight_pct": 100},
+                    {"ticker": "RSP", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 215, "option_mark": 1.2, "entry_credit": 1.5, "dte": 11},
+                ],
+                {"RSP": {"ticker": "RSP", "price": 213, "trend": "NEUTRAL", "support_level": 210, "resistance_level": 215}},
+            ),
+            playbook=self.playbook,
+        )
+        stock = next(item for item in payload["positions"] if item["sec_type"] == "STK")
+        alternatives = {item["alternative_id"]: item for item in stock["management_alternatives"]["alternatives"]}
+
+        self.assertEqual(stock["management_alternatives"]["recommendation"]["alternative_id"], "HOLD_MONITOR")
+        self.assertEqual(alternatives["REDUCE_25"]["status"], "RISK_BLOCKED_COVERAGE")
+        self.assertEqual(alternatives["EXIT_FULL"]["status"], "RISK_BLOCKED_COVERAGE")
+
+    def test_identical_position_copies_are_deduplicated(self):
+        row = {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "market_price": 213}
+        payload = position_management.build_active_position_management(
+            self.snapshot([row, dict(row)], {"RSP": {"ticker": "RSP", "price": 213, "trend": "NEUTRAL"}}),
+            playbook=self.playbook,
+        )
+
+        self.assertEqual(payload["positions_found"], 1)
 
     def test_position_management_journal_records_manual_review_event(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,14 +493,34 @@ class PositionManagementTests(unittest.TestCase):
         self.assertEqual(technical["gamma"]["gamma_wall"], 675)
         self.assertEqual(technical["gamma"]["call_wall"], 680)
 
+    def test_generic_manual_json_context_feeds_price_and_levels(self):
+        payload = position_management.build_active_position_management(
+            {
+                **self.snapshot(
+                    [{"ticker": "NFLX", "sec_type": "STK", "position_size": 100}],
+                    {},
+                ),
+                "gamma_contexts": {
+                    "contexts": [{"ticker": "NFLX", "spot": 67.4, "support_levels": [62, 65], "resistance_levels": [70, 73], "call_wall": 72}],
+                },
+            },
+            playbook=self.playbook,
+        )
+        technical = payload["positions"][0]["technical"]
+
+        self.assertEqual(technical["price"], 67.4)
+        self.assertEqual(technical["support"], 65)
+        self.assertEqual(technical["resistance"], 70)
+
     def test_gamma_context_store_upserts_manual_gamma(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gamma.json"
-            gamma_context_store.upsert_context({"ticker": "SPY", "call_wall": 700, "put_wall": 650}, path=path)
+            gamma_context_store.upsert_context({"ticker": "SPY", "spot": 675, "support_levels": [650, 660], "resistance_levels": [690, 700], "call_wall": 700, "put_wall": 650}, path=path)
             summary = gamma_context_store.summary(path)
 
         self.assertEqual(summary["context_count"], 1)
         self.assertIn("SPY", summary["tickers"])
+        self.assertEqual(summary["latest_context"]["support_levels"], [650.0, 660.0])
 
     def test_position_state_alerts_detect_management_action_change(self):
         with tempfile.TemporaryDirectory() as tmp:

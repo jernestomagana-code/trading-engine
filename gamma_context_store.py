@@ -30,6 +30,14 @@ def safe_upper(value: Any, default: str = "") -> str:
     return text or default
 
 
+def normalize_levels(value: Any) -> list[float]:
+    if isinstance(value, str):
+        value = value.replace(";", ",").split(",")
+    if not isinstance(value, list):
+        value = [value]
+    return sorted({number for number in (safe_float(raw) for raw in value) if number is not None})
+
+
 def load_contexts(path: str | Path = DEFAULT_GAMMA_CONTEXT_PATH) -> dict[str, Any]:
     path = Path(path)
     try:
@@ -67,13 +75,19 @@ def normalize_context(item: dict[str, Any]) -> dict[str, Any]:
         "ticker": ticker,
         "as_of": item.get("as_of") or item.get("generated_at") or now_iso(),
         "source": str(item.get("source") or "manual_gamma_json").strip(),
+        "spot": safe_float(item.get("spot") or item.get("price") or item.get("underlying_price")),
+        "support_levels": normalize_levels(item.get("support_levels")),
+        "resistance_levels": normalize_levels(item.get("resistance_levels")),
+        "expected_move_low": safe_float(item.get("expected_move_low")),
+        "expected_move_high": safe_float(item.get("expected_move_high")),
+        "gamma_bias": str(item.get("gamma_bias") or item.get("bias") or "").strip().upper(),
         "gamma_wall": safe_float(item.get("gamma_wall")),
         "call_wall": safe_float(item.get("call_wall")),
         "put_wall": safe_float(item.get("put_wall")),
         "zero_gamma": safe_float(item.get("zero_gamma")),
         "net_gamma": safe_float(item.get("net_gamma")),
         "gamma_exposure": safe_float(item.get("gamma_exposure")),
-        "notes": str(item.get("notes") or "").strip(),
+        "notes": str(item.get("notes") or item.get("gamma_notes") or "").strip(),
         "not_order_instruction": True,
         "execution_authorized": False,
     }

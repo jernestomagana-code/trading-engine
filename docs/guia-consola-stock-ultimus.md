@@ -226,7 +226,15 @@ Muestra primero las posiciones que requieren atención. Cada tarjeta enseña ini
 
 Cada posición incluye además **Posibilidades de gestión**. No es una lista genérica de botones: cambia según el instrumento. Las acciones largas comparan mantener, covered call parcial o total, protective put, collar, reducciones parciales y salida; las puts vendidas y covered calls comparan mantener, recomprar, rolar, asignación y defensa; las opciones largas y cualquier riesgo descubierto reciben rutas específicas. Cada posibilidad indica si está **lista para revisión**, si **falta cadena**, **falta precio**, **faltan datos** o conviene **esperar liquidez**.
 
+La tarjeta destaca primero una sola **Recomendación del motor**, que también puede ser **Mantener y monitorear**. Explica por qué la priorizó, su confianza y el contrato preferido cuando aplica. Las demás rutas quedan dentro de **Ver otras posibilidades** para no confundir la acción principal con una lista de opciones equivalentes.
+
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
+
+La misma apertura obtiene velas históricas de cada subyacente abierto aunque ya tenga precio vivo. Con ellas calcula tendencia, SMA 10/20/50, RSI 14, ATR 14 y soportes/resistencias de 20 y 50 sesiones. La prima de una opción nunca se usa como precio del activo. Si falta evidencia suficiente, la recomendación debe ser no hacer cambios hasta actualizar los datos.
+
+El motor tampoco propone reducir acciones si eso dejaría una call descubierta, ni prioriza vender una covered call nueva sobre un activo sobrevendido sin confirmación adicional. En posiciones cubiertas, la pata de acciones remite la gestión a la operación completa.
+
+En **Capacidad y administración operativa → Contexto técnico complementario** puedes seleccionar cualquier activo abierto y pegar el mismo JSON o texto usado para RSP. Spot, soportes, resistencias, expected move y gamma complementan la lectura automática; no sustituyen las velas ni convierten la recomendación en una orden.
 
 - estrategia, tipo de instrumento, cantidad, strike y DTE;
 - captura de prima, PnL y peso en cartera;

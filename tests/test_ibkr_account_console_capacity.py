@@ -312,16 +312,18 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Riesgo inmediato", html)
         self.assertIn("Seguimiento", html)
         self.assertIn("Ver detalles y registrar gestión", html)
-        self.assertIn("Posibilidades de gestión", html)
+        self.assertIn("Recomendación del motor", html)
+        self.assertIn("Ver otras", html)
         self.assertIn("Comprar para cerrar", html)
         self.assertIn("Rolar put en tiempo o strike", html)
 
     def test_console_renders_manual_gamma_panel(self):
         html = account_console.render_gamma_context_panel()
 
-        self.assertIn("Gamma manual", html)
+        self.assertIn("Contexto técnico complementario", html)
         self.assertIn('action="/gamma-context"', html)
         self.assertIn("call_wall", html)
+        self.assertIn("gamma_blob", html)
 
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

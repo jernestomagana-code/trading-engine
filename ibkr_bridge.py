@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import runtime_local_technical
+import local_technical_engine
 import broker_check
 import ibkr_diagnostics
 import position_management
@@ -928,9 +929,9 @@ OPTION_MARKET_DATA_TYPE_SEQUENCE = _env_int_sequence(
 # CONTROL FLAGS
 # ============================================================
 
-ENABLE_MARKET_DATA = True
-ENABLE_PORTFOLIO_COMMANDER = True
-ENABLE_OPTIONS_INTELLIGENCE = True
+ENABLE_MARKET_DATA = _env_bool("IBKR_ENABLE_MARKET_DATA", True)
+ENABLE_PORTFOLIO_COMMANDER = _env_bool("IBKR_ENABLE_PORTFOLIO_COMMANDER", True)
+ENABLE_OPTIONS_INTELLIGENCE = _env_bool("IBKR_ENABLE_OPTIONS_INTELLIGENCE", True)
 
 ENABLE_COVERED_CALLS = True
 ENABLE_NAKED_PUTS = True
@@ -1003,6 +1004,7 @@ LOCAL_TECHNICAL_HISTORICAL_DURATION = _v283_os.environ.get(
 LOCAL_TECHNICAL_MAX_BARS = int(
     _v283_os.environ.get("IBKR_LOCAL_TECHNICAL_MAX_BARS", "120")
 )
+ACTIVE_POSITION_TECHNICAL_PATH = _v283_Path("runtime") / "active_position_technical_latest.json"
 
 # Mandamos opciones aunque estén incompletas, pero la decisión queda bloqueada.
 SEND_OPTIONS_WITHOUT_GREEKS = True
@@ -2613,6 +2615,63 @@ def get_price_snapshot(symbol):
     except Exception as e:
         print(symbol, "PRICE ERROR:", e)
         return None
+
+
+def refresh_active_position_technical_snapshot():
+    """Always collect daily bars for held underlyings, even when live price works."""
+    symbols = sorted(_bridge_held_underlying_symbols())
+    previous = {}
+    try:
+        loaded = _v283_json.loads(ACTIVE_POSITION_TECHNICAL_PATH.read_text())
+        previous = loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        previous = {}
+    previous_by_ticker = previous.get("by_ticker") if isinstance(previous.get("by_ticker"), dict) else {}
+    by_ticker = dict(previous_by_ticker)
+    attempts = []
+    for symbol in symbols:
+        try:
+            with bridge_step_timeout(HISTORICAL_DATA_TIMEOUT_SECONDS + 1, f"active technical {symbol}"):
+                snapshot = get_price_snapshot_historical(symbol, stock_contract(symbol))
+            bars = snapshot.get("historical_bars") if isinstance(snapshot, dict) else []
+            if not isinstance(bars, list) or len(bars) < local_technical_engine.MIN_RECOMMENDED_BARS:
+                attempts.append({"ticker": symbol, "status": "INSUFFICIENT_HISTORICAL_BARS", "bar_count": len(bars or [])})
+                continue
+            evaluated = local_technical_engine.evaluate_symbol(symbol, bars, strategy="CASH_SECURED_PUT", timeframe="1d")
+            evaluated.update({
+                "ticker": symbol,
+                "price": snapshot.get("price"),
+                "underlying_price": snapshot.get("price"),
+                "historical_bar_count": len(bars),
+                "historical_bars": bars,
+                "data_status": "AVAILABLE",
+                "source": "IBKR_HISTORICAL_BARS_ACTIVE_POSITION",
+                "generated_at": now_iso(),
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            })
+            by_ticker[symbol] = evaluated
+            attempts.append({"ticker": symbol, "status": "AVAILABLE", "bar_count": len(bars)})
+        except Exception as exc:
+            attempts.append({"ticker": symbol, "status": "HISTORICAL_DATA_UNAVAILABLE", "error": str(exc)[:140]})
+    payload = {
+        "active_position_technical_version": "active_position_technical_v1",
+        "generated_at": now_iso(),
+        "symbols_requested": symbols,
+        "by_ticker": by_ticker,
+        "attempts": attempts,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    ACTIVE_POSITION_TECHNICAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ACTIVE_POSITION_TECHNICAL_PATH.write_text(_v283_json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+    print(
+        "ACTIVE POSITION TECHNICAL"
+        f" | requested:{len(symbols)}"
+        f" | available:{sum(1 for row in attempts if row.get('status') == 'AVAILABLE')}"
+        f" | preserved:{len(by_ticker)}"
+    )
+    return payload
 
 
 def send_market_data():
@@ -5288,6 +5347,7 @@ def run_bridge_cycle():
     if ENABLE_PORTFOLIO_COMMANDER:
         send_positions()
         write_rsp_positions_snapshot()
+        refresh_active_position_technical_snapshot()
 
     if ENABLE_OPTIONS_INTELLIGENCE:
         send_options_intelligence()

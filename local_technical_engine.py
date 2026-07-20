@@ -145,6 +145,22 @@ def _indicators(bars: list[dict[str, Any]]) -> dict[str, Any]:
             trend = "NEUTRAL"
 
     atr_pct = None if atr_14 is None or not close else (atr_14 / close) * 100
+    recent_20 = bars[-20:]
+    recent_50 = bars[-50:]
+
+    def range_level(rows: list[dict[str, Any]], field: str, fn: Any) -> float | None:
+        values = [_num(row.get(field)) for row in rows]
+        clean_values = [value for value in values if value is not None]
+        return fn(clean_values) if clean_values else None
+
+    support_20 = range_level(recent_20, "low", min)
+    support_50 = range_level(recent_50, "low", min)
+    resistance_20 = range_level(recent_20, "high", max)
+    resistance_50 = range_level(recent_50, "high", max)
+    support_levels = sorted({round(value, 4) for value in [support_20, support_50] if value is not None})
+    resistance_levels = sorted({round(value, 4) for value in [resistance_20, resistance_50] if value is not None})
+    nearest_support = max([value for value in support_levels if close is None or value <= close], default=support_20)
+    nearest_resistance = min([value for value in resistance_levels if close is None or value >= close], default=resistance_20)
     return {
         "close": _round(close),
         "sma_10": _round(sma_10),
@@ -155,6 +171,12 @@ def _indicators(bars: list[dict[str, Any]]) -> dict[str, Any]:
         "atr_14": _round(atr_14),
         "atr_pct": _round(atr_pct, 2),
         "trend": trend,
+        "support": _round(nearest_support),
+        "support_level": _round(nearest_support),
+        "support_levels": support_levels,
+        "resistance": _round(nearest_resistance),
+        "resistance_level": _round(nearest_resistance),
+        "resistance_levels": resistance_levels,
     }
 
 
@@ -372,6 +394,14 @@ def evaluate_symbol(ticker: str, bars: Any, strategy: str = "CASH_SECURED_PUT", 
         "confirmed": selected["confirmed"],
         "blockers": selected.get("blockers", []),
         "indicators": ind,
+        "price": ind.get("close"),
+        "underlying_price": ind.get("close"),
+        "support": ind.get("support"),
+        "support_level": ind.get("support_level"),
+        "support_levels": ind.get("support_levels") or [],
+        "resistance": ind.get("resistance"),
+        "resistance_level": ind.get("resistance_level"),
+        "resistance_levels": ind.get("resistance_levels") or [],
         "strategy_context": selected.get("strategy_context"),
         "available_strategy_contexts": sorted(contexts.keys()),
         "by_strategy_context": contexts,

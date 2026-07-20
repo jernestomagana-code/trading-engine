@@ -78,6 +78,9 @@ The active-position payload now includes:
   put, collar, partial reductions, and full exit. Short puts, covered calls,
   uncovered calls, and long options receive their own close, roll,
   assignment, hedge, and risk-reduction paths.
+- `recommendation`: one prioritized path for the operator, including hold/no
+  change, its confidence, evidence-based reason, and preferred visible
+  contract when applicable. Other paths remain secondary comparisons.
 - `option_alternatives_summary`: coverage of preserved option chains and the
   number of alternatives produced across the portfolio.
 - `position_context_summary`: how many locally saved position contexts were
@@ -92,6 +95,13 @@ The bridge preserves the latest non-empty chain per ticker in
 `runtime/active_position_option_chains_latest.json`. Daily open prioritizes all
 symbols detected in open stock or option positions, in addition to the normal
 watchlist, so a later unrelated scan does not erase their management choices.
+
+The bridge also downloads daily historical bars for every held underlying even
+when a live quote is already available. It stores the result in
+`runtime/active_position_technical_latest.json` and calculates SMA 10/20/50,
+RSI 14, ATR 14, trend, and 20/50-session support/resistance. Option premium is
+never accepted as the underlying price. If directional evidence is incomplete,
+the primary recommendation is to make no change until data is complete.
 
 Local console review events are stored in
 `runtime/active_position_management_journal.json`. These are process/outcome
@@ -115,8 +125,10 @@ priority.
 
 Until a paid gamma provider is connected, use one of these paths:
 
-- Manual JSON from the console: save ticker, gamma wall, call wall, put wall,
-  zero gamma, and notes. This writes `runtime/gamma_contexts.json`.
+- Manual JSON from the console: select any ticker with an open position and
+  paste the same RSP-style payload containing spot, supports, resistances,
+  expected move, call wall, put wall, zero gamma, bias, and notes. This writes
+  `runtime/gamma_contexts.json`.
 - Imported JSON from any future provider: keep the same schema and set `source`.
 - IBKR open-interest approximation: possible later, but it must be labeled as
   OI context, not real dealer gamma.

@@ -16,7 +16,7 @@ import position_context_store
 import strategy_exit_playbook
 
 
-POSITION_MANAGEMENT_VERSION = "active_position_management_v3"
+POSITION_MANAGEMENT_VERSION = "active_position_management_v4"
 DEFAULT_MAX_CONTEXT_AGE_MINUTES = 15
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
@@ -145,7 +145,7 @@ def normalize_position(row: dict[str, Any]) -> dict[str, Any]:
         "position_id": str(row.get("position_id") or _position_key(row)),
         "ticker": ticker,
         "sec_type": sec_type,
-        "right": safe_upper(row.get("right")),
+        "right": safe_upper(row.get("right")) if sec_type in ["OPT", "OPTION"] else "",
         "strike": safe_float(row.get("strike")),
         "expiration": expiration,
         "dte": dte,
@@ -170,23 +170,25 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     def add(value: Any, forced_ticker: Any = None) -> None:
         if not isinstance(value, dict):
             return
+        sec_type = safe_upper(value.get("sec_type") or value.get("security_type") or value.get("asset_class"))
+        right = safe_upper(value.get("right") or value.get("option_type"))
+        if sec_type in {"OPT", "OPTION"} or (right in {"C", "P"} and value.get("strike") not in [None, ""]):
+            return
         ticker = safe_upper(value.get("ticker") or value.get("symbol") or forced_ticker)
-        looks_technical = any(
+        strong_technical = any(
             key in value
             for key in [
                 "trend",
                 "bias",
                 "technical_bias",
-                "score",
-                "technical_score",
-                "price",
-                "underlying_price",
                 "support",
                 "support_level",
+                "support_levels",
                 "support_near",
                 "support_broken",
                 "resistance",
                 "resistance_level",
+                "resistance_levels",
                 "resistance_near",
                 "range_breakout",
                 "event_risk",
@@ -197,9 +199,29 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "put_wall",
             ]
         )
+        price_context = any(value.get(key) not in [None, ""] for key in ["price", "underlying_price"])
+        looks_like_decision_row = bool(value.get("decision") or value.get("final_decision")) and bool(value.get("strategy") or value.get("strategy_hint"))
+        explicit_directional_context = any(key in value for key in ["trend", "bias", "technical_bias", "support", "support_level", "resistance", "resistance_level"])
+        if looks_like_decision_row and not explicit_directional_context:
+            return
+        looks_technical = strong_technical or (price_context and not looks_like_decision_row)
         if ticker and looks_technical:
-            item = dict(value)
+            item = {**dict(out.get(ticker) or {}), **dict(value)}
             item["ticker"] = ticker
+            spot = safe_float(item.get("spot"))
+            if spot is not None:
+                item["price"] = spot
+                item["underlying_price"] = spot
+            support_levels = [safe_float(level) for level in (item.get("support_levels") or [])] if isinstance(item.get("support_levels"), list) else []
+            support_levels = [level for level in support_levels if level is not None]
+            resistance_levels = [safe_float(level) for level in (item.get("resistance_levels") or [])] if isinstance(item.get("resistance_levels"), list) else []
+            resistance_levels = [level for level in resistance_levels if level is not None]
+            if support_levels and item.get("support") is None:
+                item["support"] = max([level for level in support_levels if spot is None or level <= spot], default=max(support_levels))
+                item["support_level"] = item["support"]
+            if resistance_levels and item.get("resistance") is None:
+                item["resistance"] = min([level for level in resistance_levels if spot is None or level >= spot], default=min(resistance_levels))
+                item["resistance_level"] = item["resistance"]
             out[ticker] = item
 
     if isinstance(raw, dict):
@@ -213,6 +235,15 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     runtime_data = snapshot.get("runtime_data") if isinstance(snapshot.get("runtime_data"), dict) else {}
     for item in _walk_dicts(runtime_data):
         add(item)
+
+    active_technical = runtime_data.get("active_position_technical_latest.json")
+    if isinstance(active_technical, dict):
+        active_by_ticker = active_technical.get("by_ticker") if isinstance(active_technical.get("by_ticker"), dict) else {}
+        for ticker, item in active_by_ticker.items():
+            add(item, ticker)
+    rsp_manual_context = runtime_data.get("coberturas_rsp_manual_context.json")
+    if isinstance(rsp_manual_context, dict):
+        add(rsp_manual_context, "RSP")
 
     # The per-position chain store is intentionally durable: a later generic
     # scan may contain empty technical rows, while the last successful chain
@@ -256,6 +287,23 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for key in ["gamma_wall", "call_wall", "put_wall", "zero_gamma", "net_gamma", "gamma_exposure"]:
             if gamma.get(key) is not None:
                 technical[key] = gamma.get(key)
+        support_levels = gamma.get("support_levels") if isinstance(gamma.get("support_levels"), list) else []
+        resistance_levels = gamma.get("resistance_levels") if isinstance(gamma.get("resistance_levels"), list) else []
+        spot = safe_float(gamma.get("spot"))
+        if spot is not None:
+            technical["price"] = spot
+            technical["underlying_price"] = spot
+        if support_levels:
+            technical["support_levels"] = support_levels
+            technical["support"] = max([value for value in support_levels if spot is None or value <= spot], default=max(support_levels))
+            technical["support_level"] = technical["support"]
+        if resistance_levels:
+            technical["resistance_levels"] = resistance_levels
+            technical["resistance"] = min([value for value in resistance_levels if spot is None or value >= spot], default=min(resistance_levels))
+            technical["resistance_level"] = technical["resistance"]
+        for key in ["expected_move_low", "expected_move_high", "gamma_bias"]:
+            if gamma.get(key) not in [None, ""]:
+                technical[key] = gamma.get(key)
         technical["gamma_context"] = {
             "source": gamma.get("source"),
             "as_of": gamma.get("as_of"),
@@ -283,6 +331,31 @@ def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any
             if right == "P" and qty < 0:
                 group["short_puts"] += abs(qty)
     return groups
+
+
+def _dedupe_position_copies(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove identical position copies propagated through multiple snapshots."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in positions:
+        account = safe_upper(row.get("account_alias") or row.get("account_scope") or row.get("account"))
+        strike = safe_float(row.get("strike"))
+        strike = None if strike in [None, 0.0] else strike
+        key = (
+            safe_upper(row.get("ticker")),
+            safe_upper(row.get("sec_type")),
+            safe_upper(row.get("right")),
+            strike,
+            str(row.get("expiration") or ""),
+            str(row.get("local_symbol") or ""),
+            safe_float(row.get("position_size"), 0.0),
+            account,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 
 def _position_contexts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -444,10 +517,12 @@ def _technical_context(row: dict[str, Any], technical_store: dict[str, dict[str,
     technical = dict(technical_store.get(ticker) or {})
     qty = safe_float(row.get("position_size"), 0.0) or 0.0
     market_value = safe_float(row.get("market_value"))
-    implied_stock_price = abs(market_value / qty) if market_value is not None and qty else None
+    is_stock = safe_upper(row.get("sec_type")) in ["STK", "STOCK", "EQUITY"]
+    implied_stock_price = abs(market_value / qty) if is_stock and market_value is not None and qty else None
+    row_underlying = row.get("underlying_price") if is_stock else None
     price = safe_float(
-        row.get("underlying_price")
-        or row.get("market_price")
+        row_underlying
+        or (row.get("market_price") if is_stock else None)
         or technical.get("underlying_price")
         or technical.get("price")
         or implied_stock_price
@@ -482,6 +557,9 @@ def _technical_context(row: dict[str, Any], technical_store: dict[str, dict[str,
         "support_broken": support_broken,
         "resistance_breakout": resistance_breakout,
         "event_risk": bool(technical.get("event_risk") or technical.get("earnings_soon")),
+        "indicators": technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {},
+        "expected_move_low": safe_float(technical.get("expected_move_low")),
+        "expected_move_high": safe_float(technical.get("expected_move_high")),
         "gamma": gamma_fields,
         "gamma_available": bool(gamma_fields),
         "raw_fields_present": sorted([key for key in technical.keys() if key not in {"account", "token", "secret"}])[:60],
@@ -772,14 +850,20 @@ def _management_alternatives(
         call_status = option_status(calls)
         put_status = option_status(puts)
         partial_contracts = max(1, uncovered_share_lots // 2) if uncovered_share_lots else 0
+        reduction_status = price_status if short_calls == 0 else "RISK_BLOCKED_COVERAGE"
+        reduction_reason = (
+            "No reducir acciones sin cerrar o ajustar primero las calls cubiertas; hacerlo rompería la cobertura."
+            if short_calls
+            else "Disminuir parcialmente exposición y concentración conservando la mayor parte de la tesis."
+        )
         alternatives.extend([
             _alternative("COVERED_CALL_PARTIAL", "Covered call parcial", "INCOME", call_status if uncovered_share_lots else "NOT_AVAILABLE_ALREADY_COVERED", "Vender calls sobre parte de los lotes disponibles para generar prima sin limitar toda la posición.", contracts=partial_contracts, candidates=calls, effects=["Genera prima", "Limita upside sólo en lotes cubiertos", "Riesgo de asignación"]),
             _alternative("COVERED_CALL_FULL", "Covered call sobre todos los lotes disponibles", "INCOME", call_status if uncovered_share_lots else "NOT_AVAILABLE_ALREADY_COVERED", "Cubrir con calls todos los lotes que todavía no tienen una call corta.", contracts=uncovered_share_lots, candidates=calls, effects=["Mayor prima", "Limita upside de todos los lotes cubiertos", "Riesgo de salida por asignación"]),
             _alternative("PROTECTIVE_PUT", "Comprar protective put", "DEFENSE", put_status, "Comprar puts para definir protección bajista sin vender las acciones.", contracts=share_lots, candidates=puts, effects=["Define piso de protección", "Tiene costo de prima", "Conserva upside"]),
             _alternative("COLLAR", "Construir collar", "DEFENSE_INCOME", "READY_FOR_MANUAL_REVIEW" if call_status == put_status == "READY_FOR_MANUAL_REVIEW" and uncovered_share_lots else ("WAIT_OPTION_CHAIN" if not calls or not puts else "WAIT_MARKET_DATA"), "Combinar call cubierta y protective put sobre lotes equivalentes.", contracts=uncovered_share_lots, candidates=(calls[:3] + puts[:3]), effects=["Reduce costo de protección", "Limita downside y upside", "Requiere vencimientos y cantidades compatibles"]),
-            _alternative("REDUCE_25", "Reducir 25% de las acciones", "REDUCE", price_status, "Disminuir parcialmente exposición y concentración conservando la mayor parte de la tesis.", effects=["Libera capital", "Reduce riesgo direccional", "Puede generar impacto fiscal"]),
-            _alternative("REDUCE_50", "Reducir 50% de las acciones", "REDUCE", price_status, "Reducir a la mitad la exposición cuando concentración o tesis lo justifiquen.", effects=["Libera más capital", "Reduce volatilidad de cartera", "Puede generar impacto fiscal"]),
-            _alternative("EXIT_FULL", "Cerrar la posición completa", "EXIT", price_status, "Revisar salida total sólo si la tesis quedó invalidada o la exposición ya no es deseada.", effects=["Elimina riesgo direccional", "Realiza P/L", "Puede generar impacto fiscal"]),
+            _alternative("REDUCE_25", "Reducir 25% de las acciones", "REDUCE", reduction_status, reduction_reason, effects=["Libera capital", "Reduce riesgo direccional", "Puede generar impacto fiscal"]),
+            _alternative("REDUCE_50", "Reducir 50% de las acciones", "REDUCE", reduction_status, reduction_reason, effects=["Libera más capital", "Reduce volatilidad de cartera", "Puede generar impacto fiscal"]),
+            _alternative("EXIT_FULL", "Cerrar la posición completa", "EXIT", reduction_status, "Cerrar acciones requiere cerrar o incluir simultáneamente todas las calls cubiertas." if short_calls else "Revisar salida total sólo si la tesis quedó invalidada o la exposición ya no es deseada.", effects=["Elimina riesgo direccional", "Realiza P/L", "Puede generar impacto fiscal"]),
         ])
     elif strategy == "CASH_SECURED_PUT":
         alternatives.extend([
@@ -819,9 +903,86 @@ def _management_alternatives(
         "REVIEW_ASSIGNMENT": "ACCEPT_ASSIGNMENT" if strategy == "CASH_SECURED_PUT" else "ACCEPT_CALLED_AWAY",
         "REVIEW_DEFENSIVE_EXIT": "DEFENSIVE_EXIT" if strategy == "CASH_SECURED_PUT" else "EXIT_FULL",
     }
-    primary_id = primary_map.get(management_action)
+    primary_id = primary_map.get(management_action) or "HOLD_MONITOR"
+    recommendation_reason = "No existe un disparador determinista que justifique cambiar la posición."
+    recommendation_confidence = "MEDIUM" if price is not None else "LOW"
+    trend = safe_upper(technical.get("trend"), "UNKNOWN")
+    directional_ready = trend not in {"", "UNKNOWN"} and price is not None
+    by_id = {item.get("alternative_id"): item for item in alternatives}
+
+    def choose(alternative_id: str, reason: str, confidence: str = "MEDIUM") -> None:
+        nonlocal primary_id, recommendation_reason, recommendation_confidence
+        candidate = by_id.get(alternative_id)
+        if not candidate or candidate.get("status") != "READY_FOR_MANUAL_REVIEW":
+            primary_id = "HOLD_MONITOR"
+            recommendation_reason = "No hacer cambios por ahora: faltan datos o liquidez para respaldar una alternativa superior."
+            recommendation_confidence = "LOW"
+            return
+        primary_id = alternative_id
+        recommendation_reason = reason
+        recommendation_confidence = confidence
+
+    if strategy == "SHORT_CALL_UNCOVERED_REVIEW":
+        choose("BUY_BACK_UNCOVERED_CALL", "Prioridad de riesgo: eliminar la exposición descubierta antes de evaluar otras rutas.", "HIGH")
+    elif management_action == "REVIEW_CLOSE_OR_BUY_BACK":
+        choose("BUY_BACK_CLOSE" if strategy == "CASH_SECURED_PUT" else "BUY_BACK_CALL", "La captura de prima alcanzó el umbral del plan; revisar cierre es la ruta preferida.", "HIGH")
+    elif management_action == "REVIEW_ROLL":
+        choose("ROLL_PUT" if strategy == "CASH_SECURED_PUT" else "ROLL_CALL", "DTE y delta activaron revisión de roll; priorizar sólo un contrato que no aumente el riesgo.", "HIGH")
+    elif management_action == "REFRESH_DATA":
+        choose("HOLD_MONITOR", "No hacer cambios hasta completar los datos económicos de la posición y recalcular la recomendación.", "LOW")
+    elif strategy == "LONG_STOCK":
+        weight = safe_float(row.get("portfolio_weight_pct"))
+        indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
+        rsi_14 = safe_float(indicators.get("rsi_14"))
+        if short_calls and uncovered_share_lots == 0:
+            choose("HOLD_MONITOR", "Las acciones ya respaldan calls cubiertas; mantener la cobertura y gestionar la operación desde la pata de covered call.", "HIGH")
+        elif technical.get("support_broken") or trend in {"BEARISH", "DOWN", "SELL"}:
+            choose("REDUCE_25", "La tendencia bajista o ruptura de soporte favorece reducir riesgo de forma gradual.", "HIGH" if technical.get("support_broken") else "MEDIUM")
+        elif weight is not None and weight >= 35:
+            choose("REDUCE_25", "La concentración supera el límite de revisión; reducir parcialmente domina a añadir exposición.", "HIGH")
+        elif rsi_14 is not None and rsi_14 < 40:
+            choose("HOLD_MONITOR", "El activo está sobrevendido; no conviene limitar un posible rebote con una call nueva sin confirmación adicional.", "MEDIUM")
+        elif trend in {"NEUTRAL_TO_BEARISH", "NEUTRAL"} and uncovered_share_lots:
+            choose("COVERED_CALL_PARTIAL", "El sesgo neutral favorece generar prima sobre una parte de las acciones sin limitar toda la posición.")
+        elif directional_ready:
+            choose("HOLD_MONITOR", "La tesis técnica no muestra daño suficiente; mantener y monitorear es preferible a operar por operar.")
+        else:
+            choose("HOLD_MONITOR", "No hacer cambios hasta completar tendencia y niveles críticos del activo.", "LOW")
+    elif strategy == "CASH_SECURED_PUT" and management_action == "REVIEW_ASSIGNMENT":
+        if trend in {"BEARISH", "DOWN", "SELL", "NEUTRAL_TO_BEARISH"} or technical.get("support_broken"):
+            choose("DEFENSIVE_EXIT", "El subyacente está bajo el strike y el contexto técnico es débil; priorizar defensa sobre aceptar asignación.", "HIGH")
+        elif trend in {"BULLISH", "UP", "BUY", "NEUTRAL_TO_BULLISH"} and not technical.get("support_broken"):
+            choose("ACCEPT_ASSIGNMENT", "El precio está bajo el strike, pero la tesis técnica permanece favorable; aceptar asignación es la ruta preferida si el capital está reservado.")
+        else:
+            choose("HOLD_MONITOR", "No elegir entre cierre y asignación hasta completar tendencia, soporte y precio correcto del subyacente.", "LOW")
+    elif strategy == "COVERED_CALL" and management_action == "REVIEW_ASSIGNMENT":
+        if trend in {"BULLISH", "UP", "BUY", "NEUTRAL_TO_BULLISH"} or technical.get("resistance_breakout"):
+            choose("ROLL_CALL", "El activo mantiene impulso alcista; revisar roll domina a entregar las acciones si existe contrato líquido.")
+        elif directional_ready:
+            choose("ACCEPT_CALLED_AWAY", "Sin impulso alcista suficiente, aceptar la salida al strike respeta la estructura de la covered call.")
+        else:
+            choose("HOLD_MONITOR", "No decidir roll o asignación hasta completar el contexto técnico del subyacente.", "LOW")
+    elif strategy in {"CASH_SECURED_PUT", "COVERED_CALL", "LONG_CALL", "LONG_PUT"} and not directional_ready:
+        choose("HOLD_MONITOR", "No hacer cambios hasta completar la lectura direccional y los niveles críticos.", "LOW")
+
     for alternative in alternatives:
         alternative["is_primary_management_path"] = alternative.get("alternative_id") == primary_id
+    alternatives.sort(key=lambda item: 0 if item.get("is_primary_management_path") else 1)
+    primary = by_id.get(primary_id) or by_id.get("HOLD_MONITOR") or {}
+    recommendation = {
+        "recommendation_version": "position_primary_recommendation_v1",
+        "alternative_id": primary.get("alternative_id"),
+        "label": primary.get("label"),
+        "status": primary.get("status"),
+        "reason": recommendation_reason,
+        "confidence": recommendation_confidence,
+        "contract": ((primary.get("contract_candidates") or [None])[0]),
+        "data_complete": directional_ready,
+        "can_recommend_no_action": True,
+        "manual_review_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
     return {
         "alternatives_version": "position_management_alternatives_v1",
         "strategy": strategy,
@@ -831,6 +992,7 @@ def _management_alternatives(
         "underlying_price_available": price is not None,
         "share_lots": share_lots,
         "uncovered_share_lots": uncovered_share_lots,
+        "recommendation": recommendation,
         "alternatives": alternatives,
         "manual_review_required": True,
         "execution_authorized": False,
@@ -926,7 +1088,8 @@ def _base_position_report(row: dict[str, Any], strategy: str, technical: dict[st
             report["warnings"].append("OPTION_MARK_MISSING")
         if entry_credit is None and (safe_float(row.get("position_size"), 0.0) or 0.0) < 0:
             report["warnings"].append("ENTRY_CREDIT_MISSING")
-    if report["warnings"]:
+    substantive_warnings = [warning for warning in report["warnings"] if warning != "GAMMA_CONTEXT_MISSING"]
+    if substantive_warnings:
         report["confidence"] = "LOW"
     report["management_outcome_template"] = _management_outcome_template(report)
     return report
@@ -1021,7 +1184,8 @@ def evaluate_position(
         report["confidence"] = "LOW"
         report["reasons"].append("Strategy is not registered in the active position playbook; monitor manually.")
 
-    if report["warnings"] and report["management_action"] == "NO_ACTION_RECOMMENDED":
+    refresh_warnings = {"TECHNICAL_CONTEXT_MISSING", "DTE_MISSING", "OPTION_MARK_MISSING", "ENTRY_CREDIT_MISSING"}
+    if any(warning in refresh_warnings for warning in report["warnings"]) and report["management_action"] == "NO_ACTION_RECOMMENDED":
         report["management_action"] = "REFRESH_DATA"
         report["manual_review_required"] = True
     report["management_alternatives"] = _management_alternatives(
@@ -1158,6 +1322,7 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
         raw_positions.append(position_context_store.merge_context_into_position(normalized_row, context))
     positions = [normalize_position(row) for row in raw_positions]
     positions = [row for row in positions if safe_float(row.get("position_size"), 0.0) not in [None, 0.0]]
+    positions = _dedupe_position_copies(positions)
     technical_store = _technical_by_ticker(snapshot)
     option_candidates = _option_candidates_by_ticker(snapshot)
     account_context = snapshot.get("account_context") if isinstance(snapshot.get("account_context"), dict) else broker_check.extract_account_context(snapshot)

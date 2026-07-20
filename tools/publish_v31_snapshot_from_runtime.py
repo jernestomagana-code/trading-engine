@@ -40,6 +40,7 @@ PUBLISH_DATA_FILES = (
     "decision_desk_snapshot.json",
     "v32_ibkr_chain_coverage.json",
     "active_position_option_chains_latest.json",
+    "active_position_technical_latest.json",
     "stock_ultimus_console_bridge_latest.json",
     "market_bridge_session_latest.json",
     "daily_radar_latest.json",

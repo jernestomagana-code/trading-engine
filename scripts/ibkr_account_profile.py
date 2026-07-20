@@ -4622,6 +4622,8 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         "WAIT_UNDERLYING_PRICE": "Falta precio",
         "WAIT_OPTION_MARK": "Falta precio de opción",
         "NOT_AVAILABLE_ALREADY_COVERED": "Lotes ya cubiertos",
+        "RISK_BLOCKED": "Bloqueada por riesgo",
+        "RISK_BLOCKED_COVERAGE": "Rompería la cobertura",
     }
 
     def card(alternative: dict[str, Any]) -> str:
@@ -4653,24 +4655,39 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
             effects=html_escape("Efectos: " + "; ".join(str(value) for value in effects[:3]) if effects else ""),
         )
 
-    visible = alternatives[:3]
-    remaining = alternatives[3:]
-    more = ""
-    if remaining:
-        more = '<details class="position-alternatives-more"><summary>Ver las {} posibilidades restantes</summary>{}</details>'.format(
-            len(remaining),
-            "".join(card(value) for value in remaining if isinstance(value, dict)),
+    recommendation = payload.get("recommendation") if isinstance(payload.get("recommendation"), dict) else {}
+    primary_id = recommendation.get("alternative_id")
+    primary = next((value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") == primary_id), alternatives[0])
+    contract = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
+    contract_line = ""
+    if contract:
+        contract_line = "Contrato preferido visible: {} {} · {} · prima {}.".format(
+            contract.get("right") or "",
+            contract.get("strike") if contract.get("strike") is not None else "N/D",
+            contract.get("expiration") or "N/D",
+            coberturas_money(contract.get("premium_per_contract")),
         )
+    secondary = [value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") != primary_id]
+    more = '<details class="position-alternatives-more"><summary>Ver otras {} posibilidades</summary>{}</details>'.format(
+        len(secondary),
+        "".join(card(value) for value in secondary),
+    ) if secondary else ""
     return """
       <div class="position-alternatives">
-        <div class="position-alternatives-head"><b>Posibilidades de gestión</b><span>{reviewable} de {total} con datos para revisión</span></div>
-        {cards}
+        <div class="position-alternatives-head"><b>Recomendación del motor</b><span>Confianza {confidence}</span></div>
+        <div class="position-recommendation">
+          <div><b>{label}</b><span>{status}</span></div>
+          <p>{reason}</p>
+          <small>{contract}</small>
+        </div>
         {more}
       </div>
     """.format(
-        reviewable=html_escape(payload.get("reviewable_count") or 0),
-        total=html_escape(payload.get("alternative_count") or len(alternatives)),
-        cards="".join(card(value) for value in visible if isinstance(value, dict)),
+        confidence=html_escape(recommendation.get("confidence") or "LOW"),
+        label=html_escape(recommendation.get("label") or primary.get("label") or "Mantener y monitorear"),
+        status=html_escape(status_labels.get(str(recommendation.get("status") or primary.get("status") or ""), friendly_operator_state(recommendation.get("status") or primary.get("status")))),
+        reason=html_escape(recommendation.get("reason") or primary.get("reason") or ""),
+        contract=html_escape(contract_line),
         more=more,
     )
 
@@ -4872,32 +4889,37 @@ def render_active_positions_panel(
     )
 
 
-def render_gamma_context_panel() -> str:
+def render_gamma_context_panel(position_payload: dict[str, Any] | None = None) -> str:
     summary = shared_gamma_context_store.summary(GAMMA_CONTEXTS_PATH)
     latest = summary.get("latest_context") if isinstance(summary.get("latest_context"), dict) else {}
+    positions = position_payload.get("positions") if isinstance(position_payload, dict) and isinstance(position_payload.get("positions"), list) else []
+    tickers = sorted({str(item.get("ticker") or "").upper() for item in positions if isinstance(item, dict) and item.get("ticker")})
+    ticker_options = "".join('<option value="{}">{}</option>'.format(html_escape(ticker), html_escape(ticker)) for ticker in tickers)
     return """
     <section class="panel embedded-support-panel">
       <div class="section-head">
-        <h2>Gamma manual</h2>
-        <p>Usa JSON/manual cuando no hay fuente externa. Esto alimenta gamma_wall, call_wall, put_wall y zero_gamma al motor.</p>
+        <h2>Contexto técnico complementario</h2>
+        <p>Pega el mismo tipo de JSON usado para RSP en cualquier activo abierto. Soportes, resistencias, rango esperado y gamma complementan la lectura automática.</p>
       </div>
       <div class="tiles compact-status">
         <div class="tile">Tickers<span>{tickers}</span></div>
         <div class="tile">Ultimo<span>{latest}</span></div>
       </div>
       <form method="post" action="/gamma-context" class="hero-actions" data-busy="Guardando gamma manual" data-busy-detail="Actualiza runtime/gamma_contexts.json. No ejecuta ordenes.">
-        <input name="ticker" placeholder="Ticker">
+        <select name="ticker" required><option value="">Selecciona posición</option>{ticker_options}</select>
+        <textarea name="gamma_blob" placeholder="Pega aquí el JSON o texto con spot, soportes, resistencias, expected move, call wall, put wall y sesgo gamma."></textarea>
         <input name="gamma_wall" placeholder="Gamma wall">
         <input name="call_wall" placeholder="Call wall">
         <input name="put_wall" placeholder="Put wall">
         <input name="zero_gamma" placeholder="Zero gamma">
         <input name="notes" placeholder="Notas / fuente">
-        <button>Guardar gamma</button>
+        <button>Guardar contexto del activo</button>
       </form>
     </section>
     """.format(
         tickers=html_escape(", ".join(summary.get("tickers") or []) or "sin gamma manual"),
         latest=html_escape((latest.get("ticker") or "N/D") + " " + str(latest.get("as_of") or "")),
+        ticker_options=ticker_options,
     )
 
 
@@ -6393,7 +6415,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     admin_support = render_support_bundle(
         "Capacidad y administracion operativa",
         render_account_capacity_panel(operator_payload, snapshot),
-        render_gamma_context_panel(),
+        render_gamma_context_panel(position_payload),
         render_console_actions(active, snapshot, operator_payload),
     )
 
@@ -6632,6 +6654,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-alternatives-head span {{ margin:0; font-size:.76rem; }}
           .position-alternative {{ border:1px solid var(--line); border-left:4px solid #94a3b8; border-radius:8px; padding:9px 10px; background:#fff; }}
           .position-alternative.alternative-primary {{ border-left-color:#2563eb; background:#f5f9ff; }}
+          .position-recommendation {{ border:1px solid #93c5fd; border-left:6px solid #2563eb; border-radius:8px; padding:12px; background:#eff6ff; }}
+          .position-recommendation > div {{ display:flex; justify-content:space-between; gap:10px; }}
+          .position-recommendation > div span {{ font-size:.72rem; font-weight:900; color:#1d4ed8; }}
+          .position-recommendation p {{ margin:7px 0; line-height:1.4; }}
+          .position-recommendation small {{ color:var(--muted); }}
           .position-alternative > div {{ display:flex; justify-content:space-between; gap:10px; }}
           .position-alternative > div span {{ margin:0; font-size:.72rem; font-weight:850; }}
           .position-alternative p {{ margin:5px 0; color:var(--muted); font-size:.82rem; line-height:1.3; }}
@@ -7666,19 +7693,27 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             elif self.path == "/gamma-context":
                 ticker_label = (params.get("ticker") or [""])[0] or "UNKNOWN"
                 try:
+                    gamma_blob = (params.get("gamma_blob") or [""])[0]
+                    parsed_context = shared_coberturas_engine.parse_gamma_blob(gamma_blob)
                     shared_gamma_context_store.upsert_context(
                         {
                             "ticker": ticker_label,
-                            "gamma_wall": (params.get("gamma_wall") or [""])[0],
-                            "call_wall": (params.get("call_wall") or [""])[0],
-                            "put_wall": (params.get("put_wall") or [""])[0],
-                            "zero_gamma": (params.get("zero_gamma") or [""])[0],
+                            "spot": parsed_context.get("spot"),
+                            "support_levels": parsed_context.get("support_levels") or [],
+                            "resistance_levels": parsed_context.get("resistance_levels") or [],
+                            "expected_move_low": parsed_context.get("expected_move_low"),
+                            "expected_move_high": parsed_context.get("expected_move_high"),
+                            "gamma_bias": parsed_context.get("gamma_bias"),
+                            "gamma_wall": (params.get("gamma_wall") or [""])[0] or parsed_context.get("gamma_wall"),
+                            "call_wall": (params.get("call_wall") or [""])[0] or parsed_context.get("call_wall"),
+                            "put_wall": (params.get("put_wall") or [""])[0] or parsed_context.get("put_wall"),
+                            "zero_gamma": (params.get("zero_gamma") or [""])[0] or parsed_context.get("zero_gamma"),
                             "notes": (params.get("notes") or [""])[0],
-                            "source": "stock_ultimus_console_manual",
+                            "source": "stock_ultimus_console_json_or_manual",
                         },
                         path=GAMMA_CONTEXTS_PATH,
                     )
-                    self.send_html("Gamma manual guardada para {}. Se aplicara en el siguiente calculo.".format(ticker_label))
+                    self.send_html("Contexto complementario guardado para {}. Se aplicara en el siguiente calculo.".format(ticker_label))
                 except Exception as exc:
                     self.send_html("No pude guardar gamma manual: {}".format(str(exc)[:160]), status=400)
             elif self.path == "/operator-event":
