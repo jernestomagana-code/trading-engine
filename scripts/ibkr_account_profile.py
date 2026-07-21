@@ -5268,6 +5268,13 @@ def is_daily_open_result(result: dict[str, Any]) -> bool:
 
 
 def daily_open_recovered_by_newer_state(report: dict[str, Any]) -> bool:
+    """Return whether a timed-out opening was superseded by fresh broker state.
+
+    The opening report already records whether publication succeeded.  Do not
+    consult WEB_LAST_RESULT_PATH here: that file represents the latest console
+    action, so a later monitor/refresh action may legitimately replace the
+    successful publish result and make a completed opening look pending again.
+    """
     report_time = timestamp_sort_value(report.get("generated_at"))
     tower = load_json_file(CONTROL_TOWER_PATH)
     accounts = [item for item in (tower.get("accounts") or []) if isinstance(item, dict)]
@@ -5276,16 +5283,10 @@ def daily_open_recovered_by_newer_state(report: dict[str, Any]) -> bool:
         and all(str(item.get("refresh_status") or "").upper() == "READY" for item in accounts)
         and timestamp_sort_value(tower.get("generated_at")) > report_time
     )
-    web_result = load_json_file(WEB_LAST_RESULT_PATH)
-    remote_recovered = bool(
-        web_result.get("returncode") == 0
-        and web_result.get("remote_verification_ok") is True
-        and timestamp_sort_value(web_result.get("generated_at")) > report_time
-    )
     publish_ok = (report.get("publish_step") or {}).get("ok") is True
     capacity_ok = (report.get("capacity_refresh_step") or {}).get("ok") is True
     rsp_ok = (report.get("rsp_refresh_step") or {}).get("ok") is True
-    return bool(tower_ready and remote_recovered and publish_ok and capacity_ok and rsp_ok)
+    return bool(tower_ready and publish_ok and capacity_ok and rsp_ok)
 
 
 def effective_daily_open_status(report: dict[str, Any]) -> str:

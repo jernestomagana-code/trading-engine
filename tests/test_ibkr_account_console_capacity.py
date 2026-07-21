@@ -93,11 +93,10 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(capacity["available_capacity"], 15731.34)
         self.assertEqual(capacity["capacity_source"], "control_tower_available_funds")
 
-    def test_daily_open_timeout_is_recovered_by_newer_ready_tower_and_publish(self):
+    def test_daily_open_timeout_is_recovered_by_newer_ready_tower_and_report_publish(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
             tower_path = runtime / "broker_control_tower_latest.json"
-            web_result_path = runtime / "ibkr_account_profile_web_last_result.json"
             tower_path.write_text(json.dumps({
                 "generated_at": "2026-07-21T14:22:24+00:00",
                 "accounts": [
@@ -105,11 +104,6 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                     {"refresh_status": "READY"},
                     {"refresh_status": "READY"},
                 ],
-            }))
-            web_result_path.write_text(json.dumps({
-                "returncode": 0,
-                "remote_verification_ok": True,
-                "generated_at": "2026-07-21T14:23:44+00:00",
             }))
             report = {
                 "generated_at": "2026-07-21T14:03:13+00:00",
@@ -120,9 +114,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 "publish_step": {"ok": True},
                 "checks": {"foundation_health": {"status": "FAIL"}},
             }
-            with patch.object(account_console, "CONTROL_TOWER_PATH", tower_path), patch.object(
-                account_console, "WEB_LAST_RESULT_PATH", web_result_path
-            ):
+            with patch.object(account_console, "CONTROL_TOWER_PATH", tower_path):
                 recovered = account_console.daily_open_recovered_by_newer_state(report)
                 effective = account_console.effective_daily_open_status(report)
 
