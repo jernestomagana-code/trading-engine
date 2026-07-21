@@ -8116,6 +8116,9 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
                     prefer_cache=False,
                 )
+                # Refresh every source used by the console, including the
+                # durable futures ledger and daily report, in the same action.
+                console_v31_payloads(prefer_cache=False)
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
                 if result.get("ok"):
                     comparison = selected_vs_published(active_profile(), latest_master_snapshot(), result)
