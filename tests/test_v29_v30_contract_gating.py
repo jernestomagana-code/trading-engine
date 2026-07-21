@@ -1679,6 +1679,29 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["processed_count"], 1)
         self.assertEqual(result["processed"][0]["ticker"], "USTEC.F")
 
+    def test_daily_futures_reader_falls_back_to_durable_signal_ledger(self):
+        signal_event = {
+            "event_id": "TV-chris-durable-1",
+            "accepted_for_engine": True,
+            "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+            "breakout_direction": "SHORT",
+            "received_at": "2026-07-21T15:45:00+00:00",
+            "raw_payload": {"price": 29259.63},
+        }
+        with patch.object(main, "supabase_fetch_table_rows", return_value=[]), patch.object(
+            main, "load_intraday_futures_alert_events_from_file", return_value=[]
+        ), patch.object(main, "_v32_load_tradingview_signal_events", return_value=[signal_event]):
+            events = main.load_intraday_futures_alert_events(limit=100)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_id"], "IFEV-TV-chris-durable-1")
+        self.assertEqual(events[0]["strategy"], "CHRIS_IA_REVERSAL_PRO")
+        self.assertEqual(events[0]["event"], "ENTRY")
+        self.assertEqual(events[0]["session_date"], "2026-07-21")
+
     def test_fresh_intraday_event_becomes_main_console_alert(self):
         event = {
             "event_id": "IFEV-TV-console-1",

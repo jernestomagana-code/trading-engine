@@ -2042,6 +2042,7 @@ def load_intraday_futures_alert_events(limit=5000):
         order_column="received_at",
         limit=limit,
     )
+    events = []
     if rows:
         events = [row_to_intraday_futures_alert_event(row) for row in rows]
         outcome_rows = supabase_fetch_table_rows(
@@ -2049,9 +2050,59 @@ def load_intraday_futures_alert_events(limit=5000):
             order_column="updated_at",
             limit=max(limit, 1000),
         )
-        return attach_intraday_futures_outcomes(events, outcome_rows)[-limit:]
+        events = attach_intraday_futures_outcomes(events, outcome_rows)
+    else:
+        events = load_intraday_futures_alert_events_from_file(limit=limit)
 
-    return load_intraday_futures_alert_events_from_file(limit=limit)
+    # The TradingView signal ledger is the durable receipt of record.  Merge it
+    # on every read so a missing/legacy futures table or a second Render instance
+    # cannot turn confirmed webhook activity into a false zero-event report.
+    signal_loader = globals().get("_v32_load_tradingview_signal_events")
+    event_builder = globals().get("build_intraday_futures_alert_event")
+    if callable(signal_loader) and callable(event_builder):
+        try:
+            for signal_event in signal_loader(limit=max(limit, 1000)):
+                if not isinstance(signal_event, dict) or signal_event.get("accepted_for_engine") is not True:
+                    continue
+                strategy = str(signal_event.get("strategy_context") or "").upper().strip()
+                if strategy not in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}:
+                    continue
+                raw = signal_event.get("raw_payload") if isinstance(signal_event.get("raw_payload"), dict) else {}
+                payload = dict(raw)
+                source_event_id = signal_event.get("event_id") or signal_event.get("id")
+                payload.update({
+                    "source_event_id": source_event_id,
+                    "tradingview_event_id": source_event_id,
+                    "strategy": strategy,
+                    "strategy_context": strategy,
+                    "ticker": signal_event.get("ticker") or payload.get("ticker"),
+                    "timeframe": signal_event.get("timeframe") or payload.get("timeframe"),
+                    "event": signal_event.get("event") or payload.get("event"),
+                    "event_code": signal_event.get("event_code") or payload.get("event_code"),
+                    "price": signal_event.get("price") if signal_event.get("price") is not None else payload.get("price"),
+                    "received_at": signal_event.get("received_at") or payload.get("received_at"),
+                    "direction": signal_event.get("breakout_direction") or payload.get("breakout_direction"),
+                    "source": "TRADINGVIEW_SIGNAL_LEDGER",
+                    "original_source": "TRADINGVIEW",
+                    "engine_layer": "TRADINGVIEW_DURABLE_LEDGER_FALLBACK",
+                    "is_validation": intraday_futures_is_validation_event(signal_event),
+                    "not_order_instruction": True,
+                })
+                events.append(event_builder(payload))
+        except Exception:
+            pass
+
+    merged = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        key = str(event.get("event_id") or "")
+        if key:
+            current = merged.get(key)
+            # Prefer the processed event over its minimal ledger projection.
+            if current is None or event.get("decision") or not current.get("decision"):
+                merged[key] = event
+    return sorted(merged.values(), key=lambda item: str(item.get("received_at") or item.get("saved_at") or ""))[-limit:]
 
 
 def load_intraday_futures_price_points_from_file(limit=20000):
@@ -2411,7 +2462,7 @@ def build_intraday_futures_alert_event(payload):
         "received_at": received_at,
         "saved_at": now_utc().isoformat(),
         "session_date": session_date_from_iso(received_at),
-        "strategy": "INTRADAY_INDEX_FUTURES",
+        "strategy": payload.get("strategy") or payload.get("strategy_context") or "INTRADAY_INDEX_FUTURES",
         "strategy_version": payload.get("strategy_version"),
         "outcome_engine_version": "outcome_engine_v1_phase_1",
         "source": payload.get("source"),
