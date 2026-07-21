@@ -63,6 +63,39 @@ def _ibkr_primary_gap(runtime: Path) -> str:
     return str(payload.get("primary_gap") or "NO_IBKR_OPTION_DIAGNOSTICS")
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _ibkr_connected(runtime: Path, generated_at: str, max_age_seconds: int = 900) -> bool:
+    """Use the fresh multi-account control tower as connection evidence.
+
+    Option-chain coverage and broker connectivity are separate facts.  Missing
+    chain diagnostics must not be presented to the operator as a disconnected
+    or generally unreviewable IBKR session.
+    """
+    tower = read_json(runtime / "broker_control_tower_latest.json", {})
+    accounts = [item for item in (tower.get("accounts") or []) if isinstance(item, dict)] if isinstance(tower, dict) else []
+    tower_time = _parse_timestamp(tower.get("generated_at") if isinstance(tower, dict) else None)
+    check_time = _parse_timestamp(generated_at)
+    fresh = bool(tower_time and check_time and 0 <= (check_time - tower_time).total_seconds() <= max_age_seconds)
+    return bool(
+        fresh
+        and str(tower.get("status") or "").upper() == "READY"
+        and accounts
+        and all(str(item.get("refresh_status") or "").upper() == "READY" for item in accounts)
+    )
+
+
 def _classify_go_no_go(
     foundation: dict[str, Any],
     gate: dict[str, Any],
@@ -115,6 +148,7 @@ def build_go_no_go(
         allow_local_replay_validation=True,
     )
     ibkr_gap = _ibkr_primary_gap(runtime)
+    ibkr_connected = _ibkr_connected(runtime, generated_at)
     status, next_action, reasons = _classify_go_no_go(foundation, gate, tv_bundle, ibkr_gap)
     return {
         "engine": "STOCK_ULTIMUS_OPERATOR_READINESS",
@@ -133,6 +167,7 @@ def build_go_no_go(
         "foundation_status": foundation.get("status"),
         "operational_gate_state": gate.get("state"),
         "ibkr_primary_gap": ibkr_gap,
+        "ibkr_connected": ibkr_connected,
         "tradingview_bundle": {
             "status": tv_bundle.get("status"),
             "coverage_valid": tv_bundle.get("coverage_valid"),
@@ -233,7 +268,14 @@ def build_post_open_monitor(
     if _safe_int(tv.get("total_quarantine_event_count")):
         findings.append({"severity": "ACTION", "code": "TV_QUARANTINE_EVENTS", "detail": "Unknown or malformed TradingView payloads are present."})
     if readiness.get("ibkr_primary_gap") != "COVERAGE_REVIEWABLE":
-        findings.append({"severity": "WATCH", "code": "IBKR_NOT_REVIEWABLE", "detail": readiness.get("ibkr_primary_gap")})
+        if readiness.get("ibkr_connected") is True:
+            findings.append({
+                "severity": "INFO",
+                "code": "IBKR_OPTION_COVERAGE_PENDING",
+                "detail": "IBKR esta conectado; falta completar el diagnostico de cobertura de opciones.",
+            })
+        else:
+            findings.append({"severity": "WATCH", "code": "IBKR_NOT_REVIEWABLE", "detail": readiness.get("ibkr_primary_gap")})
     if not _capability_allowed(readiness, "can_evaluate_outcomes"):
         blockers = _capability_blockers(readiness, "can_evaluate_outcomes")
         findings.append({"severity": "INFO", "code": "PAPER_OUTCOME_LOOP_PENDING", "detail": ", ".join(blockers) or "Outcome sample still accumulating."})
@@ -259,6 +301,7 @@ def build_post_open_monitor(
             "tradingview_total_received_required_event_count": tv.get("total_received_required_event_count"),
             "tradingview_total_required_alert_count": tv.get("total_required_alert_count"),
             "ibkr_primary_gap": readiness.get("ibkr_primary_gap"),
+            "ibkr_connected": readiness.get("ibkr_connected") is True,
             "operational_gate_state": readiness.get("operational_gate_state"),
         },
         "next_required_action": readiness["next_required_action"],

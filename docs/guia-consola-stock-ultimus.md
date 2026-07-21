@@ -419,6 +419,15 @@ Es una zona de uso ocasional. Incluye:
 - **Diagnóstico técnico y salud de módulos:** semáforos internos, timeline y detalle para investigar fallas.
 - **Cuentas y perfiles:** selección y configuración de alias de cuenta.
 
+### Prioridad de las notificaciones
+
+Las notificaciones distinguen entre una incidencia accionable y el avance normal de validación:
+
+- **Prioridad alta:** se reserva para condiciones `ACTION` que requieren revisión del operador.
+- **Prioridad normal:** informa que la validación continúa, por ejemplo mientras llegan eventos reales de TradingView, se completa la cobertura de opciones o se acumulan resultados cerrados.
+
+El mensaje **Validación operativa en progreso** no indica una desconexión ni una orden pendiente. Si la Torre de Control confirma las cuentas, la notificación dirá **IBKR conectado; cobertura de opciones pendiente de completar**. La conectividad del broker y la disponibilidad del diagnóstico de cadenas son estados diferentes.
+
 En perfiles de cuenta:
 
 - **Usar cuenta** selecciona y publica el contexto para GPT.

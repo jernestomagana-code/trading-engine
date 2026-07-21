@@ -155,6 +155,27 @@ class EnvironmentToolsTests(unittest.TestCase):
         self.assertEqual(first, (True, "ENVIRONMENT_WATCH"))
         self.assertEqual(second, (False, "DUPLICATE_SUPPRESSED"))
 
+    def test_environment_watch_is_normal_priority_and_uses_operator_wording(self):
+        monitor = {
+            "alert_level": "WATCH",
+            "status": "FOUNDATION_BLOCKED",
+            "next_required_action": "Resolver Foundation Health antes de usar el motor.",
+            "findings": [
+                {"code": "TV_REAL_E2E_PENDING", "severity": "WATCH"},
+                {"code": "IBKR_OPTION_COVERAGE_PENDING", "severity": "INFO"},
+                {"code": "PAPER_OUTCOME_LOOP_PENDING", "severity": "INFO"},
+            ],
+        }
+
+        report = run_environment_alerts.notification_report(monitor, "ENVIRONMENT_WATCH", True)
+
+        self.assertEqual(report["operator_status"], "VALIDATION_IN_PROGRESS")
+        self.assertEqual(report["classification"]["notification_priority"], "normal")
+        self.assertEqual(report["classification"]["actionable_count"], 0)
+        self.assertEqual(report["classification"]["informational_count"], 1)
+        self.assertIn("IBKR conectado", report["custom_message"])
+        self.assertNotIn("FOUNDATION_BLOCKED", report["custom_message"])
+
     def test_security_audit_redacts_secret_values_and_notifies_only_action(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

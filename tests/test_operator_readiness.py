@@ -156,6 +156,28 @@ class OperatorReadinessTests(unittest.TestCase):
         self.assertTrue(report["tradingview_bundle"]["real_e2e_confirmed"])
         self.assertEqual(monitor["alert_level"], "OK")
 
+    def test_connected_tower_separates_ibkr_connection_from_option_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            runtime.joinpath("broker_control_tower_latest.json").write_text(json.dumps({
+                "generated_at": "2026-07-21T14:39:00+00:00",
+                "status": "READY",
+                "accounts": [
+                    {"refresh_status": "READY"},
+                    {"refresh_status": "READY"},
+                ],
+            }))
+            monitor = operator_readiness.build_post_open_monitor(
+                runtime,
+                generated_at="2026-07-21T14:40:00+00:00",
+                market_closed_ok=True,
+            )
+
+        codes = {item["code"]: item["severity"] for item in monitor["findings"]}
+        self.assertTrue(monitor["summary"]["ibkr_connected"])
+        self.assertEqual(codes["IBKR_OPTION_COVERAGE_PENDING"], "INFO")
+        self.assertNotIn("IBKR_NOT_REVIEWABLE", codes)
+
 
 if __name__ == "__main__":
     unittest.main()

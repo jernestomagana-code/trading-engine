@@ -79,8 +79,21 @@ def should_notify(monitor: dict[str, Any], args: argparse.Namespace, previous_st
     return True, reason
 
 
-def notification_report(monitor: dict[str, Any], notify_reason: str, should_send: bool) -> dict[str, Any]:
+def notification_message(monitor: dict[str, Any]) -> str:
+    level = str(monitor.get("alert_level") or "UNKNOWN").upper()
     findings = monitor.get("findings") if isinstance(monitor.get("findings"), list) else []
+    codes = {str(item.get("code") or "") for item in findings if isinstance(item, dict)}
+    if level != "ACTION" and codes.intersection({
+        "TV_REAL_E2E_PENDING",
+        "IBKR_OPTION_COVERAGE_PENDING",
+        "PAPER_OUTCOME_LOOP_PENDING",
+    }):
+        message = "Validación operativa en progreso: esperando eventos reales de TradingView y acumulando una muestra de resultados."
+        if "IBKR_OPTION_COVERAGE_PENDING" in codes:
+            message += " IBKR conectado; cobertura de opciones pendiente de completar."
+        elif "IBKR_NOT_REVIEWABLE" in codes:
+            message += " IBKR requiere completar la revisión de opciones."
+        return message
     message = "{level} {status}: {next_action}".format(
         level=monitor.get("alert_level"),
         status=monitor.get("status"),
@@ -88,19 +101,30 @@ def notification_report(monitor: dict[str, Any], notify_reason: str, should_send
     )
     if findings:
         message += " | " + "; ".join(str(item.get("code")) for item in findings[:4] if isinstance(item, dict))
+    return message
+
+
+def notification_report(monitor: dict[str, Any], notify_reason: str, should_send: bool) -> dict[str, Any]:
+    findings = monitor.get("findings") if isinstance(monitor.get("findings"), list) else []
+    level = str(monitor.get("alert_level") or "UNKNOWN").upper()
+    is_action = bool(should_send and level == "ACTION")
+    display_status = "VALIDATION_IN_PROGRESS" if level == "WATCH" else monitor.get("status")
+    message = notification_message(monitor)
     return {
         "engine": "STOCK_ULTIMUS_ENVIRONMENT_ALERTS",
         "notify_version": "environment_alerts_v1",
         "checked_at": monitor.get("generated_at"),
-        "status": monitor.get("status"),
-        "operator_status": monitor.get("status"),
+        "status": display_status,
+        "operator_status": display_status,
         "operator_readiness": monitor.get("alert_level"),
         "custom_message": message[:220],
         "classification": {
             "should_notify": should_send,
             "notify_reason": notify_reason,
-            "actionable_count": 1 if should_send else 0,
+            "actionable_count": 1 if is_action else 0,
+            "informational_count": 1 if should_send and not is_action else 0,
             "active_alert_count": len(findings),
+            "notification_priority": "high" if is_action else "normal",
             "actionable_alerts": [
                 {
                     "ticker": "ENV",
@@ -112,7 +136,7 @@ def notification_report(monitor: dict[str, Any], notify_reason: str, should_send
                     "execution_authorized": False,
                     "not_order_instruction": True,
                 }
-            ] if should_send else [],
+            ] if is_action else [],
         },
         "execution_authorized": False,
         "not_order_instruction": True,

@@ -295,12 +295,17 @@ def send_pushover_notification(report: dict[str, Any], user_key: str, api_token:
         return {"sent": False, "provider": "pushover", "reason": "PUSHOVER_CONFIG_MISSING", "missing": missing}
 
     title, body = notification_text(report)
+    classification = report.get("classification") or {}
+    configured_priority = str(classification.get("notification_priority") or "").lower()
+    priority = "1" if configured_priority == "high" else "0" if configured_priority == "normal" else (
+        "1" if classification.get("actionable_count") else "0"
+    )
     payload = urllib.parse.urlencode({
         "token": api_token,
         "user": user_key,
         "title": title,
         "message": body,
-        "priority": "1" if (report.get("classification") or {}).get("actionable_count") else "0",
+        "priority": priority,
     }).encode("utf-8")
     request = urllib.request.Request(
         "https://api.pushover.net/1/messages.json",
