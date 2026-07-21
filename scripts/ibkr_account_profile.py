@@ -3716,6 +3716,21 @@ def console_float_or_none(value: Any) -> float | None:
         return None
 
 
+def active_control_tower_account(active: dict[str, Any] | None = None) -> dict[str, Any]:
+    active = active if isinstance(active, dict) else active_profile()
+    wanted_alias = str(active.get("account_alias") or "").strip()
+    wanted_scope = str(active.get("account_scope") or "").strip()
+    tower = load_json_file(CONTROL_TOWER_PATH)
+    for account in tower.get("accounts") or []:
+        if not isinstance(account, dict):
+            continue
+        alias = str(account.get("account_alias") or "").strip()
+        scope = str(account.get("account_scope") or "").strip()
+        if (wanted_alias and alias == wanted_alias) or (wanted_scope and scope == wanted_scope):
+            return account
+    return {}
+
+
 def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     capacity = data.get("account_capacity") if isinstance(data.get("account_capacity"), dict) else {}
@@ -3737,6 +3752,27 @@ def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[st
             else:
                 capacity = {**local_capacity, **capacity}
                 context = {**local_capacity, **context}
+    tower_account = active_control_tower_account(active_profile())
+    tower_capacity = tower_account.get("capacity") if isinstance(tower_account.get("capacity"), dict) else {}
+    tower_ready = str(tower_account.get("refresh_status") or "").upper() == "READY"
+    if tower_ready and tower_capacity:
+        tower_generated_at = tower_account.get("generated_at")
+        current_time = max(
+            timestamp_sort_value(capacity.get("generated_at")),
+            timestamp_sort_value(context.get("generated_at")),
+        )
+        if timestamp_sort_value(tower_generated_at) >= current_time:
+            tower_overlay = {
+                **tower_capacity,
+                "available": True,
+                "available_capacity": tower_capacity.get("available_capacity", tower_capacity.get("available_funds")),
+                "capacity_source": "control_tower_available_funds",
+                "account_alias": tower_account.get("account_alias"),
+                "account_scope": tower_account.get("account_scope"),
+                "generated_at": tower_generated_at,
+            }
+            capacity = {**capacity, **tower_overlay}
+            context = {**context, **tower_overlay}
     available_funds = console_float_or_none(capacity.get("available_funds", context.get("available_funds")))
     excess_liquidity = console_float_or_none(capacity.get("excess_liquidity", context.get("excess_liquidity")))
     buying_power = console_float_or_none(capacity.get("buying_power", context.get("buying_power")))
@@ -3804,17 +3840,36 @@ def latest_ibkr_connection_status(active: dict[str, Any]) -> dict[str, Any]:
         or str(health.get("status") or "").upper() == "CONNECTED"
         or latest_run.get("ok")
     )
+    tower_account = active_control_tower_account(active)
+    tower_ready = str(tower_account.get("refresh_status") or "").upper() == "READY"
+    if tower_ready:
+        connected = True
+        account_matches = True
+    web_result = load_json_file(WEB_LAST_RESULT_PATH)
+    web_alias = str(web_result.get("alias") or "").strip()
+    web_scope = str(web_result.get("account_scope") or "").strip()
+    web_matches = bool(
+        (active_alias and web_alias == active_alias)
+        or (active_scope and web_scope == active_scope)
+    )
+    web_published = bool(
+        web_matches
+        and web_result.get("returncode") == 0
+        and web_result.get("remote_verification_ok") is True
+    )
     published = bool(
         latest_run.get("published")
         or any(bool(run.get("published")) for run in runs if isinstance(run, dict))
+        or web_published
     )
     return {
         "available": bool(connected and account_matches),
         "connected": connected,
         "account_matches": account_matches,
-        "status": health.get("status") or latest_run.get("status") or "",
-        "generated_at": health.get("generated_at") or latest_run.get("finished_at") or session.get("finished_at") or "",
+        "status": "CONNECTED_CONTROL_TOWER" if tower_ready else health.get("status") or latest_run.get("status") or "",
+        "generated_at": tower_account.get("generated_at") if tower_ready else health.get("generated_at") or latest_run.get("finished_at") or session.get("finished_at") or "",
         "published": published,
+        "source": "BROKER_CONTROL_TOWER" if tower_ready else "IBKR_BRIDGE_HEALTH",
     }
 
 
@@ -5212,6 +5267,27 @@ def is_daily_open_result(result: dict[str, Any]) -> bool:
     return "daily_open_checklist.py" in str(result.get("command") or "")
 
 
+def daily_open_recovered_by_newer_state(report: dict[str, Any]) -> bool:
+    report_time = timestamp_sort_value(report.get("generated_at"))
+    tower = load_json_file(CONTROL_TOWER_PATH)
+    accounts = [item for item in (tower.get("accounts") or []) if isinstance(item, dict)]
+    tower_ready = bool(
+        accounts
+        and all(str(item.get("refresh_status") or "").upper() == "READY" for item in accounts)
+        and timestamp_sort_value(tower.get("generated_at")) > report_time
+    )
+    web_result = load_json_file(WEB_LAST_RESULT_PATH)
+    remote_recovered = bool(
+        web_result.get("returncode") == 0
+        and web_result.get("remote_verification_ok") is True
+        and timestamp_sort_value(web_result.get("generated_at")) > report_time
+    )
+    publish_ok = (report.get("publish_step") or {}).get("ok") is True
+    capacity_ok = (report.get("capacity_refresh_step") or {}).get("ok") is True
+    rsp_ok = (report.get("rsp_refresh_step") or {}).get("ok") is True
+    return bool(tower_ready and remote_recovered and publish_ok and capacity_ok and rsp_ok)
+
+
 def effective_daily_open_status(report: dict[str, Any]) -> str:
     status = str(report.get("status") or "UNKNOWN")
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
@@ -5223,6 +5299,8 @@ def effective_daily_open_status(report: dict[str, Any]) -> str:
     production_ok = (checks.get("production_auth") or {}).get("ok") is True and (checks.get("v32_operator_today") or {}).get("ok") is True
     if status == "ACTION_REQUIRED" and mechanics_ok and production_ok and foundation.get("status") == "FAIL":
         return "EVIDENCE_COLLECTION_ONLY"
+    if status == "ACTION_REQUIRED" and daily_open_recovered_by_newer_state(report):
+        return "EVIDENCE_COLLECTION_ONLY" if foundation.get("status") == "FAIL" else "READY"
     return status
 
 
@@ -5277,12 +5355,16 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
         publish_detail = "Render recibio solicitud, pero no confirmo respuesta antes del timeout."
     gpt_status = result.get("remote_verification_status") or ("OK" if operator_today.get("ok") else "NO CONFIRMADO")
     overall = effective_daily_open_status(report)
+    recovered_after_timeout = daily_open_recovered_by_newer_state(report)
+    if recovered_after_timeout and refresh.get("ok") is False:
+        ibkr_status = "OK"
+        ibkr_detail = "Control Tower confirmó todas las cuentas después del timeout inicial."
     overall_label = "ACUMULANDO EVIDENCIA" if overall == "EVIDENCE_COLLECTION_ONLY" else overall
     next_action = report.get("next_required_action") or "Sin siguiente accion reportada."
     if overall == "EVIDENCE_COLLECTION_ONLY":
         next_action = "Apertura tecnica completa. Continuar acumulando evidencia; no cambiar parametros ni forzar ENTRY_READY."
     level = "green" if overall in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"} and refresh.get("ok") else "amber"
-    if overall == "ACTION_REQUIRED" or refresh.get("ok") is False or publish.get("ok") is False:
+    if overall == "ACTION_REQUIRED" or (refresh.get("ok") is False and not recovered_after_timeout) or publish.get("ok") is False:
         level = "red"
     rsp_status = status_word(rsp_refresh.get("ok"), good="ACTUALIZADO")
     if rsp_refresh.get("skipped"):

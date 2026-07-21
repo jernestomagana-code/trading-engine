@@ -25,6 +25,110 @@ runtime_publisher = load_module("publish_v31_snapshot_for_test", ROOT / "tools" 
 
 
 class IbkrAccountConsoleCapacityTests(unittest.TestCase):
+    def test_control_tower_fresh_account_overrides_stale_single_account_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            active_path = runtime / "ibkr_account_active_profile.json"
+            tower_path = runtime / "broker_control_tower_latest.json"
+            health_path = runtime / "ibkr_bridge_health_latest.json"
+            session_path = runtime / "stock_ultimus_console_bridge_latest.json"
+            web_result_path = runtime / "ibkr_account_profile_web_last_result.json"
+            capacity_path = runtime / "ibkr_account_capacity_latest.json"
+            active_path.write_text(json.dumps({"account_alias": "remanente", "account_scope": "remanente"}))
+            tower_path.write_text(json.dumps({
+                "generated_at": "2026-07-21T14:22:24+00:00",
+                "accounts": [{
+                    "account_alias": "remanente",
+                    "account_scope": "remanente",
+                    "refresh_status": "READY",
+                    "generated_at": "2026-07-21T14:22:07+00:00",
+                    "capacity": {"available_funds": 15731.34, "buying_power": 63591.84},
+                }],
+            }))
+            health_path.write_text(json.dumps({
+                "status": "CONNECTED",
+                "connected": True,
+                "account_alias": "retiro",
+                "account_scope": "retiro",
+                "generated_at": "2026-07-21T14:07:16+00:00",
+            }))
+            session_path.write_text(json.dumps({"runs": []}))
+            web_result_path.write_text(json.dumps({
+                "alias": "remanente",
+                "account_scope": "remanente",
+                "returncode": 0,
+                "remote_verification_ok": True,
+                "generated_at": "2026-07-21T14:23:44+00:00",
+            }))
+            capacity_path.write_text(json.dumps({
+                "available": True,
+                "account_alias": "remanente",
+                "account_scope": "remanente",
+                "available_capacity": 15.76,
+                "generated_at": "2026-07-20T16:00:42+00:00",
+            }))
+            patches = [
+                patch.object(account_console, "RUNTIME", runtime),
+                patch.object(account_console, "ACTIVE_PATH", active_path),
+                patch.object(account_console, "CONTROL_TOWER_PATH", tower_path),
+                patch.object(account_console, "IBKR_BRIDGE_HEALTH_PATH", health_path),
+                patch.object(account_console, "CONSOLE_BRIDGE_SESSION_PATH", session_path),
+                patch.object(account_console, "WEB_LAST_RESULT_PATH", web_result_path),
+                patch.object(account_console, "ACCOUNT_CAPACITY_PATH", capacity_path),
+            ]
+            for item in patches:
+                item.start()
+            try:
+                active = account_console.active_profile()
+                connection = account_console.latest_ibkr_connection_status(active)
+                capacity = account_console.console_account_capacity({"data": {}}, {"available": True})
+            finally:
+                for item in reversed(patches):
+                    item.stop()
+
+        self.assertTrue(connection["available"])
+        self.assertEqual(connection["status"], "CONNECTED_CONTROL_TOWER")
+        self.assertEqual(connection["source"], "BROKER_CONTROL_TOWER")
+        self.assertTrue(connection["published"])
+        self.assertEqual(capacity["available_capacity"], 15731.34)
+        self.assertEqual(capacity["capacity_source"], "control_tower_available_funds")
+
+    def test_daily_open_timeout_is_recovered_by_newer_ready_tower_and_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            tower_path = runtime / "broker_control_tower_latest.json"
+            web_result_path = runtime / "ibkr_account_profile_web_last_result.json"
+            tower_path.write_text(json.dumps({
+                "generated_at": "2026-07-21T14:22:24+00:00",
+                "accounts": [
+                    {"refresh_status": "READY"},
+                    {"refresh_status": "READY"},
+                    {"refresh_status": "READY"},
+                ],
+            }))
+            web_result_path.write_text(json.dumps({
+                "returncode": 0,
+                "remote_verification_ok": True,
+                "generated_at": "2026-07-21T14:23:44+00:00",
+            }))
+            report = {
+                "generated_at": "2026-07-21T14:03:13+00:00",
+                "status": "ACTION_REQUIRED",
+                "refresh_step": {"ok": False, "error": "TIMEOUT_AFTER_240_SECONDS"},
+                "capacity_refresh_step": {"ok": True},
+                "rsp_refresh_step": {"ok": True},
+                "publish_step": {"ok": True},
+                "checks": {"foundation_health": {"status": "FAIL"}},
+            }
+            with patch.object(account_console, "CONTROL_TOWER_PATH", tower_path), patch.object(
+                account_console, "WEB_LAST_RESULT_PATH", web_result_path
+            ):
+                recovered = account_console.daily_open_recovered_by_newer_state(report)
+                effective = account_console.effective_daily_open_status(report)
+
+        self.assertTrue(recovered)
+        self.assertEqual(effective, "EVIDENCE_COLLECTION_ONLY")
+
     def test_publisher_merges_sanitized_capacity_without_account_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime_dir = Path(tmp)
