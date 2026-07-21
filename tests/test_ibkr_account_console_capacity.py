@@ -953,6 +953,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             "signal_events": {"ok": True, "data": {"events": [
                 {
                     "event_id": "TV-CHRIS-ENTRY",
+                    "accepted_for_engine": True,
                     "ticker": "USTEC.F",
                     "strategy_context": "CHRIS_IA_REVERSAL_PRO",
                     "event": "ENTRY",
@@ -963,6 +964,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 },
                 {
                     "event_id": "TV-NATIVE-SNAPSHOT",
+                    "accepted_for_engine": True,
                     "ticker": "MNQ1!",
                     "strategy_context": "INTRADAY_INDEX_FUTURES",
                     "event": "SESSION_SNAPSHOT",
@@ -977,6 +979,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         alerts = merged["data"]["active_alerts"]
 
         self.assertEqual(intraday["daily_summary"]["received"], 2)
+        self.assertEqual(intraday["daily_summary"]["accepted"], 2)
         self.assertEqual(intraday["daily_summary"]["entry"], 1)
         self.assertEqual(intraday["daily_summary"]["snapshot"], 1)
         self.assertTrue(intraday["daily_summary"]["pipeline_mismatch"])

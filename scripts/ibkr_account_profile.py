@@ -1734,7 +1734,7 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
     events = ledger.get("events") if isinstance(ledger.get("events"), list) else []
     now = datetime.now(timezone.utc)
     session_date = now.astimezone(FUTURES_MARKET_TZ).date().isoformat()
-    today_events = []
+    today_received_events = []
     for event in events:
         if not isinstance(event, dict) or not is_remote_futures_signal(event):
             continue
@@ -1744,7 +1744,10 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         if received_at.tzinfo is None:
             received_at = received_at.replace(tzinfo=timezone.utc)
         if received_at.astimezone(FUTURES_MARKET_TZ).date().isoformat() == session_date:
-            today_events.append(event)
+            today_received_events.append(event)
+
+    today_events = [event for event in today_received_events if event.get("accepted_for_engine") is not False]
+    quarantined_count = len(today_received_events) - len(today_events)
 
     counts = {"ENTRY": 0, "RISK": 0, "WATCH": 0, "SNAPSHOT": 0, "OTHER": 0}
     native_count = 0
@@ -1804,7 +1807,9 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
     latest_at = max((remote_signal_received_at(event) for event in today_events if remote_signal_received_at(event)), default=None)
     summary = {
         "session_date": session_date,
-        "received": len(today_events),
+        "received": len(today_received_events),
+        "accepted": len(today_events),
+        "quarantined": quarantined_count,
         "entry": counts["ENTRY"],
         "risk": counts["RISK"],
         "watch": counts["WATCH"],
@@ -4650,7 +4655,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
         <div class="tiles">
           <div class="tile">Sin señal vigente<span>No hay una ENTRY/RISK de futuros todavía activa.</span></div>
           <div class="tile">Entradas hoy: {entries}<span>WATCH: {watch} · snapshots: {snapshots}</span></div>
-          <div class="tile">Recibidos hoy: {today}<span>Motor procesó: {processed} · Chris IA: {chris}</span></div>
+          <div class="tile">Aceptados hoy: {accepted}<span>Recibidos: {today} · cuarentena: {quarantined}</span></div>
+          <div class="tile">Motor diario: {processed}<span>Chris IA: {chris} · entradas: {entries}</span></div>
           <div class="tile">TradingView<span>{received}/{required} eventos aceptados/intentos.</span></div>
           <div class="tile">Estado<span>{status}</span></div>
         </div>
@@ -4661,6 +4667,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
             watch=html_escape(daily.get("watch", 0)),
             snapshots=html_escape(daily.get("snapshot", 0)),
             today=html_escape(daily.get("received", 0)),
+            accepted=html_escape(daily.get("accepted", daily.get("received", 0))),
+            quarantined=html_escape(daily.get("quarantined", 0)),
             processed=html_escape(daily.get("processed_total", 0)),
             chris=html_escape(daily.get("chris_ia", 0)),
             status=html_escape(intraday.get("status") or tradingview.get("status") or "sin reporte"),

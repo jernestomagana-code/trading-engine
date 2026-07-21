@@ -173,7 +173,7 @@ Que una alerta aparezca como operable significa **“revisar ahora”**, no “e
 
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
 
-El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor procesó** confirma que fueron incorporados a la evaluación diaria. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
+El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **Aceptados hoy** excluye lo enviado a cuarentena; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor diario** confirma que fueron incorporados a la evaluación. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
 
 ### Severidades
 
