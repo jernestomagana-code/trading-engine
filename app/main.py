@@ -23815,6 +23815,11 @@ def _v32_operator_intraday_alerts(operator_events=None, max_age_hours=18):
         load_intraday_futures_alert_events(limit=1000),
         include_validation=False,
     ):
+        if not (
+            intraday_futures_is_entry_event(event.get("event_code"), event.get("event"))
+            or intraday_futures_is_risk_invalidation_event(event.get("event_code"), event.get("event"))
+        ):
+            continue
         received_at = parse_iso_datetime(event.get("received_at") or event.get("saved_at"))
         if received_at is None:
             continue
@@ -23823,6 +23828,9 @@ def _v32_operator_intraday_alerts(operator_events=None, max_age_hours=18):
             continue
         alert = _v32_operator_alert_from_intraday_event(event, operator_events=operator_events)
         if not alert.get("alert_id"):
+            continue
+        lifecycle = alert.get("alert_lifecycle") if isinstance(alert.get("alert_lifecycle"), dict) else {}
+        if _v29_safe_upper(lifecycle.get("lifecycle_state"), "") == "EXPIRED":
             continue
         if _v29_safe_upper(alert.get("operator_status"), "NEW") in _V32_OPERATOR_CLOSED_STATUSES:
             continue

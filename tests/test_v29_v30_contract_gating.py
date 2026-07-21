@@ -1733,6 +1733,31 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(alerts[0]["severity"], "ACTION")
         self.assertEqual(alerts[0]["state"], "ENTRY_READY")
 
+    def test_intraday_console_excludes_watch_and_expired_entry_events(self):
+        watch = {
+            "event_id": "IFEV-TV-watch-1",
+            "received_at": main.now_utc().isoformat(),
+            "strategy": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "event": "WATCH",
+            "event_code": "CHRIS_IA_USTECF_SHORT_WATCH_15",
+            "is_validation": False,
+        }
+        expired_entry = {
+            "event_id": "IFEV-TV-expired-1",
+            "received_at": (main.now_utc() - timedelta(hours=3)).isoformat(),
+            "strategy": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+            "final_state": "MANUAL_REVIEW",
+            "is_validation": False,
+        }
+        with patch.object(main, "load_intraday_futures_alert_events", return_value=[watch, expired_entry]):
+            alerts = main._v32_operator_intraday_alerts(operator_events=[])
+
+        self.assertEqual(alerts, [])
+
     def test_v32_operator_daily_cycle_guides_notifications_and_backtesting(self):
         with patch.object(main, "_v32_operator_today_payload", return_value={
             "engine": "V32_OPERATOR_ASSISTANT",
