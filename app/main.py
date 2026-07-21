@@ -2295,7 +2295,7 @@ def is_intraday_futures_signal(payload):
         or payload.get("strategy_context")
         or ""
     ).upper().strip()
-    return strategy == "INTRADAY_INDEX_FUTURES"
+    return strategy in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}
 
 
 def build_intraday_futures_price_point(payload):
@@ -2850,15 +2850,13 @@ def build_intraday_futures_daily_report(session_date=None, include_validation=Fa
     )
     summary = summarize_intraday_futures_alert_events(events)
 
-    actionable_codes = {101, 102, 201, 202}
-    risk_codes = {701, 801, 802, 901, 990}
     actionable_events = [
         event for event in events
-        if event.get("event_code") in actionable_codes
+        if intraday_futures_is_entry_event(event.get("event_code"), event.get("event"))
     ]
     risk_events = [
         event for event in events
-        if event.get("event_code") in risk_codes
+        if intraday_futures_is_risk_invalidation_event(event.get("event_code"), event.get("event"))
     ]
 
     mfe_values = []
@@ -9540,9 +9538,10 @@ def intraday_futures_is_entry_event(event_code, event=None):
         "ORB_BREAKOUT_SHORT",
         "VWAP_RECLAIM_LONG",
         "VWAP_REJECT_SHORT",
+        "CHRIS_IA_",
     ]):
-        return True
-    return name in {"BREAK_BOUNCE_LONG", "BREAK_BOUNCE_SHORT", "ORB_BREAKOUT", "VWAP_RECLAIM", "VWAP_REJECT"}
+        return "_ENTRY_" in code or not code.startswith("CHRIS_IA_")
+    return name in {"ENTRY", "BREAK_BOUNCE_LONG", "BREAK_BOUNCE_SHORT", "ORB_BREAKOUT", "VWAP_RECLAIM", "VWAP_REJECT"}
 
 
 def intraday_futures_is_setup_wait_event(event_code, event=None):
@@ -10419,7 +10418,10 @@ def build_intraday_futures_construction(payload):
 def enrich_stock_ultimus_technical_payload(payload):
     payload = map_stock_ultimus_event_code(normalize_technical_snapshot_payload(payload))
     if str(payload.get("strategy_context") or "").upper().strip() == "CHRIS_IA_REVERSAL_PRO":
-        return payload
+        payload.setdefault("strategy", "CHRIS_IA_REVERSAL_PRO")
+        payload.setdefault("direction", payload.get("breakout_direction") or "NONE")
+        payload.setdefault("entry_price", payload.get("price"))
+        payload.setdefault("not_order_instruction", True)
     constructed = build_intraday_futures_construction(payload)
     return constructed if constructed is not None else payload
 
@@ -10885,7 +10887,7 @@ def _v32_reconcile_intraday_futures_signal_events(limit=1000, notify=False):
         if signal_event.get("accepted_for_engine") is not True:
             skipped.append({"event_id": source_event_id, "reason": "NOT_ACCEPTED_FOR_ENGINE"})
             continue
-        if _v29_safe_upper(signal_event.get("strategy_context"), "") != "INTRADAY_INDEX_FUTURES":
+        if _v29_safe_upper(signal_event.get("strategy_context"), "") not in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}:
             skipped.append({"event_id": source_event_id, "reason": "NOT_INTRADAY_INDEX_FUTURES"})
             continue
         if source_event_id in existing_source_ids or expected_event_id in existing_event_ids:

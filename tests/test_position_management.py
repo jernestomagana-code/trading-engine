@@ -624,6 +624,28 @@ class PositionManagementTests(unittest.TestCase):
         self.assertEqual(technical["support"], 65)
         self.assertEqual(technical["resistance"], 70)
 
+    def test_open_futures_position_requires_explicit_risk_review(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [{
+                    "ticker": "MNQ",
+                    "sec_type": "FUT",
+                    "expiration": "20260918",
+                    "position_size": -1,
+                    "market_value": -58666,
+                }],
+                {"MNQ": {"ticker": "MNQ", "trend": "NEUTRAL", "price": 29300}},
+            ),
+            playbook=self.playbook,
+        )
+
+        position = payload["positions"][0]
+        self.assertEqual(position["strategy"], "FUTURES_POSITION")
+        self.assertEqual(position["management_action"], "REVIEW_RISK")
+        self.assertIn("FUTURES_RISK_PLAN_REVIEW_REQUIRED", position["blockers"])
+        self.assertTrue(position["manual_review_required"])
+        self.assertFalse(position["execution_authorized"])
+
     def test_gamma_context_store_upserts_manual_gamma(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gamma.json"

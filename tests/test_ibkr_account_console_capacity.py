@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,7 +113,10 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 "capacity_refresh_step": {"ok": True},
                 "rsp_refresh_step": {"ok": True},
                 "publish_step": {"ok": True},
-                "checks": {"foundation_health": {"status": "FAIL"}},
+                "checks": {
+                    "foundation_health": {"status": "FAIL"},
+                    "intraday_futures_reconciliation": {"ok": True},
+                },
             }
             with patch.object(account_console, "CONTROL_TOWER_PATH", tower_path):
                 recovered = account_console.daily_open_recovered_by_newer_state(report)
@@ -120,6 +124,23 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
 
         self.assertTrue(recovered)
         self.assertEqual(effective, "EVIDENCE_COLLECTION_ONLY")
+
+    def test_daily_open_timeout_is_not_recovered_when_futures_reconciliation_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tower_path = Path(tmp) / "broker_control_tower_latest.json"
+            tower_path.write_text(json.dumps({
+                "generated_at": "2026-07-21T14:22:24+00:00",
+                "accounts": [{"refresh_status": "READY"}],
+            }))
+            report = {
+                "generated_at": "2026-07-21T14:03:13+00:00",
+                "capacity_refresh_step": {"ok": True},
+                "rsp_refresh_step": {"ok": True},
+                "publish_step": {"ok": True},
+                "checks": {"intraday_futures_reconciliation": {"ok": False}},
+            }
+            with patch.object(account_console, "CONTROL_TOWER_PATH", tower_path):
+                self.assertFalse(account_console.daily_open_recovered_by_newer_state(report))
 
     def test_publisher_merges_sanitized_capacity_without_account_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -394,8 +415,9 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             },
         }
 
-        payload = account_console.console_active_position_management(snapshot, {})
-        html = account_console.render_active_positions_panel(snapshot, {}, {"account_alias": "primary"})
+        with patch.object(account_console, "console_runtime_position_context", return_value=snapshot["data"]):
+            payload = account_console.console_active_position_management(snapshot, {})
+            html = account_console.render_active_positions_panel(snapshot, {}, {"account_alias": "primary"})
 
         self.assertEqual(payload["positions_found"], 1)
         self.assertEqual(payload["positions"][0]["management_action"], "REVIEW_CLOSE_OR_BUY_BACK")
@@ -923,6 +945,44 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn('action="/notification-test-email"', html)
         self.assertIn('action="/notification-test-push"', html)
         self.assertIn("No autoriza ordenes", html)
+
+    def test_remote_chris_ia_futures_feed_is_counted_and_promotes_fresh_entry(self):
+        received_at = datetime.now(timezone.utc).isoformat()
+        operator = {"ok": True, "data": {"active_alerts": []}}
+        payloads = {
+            "signal_events": {"ok": True, "data": {"events": [
+                {
+                    "event_id": "TV-CHRIS-ENTRY",
+                    "ticker": "USTEC.F",
+                    "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+                    "event": "ENTRY",
+                    "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+                    "breakout_direction": "SHORT",
+                    "score": 92,
+                    "received_at": received_at,
+                },
+                {
+                    "event_id": "TV-NATIVE-SNAPSHOT",
+                    "ticker": "MNQ1!",
+                    "strategy_context": "INTRADAY_INDEX_FUTURES",
+                    "event": "SESSION_SNAPSHOT",
+                    "received_at": received_at,
+                },
+            ]}},
+            "futures_daily": {"ok": True, "data": {"summary": {"total_events": 0}}},
+        }
+
+        merged = account_console.merge_remote_futures_into_operator(operator, payloads)
+        intraday = merged["data"]["intraday_futures"]
+        alerts = merged["data"]["active_alerts"]
+
+        self.assertEqual(intraday["daily_summary"]["received"], 2)
+        self.assertEqual(intraday["daily_summary"]["entry"], 1)
+        self.assertEqual(intraday["daily_summary"]["snapshot"], 1)
+        self.assertTrue(intraday["daily_summary"]["pipeline_mismatch"])
+        self.assertEqual(intraday["status"], "PIPELINE_MISMATCH")
+        self.assertEqual(alerts[0]["state"], "MANUAL_REVIEW")
+        self.assertTrue(account_console.is_intraday_futures_alert(alerts[0]))
 
 
 if __name__ == "__main__":

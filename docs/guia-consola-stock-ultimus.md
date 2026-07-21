@@ -165,13 +165,15 @@ Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Me
 Este panel permanece cerrado cuando no hay una señal operable. La consola separa:
 
 - **Alertas Operables:** configuraciones con suficiente calidad para revisión humana.
-- **Futuros Intradía:** señales rápidas de MNQ/MES recibidas desde TradingView.
+- **Futuros Intradía:** señales nativas de MNQ/MES y señales Chris IA de USTEC.F/US500F recibidas desde TradingView.
 - **Diagnóstico oculto:** casos con datos insuficientes, espera, bloqueo o calidad baja.
 - **Ya revisadas/en seguimiento/cerradas:** historial operativo reciente.
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
+
+El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor procesó** confirma que fueron incorporados a la evaluación diaria. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
 
 ### Severidades
 
@@ -267,6 +269,8 @@ Para una acción ya abierta, el escaneo incluye calls **ITM, ATM y OTM**. El tam
 La misma apertura obtiene velas históricas de cada subyacente abierto aunque ya tenga precio vivo. Con ellas calcula tendencia, SMA 10/20/50, RSI 14, ATR 14 y soportes/resistencias de 20 y 50 sesiones. La prima de una opción nunca se usa como precio del activo. Si falta evidencia suficiente, la recomendación debe ser no hacer cambios hasta actualizar los datos.
 
 El motor tampoco propone reducir acciones si eso dejaría una call descubierta, ni prioriza vender una covered call nueva sobre un activo sobrevendido sin confirmación adicional. En posiciones cubiertas, la pata de acciones remite la gestión a la operación completa.
+
+Las posiciones abiertas de futuros (`FUT`), por ejemplo MNQ, también se importan desde la Torre de Control aunque no estén presentes en el snapshot antiguo de posiciones. Aparecen como revisión explícita de riesgo direccional: dirección, cantidad, vencimiento y valor de mercado. La consola exige revisar el plan de riesgo; no inventa stop ni objetivo cuando esos datos no existen y nunca cierra la posición automáticamente.
 
 En **Capacidad y administración operativa → Contexto técnico complementario** puedes seleccionar cualquier activo abierto y pegar el mismo JSON o texto usado para RSP. Spot, soportes, resistencias, expected move y gamma complementan la lectura automática; no sustituyen las velas ni convierten la recomendación en una orden.
 

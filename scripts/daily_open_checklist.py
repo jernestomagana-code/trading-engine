@@ -586,15 +586,21 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "unauthorized_status": denied_status,
             "authorized_status": allowed_status,
         }
-        reconcile_status, reconciliation = request_json(
-            f"{base_url}/v32_intraday_futures_reconcile?limit=2000",
-            token=read_token,
-            timeout=args.read_timeout,
-            method="POST",
-        )
+        reconcile_status, reconciliation = 0, {}
+        reconcile_attempts = 0
+        for reconcile_attempts in range(1, 3):
+            reconcile_status, reconciliation = request_json(
+                f"{base_url}/v32_intraday_futures_reconcile?limit=2000",
+                token=read_token,
+                timeout=max(args.read_timeout, 45),
+                method="POST",
+            )
+            if reconcile_status == 200:
+                break
         checks["intraday_futures_reconciliation"] = {
             "ok": reconcile_status == 200,
             "status_code": reconcile_status,
+            "attempt_count": reconcile_attempts,
             "processed_count": reconciliation.get("processed_count") if isinstance(reconciliation, dict) else None,
             "candidate_count": reconciliation.get("candidate_count") if isinstance(reconciliation, dict) else None,
         }

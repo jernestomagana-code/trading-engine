@@ -1566,6 +1566,37 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(args[0]["source_event_id"], "TV-fast-ack-1")
         self.assertTrue(args[1])
 
+    def test_chris_ia_entry_is_routed_to_futures_manual_review(self):
+        payload = {
+            "source": "TRADINGVIEW",
+            "action": "ALERT_ONLY",
+            "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "timeframe": "15",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+            "breakout_direction": "SHORT",
+            "price": 29259.63,
+            "score": 92,
+            "setup_quality": "CONFIRMED_ENTRY",
+            "not_order_instruction": True,
+        }
+        with patch.object(main, "get_intraday_futures_premarket_context", return_value={
+            "found": False,
+            "context": {"decision_max_state": "MANUAL_REVIEW"},
+        }):
+            result = main.enrich_stock_ultimus_technical_payload(payload)
+
+        self.assertTrue(main.is_intraday_futures_signal(result))
+        self.assertTrue(main.intraday_futures_is_entry_event(result["event_code"], result["event"]))
+        self.assertEqual(result["strategy"], "CHRIS_IA_REVERSAL_PRO")
+        self.assertEqual(result["target_instrument"], "MNQ")
+        self.assertEqual(result["direction"], "SHORT")
+        self.assertEqual(result["final_state"], "MANUAL_REVIEW")
+        self.assertIn("stop_price", result["required_missing_fields"])
+        self.assertFalse(result.get("execution_authorized", False))
+        self.assertTrue(result["not_order_instruction"])
+
     def test_intraday_event_ids_are_deterministic_for_tradingview_retries(self):
         payload = {
             "strategy": "INTRADAY_INDEX_FUTURES",
@@ -1621,6 +1652,32 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(deduped["processed_count"], 0)
         self.assertEqual(deduped["skipped"][0]["reason"], "ALREADY_PROCESSED")
         process.assert_not_called()
+
+    def test_reconciliation_includes_chris_ia_futures_confirmation(self):
+        signal_event = {
+            "event_id": "TV-chris-recovery-1",
+            "accepted_for_engine": True,
+            "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+            "received_at": "2026-07-21T15:45:00+00:00",
+        }
+        with patch.object(main, "_v32_load_tradingview_signal_events", return_value=[signal_event]), patch.object(
+            main, "load_intraday_futures_alert_events", return_value=[]
+        ), patch.object(main, "_v32_intraday_payload_from_signal_event", return_value={
+            "strategy": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "USTEC.F",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_USTECF_SHORT_ENTRY_15",
+            "source_event_id": "TV-chris-recovery-1",
+        }), patch.object(main, "_v32_process_intraday_futures_alert", return_value={
+            "event_storage": {"saved": True, "event_id": "IFEV-TV-chris-recovery-1"},
+        }):
+            result = main._v32_reconcile_intraday_futures_signal_events()
+
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(result["processed"][0]["ticker"], "USTEC.F")
 
     def test_fresh_intraday_event_becomes_main_console_alert(self):
         event = {

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
+from zoneinfo import ZoneInfo
 import urllib.error
 import urllib.request
 
@@ -1682,7 +1683,173 @@ def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]
         "reviews": fetch_remote_json("/v31_manual_reviews?limit=250", prefer_cache=prefer_cache),
         "learning": fetch_remote_json("/v31_manual_review_learning?limit=250", prefer_cache=prefer_cache),
         "performance": fetch_remote_json("/v32_strategy_performance?limit=500", prefer_cache=prefer_cache),
+        "signal_events": fetch_remote_json("/v32_signal_events?limit=1000", prefer_cache=prefer_cache),
+        "futures_daily": fetch_remote_json("/intraday_futures/report/daily?include_validation=false", prefer_cache=prefer_cache),
+        "webhook_status": fetch_remote_json("/v32_tradingview_webhook_status", prefer_cache=prefer_cache),
     }
+
+
+FUTURES_MARKET_TZ = ZoneInfo("America/New_York")
+FUTURES_STRATEGIES = {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}
+FUTURES_TICKERS = {"MNQ", "MNQ1!", "NQ", "MES", "MES1!", "ES", "USTEC.F", "USTECF", "US500F", "US500.F"}
+
+
+def remote_signal_received_at(event: dict[str, Any]) -> datetime | None:
+    raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+    return parse_iso_datetime(event.get("received_at") or event.get("saved_at") or raw.get("received_at") or raw.get("saved_at"))
+
+
+def is_remote_futures_signal(event: dict[str, Any]) -> bool:
+    raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+    strategy = str(event.get("strategy_context") or event.get("strategy") or raw.get("strategy_context") or raw.get("strategy") or "").upper()
+    ticker = str(event.get("ticker") or raw.get("ticker") or "").upper()
+    return strategy in FUTURES_STRATEGIES or ticker in FUTURES_TICKERS
+
+
+def remote_futures_event_kind(event: dict[str, Any]) -> str:
+    event_name = str(event.get("event") or "").upper()
+    event_code = str(event.get("event_code") or "").upper()
+    if event_name == "ENTRY" or "_ENTRY_" in event_code:
+        return "ENTRY"
+    if event_name in {"RISK", "EXIT", "INVALIDATION"} or any(marker in event_code for marker in ["_RISK_", "_EXIT_", "INVALID"]):
+        return "RISK"
+    if event_name == "WATCH" or "_WATCH_" in event_code:
+        return "WATCH"
+    if event_name == "SESSION_SNAPSHOT" or "SESSION_SNAPSHOT" in event_code:
+        return "SNAPSHOT"
+    return event_name or "OTHER"
+
+
+def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Expose today's durable futures feed in the operator console.
+
+    The main operator endpoint is intentionally decision-oriented and can omit
+    radar/heartbeat events.  This merge keeps the historical daily evidence
+    visible while promoting only fresh ENTRY/RISK events as live cards.
+    """
+    output = dict(operator_payload) if isinstance(operator_payload, dict) else {"ok": False, "data": {}}
+    data = dict(output.get("data")) if isinstance(output.get("data"), dict) else {}
+    signal_result = payloads.get("signal_events") if isinstance(payloads.get("signal_events"), dict) else {}
+    ledger = signal_result.get("data") if isinstance(signal_result.get("data"), dict) else {}
+    events = ledger.get("events") if isinstance(ledger.get("events"), list) else []
+    now = datetime.now(timezone.utc)
+    session_date = now.astimezone(FUTURES_MARKET_TZ).date().isoformat()
+    today_events = []
+    for event in events:
+        if not isinstance(event, dict) or not is_remote_futures_signal(event):
+            continue
+        received_at = remote_signal_received_at(event)
+        if not received_at:
+            continue
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        if received_at.astimezone(FUTURES_MARKET_TZ).date().isoformat() == session_date:
+            today_events.append(event)
+
+    counts = {"ENTRY": 0, "RISK": 0, "WATCH": 0, "SNAPSHOT": 0, "OTHER": 0}
+    native_count = 0
+    chris_count = 0
+    for event in today_events:
+        kind = remote_futures_event_kind(event)
+        counts[kind if kind in counts else "OTHER"] += 1
+        raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        strategy = str(event.get("strategy_context") or event.get("strategy") or raw.get("strategy_context") or raw.get("strategy") or "").upper()
+        if strategy == "CHRIS_IA_REVERSAL_PRO":
+            chris_count += 1
+        else:
+            native_count += 1
+
+    current_alerts = list(data.get("active_alerts")) if isinstance(data.get("active_alerts"), list) else []
+    known_ids = {str(item.get("alert_id") or item.get("event_id") or "") for item in current_alerts if isinstance(item, dict)}
+    for event in today_events:
+        kind = remote_futures_event_kind(event)
+        received_at = remote_signal_received_at(event)
+        if kind not in {"ENTRY", "RISK"} or not received_at:
+            continue
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        if (now - received_at.astimezone(timezone.utc)).total_seconds() > 90 * 60:
+            continue
+        event_id = str(event.get("event_id") or event.get("id") or "")
+        if event_id and event_id in known_ids:
+            continue
+        raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        strategy = str(event.get("strategy_context") or event.get("strategy") or raw.get("strategy_context") or raw.get("strategy") or "INTRADAY_INDEX_FUTURES")
+        direction = str(event.get("breakout_direction") or raw.get("breakout_direction") or "").upper()
+        score = event.get("score") if event.get("score") is not None else raw.get("score")
+        current_alerts.append({
+            "alert_id": event_id,
+            "event_id": event_id,
+            "ticker": event.get("ticker") or raw.get("ticker") or "FUTURES",
+            "strategy": strategy,
+            "severity": "RISK" if kind == "RISK" else "ACTION",
+            "state": "RISK_BLOCKED" if kind == "RISK" else "MANUAL_REVIEW",
+            "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else "RISK_CONTEXT_PENDING",
+            "setup_validity_pct": score,
+            "event": kind,
+            "event_code": event.get("event_code") or raw.get("event_code"),
+            "direction": direction,
+            "entry_price": event.get("price") if event.get("price") is not None else raw.get("price"),
+            "received_at": received_at.isoformat(),
+            "why": "Señal real de futuros recibida; requiere revisión de riesgo y contexto antes de cualquier decisión.",
+            "manual_review_ready": True,
+            "not_order_instruction": True,
+        })
+        known_ids.add(event_id)
+
+    daily_result = payloads.get("futures_daily") if isinstance(payloads.get("futures_daily"), dict) else {}
+    daily = daily_result.get("data") if isinstance(daily_result.get("data"), dict) else {}
+    processed_total = ((daily.get("summary") or {}).get("total_events", 0) if isinstance(daily.get("summary"), dict) else 0) or 0
+    mismatch = bool(today_events and processed_total == 0)
+    latest_at = max((remote_signal_received_at(event) for event in today_events if remote_signal_received_at(event)), default=None)
+    summary = {
+        "session_date": session_date,
+        "received": len(today_events),
+        "entry": counts["ENTRY"],
+        "risk": counts["RISK"],
+        "watch": counts["WATCH"],
+        "snapshot": counts["SNAPSHOT"],
+        "other": counts["OTHER"],
+        "native": native_count,
+        "chris_ia": chris_count,
+        "processed_total": processed_total,
+        "pipeline_mismatch": mismatch,
+        "latest_at": latest_at.isoformat() if latest_at else "",
+    }
+    intraday = dict(data.get("intraday_futures")) if isinstance(data.get("intraday_futures"), dict) else {}
+    intraday["daily_summary"] = summary
+    if mismatch:
+        intraday.update({"status": "PIPELINE_MISMATCH", "message": "TradingView sí envió futuros hoy, pero el motor diario todavía no los procesó."})
+    elif counts["ENTRY"] or counts["RISK"]:
+        intraday.update({"status": "ACTIVITY_CONFIRMED", "message": f"Hoy hubo {counts['ENTRY']} entrada(s) y {counts['RISK']} evento(s) de riesgo; las vigentes aparecen para revisión."})
+    elif today_events:
+        intraday.update({"status": "MONITORING_CONFIRMED", "message": "El radar de futuros funcionó hoy, pero no produjo una entrada vigente."})
+    data["active_alerts"] = current_alerts
+    data["intraday_futures"] = intraday
+    output["data"] = data
+    return output
+
+
+def merge_remote_tradingview_report(reports: dict[str, dict[str, Any]], payloads: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    output = dict(reports) if isinstance(reports, dict) else {}
+    webhook_result = payloads.get("webhook_status") if isinstance(payloads.get("webhook_status"), dict) else {}
+    webhook = webhook_result.get("data") if isinstance(webhook_result.get("data"), dict) else {}
+    status = webhook.get("webhook_status") if isinstance(webhook.get("webhook_status"), dict) else {}
+    if webhook_result.get("ok") and status:
+        tradingview = dict(output.get("tradingview")) if isinstance(output.get("tradingview"), dict) else {}
+        tradingview.update({
+            "status": webhook.get("status") or "RECEIVED",
+            "generated_at": webhook.get("generated_at") or status.get("updated_at"),
+            "total_received_required_event_count": status.get("accepted_count", 0),
+            "total_required_logical_event_count": status.get("webhook_attempt_count", 0),
+            "live_accepted_count": status.get("accepted_count", 0),
+            "live_quarantined_count": status.get("quarantined_count", 0),
+            "latest_event": webhook.get("latest_event") or status.get("last_webhook"),
+            "_runtime_available": True,
+            "_remote_live": True,
+        })
+        output["tradingview"] = tradingview
+    return output
 
 
 def published_context_value(value: Any) -> str:
@@ -4299,7 +4466,7 @@ def alert_quality_score(alert: dict[str, Any]) -> float:
 def is_intraday_futures_alert(alert: dict[str, Any]) -> bool:
     strategy = str(alert.get("strategy") or "").upper()
     ticker = str(alert.get("ticker") or alert.get("symbol") or "").upper()
-    return strategy == "INTRADAY_INDEX_FUTURES" or ticker in {"MNQ", "MNQ1!", "NQ", "MES", "MES1!", "ES"}
+    return strategy in FUTURES_STRATEGIES or ticker in FUTURES_TICKERS
 
 
 def alert_operator_visibility(alert: dict[str, Any]) -> str:
@@ -4472,6 +4639,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     reports = reports if isinstance(reports, dict) else {}
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
+    daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
     tradingview = reports.get("tradingview") or {}
     if futures_alerts:
         cards = "".join(render_alert_card(alert, account_capacity=console_account_capacity(operator_payload, {})) for alert in futures_alerts[:4])
@@ -4480,13 +4648,21 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     else:
         body = """
         <div class="tiles">
-          <div class="tile">Sin senal intradia viva<span>No hay ENTRY/RISK de futuros en el payload actual.</span></div>
-          <div class="tile">TradingView<span>{received}/{required} eventos requeridos recibidos.</span></div>
+          <div class="tile">Sin señal vigente<span>No hay una ENTRY/RISK de futuros todavía activa.</span></div>
+          <div class="tile">Entradas hoy: {entries}<span>WATCH: {watch} · snapshots: {snapshots}</span></div>
+          <div class="tile">Recibidos hoy: {today}<span>Motor procesó: {processed} · Chris IA: {chris}</span></div>
+          <div class="tile">TradingView<span>{received}/{required} eventos aceptados/intentos.</span></div>
           <div class="tile">Estado<span>{status}</span></div>
         </div>
         """.format(
             received=html_escape(tradingview.get("total_received_required_event_count", 0)),
             required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))),
+            entries=html_escape(daily.get("entry", 0)),
+            watch=html_escape(daily.get("watch", 0)),
+            snapshots=html_escape(daily.get("snapshot", 0)),
+            today=html_escape(daily.get("received", 0)),
+            processed=html_escape(daily.get("processed_total", 0)),
+            chris=html_escape(daily.get("chris_ia", 0)),
             status=html_escape(intraday.get("status") or tradingview.get("status") or "sin reporte"),
         )
         status = intraday.get("message") or "Sin alertas intradia de futuros en este momento."
@@ -4622,6 +4798,25 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
     for key in ["account_context", "account_scope", "account_alias", "technical_snapshot", "positions"]:
         if snapshot_data.get(key) not in [None, "", [], {}]:
             context[key] = snapshot_data.get(key)
+    tower = runtime_data.get("broker_control_tower_latest.json") if isinstance(runtime_data.get("broker_control_tower_latest.json"), dict) else {}
+    selected_alias = str((active_profile() or {}).get("account_alias") or "").strip().lower()
+    tower_positions = []
+    for row in tower.get("consolidated_positions") or []:
+        if not isinstance(row, dict):
+            continue
+        aliases = [str(value or "").strip().lower() for value in (row.get("account_aliases") or [])]
+        if selected_alias and aliases and selected_alias not in aliases:
+            continue
+        tower_positions.append({
+            **row,
+            "ticker": row.get("ticker") or row.get("symbol"),
+            "sec_type": row.get("security_type") or row.get("sec_type"),
+            "position_size": row.get("quantity") if row.get("quantity") is not None else row.get("position"),
+            "source": "BROKER_CONTROL_TOWER",
+        })
+    if tower_positions:
+        existing_positions = context.get("positions") if isinstance(context.get("positions"), list) else []
+        context["positions"] = existing_positions + tower_positions
     local_contexts = shared_position_context_store.load_contexts(POSITION_CONTEXTS_PATH)
     context["active_position_contexts"] = local_contexts
     context["gamma_contexts"] = shared_gamma_context_store.load_contexts(GAMMA_CONTEXTS_PATH)
@@ -4663,16 +4858,28 @@ def console_active_position_management(snapshot: dict[str, Any] | None = None, v
                 "execution_authorized": False,
                 "can_operate": False,
             }
-    if int(local.get("positions_found") or 0) == 0:
-        try:
-            runtime_context = console_runtime_position_context(snapshot)
-            runtime_local = shared_position_management.build_active_position_management(runtime_context)
-            if int(runtime_local.get("positions_found") or 0) > 0:
-                local = runtime_local
-                local["source"] = "local_runtime_recalculated"
-                local["source_path"] = "runtime/*.json"
-        except Exception:
-            pass
+    try:
+        runtime_context = console_runtime_position_context(snapshot)
+        runtime_local = shared_position_management.build_active_position_management(runtime_context)
+        local_positions_by_id = {
+            str(item.get("position_id") or "")
+            for item in (local.get("positions") or [])
+            if isinstance(item, dict)
+        }
+        runtime_positions_by_id = {
+            str(item.get("position_id") or "")
+            for item in (runtime_local.get("positions") or [])
+            if isinstance(item, dict)
+        }
+        runtime_has_missing_positions = bool(runtime_positions_by_id - local_positions_by_id)
+        if int(runtime_local.get("positions_found") or 0) > 0 and (
+            int(local.get("positions_found") or 0) == 0 or runtime_has_missing_positions
+        ):
+            local = runtime_local
+            local["source"] = "local_runtime_recalculated"
+            local["source_path"] = "runtime/*.json"
+    except Exception:
+        pass
     remote_positions = int(remote.get("positions_found") or 0) if remote else 0
     local_positions = int(local.get("positions_found") or 0)
     if remote.get("position_management_version") and (local_positions == 0 and remote_positions > 0):
@@ -4727,6 +4934,8 @@ def friendly_position_reason(text: str) -> str:
         "Long stock is eligible for covered-call review, but no exit trigger is active.": "La posición permite evaluar un covered call, pero no existe una señal de salida activa.",
         "Bearish trend with intact support requires comparing hold, income overlays, protection, and reduction.": "La tendencia es bajista, pero el soporte sigue intacto; comparar mantener, generar prima, proteger y reducir.",
         "Long-stock thesis may be damaged by event risk or a broken support level.": "La tesis de las acciones puede estar dañada por un evento de riesgo o por ruptura de soporte.",
+        "Open futures exposure conflicts with the latest technical context; review stop, reduction, or exit manually.": "La posición de futuros contradice el contexto técnico; revisar manualmente stop, reducción o salida.",
+        "Open futures exposure requires an explicit stop, target, session context, and daily-loss review.": "La posición de futuros requiere revisar stop, objetivo, contexto de sesión y pérdida diaria máxima.",
     }
     return replacements.get(text, text)
 
@@ -5286,7 +5495,9 @@ def daily_open_recovered_by_newer_state(report: dict[str, Any]) -> bool:
     publish_ok = (report.get("publish_step") or {}).get("ok") is True
     capacity_ok = (report.get("capacity_refresh_step") or {}).get("ok") is True
     rsp_ok = (report.get("rsp_refresh_step") or {}).get("ok") is True
-    return bool(tower_ready and publish_ok and capacity_ok and rsp_ok)
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    reconciliation_ok = (checks.get("intraday_futures_reconciliation") or {}).get("ok") is True
+    return bool(tower_ready and publish_ok and capacity_ok and rsp_ok and reconciliation_ok)
 
 
 def effective_daily_open_status(report: dict[str, Any]) -> str:
@@ -6723,7 +6934,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     snapshot = latest_master_snapshot()
     operator_payload = console_operator_payload(prefer_cache=prefer_cache)
     v31_payloads = console_v31_payloads(prefer_cache=prefer_cache)
-    reports = console_reports()
+    operator_payload = merge_remote_futures_into_operator(operator_payload, v31_payloads)
+    reports = merge_remote_tradingview_report(console_reports(), v31_payloads)
     position_payload = console_active_position_management(snapshot, v31_payloads)
     risk_payload = load_portfolio_risk(profiles, active)
     rsp_payload = shared_coberturas_engine.build_recommendation(RUNTIME)

@@ -1431,6 +1431,27 @@ def evaluate_position(
             report["reasons"].append("Long stock is eligible for covered-call review, but no exit trigger is active.")
         else:
             report["reasons"].append("Long stock has no deterministic action trigger; monitor.")
+    elif strategy == "FUTURES_POSITION":
+        position_direction = "LONG" if qty > 0 else "SHORT"
+        opposing_trend = (
+            position_direction == "LONG" and trend in ["BEARISH", "DOWN", "SELL"]
+        ) or (
+            position_direction == "SHORT" and trend in ["BULLISH", "UP", "BUY"]
+        )
+        if opposing_trend or technical.get("support_broken") or technical.get("resistance_breakout"):
+            set_review(
+                "RISK_REVIEW",
+                "REVIEW_DEFENSIVE_EXIT",
+                "Open futures exposure conflicts with the latest technical context; review stop, reduction, or exit manually.",
+                "FUTURES_DIRECTIONAL_RISK",
+            )
+        else:
+            set_review(
+                "RISK_REVIEW",
+                "REVIEW_RISK",
+                "Open futures exposure requires an explicit stop, target, session context, and daily-loss review.",
+                "FUTURES_RISK_PLAN_REVIEW_REQUIRED",
+            )
     else:
         report["warnings"].append("POSITION_STRATEGY_NOT_REGISTERED")
         report["confidence"] = "LOW"
