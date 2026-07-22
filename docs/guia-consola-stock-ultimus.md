@@ -212,6 +212,10 @@ En una tarjeta de **Futuros Intradía**, la información cambia para evitar conc
 
 La alerta móvil de una ENTRY/RISK es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2**, vigencia implícita y una sola acción recomendada. Sale con prioridad alta directamente desde el procesamiento del webhook; el monitor local permanece como respaldo. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca deben interpretarse como una orden automática ni reemplazan el límite de riesgo del operador.
 
+Antes de enviar una ENTRY urgente, el motor aplica una puerta adicional de calidad direccional. Compara la dirección con tendencia, votos multitemporales, MACD, RSI y cruce estocástico. Si una entrada va contra tendencia o contra la mayoría MTF necesita al menos tres confirmaciones y no puede acumular tres o más conflictos. Si no las reúne queda como **WATCH_ONLY**, permanece visible para análisis y no genera una alerta móvil urgente. La tarjeta muestra **confirmaciones a favor**, **conflictos**, calificación de la puerta y motivo del bloqueo.
+
+El `score` de TradingView mide cuánto coincide la lectura con las reglas internas de ese patrón; **no es una probabilidad de éxito**. Por eso una reversión puede tener score 100 y aun así quedar en WATCH si el mercado continúa alineado en sentido contrario. La consola corrige además el indicador `counter_trend` usando la tendencia y los votos MTF, aunque la fuente lo haya enviado de forma inconsistente.
+
 ### Botones de seguimiento de alertas
 
 | Botón | Úsalo cuando… |

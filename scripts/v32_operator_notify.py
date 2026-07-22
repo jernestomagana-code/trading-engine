@@ -190,9 +190,15 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
             "tp2_price": alert.get("tp2_price"),
             "score": alert.get("setup_validity_pct") if alert.get("setup_validity_pct") is not None else alert.get("score"),
             "reference_levels_provisional": alert.get("reference_levels_provisional") is True,
+            "signal_actionability": alert.get("signal_actionability"),
+            "confirmation_gate_status": alert.get("confirmation_gate_status"),
+            "confirmation_reasons": alert.get("confirmation_reasons") or [],
+            "confirmation_conflicts": alert.get("confirmation_conflicts") or [],
             "execution_authorized": False,
             "not_order_instruction": True,
         }
+        if str(alert.get("signal_actionability") or "").upper() == "WATCH_ONLY":
+            continue
         if severity in {"ACTION", "RISK"} or manual_ready:
             actionable.append(compact)
         elif state == "WAIT_MARKET":

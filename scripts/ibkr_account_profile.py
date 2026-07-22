@@ -1780,22 +1780,29 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         strategy = str(event.get("strategy_context") or event.get("strategy") or raw.get("strategy_context") or raw.get("strategy") or "INTRADAY_INDEX_FUTURES")
         direction = str(event.get("breakout_direction") or raw.get("breakout_direction") or "").upper()
         score = event.get("score") if event.get("score") is not None else raw.get("score")
+        signal_actionability = event.get("signal_actionability") or raw.get("signal_actionability")
+        watch_only = str(signal_actionability or "").upper() == "WATCH_ONLY"
         current_alerts.append({
             "alert_id": event_id,
             "event_id": event_id,
             "ticker": event.get("ticker") or raw.get("ticker") or "FUTURES",
             "strategy": strategy,
-            "severity": "RISK" if kind == "RISK" else "ACTION",
+            "severity": "RISK" if kind == "RISK" else "WATCH" if watch_only else "ACTION",
             "state": "RISK_BLOCKED" if kind == "RISK" else "MANUAL_REVIEW",
-            "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else "RISK_CONTEXT_PENDING",
+            "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else raw.get("main_blocker") or "RISK_CONTEXT_PENDING",
             "setup_validity_pct": score,
             "event": kind,
             "event_code": event.get("event_code") or raw.get("event_code"),
             "direction": direction,
             "entry_price": event.get("price") if event.get("price") is not None else raw.get("price"),
             "received_at": received_at.isoformat(),
-            "why": "Señal real de futuros recibida; requiere revisión de riesgo y contexto antes de cualquier decisión.",
-            "manual_review_ready": True,
+            "why": raw.get("decision_explanation") or "Señal real de futuros recibida; requiere revisión de riesgo y contexto antes de cualquier decisión.",
+            "manual_review_ready": not watch_only,
+            "signal_actionability": signal_actionability,
+            "confirmation_gate_status": event.get("confirmation_gate_status") or raw.get("confirmation_gate_status"),
+            "confirmation_quality_score": event.get("confirmation_quality_score") or raw.get("confirmation_quality_score"),
+            "confirmation_reasons": event.get("confirmation_reasons") or raw.get("confirmation_reasons") or [],
+            "confirmation_conflicts": event.get("confirmation_conflicts") or raw.get("confirmation_conflicts") or [],
             "not_order_instruction": True,
         })
         known_ids.add(event_id)
@@ -1838,6 +1845,11 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "tp2_price": latest_entry.get("tp2_price"),
             "score": latest_entry.get("score") or latest_entry.get("setup_validity_pct"),
             "reference_levels_provisional": latest_entry.get("reference_levels_provisional") is True,
+            "signal_actionability": latest_entry.get("signal_actionability"),
+            "confirmation_gate_status": latest_entry.get("confirmation_gate_status"),
+            "confirmation_quality_score": latest_entry.get("confirmation_quality_score"),
+            "confirmation_reasons": latest_entry.get("confirmation_reasons") or [],
+            "confirmation_conflicts": latest_entry.get("confirmation_conflicts") or [],
             "received_at": latest_entry.get("received_at") or latest_entry.get("saved_at"),
         }
     intraday = dict(data.get("intraday_futures")) if isinstance(data.get("intraday_futures"), dict) else {}
@@ -4143,7 +4155,8 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
     if is_intraday_futures_alert(alert):
         return (
             "Señal: {event} | direccion {direction} | entrada {entry} | stop {stop} | "
-            "TP1 {tp1} | TP2 {tp2} | RR {rr} | niveles {level_source} | contratos permitidos {contracts}"
+            "TP1 {tp1} | TP2 {tp2} | RR {rr} | calidad {quality} | confirmaciones {confirmations} | "
+            "conflictos {conflicts} | niveles {level_source} | contratos permitidos {contracts}"
         ).format(
             event=compact_contract_value(alert.get("event_code") or alert.get("event")),
             direction=compact_contract_value(alert.get("direction")),
@@ -4152,6 +4165,9 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
             tp1=compact_contract_value(alert.get("tp1_price")),
             tp2=compact_contract_value(alert.get("tp2_price")),
             rr=compact_contract_value(alert.get("rr_ratio")),
+            quality=compact_contract_value(alert.get("confirmation_gate_status") or "sin evaluar"),
+            confirmations=compact_contract_value(", ".join(alert.get("confirmation_reasons") or []) or "ninguna"),
+            conflicts=compact_contract_value(", ".join(alert.get("confirmation_conflicts") or []) or "ninguno"),
             level_source=(
                 "ATR estimados; confirmar"
                 if alert.get("reference_levels_provisional") is True
@@ -4680,7 +4696,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
         if latest_signal:
             latest_signal_tile = (
                 '<div class="tile">Última {event}: {ticker} {direction}'
-                '<span>Disparo {entry} · Stop {stop} · T1 {tp1} · T2 {tp2}{estimate}</span></div>'
+                '<span>Disparo {entry} · Stop {stop} · T1 {tp1} · T2 {tp2}{estimate}</span>'
+                '<span>Calidad: {quality} · {confirmations} a favor / {conflicts} en contra</span></div>'
             ).format(
                 event=html_escape(latest_signal.get("event") or "señal"),
                 ticker=html_escape(latest_signal.get("ticker") or "N/D"),
@@ -4690,6 +4707,9 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
                 tp1=html_escape(compact_contract_value(latest_signal.get("tp1_price"))),
                 tp2=html_escape(compact_contract_value(latest_signal.get("tp2_price"))),
                 estimate=" · ATR estimados" if latest_signal.get("reference_levels_provisional") else "",
+                quality=html_escape(latest_signal.get("confirmation_gate_status") or "sin evaluar"),
+                confirmations=html_escape(len(latest_signal.get("confirmation_reasons") or [])),
+                conflicts=html_escape(len(latest_signal.get("confirmation_conflicts") or [])),
             )
         body = """
         <div class="tiles">

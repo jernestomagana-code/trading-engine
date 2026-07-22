@@ -1633,6 +1633,16 @@ def row_to_intraday_futures_alert_event(row):
         "not_order_instruction",
         "evaluation_status",
         "paper_outcome",
+        "signal_actionability",
+        "confirmation_gate_status",
+        "confirmation_quality_score",
+        "confirmation_required",
+        "confirmation_reasons",
+        "confirmation_conflicts",
+        "signal_trigger_explanation",
+        "signal_quality_explanation",
+        "counter_trend",
+        "source_counter_trend",
         "raw_payload_preview",
     ]:
         if row.get(key) is not None:
@@ -2081,7 +2091,11 @@ def load_intraday_futures_alert_events(limit=5000):
                     "event_code": signal_event.get("event_code") or payload.get("event_code"),
                     "price": signal_event.get("price") if signal_event.get("price") is not None else payload.get("price"),
                     "received_at": signal_event.get("received_at") or payload.get("received_at"),
-                    "direction": signal_event.get("breakout_direction") or payload.get("breakout_direction"),
+                    "direction": (
+                        signal_event.get("breakout_direction")
+                        or payload.get("breakout_direction")
+                        or payload.get("direction")
+                    ),
                     "source": "TRADINGVIEW_SIGNAL_LEDGER",
                     "original_source": "TRADINGVIEW",
                     "engine_layer": "TRADINGVIEW_DURABLE_LEDGER_FALLBACK",
@@ -2091,6 +2105,9 @@ def load_intraday_futures_alert_events(limit=5000):
                 reference_builder = globals().get("apply_intraday_futures_reference_levels")
                 if callable(reference_builder):
                     payload = reference_builder(payload)
+                quality_builder = globals().get("apply_intraday_futures_signal_quality_gate")
+                if callable(quality_builder):
+                    payload = quality_builder(payload)
                 events.append(event_builder(payload))
         except Exception:
             pass
@@ -2103,7 +2120,27 @@ def load_intraday_futures_alert_events(limit=5000):
         if key:
             current = merged.get(key)
             # Prefer the processed event over its minimal ledger projection.
-            if current is None or event.get("decision") or not current.get("decision"):
+            # A newer quality gate may legitimately downgrade a historical
+            # ledger ENTRY even when the original processed row predates it.
+            if (
+                current is not None
+                and event.get("signal_actionability") == "WATCH_ONLY"
+                and current.get("signal_actionability") != "WATCH_ONLY"
+            ):
+                revised = dict(current)
+                for field in [
+                    "signal_actionability", "confirmation_gate_status",
+                    "confirmation_quality_score", "confirmation_required",
+                    "confirmation_reasons", "confirmation_conflicts",
+                    "signal_trigger_explanation", "signal_quality_explanation",
+                    "counter_trend", "source_counter_trend", "main_blocker",
+                    "final_state", "decision_max_state", "construction_status",
+                    "decision_explanation", "blockers", "warnings",
+                ]:
+                    if event.get(field) is not None:
+                        revised[field] = event.get(field)
+                merged[key] = revised
+            elif current is None or event.get("decision") or not current.get("decision"):
                 merged[key] = event
     return sorted(merged.values(), key=lambda item: str(item.get("received_at") or item.get("saved_at") or ""))[-limit:]
 
@@ -2486,6 +2523,16 @@ def build_intraday_futures_alert_event(payload):
         "reference_atr_points": payload.get("reference_atr_points"),
         "reference_level_source": payload.get("reference_level_source"),
         "reference_levels_provisional": payload.get("reference_levels_provisional") is True,
+        "signal_actionability": payload.get("signal_actionability"),
+        "confirmation_gate_status": payload.get("confirmation_gate_status"),
+        "confirmation_quality_score": payload.get("confirmation_quality_score"),
+        "confirmation_required": payload.get("confirmation_required"),
+        "confirmation_reasons": payload.get("confirmation_reasons") or [],
+        "confirmation_conflicts": payload.get("confirmation_conflicts") or [],
+        "signal_trigger_explanation": payload.get("signal_trigger_explanation"),
+        "signal_quality_explanation": payload.get("signal_quality_explanation"),
+        "counter_trend": payload.get("counter_trend"),
+        "source_counter_trend": payload.get("source_counter_trend"),
         "event_code": event_code,
         "event": event,
         "direction_code": payload.get("direction_code"),
@@ -9701,6 +9748,170 @@ def apply_intraday_futures_reference_levels(payload):
     return payload
 
 
+def apply_intraday_futures_signal_quality_gate(payload):
+    """Downgrade weak counter-trend entries before they reach the operator.
+
+    A strategy score describes how closely a setup matches its own rules; it is
+    not a probability of success.  This gate independently checks directional
+    alignment and requires several confirmations when an ENTRY fights the
+    prevailing trend or the multi-timeframe vote.
+    """
+    payload = dict(payload or {})
+    if not is_intraday_futures_signal(payload):
+        return payload
+    if not intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event")):
+        return payload
+
+    direction = intraday_futures_event_text(
+        payload.get("direction") or payload.get("breakout_direction")
+    )
+    if direction not in {"LONG", "SHORT"}:
+        return payload
+
+    trend = intraday_futures_event_text(payload.get("trend_state") or payload.get("trend"))
+    bullish_trend = any(token in trend for token in ("ALCISTA", "BULL", "UPTREND"))
+    bearish_trend = any(token in trend for token in ("BAJISTA", "BEAR", "DOWNTREND"))
+    long_votes = first_present_float(payload.get("mtf_long_votes"))
+    short_votes = first_present_float(payload.get("mtf_short_votes"))
+    macd_z = first_present_float(payload.get("macd_z"))
+    rsi = first_present_float(payload.get("rsi"))
+    stoch_k = first_present_float(payload.get("stoch_k"))
+    stoch_d = first_present_float(payload.get("stoch_d"))
+
+    confirmations = []
+    conflicts = []
+    if direction == "SHORT":
+        if bearish_trend:
+            confirmations.append("TENDENCIA_BAJISTA")
+        elif bullish_trend:
+            conflicts.append("TENDENCIA_ALCISTA")
+        if long_votes is not None and short_votes is not None:
+            if short_votes > long_votes:
+                confirmations.append("MAYORIA_MTF_SHORT")
+            elif long_votes > short_votes:
+                conflicts.append("MAYORIA_MTF_LONG")
+        if macd_z is not None:
+            (confirmations if macd_z < 0 else conflicts).append(
+                "MACD_NEGATIVO" if macd_z < 0 else "MACD_POSITIVO"
+            )
+        if rsi is not None:
+            (confirmations if rsi < 50 else conflicts).append(
+                "RSI_BAJO_50" if rsi < 50 else "RSI_SOBRE_50"
+            )
+        if stoch_k is not None and stoch_d is not None:
+            (confirmations if stoch_k < stoch_d else conflicts).append(
+                "CRUCE_ESTOCASTICO_BAJISTA" if stoch_k < stoch_d else "ESTOCASTICO_ALCISTA"
+            )
+    else:
+        if bullish_trend:
+            confirmations.append("TENDENCIA_ALCISTA")
+        elif bearish_trend:
+            conflicts.append("TENDENCIA_BAJISTA")
+        if long_votes is not None and short_votes is not None:
+            if long_votes > short_votes:
+                confirmations.append("MAYORIA_MTF_LONG")
+            elif short_votes > long_votes:
+                conflicts.append("MAYORIA_MTF_SHORT")
+        if macd_z is not None:
+            (confirmations if macd_z > 0 else conflicts).append(
+                "MACD_POSITIVO" if macd_z > 0 else "MACD_NEGATIVO"
+            )
+        if rsi is not None:
+            (confirmations if rsi > 50 else conflicts).append(
+                "RSI_SOBRE_50" if rsi > 50 else "RSI_BAJO_50"
+            )
+        if stoch_k is not None and stoch_d is not None:
+            (confirmations if stoch_k > stoch_d else conflicts).append(
+                "CRUCE_ESTOCASTICO_ALCISTA" if stoch_k > stoch_d else "ESTOCASTICO_BAJISTA"
+            )
+
+    source_counter_trend = payload.get("counter_trend")
+    vote_counter_trend = (
+        long_votes is not None
+        and short_votes is not None
+        and ((direction == "SHORT" and long_votes > short_votes) or
+             (direction == "LONG" and short_votes > long_votes))
+    )
+    trend_counter_trend = (
+        (direction == "SHORT" and bullish_trend)
+        or (direction == "LONG" and bearish_trend)
+    )
+    counter_trend = bool(vote_counter_trend or trend_counter_trend)
+    minimum_confirmations = 3 if counter_trend else 1
+    insufficient = counter_trend and (
+        len(confirmations) < minimum_confirmations or len(conflicts) >= 3
+    )
+    quality_score = max(0, min(100, 50 + 10 * len(confirmations) - 10 * len(conflicts)))
+
+    payload["source_counter_trend"] = source_counter_trend
+    payload["counter_trend"] = counter_trend
+    payload["signal_actionability"] = "WATCH_ONLY" if insufficient else "ACTIONABLE_CANDIDATE"
+    payload["confirmation_gate_status"] = "INSUFFICIENT" if insufficient else "PASSED"
+    payload["confirmation_quality_score"] = quality_score
+    payload["confirmation_required"] = minimum_confirmations
+    payload["confirmation_reasons"] = confirmations
+    payload["confirmation_conflicts"] = conflicts
+    payload["signal_trigger_explanation"] = (
+        "La estrategia disparó una reversión por: {}; el score mide coincidencia "
+        "con su patrón, no probabilidad de éxito."
+    ).format(", ".join(confirmations) or "su patrón interno")
+    payload["signal_quality_explanation"] = (
+        "Confirmaciones: {}. Conflictos: {}.".format(
+            ", ".join(confirmations) or "ninguna",
+            ", ".join(conflicts) or "ninguno",
+        )
+    )
+
+    if not insufficient:
+        return payload
+
+    blocker = "COUNTERTREND_CONFIRMATION_INSUFFICIENT"
+    blockers = normalize_warning_list(payload.get("blockers"))
+    warnings = normalize_warning_list(payload.get("warnings"))
+    if blocker not in blockers:
+        blockers.insert(0, blocker)
+    if blocker not in warnings:
+        warnings.insert(0, blocker)
+    explanation = (
+        "Mantener en WATCH: la entrada va contra tendencia/MTF y sólo reunió "
+        "{} de {} confirmaciones requeridas; conflictos: {}."
+    ).format(len(confirmations), minimum_confirmations, ", ".join(conflicts) or "ninguno")
+    payload.update({
+        "final_state": "MANUAL_REVIEW",
+        "decision_max_state": "MANUAL_REVIEW",
+        "construction_status": "NEEDS_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "warnings": warnings,
+        "decision_explanation": explanation,
+    })
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    construction.update({
+        "final_state": "MANUAL_REVIEW",
+        "decision_max_state": "MANUAL_REVIEW",
+        "construction_status": "NEEDS_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "warnings": warnings,
+        "decision_explanation": explanation,
+        "signal_actionability": "WATCH_ONLY",
+        "confirmation_gate_status": "INSUFFICIENT",
+        "confirmation_quality_score": quality_score,
+        "confirmation_reasons": confirmations,
+        "confirmation_conflicts": conflicts,
+    })
+    payload["construction"] = construction
+    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+    decision.update({
+        "final_state": "MANUAL_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "explanation": explanation,
+    })
+    payload["decision"] = decision
+    return payload
+
+
 def apply_intraday_futures_risk_engine(payload):
     payload = dict(payload or {})
 
@@ -10531,7 +10742,8 @@ def enrich_stock_ultimus_technical_payload(payload):
         payload.setdefault("not_order_instruction", True)
     payload = apply_intraday_futures_reference_levels(payload)
     constructed = build_intraday_futures_construction(payload)
-    return constructed if constructed is not None else payload
+    enriched = constructed if constructed is not None else payload
+    return apply_intraday_futures_signal_quality_gate(enriched)
 
 
 # Preserve existing V13/V15 technical_snapshot endpoint logic
@@ -10739,7 +10951,10 @@ _STRATEGY_SIGNAL_SAFE_FIELDS = {
     "rsi_divergence", "underlying_signal", "volatility_state", "confirmation_bias",
     "score_long", "score_short", "macd_z", "stoch_k", "stoch_d", "mtf_votes",
     "mtf_long_votes", "mtf_short_votes", "setup_quality", "counter_trend",
-    "rebound",
+    "rebound", "source_counter_trend", "signal_actionability",
+    "confirmation_gate_status", "confirmation_quality_score", "confirmation_required",
+    "confirmation_reasons", "confirmation_conflicts", "signal_trigger_explanation",
+    "signal_quality_explanation",
 }
 
 
@@ -23829,7 +24044,10 @@ def _v32_operator_alert_from_intraday_event(event, operator_events=None):
         "state": state,
         "final_state": state,
         "main_blocker": event.get("main_blocker"),
-        "manual_review_ready": state in {"ENTRY_READY", "MANUAL_REVIEW"},
+        "manual_review_ready": (
+            state in {"ENTRY_READY", "MANUAL_REVIEW"}
+            and _v29_safe_upper(event.get("signal_actionability"), "") != "WATCH_ONLY"
+        ),
         "alert_delivery_eligible": state == "ENTRY_READY",
         "event": event.get("event"),
         "event_code": event.get("event_code"),
@@ -23846,6 +24064,15 @@ def _v32_operator_alert_from_intraday_event(event, operator_events=None):
         "reference_atr_points": event.get("reference_atr_points"),
         "reference_level_source": event.get("reference_level_source"),
         "reference_levels_provisional": event.get("reference_levels_provisional") is True,
+        "signal_actionability": event.get("signal_actionability"),
+        "confirmation_gate_status": event.get("confirmation_gate_status"),
+        "confirmation_quality_score": event.get("confirmation_quality_score"),
+        "confirmation_required": event.get("confirmation_required"),
+        "confirmation_reasons": event.get("confirmation_reasons") or [],
+        "confirmation_conflicts": event.get("confirmation_conflicts") or [],
+        "signal_trigger_explanation": event.get("signal_trigger_explanation"),
+        "signal_quality_explanation": event.get("signal_quality_explanation"),
+        "counter_trend": event.get("counter_trend"),
         "target_instrument": event.get("target_instrument"),
         "contracts_allowed": event.get("contracts_allowed"),
         "construction_status": event.get("construction_status"),
@@ -24771,6 +24998,10 @@ def _v32_intraday_futures_immediate_message(payload, trigger_kind):
         "Target 2: {} (2R)".format(number(target_2)),
         action,
     ]
+    confirmations = payload.get("confirmation_reasons") if isinstance(payload.get("confirmation_reasons"), list) else []
+    conflicts = payload.get("confirmation_conflicts") if isinstance(payload.get("confirmation_conflicts"), list) else []
+    if payload.get("confirmation_gate_status"):
+        lines.append("Confirmación: {} a favor · {} conflicto(s).".format(len(confirmations), len(conflicts)))
     if payload.get("reference_levels_provisional"):
         lines.append("Niveles estimados por ATR; confirmar precio y riesgo en consola.")
     elif stop is None or target_1 is None:
@@ -24790,6 +25021,11 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "VALIDATION_EVENT_SUPPRESSED"
     elif intraday_futures_is_session_snapshot_event(event_code, event):
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
+    elif (
+        intraday_futures_is_entry_event(event_code, event)
+        and intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY"
+    ):
+        reason = "COUNTERTREND_CONFIRMATION_INSUFFICIENT"
     elif intraday_futures_is_entry_event(event_code, event):
         trigger_kind = "ENTRY_TRIGGER"
         reason = None
