@@ -4124,7 +4124,7 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
     if is_intraday_futures_alert(alert):
         return (
             "Señal: {event} | direccion {direction} | entrada {entry} | stop {stop} | "
-            "TP1 {tp1} | TP2 {tp2} | RR {rr} | contratos permitidos {contracts}"
+            "TP1 {tp1} | TP2 {tp2} | RR {rr} | niveles {level_source} | contratos permitidos {contracts}"
         ).format(
             event=compact_contract_value(alert.get("event_code") or alert.get("event")),
             direction=compact_contract_value(alert.get("direction")),
@@ -4133,6 +4133,11 @@ def render_alert_contract(alert: dict[str, Any]) -> str:
             tp1=compact_contract_value(alert.get("tp1_price")),
             tp2=compact_contract_value(alert.get("tp2_price")),
             rr=compact_contract_value(alert.get("rr_ratio")),
+            level_source=(
+                "ATR estimados; confirmar"
+                if alert.get("reference_levels_provisional") is True
+                else compact_contract_value(alert.get("reference_level_source") or "confirmados/origen")
+            ),
             contracts=compact_contract_value(alert.get("contracts_allowed")),
         )
     contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}

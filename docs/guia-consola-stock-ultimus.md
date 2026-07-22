@@ -210,6 +210,8 @@ Un punto pendiente en el checklist no debe ignorarse. Si falta contrato, capacid
 
 En una tarjeta de **Futuros Intradía**, la información cambia para evitar conceptos de opciones que no aplican. Muestra evento, dirección, entrada, stop, TP1/TP2, relación riesgo/beneficio, contratos permitidos y los estados de construcción, riesgo, portfolio y contexto pre-market. Usa **Visto**, **Revisando**, **Watch**, **Rechazar** o **Cerrar** para registrar qué hiciste; esos botones nunca envían una orden.
 
+La alerta móvil de una ENTRY/RISK es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2**, vigencia implícita y una sola acción recomendada. Sale con prioridad alta directamente desde el procesamiento del webhook; el monitor local permanece como respaldo. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca deben interpretarse como una orden automática ni reemplazan el límite de riesgo del operador.
+
 ### Botones de seguimiento de alertas
 
 | Botón | Úsalo cuando… |

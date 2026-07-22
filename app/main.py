@@ -2479,6 +2479,10 @@ def build_intraday_futures_alert_event(payload):
         "tp1_price": payload.get("tp1_price") or construction.get("tp1_price"),
         "tp2_price": payload.get("tp2_price") or construction.get("tp2_price"),
         "rr_ratio": payload.get("rr_ratio") or construction.get("rr_ratio"),
+        "score": payload.get("score"),
+        "reference_atr_points": payload.get("reference_atr_points"),
+        "reference_level_source": payload.get("reference_level_source"),
+        "reference_levels_provisional": payload.get("reference_levels_provisional") is True,
         "event_code": event_code,
         "event": event,
         "direction_code": payload.get("direction_code"),
@@ -9645,6 +9649,55 @@ def intraday_futures_entry_risk_fields(payload):
     }
 
 
+def apply_intraday_futures_reference_levels(payload):
+    """Fill missing ENTRY levels with a transparent ATR-based reference plan.
+
+    TradingView strategies such as Chris IA can confirm an entry without
+    emitting stop/target fields.  These levels are decision support, never an
+    order: 1 ATR risk, target 1 at 1R and target 2 at 2R.
+    """
+    payload = dict(payload or {})
+    if not is_intraday_futures_signal(payload):
+        return payload
+    if not intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event")):
+        return payload
+
+    price = first_present_float(payload.get("entry_price"), payload.get("price"))
+    direction = intraday_futures_event_text(payload.get("direction") or payload.get("breakout_direction"))
+    if price is None or direction not in {"LONG", "SHORT"}:
+        return payload
+
+    atr_points = first_present_float(payload.get("atr"), payload.get("atr_points"))
+    if atr_points is None:
+        atr_pct = first_present_float(payload.get("atr_pct"))
+        if atr_pct is not None and atr_pct > 0:
+            atr_points = abs(price * atr_pct / 100.0)
+    if atr_points is None or atr_points <= 0:
+        return payload
+
+    sign = 1.0 if direction == "LONG" else -1.0
+    derived = False
+    payload.setdefault("entry_price", price)
+    if first_present_float(payload.get("stop_price"), payload.get("logical_stop")) is None:
+        payload["stop_price"] = round(price - sign * atr_points, 2)
+        payload["stop_points"] = round(atr_points, 2)
+        derived = True
+    if first_present_float(payload.get("tp1_price"), payload.get("logical_target")) is None:
+        payload["tp1_price"] = round(price + sign * atr_points, 2)
+        derived = True
+    if first_present_float(payload.get("tp2_price")) is None:
+        payload["tp2_price"] = round(price + sign * atr_points * 2.0, 2)
+        derived = True
+    if derived:
+        payload["rr_ratio"] = first_present_float(payload.get("rr_ratio"), 2.0)
+        payload["tp1_rr_ratio"] = 1.0
+        payload["tp2_rr_ratio"] = 2.0
+        payload["reference_atr_points"] = round(atr_points, 4)
+        payload["reference_level_source"] = "ATR_1R_2R"
+        payload["reference_levels_provisional"] = True
+    return payload
+
+
 def apply_intraday_futures_risk_engine(payload):
     payload = dict(payload or {})
 
@@ -10473,6 +10526,7 @@ def enrich_stock_ultimus_technical_payload(payload):
         payload.setdefault("direction", payload.get("breakout_direction") or "NONE")
         payload.setdefault("entry_price", payload.get("price"))
         payload.setdefault("not_order_instruction", True)
+    payload = apply_intraday_futures_reference_levels(payload)
     constructed = build_intraday_futures_construction(payload)
     return constructed if constructed is not None else payload
 
@@ -10891,8 +10945,9 @@ def _v32_intraday_payload_from_signal_event(signal_event):
 
 def _v32_process_intraday_futures_alert(payload, notify=True):
     payload = dict(payload or {})
-    event_storage = save_intraday_futures_alert_event(payload)
-    price_storage = save_intraday_futures_price_point(payload)
+    # The durable TradingView ledger is already written before this background
+    # task starts.  Push first so database/storage latency cannot delay the
+    # operator's time-sensitive mobile alert.
     notify_result = (
         _v32_intraday_futures_immediate_notify_payload(payload)
         if notify
@@ -10903,6 +10958,8 @@ def _v32_process_intraday_futures_alert(payload, notify=True):
             "not_order_instruction": True,
         }
     )
+    event_storage = save_intraday_futures_alert_event(payload)
+    price_storage = save_intraday_futures_price_point(payload)
     return {
         "processed": bool(event_storage.get("saved")),
         "event_storage": event_storage,
@@ -23782,6 +23839,10 @@ def _v32_operator_alert_from_intraday_event(event, operator_events=None):
         "tp1_price": event.get("tp1_price"),
         "tp2_price": event.get("tp2_price"),
         "rr_ratio": event.get("rr_ratio"),
+        "setup_validity_pct": event.get("score"),
+        "reference_atr_points": event.get("reference_atr_points"),
+        "reference_level_source": event.get("reference_level_source"),
+        "reference_levels_provisional": event.get("reference_levels_provisional") is True,
         "target_instrument": event.get("target_instrument"),
         "contracts_allowed": event.get("contracts_allowed"),
         "construction_status": event.get("construction_status"),
@@ -24545,7 +24606,7 @@ def _v32_save_pushover_dedupe_state(signature, status):
     return True
 
 
-def send_pushover_message(title, message):
+def send_pushover_message(title, message, priority=0, sound=None):
     missing = []
     if not PUSHOVER_USER_KEY:
         missing.append("PUSHOVER_USER_KEY")
@@ -24560,16 +24621,20 @@ def send_pushover_message(title, message):
         }
 
     try:
+        request_data = {
+            "token": PUSHOVER_API_TOKEN,
+            "user": PUSHOVER_USER_KEY,
+            "title": title,
+            "message": message,
+            "url": PUBLIC_BASE_URL + "/v32_project_command_center",
+            "url_title": "Abrir Stock Ultimus",
+            "priority": int(priority or 0),
+        }
+        if sound:
+            request_data["sound"] = sound
         response = requests.post(
             "https://api.pushover.net/1/messages.json",
-            data={
-                "token": PUSHOVER_API_TOKEN,
-                "user": PUSHOVER_USER_KEY,
-                "title": title,
-                "message": message,
-                "url": PUBLIC_BASE_URL + "/v32_project_command_center",
-                "url_title": "Stock Ultimus Command Center",
-            },
+            data=request_data,
             timeout=10,
         )
         result = response.json() if response.text else {}
@@ -24671,31 +24736,43 @@ def _v32_save_intraday_futures_immediate_state(dedupe, status):
 
 def _v32_intraday_futures_immediate_message(payload, trigger_kind):
     payload = payload if isinstance(payload, dict) else {}
+    def number(value):
+        value = first_present_float(value)
+        if value is None:
+            return "N/D"
+        return f"{value:,.2f}"
+
+    ticker = payload.get("ticker") or payload.get("symbol") or "?"
+    direction = intraday_futures_event_text(payload.get("direction") or payload.get("breakout_direction")) or "N/D"
+    entry = first_present_float(payload.get("entry_price"), payload.get("price"))
+    stop = first_present_float(payload.get("stop_price"), payload.get("logical_stop"))
+    target_1 = first_present_float(payload.get("tp1_price"), payload.get("logical_target"))
+    target_2 = first_present_float(payload.get("tp2_price"))
+    score = first_present_float(payload.get("score"), payload.get("setup_validity_pct"))
+    state = intraday_futures_event_text(payload.get("final_state") or payload.get("decision_max_state"))
+    if trigger_kind == "RISK_INVALIDATION":
+        action = "ACCIÓN: proteger/revisar salida ahora."
+    elif state == "ENTRY_READY":
+        action = "ACCIÓN: revisar entrada ahora."
+    else:
+        action = "ACCIÓN: revisar ahora; aún no ejecutar."
     lines = [
-        "Stock Ultimus: futuros intradia",
-        "Trigger: {} | {} | {}".format(
-            trigger_kind,
-            payload.get("ticker") or payload.get("symbol") or "?",
-            payload.get("event_code") or payload.get("event") or "?",
-        ),
-        "Estado: {} | blocker: {}".format(
-            payload.get("final_state") or payload.get("decision_max_state") or "UNKNOWN",
-            payload.get("main_blocker") or "NONE",
-        ),
-        "Precio: {} | direccion: {} | timeframe: {}".format(
-            payload.get("price") or payload.get("entry_price") or "N/D",
-            payload.get("direction") or payload.get("breakout_direction") or "N/D",
+        "{} {} · {}".format(ticker, direction, trigger_kind or "ALERTA"),
+        "Disparo: {} · {} · score {}".format(
+            number(entry),
             payload.get("timeframe") or "N/D",
+            number(score),
         ),
+        "Stop: {}".format(number(stop)),
+        "Target 1: {} (1R)".format(number(target_1)),
+        "Target 2: {} (2R)".format(number(target_2)),
+        action,
     ]
-    if payload.get("stop_price") or payload.get("logical_stop"):
-        lines.append("Stop: {} | target: {} | RR: {}".format(
-            payload.get("stop_price") or payload.get("logical_stop"),
-            payload.get("tp1_price") or payload.get("logical_target"),
-            payload.get("rr_ratio") or "N/D",
-        ))
-    lines.append('Abre el GPT y di: "revisa futuros intradia ahora".')
-    lines.append("Decision support solamente. No autoriza ordenes.")
+    if payload.get("reference_levels_provisional"):
+        lines.append("Niveles estimados por ATR; confirmar precio y riesgo en consola.")
+    elif stop is None or target_1 is None:
+        lines.append("Sin niveles válidos: esperar actualización; no entrar a ciegas.")
+    lines.append("No es una orden automática.")
     return "\n".join(lines)
 
 
@@ -24720,7 +24797,9 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "NON_ACTIONABLE_INTRADAY_EVENT"
 
     dedupe = _v32_intraday_futures_immediate_dedupe(payload, force=force)
-    title = "Stock Ultimus: futuros intradia"
+    ticker = payload.get("ticker") or payload.get("symbol") or "FUTUROS"
+    direction = intraday_futures_event_text(payload.get("direction") or payload.get("breakout_direction")) or "ALERTA"
+    title = "{} {} · {}".format(ticker, direction, trigger_kind or "FUTUROS")
     message = _v32_intraday_futures_immediate_message(payload, trigger_kind or reason)
     base_payload = {
         "engine": "V32_INTRADAY_FUTURES_IMMEDIATE_NOTIFY",
@@ -24740,7 +24819,12 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": reason}
     if dedupe.get("deduped"):
         return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_INTRADAY_FUTURES_EVENT"}
-    result = send_pushover_message(title, message)
+    result = send_pushover_message(
+        title,
+        message,
+        priority=1,
+        sound="siren" if trigger_kind == "RISK_INVALIDATION" else "cashregister",
+    )
     if result.get("pushover_sent"):
         _v32_save_intraday_futures_immediate_state(dedupe, "sent")
     return {

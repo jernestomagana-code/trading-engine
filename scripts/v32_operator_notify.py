@@ -180,6 +180,16 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
             "main_blocker": alert.get("main_blocker"),
             "manual_review_ready": manual_ready,
             "operator_status": alert.get("operator_status"),
+            "event": alert.get("event"),
+            "event_code": alert.get("event_code"),
+            "direction": alert.get("direction") or alert.get("breakout_direction"),
+            "timeframe": alert.get("timeframe"),
+            "price": alert.get("entry_price") if alert.get("entry_price") is not None else alert.get("price"),
+            "stop_price": alert.get("stop_price"),
+            "tp1_price": alert.get("tp1_price"),
+            "tp2_price": alert.get("tp2_price"),
+            "score": alert.get("setup_validity_pct") if alert.get("setup_validity_pct") is not None else alert.get("score"),
+            "reference_levels_provisional": alert.get("reference_levels_provisional") is True,
             "execution_authorized": False,
             "not_order_instruction": True,
         }
@@ -221,8 +231,33 @@ def notification_text(report: dict[str, Any]) -> tuple[str, str]:
     actionable = classification.get("actionable_alerts") or []
     data_alerts = classification.get("data_alerts") or []
     title = "Stock Ultimus V32"
+    futures = next((
+        item for item in actionable
+        if str(item.get("strategy") or "").upper() in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}
+    ), None)
+
+    def number(value: Any) -> str:
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return "N/D"
+
     if custom_message:
         body = custom_message
+    elif futures:
+        ticker = str(futures.get("ticker") or "FUTUROS")
+        direction = str(futures.get("direction") or "ALERTA").upper()
+        title = f"{ticker} {direction} · FUTUROS"
+        levels_ready = futures.get("stop_price") is not None and futures.get("tp1_price") is not None
+        action = "REVISAR AHORA; aún no ejecutar" if str(futures.get("state") or "").upper() != "ENTRY_READY" else "REVISAR ENTRADA AHORA"
+        if not levels_ready:
+            action = "ESPERAR NIVELES; no entrar a ciegas"
+        body = (
+            f"Disparo {number(futures.get('price'))} | Stop {number(futures.get('stop_price'))} | "
+            f"T1 {number(futures.get('tp1_price'))} | T2 {number(futures.get('tp2_price'))}. {action}."
+        )
+        if futures.get("reference_levels_provisional"):
+            body += " Niveles ATR; confirmar consola."
     elif actionable:
         tickers = ", ".join(str(item.get("ticker")) for item in actionable[:5] if item.get("ticker"))
         body = f"{classification.get('actionable_count')} alerta(s) accionables: {tickers}. Estado {status}."
