@@ -1825,6 +1825,8 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "confirmation_quality_score": processed.get("confirmation_quality_score") or event.get("confirmation_quality_score") or raw.get("confirmation_quality_score"),
             "confirmation_reasons": processed.get("confirmation_reasons") or event.get("confirmation_reasons") or raw.get("confirmation_reasons") or [],
             "confirmation_conflicts": processed.get("confirmation_conflicts") or event.get("confirmation_conflicts") or raw.get("confirmation_conflicts") or [],
+            "signal_trigger_explanation": processed.get("signal_trigger_explanation") or event.get("signal_trigger_explanation") or raw.get("signal_trigger_explanation"),
+            "signal_quality_explanation": processed.get("signal_quality_explanation") or event.get("signal_quality_explanation") or raw.get("signal_quality_explanation"),
             "not_order_instruction": True,
         })
         known_ids.add(event_id)
@@ -4395,6 +4397,13 @@ def alert_reason_plain(alert: dict[str, Any]) -> str:
     missing = alert.get("required_missing_fields") if isinstance(alert.get("required_missing_fields"), list) else []
     if is_intraday_futures_alert(alert):
         event_label = alert.get("event_code") or alert.get("event") or "evento intradía"
+        if alert.get("confirmation_gate_status"):
+            trigger = alert.get("signal_trigger_explanation") or "TradingView detectó el patrón {}.".format(event_label)
+            quality = alert.get("signal_quality_explanation") or "Confirmaciones: {}. Conflictos: {}.".format(
+                ", ".join(alert.get("confirmation_reasons") or []) or "ninguna",
+                ", ".join(alert.get("confirmation_conflicts") or []) or "ninguno",
+            )
+            return "{} Filtro final: {}".format(trigger, quality)
         if state == "ENTRY_READY":
             return "TradingView detectó {} y el motor la dejó lista para revisión manual.".format(event_label)
         if state == "RISK_BLOCKED":
@@ -4512,6 +4521,10 @@ def render_alert_lifecycle_line(alert: dict[str, Any]) -> str:
 
 
 def alert_quality_score(alert: dict[str, Any]) -> float:
+    if is_intraday_futures_alert(alert):
+        confirmation_quality = console_float_or_none(alert.get("confirmation_quality_score"))
+        if confirmation_quality is not None:
+            return round(min(max(confirmation_quality, 0.0), 100.0), 2)
     values = [
         console_float_or_none(alert.get("setup_validity_pct")),
         console_float_or_none(alert.get("conviction_score")),

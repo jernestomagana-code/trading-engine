@@ -150,6 +150,8 @@ class FuturesSignalQualityTests(unittest.TestCase):
                     ],
                     "main_blocker": "COUNTERTREND_CONFIRMATION_INSUFFICIENT",
                     "decision_explanation": "Mantener en WATCH por confirmación insuficiente.",
+                    "signal_trigger_explanation": "Disparó por cruce estocástico bajista.",
+                    "signal_quality_explanation": "Una confirmación a favor y cuatro conflictos.",
                 }],
             }},
         }
@@ -162,6 +164,8 @@ class FuturesSignalQualityTests(unittest.TestCase):
         self.assertEqual(alert["stop_price"], 7542.59)
         self.assertEqual(alert["confirmation_gate_status"], "INSUFFICIENT")
         self.assertEqual(len(alert["confirmation_conflicts"]), 4)
+        self.assertEqual(ibkr_account_profile.alert_quality_score(alert), 20)
+        self.assertIn("cruce estocástico", ibkr_account_profile.alert_reason_plain(alert))
 
 
 if __name__ == "__main__":
