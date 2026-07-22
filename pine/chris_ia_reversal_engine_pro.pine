@@ -69,9 +69,7 @@ alertEntry = input.bool(true, "Alertar ENTRY", group=grp_alerts)
 // Helpers
 // ==========================================
 ma(float source, int length, simple string maType) =>
-    switch maType
-        "EMA" => ta.ema(source, length)
-        "SMA" => ta.sma(source, length)
+    maType == "EMA" ? ta.ema(source, length) : ta.sma(source, length)
 
 f_clamp(float x, float lo, float hi) =>
     math.max(lo, math.min(hi, x))
