@@ -105,8 +105,8 @@ def compact_eval_payload(endpoint: str, checkpoint: str, status_code: int, paylo
         "engine": payload.get("engine"),
         "status": payload.get("status"),
         "dry_run": payload.get("dry_run"),
-        "found": payload.get("pending_found") or payload.get("manual_reviews_found"),
-        "evaluated_count": payload.get("evaluated_count"),
+        "found": payload.get("pending_found") or payload.get("manual_reviews_found") or payload.get("pending_count"),
+        "evaluated_count": payload.get("evaluated_count") or payload.get("events_evaluated"),
         "not_evaluated_count": payload.get("not_evaluated_count"),
         "saved_count": payload.get("saved_count"),
         "not_order_instruction": payload.get("not_order_instruction"),
@@ -195,6 +195,21 @@ def main() -> int:
             if payload.get("not_order_instruction") is not True or payload.get("execution_authorized") is not False:
                 print("Guardrail failed for {endpoint} {checkpoint}".format(endpoint=endpoint, checkpoint=checkpoint), file=sys.stderr)
                 return 1
+
+    futures_endpoint = "/intraday_futures/evaluate_pending"
+    futures_status, futures_payload = request_json(
+        f"{base}{futures_endpoint}", token, args.timeout, method="POST"
+    )
+    futures_summary = compact_eval_payload(
+        futures_endpoint, "LATEST_AVAILABLE_PRICE", futures_status, futures_payload
+    )
+    evaluations.append(futures_summary)
+    if futures_status != 200:
+        print(json.dumps(futures_summary, indent=2, sort_keys=True), file=sys.stderr)
+        return 1
+    if futures_payload.get("not_order_instruction") is not True or futures_payload.get("execution_authorized") is not False:
+        print("Guardrail failed for intraday futures pending evaluation", file=sys.stderr)
+        return 1
 
     perf_status, perf = request_json(f"{base}/v32_strategy_performance", token, args.timeout)
     learning_status, learning = request_json(f"{base}/v31_manual_review_learning", token, args.timeout)

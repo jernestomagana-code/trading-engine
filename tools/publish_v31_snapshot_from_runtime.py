@@ -14,10 +14,11 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib import request, error
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -71,6 +72,79 @@ MARKET_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,8}(?:[.!-][A-Z0-9]{1,4})?!?$")
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + (occurrence - 1) * 7)
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    next_month = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    current = next_month - timedelta(days=1)
+    return current - timedelta(days=(current.weekday() - weekday) % 7)
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    holiday = date(year, month, day)
+    if holiday.weekday() == 5:
+        return holiday - timedelta(days=1)
+    if holiday.weekday() == 6:
+        return holiday + timedelta(days=1)
+    return holiday
+
+
+def _easter_sunday(year: int) -> date:
+    # Anonymous Gregorian algorithm; Good Friday is an exchange holiday.
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def _us_exchange_holidays(year: int) -> set[date]:
+    return {
+        _observed_fixed_holiday(year, 1, 1),
+        _nth_weekday(year, 1, 0, 3),
+        _nth_weekday(year, 2, 0, 3),
+        _easter_sunday(year) - timedelta(days=2),
+        _last_weekday(year, 5, 0),
+        _observed_fixed_holiday(year, 6, 19),
+        _observed_fixed_holiday(year, 7, 4),
+        _nth_weekday(year, 9, 0, 1),
+        _nth_weekday(year, 11, 3, 4),
+        _observed_fixed_holiday(year, 12, 25),
+    }
+
+
+def build_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
+    now_et = now.astimezone(ZoneInfo("America/New_York")) if now else datetime.now(ZoneInfo("America/New_York"))
+    holidays = set().union(*(
+        _us_exchange_holidays(year)
+        for year in [now_et.year - 1, now_et.year, now_et.year + 1]
+    ))
+    holiday = now_et.date() in holidays
+    minute = now_et.hour * 60 + now_et.minute
+    is_open = now_et.weekday() < 5 and not holiday and (9 * 60 + 30) <= minute < (16 * 60)
+    return {
+        "status": "REGULAR_OPTIONS_SESSION" if is_open else "OUTSIDE_REGULAR_OPTIONS_SESSION",
+        "label": "Mercado abierto: opciones en ventana regular" if is_open else "Fuera de la sesion regular de opciones",
+        "is_regular_market_open": is_open,
+        "options_bidask_expected": is_open,
+        "source": "LOCAL_RUNTIME_V31_PUBLISHER_CALENDAR",
+        "generated_at": now_iso(),
+        "calendar_precision": "NYSE_HOLIDAY_AWARE_ESTIMATE",
+        "market_holiday": holiday,
+    }
 
 
 def active_account_context(runtime_dir: Path) -> dict[str, Any]:
@@ -389,14 +463,7 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         "broker_checks": json_safe(broker_enriched.get("broker_checks") or []),
         "broker_check_summary": json_safe(broker_enriched.get("broker_check_summary") or {}),
         "active_position_management": json_safe(active_position_management),
-        "market": {
-            "status": "MANUAL_RUNTIME_PUBLISH",
-            "label": "Runtime snapshot publisher; validate market state manually.",
-            "is_regular_market_open": False,
-            "options_bidask_expected": False,
-            "source": "LOCAL_RUNTIME_V31_PUBLISHER",
-            "generated_at": now_iso(),
-        },
+        "market": build_market_snapshot(),
         "runtime_files_seen": sorted(runtime_data.keys()),
         "bridge_status": "PUBLISHED_FROM_LOCAL_RUNTIME_WITHOUT_IBKR_CONNECTION",
         "not_order_instruction": True,

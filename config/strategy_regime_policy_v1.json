@@ -36,6 +36,8 @@
           "preferred_dte_min": 30,
           "preferred_dte_max": 45,
           "max_spread_pct": 16.0,
+          "minimum_option_volume": 50,
+          "minimum_open_interest": 200,
           "minimum_decision_score": 75,
           "minimum_canslim_score": 70,
           "avoid_if": ["EARNINGS_SOON", "EVENT_RISK_ACTIVE", "SUPPORT_BROKEN", "ASSIGNMENT_UNACCEPTABLE"]
@@ -47,8 +49,10 @@
           "preferred_dte_min": 25,
           "preferred_dte_max": 45,
           "max_spread_pct": 16.0,
+          "minimum_option_volume": 50,
+          "minimum_open_interest": 200,
           "minimum_decision_score": 72,
-          "avoid_if": ["LIMITS_HIGH_CONVICTION_UPSIDE", "EARNINGS_SOON", "EX_DIVIDEND_WITHIN_WINDOW", "ASSIGNMENT_UNACCEPTABLE"]
+          "avoid_if": ["LIMITS_HIGH_CONVICTION_UPSIDE", "EARNINGS_SOON", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "EX_DIVIDEND_WITHIN_WINDOW", "ASSIGNMENT_UNACCEPTABLE"]
         }
       },
       "required_confirmations": ["TECHNICAL_TREND_CONFIRMED", "LIQUID_OPTIONS", "EVENT_RISK_CLEAR"]
@@ -84,6 +88,8 @@
           "preferred_dte_min": 30,
           "preferred_dte_max": 60,
           "max_spread_pct": 18.0,
+          "minimum_option_volume": 50,
+          "minimum_open_interest": 200,
           "minimum_decision_score": 72,
           "minimum_canslim_score": 68,
           "avoid_if": ["RANGE_SUPPORT_LOST", "EVENT_RISK_ACTIVE", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "ASSIGNMENT_UNACCEPTABLE"]
@@ -95,8 +101,10 @@
           "preferred_dte_min": 25,
           "preferred_dte_max": 55,
           "max_spread_pct": 18.0,
+          "minimum_option_volume": 50,
+          "minimum_open_interest": 200,
           "minimum_decision_score": 70,
-          "avoid_if": ["NO_LONG_POSITION", "EVENT_RISK_ACTIVE", "EX_DIVIDEND_WITHIN_WINDOW", "ASSIGNMENT_UNACCEPTABLE"]
+          "avoid_if": ["NO_LONG_POSITION", "EVENT_RISK_ACTIVE", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "EX_DIVIDEND_WITHIN_WINDOW", "ASSIGNMENT_UNACCEPTABLE"]
         },
         "IRON_CONDOR": {
           "priority": "RESEARCH_ONLY",
@@ -140,6 +148,8 @@
           "preferred_dte_min": 30,
           "preferred_dte_max": 45,
           "max_spread_pct": 14.0,
+          "minimum_option_volume": 75,
+          "minimum_open_interest": 250,
           "minimum_decision_score": 82,
           "minimum_canslim_score": 78,
           "avoid_if": ["SUPPORT_BROKEN", "INDEX_BELOW_KEY_AVERAGE", "EVENT_RISK_ACTIVE", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "ASSIGNMENT_UNACCEPTABLE"]
@@ -151,8 +161,10 @@
           "preferred_dte_min": 21,
           "preferred_dte_max": 45,
           "max_spread_pct": 16.0,
+          "minimum_option_volume": 50,
+          "minimum_open_interest": 200,
           "minimum_decision_score": 70,
-          "avoid_if": ["NO_LONG_POSITION", "ASSIGNMENT_UNACCEPTABLE", "EX_DIVIDEND_WITHIN_WINDOW"]
+          "avoid_if": ["NO_LONG_POSITION", "ASSIGNMENT_UNACCEPTABLE", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "EX_DIVIDEND_WITHIN_WINDOW"]
         }
       },
       "required_confirmations": ["TECHNICAL_DAMAGE_REVIEWED", "POSITION_CONTEXT_CLEAR", "EVENT_RISK_CLEAR"]
@@ -183,6 +195,8 @@
           "preferred_dte_min": 35,
           "preferred_dte_max": 60,
           "max_spread_pct": 12.0,
+          "minimum_option_volume": 100,
+          "minimum_open_interest": 300,
           "minimum_decision_score": 85,
           "minimum_canslim_score": 80,
           "avoid_if": ["BINARY_EVENT_WITHIN_WINDOW", "SPREADS_WIDE", "GAP_RISK_ELEVATED", "ASSIGNMENT_UNACCEPTABLE"]
@@ -194,8 +208,10 @@
           "preferred_dte_min": 21,
           "preferred_dte_max": 45,
           "max_spread_pct": 12.0,
+          "minimum_option_volume": 75,
+          "minimum_open_interest": 250,
           "minimum_decision_score": 75,
-          "avoid_if": ["NO_LONG_POSITION", "SPREADS_WIDE", "ASSIGNMENT_UNACCEPTABLE", "EX_DIVIDEND_WITHIN_WINDOW"]
+          "avoid_if": ["NO_LONG_POSITION", "SPREADS_WIDE", "ASSIGNMENT_UNACCEPTABLE", "EARNINGS_WITHIN_7_CALENDAR_DAYS", "EX_DIVIDEND_WITHIN_WINDOW"]
         },
         "INTRADAY_INDEX_FUTURES": {
           "priority": "BLOCKED_BY_DEFAULT",

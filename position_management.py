@@ -516,6 +516,7 @@ def _premium_capture_pct(row: dict[str, Any]) -> float | None:
 def _technical_context(row: dict[str, Any], technical_store: dict[str, dict[str, Any]]) -> dict[str, Any]:
     ticker = safe_upper(row.get("ticker"))
     technical = dict(technical_store.get(ticker) or {})
+    raw = technical.get("raw") if isinstance(technical.get("raw"), dict) else {}
     qty = safe_float(row.get("position_size"), 0.0) or 0.0
     market_value = safe_float(row.get("market_value"))
     is_stock = safe_upper(row.get("sec_type")) in ["STK", "STOCK", "EQUITY"]
@@ -557,7 +558,10 @@ def _technical_context(row: dict[str, Any], technical_store: dict[str, dict[str,
         "resistance_near": technical.get("resistance_near"),
         "support_broken": support_broken,
         "resistance_breakout": resistance_breakout,
+        "earnings_soon": bool(technical.get("earnings_soon") or raw.get("earnings_soon")),
         "event_risk": bool(technical.get("event_risk") or technical.get("earnings_soon")),
+        "ex_dividend_soon": bool(technical.get("ex_dividend_soon") or raw.get("ex_dividend_soon")),
+        "assignment_acceptable": technical.get("assignment_acceptable") if technical.get("assignment_acceptable") is not None else raw.get("assignment_acceptable"),
         "indicators": technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {},
         "expected_move_low": safe_float(technical.get("expected_move_low")),
         "expected_move_high": safe_float(technical.get("expected_move_high")),
@@ -1377,6 +1381,14 @@ def evaluate_position(
     premium_capture = safe_float(report.get("premium_capture_pct"))
     event_or_damage = bool(technical.get("event_risk") or technical.get("support_broken"))
     trend = safe_upper(technical.get("trend"))
+    pin_risk_near_expiration = bool(
+        dte is not None
+        and dte <= 3
+        and underlying_price is not None
+        and strike is not None
+        and strike > 0
+        and abs(underlying_price - strike) / strike <= 0.01
+    )
     if trend in ["BEARISH", "DOWN", "SELL"] and strategy == "CASH_SECURED_PUT":
         event_or_damage = True
 
@@ -1397,6 +1409,8 @@ def evaluate_position(
     elif strategy == "CASH_SECURED_PUT":
         if event_or_damage:
             set_review("RISK_REVIEW", "REVIEW_DEFENSIVE_EXIT", "Event risk, bearish trend, or support break can invalidate the short-put thesis.", "SHORT_PUT_THESIS_RISK")
+        elif pin_risk_near_expiration:
+            set_review("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT", "Short put is near expiration and near the strike; pin risk and assignment path need review.", "PIN_RISK_NEAR_EXPIRATION")
         elif underlying_price is not None and strike is not None and underlying_price < strike:
             set_review("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT", "Underlying is below the short-put strike; assignment risk needs review.", "SHORT_PUT_UNDERLYING_BELOW_STRIKE")
         elif premium_capture is not None and premium_capture >= premium_threshold:
@@ -1409,6 +1423,10 @@ def evaluate_position(
         required_shares = abs(qty) * (safe_float(row.get("multiplier"), DEFAULT_CONTRACT_MULTIPLIER) or DEFAULT_CONTRACT_MULTIPLIER)
         if (safe_float(group.get("shares"), 0.0) or 0.0) < required_shares:
             set_review("RISK_REVIEW", "REVIEW_RISK", "Covered call no longer has enough detected shares.", "COVERED_CALL_SHARE_MISMATCH")
+        elif bool(technical.get("ex_dividend_soon")) and underlying_price is not None and strike is not None and underlying_price >= strike:
+            set_review("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT", "Covered call is ITM into an ex-dividend window; early assignment risk needs review.", "EARLY_ASSIGNMENT_RISK")
+        elif pin_risk_near_expiration:
+            set_review("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT", "Covered call is near expiration and near the strike; pin risk and called-away path need review.", "PIN_RISK_NEAR_EXPIRATION")
         elif underlying_price is not None and strike is not None and underlying_price > strike:
             set_review("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT", "Underlying is above the short-call strike; assignment or roll choice needs review.", "COVERED_CALL_UNDERLYING_ABOVE_STRIKE")
         elif technical.get("resistance_breakout"):

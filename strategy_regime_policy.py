@@ -304,6 +304,22 @@ def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[s
         checks,
         blockers,
         missing_fields,
+        name="volume",
+        value=contract.get("volume"),
+        minimum=parameters.get("minimum_option_volume"),
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
+        name="open_interest",
+        value=contract.get("open_interest"),
+        minimum=parameters.get("minimum_open_interest"),
+    )
+    _check_range(
+        checks,
+        blockers,
+        missing_fields,
         name="technical_score",
         value=technical.get("score"),
         minimum=parameters.get("minimum_decision_score"),
@@ -330,6 +346,8 @@ def parameter_review(recommendation: dict[str, Any], regime_overlay_data: dict[s
         "NO_LONG_POSITION": "NO_LONG_POSITION" in active_blockers,
         "ASSIGNMENT_UNACCEPTABLE": "ASSIGNMENT_UNACCEPTABLE" in active_blockers or market.get("assignment_acceptable") is False,
         "EX_DIVIDEND_WITHIN_WINDOW": "EX_DIVIDEND_WITHIN_WINDOW" in active_blockers or bool(market.get("ex_dividend_soon")),
+        "PIN_RISK_NEAR_EXPIRATION": "PIN_RISK_NEAR_EXPIRATION" in active_blockers or bool(market.get("pin_risk_near_expiration")),
+        "EARLY_ASSIGNMENT_RISK": "EARLY_ASSIGNMENT_RISK" in active_blockers or bool(market.get("early_assignment_risk")),
     }
     for condition in avoid_if:
         normalized = normalize(condition)

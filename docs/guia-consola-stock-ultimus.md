@@ -114,7 +114,7 @@ Las acciones técnicas de conexión y publicación quedaron dentro de **Más opc
 
 | Botón | Para qué sirve | Qué no hace |
 |---|---|---|
-| Ejecutar apertura diaria | Ejecuta CANSLIM, refresh principal de IBKR, refresh RSP 7–14 DTE, publicación, validaciones y reporte. | No autoriza órdenes. |
+| Ejecutar apertura diaria | Ejecuta CANSLIM, evalúa dinámicamente hasta 14 subyacentes con opciones, refresca IBKR y RSP 7–14 DTE, publica, prepara contexto conservador de futuros, reconcilia señales y genera el reporte. | No autoriza órdenes ni da por validado el contexto macro. |
 | Actualizar | Relee producción, GPT y alertas. | No cambia cuenta y no consulta profundamente IBKR. |
 | Validar conexión IBKR | Dentro de **Más opciones**; prueba TWS/API, cuenta y capacidad. | No hace un escaneo profundo de opciones. |
 | Alinear contexto publicado | Dentro de **Más opciones**; corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
@@ -172,6 +172,8 @@ Este panel permanece cerrado cuando no hay una señal operable. La consola separ
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
+
+La apertura crea, sólo cuando no existe uno, un contexto premercado **automático conservador**. Este evita que una señal quede sin expediente de sesión, pero mantiene macro, volatilidad y referencias en `NEEDS_REVIEW`; debes validarlos en la consola antes de aprobar una entrada. El motor también toma automáticamente de la publicación vigente el valor neto de la cuenta para calcular riesgo cuando TradingView no lo incluye. Un valor recibido directamente en la alerta siempre tiene prioridad.
 
 El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **Aceptados hoy** excluye lo enviado a cuarentena; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor diario** confirma que fueron incorporados a la evaluación. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
 
@@ -501,6 +503,8 @@ Ejecuta un refresh de IBKR y espera a que termine. No tomes decisiones de contra
 Puede ser correcto. Revisa si el mercado está cerrado, si faltan eventos reales de TradingView o si las oportunidades quedaron ocultas como diagnóstico por no superar las puertas de calidad. La ausencia de alerta es preferible a forzar una señal débil.
 
 Para futuros, **Apertura diaria** también ejecuta la reconciliación de señales. Si TradingView recibió una señal pero la consola no pudo procesarla antes de un reinicio, la recupera desde el almacenamiento permanente, evita duplicarla y la incorpora a **Futuros Intradía** si todavía está vigente. Si esta comprobación falla, la apertura queda en `ACTION_REQUIRED` y no debe asumirse que “no hubo señales”.
+
+Los eventos productivos de MES/MNQ enviados con `is_validation:false` se consideran reales; solamente `is_validation:true` o una fuente expresamente sintética se excluye. El ciclo postcierre evalúa además `/intraday_futures/evaluate_pending`, de modo que los resultados de futuros no quedan fuera del aprendizaje diario cuando ya existe un precio posterior utilizable.
 
 ### Una acción muestra error
 

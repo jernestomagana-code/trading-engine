@@ -633,7 +633,9 @@ Current guardrails:
 
 - `IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED=true` by default.
 - `IBKR_MAX_OPTION_SYMBOLS_PER_RUN` limits how many underlyings get option
-  chains in one cycle. Default is 10 in normal mode and 6 in fast mode.
+  chains in one cycle. The bridge defaults to 14 in normal mode and 8 in fast
+  mode; the daily opening deliberately allows up to 14 ranked names so the
+  strongest CANSLIM candidates complete contract evaluation that same day.
 - `IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN` limits total option contracts
   queried in one cycle.
 - `IBKR_OPTION_MIN_UNDERLYING_SCORE` defaults to 30 so liquid large-cap names
@@ -643,7 +645,7 @@ Current guardrails:
 - `IBKR_OPTION_TECHNICAL_TRIGGER_SCORE` and
   `IBKR_OPTION_CANSLIM_TRIGGER_SCORE` define the technical/CANSLIM detonators.
 - The IBKR diagnostic file records `option_symbol_plan` with ranked, selected,
-  selected, and skipped underlyings, plus `canslim_candidate_count`, so the
+  and skipped underlyings, plus `canslim_candidate_count`, so the
   operator can audit why a symbol did or did not consume option-chain budget.
 
 If a new stock or strategy repeatedly needs TradingView-specific confirmation,

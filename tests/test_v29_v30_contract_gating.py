@@ -197,6 +197,8 @@ class V29V30ContractGatingTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
 
         with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
@@ -280,6 +282,8 @@ class V29V30ContractGatingTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
         master = _master_snapshot([complete_row])
         master["technical"]["QQQ"]["canslim"] = {"passes": False, "score": 42}
@@ -420,6 +424,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
 
         with patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([complete_row])):
@@ -452,6 +458,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
         market_closed = _master_snapshot([complete_row])
         market_closed["data"]["market"] = {
@@ -1521,6 +1529,55 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(validation_result["reason"], "VALIDATION_EVENT_SUPPRESSED")
         send_push.assert_not_called()
 
+    def test_tradingview_explicit_false_validation_is_not_suppressed(self):
+        raw = '{"source":"TRADINGVIEW","is_validation":false,"event":"ORB_BREAKOUT"}'
+        self.assertFalse(main.intraday_futures_is_validation_event({
+            "source": "TRADINGVIEW",
+            "is_validation": False,
+            "raw_payload_preview": raw,
+        }))
+        self.assertFalse(main.intraday_futures_is_validation_event({
+            "source": "TRADINGVIEW",
+            "raw_payload_preview": raw,
+        }))
+        self.assertTrue(main.intraday_futures_is_validation_event({
+            "source": "TRADINGVIEW_SYNTHETIC_VALIDATION",
+            "raw_payload_preview": raw,
+        }))
+
+    def test_futures_account_context_uses_current_master_nlv_when_payload_omits_it(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "event": "ORB_BREAKOUT",
+        }
+        with patch.object(main, "_v29_discover_master_snapshot", return_value={"path": "runtime/master.json"}), patch.object(
+            main,
+            "_v31_account_context_from_master",
+            return_value={
+                "net_liquidation": 7000.0,
+                "account_scope": "futures",
+                "account_alias": "principal",
+                "generated_at": "2026-07-22T14:00:00+00:00",
+            },
+        ):
+            enriched = main.apply_intraday_futures_account_context(payload)
+
+        self.assertEqual(enriched["nlv"], 7000.0)
+        self.assertEqual(enriched["account_nlv"], 7000.0)
+        self.assertEqual(enriched["account_context_source"], "CURRENT_BROKER_MASTER_SNAPSHOT")
+
+    def test_automatic_premarket_template_remains_manual_review(self):
+        template = main.intraday_futures_premarket_template(
+            mode="automatic_conservative",
+            session_date="2026-07-22",
+            updated_by="daily_open",
+        )
+        payload = template["payload"]
+        self.assertEqual(payload["decision_max_state"], "MANUAL_REVIEW")
+        self.assertEqual(payload["macro_status"], "NEEDS_REVIEW")
+        self.assertEqual(payload["source"], "DAILY_OPEN_AUTOMATIC_CONSERVATIVE")
+
     def test_fast_ack_queues_intraday_operational_processing(self):
         parsed = {
             "source": "TRADINGVIEW",
@@ -2191,6 +2248,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
         master = _master_snapshot([row])
         master["technical"]["QQQ"]["canslim"] = {"passes": True, "score": 78}
@@ -2346,6 +2405,74 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(blocked["selected_contract"]["volatility_context"]["premium_state"], "CHEAP")
         self.assertEqual(blocked["risk_profile"]["blocked_checks"][0]["field"], "selected_contract.iv")
 
+    def test_v31_risk_profile_blocks_naked_put_when_liquidity_is_too_thin(self):
+        illiquid_row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260821",
+            "dte": 31,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+            "volume": 10,
+            "open_interest": 80,
+            "iv_rank": 45,
+        }
+
+        with patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([illiquid_row]),
+        ):
+            blocked = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(blocked["final_state"], "RISK_BLOCKED")
+        self.assertIn("RISK_PROFILE_OPTION_VOLUME_TOO_LOW", blocked["blockers"])
+        self.assertIn("RISK_PROFILE_OPEN_INTEREST_TOO_LOW", blocked["blockers"])
+
+    def test_v31_risk_profile_distinguishes_missing_iv_from_low_iv(self):
+        row = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 710,
+            "expiration": "20260821",
+            "dte": 31,
+            "bid": 1.20,
+            "ask": 1.35,
+            "mid": 1.275,
+            "spread": 0.15,
+            "spread_pct": 11.76,
+            "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
+            "iv": None,
+        }
+
+        with patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([{**row, "iv_rank": 20}]),
+        ):
+            low = main._v31_canonical_decision("QQQ")
+
+        with patch.object(
+            main,
+            "_v29_discover_master_snapshot",
+            return_value=_master_snapshot([row]),
+        ):
+            missing = main._v31_canonical_decision("QQQ")
+
+        self.assertEqual(low["risk_blocker"], "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
+        self.assertEqual(missing["risk_blocker"], "RISK_PROFILE_VOLATILITY_PREMIUM_MISSING")
+
     def test_v31_balanced_profile_is_not_looser_than_strategy_specific_put_guard(self):
         complete_row = {
             "ticker": "QQQ",
@@ -2361,6 +2488,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
 
         with patch.object(
@@ -2468,6 +2597,50 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(decision["market"]["ex_dividend_soon"])
         self.assertEqual(payload["items"][0]["parameter_review"]["status"], "REVIEW_REQUIRED")
         self.assertIn("AVOID_IF_EX_DIVIDEND_WITHIN_WINDOW", payload["items"][0]["parameter_review"]["blockers"])
+
+    def test_v31_event_assignment_gate_blocks_covered_call_earnings_window(self):
+        complete_row = {
+            "ticker": "TSLA",
+            "strategy": "COVERED_CALL",
+            "decision": "ENTRY_READY",
+            "score": 90,
+            "strike": 440,
+            "expiration": "20260821",
+            "dte": 31,
+            "bid": 13.20,
+            "ask": 13.35,
+            "mid": 13.275,
+            "spread": 0.15,
+            "spread_pct": 1.13,
+            "delta": 0.20,
+            "volume": 100,
+            "open_interest": 500,
+        }
+        master = _master_snapshot([complete_row])
+        master["technical"] = {
+            "TSLA": {
+                "ticker": "TSLA",
+                "trend": "BULLISH",
+                "score": 80,
+                "by_strategy_context": {
+                    "COVERED_CALL": {
+                        "trend": "BULLISH",
+                        "score": 80,
+                        "earnings_soon": True,
+                        "assignment_acceptable": True,
+                    }
+                },
+            }
+        }
+
+        with patch.object(main, "_v29_discover_master_snapshot", return_value=master):
+            decision = main._v31_canonical_decision("TSLA")
+            payload = main._v31_daily_recommendations_payload(["TSLA"])
+
+        self.assertEqual(decision["final_state"], "RISK_BLOCKED")
+        self.assertIn("EARNINGS_WITHIN_7_CALENDAR_DAYS", decision["blockers"])
+        self.assertEqual(payload["items"][0]["parameter_review"]["status"], "REVIEW_REQUIRED")
+        self.assertIn("AVOID_IF_EARNINGS_WITHIN_7_CALENDAR_DAYS", payload["items"][0]["parameter_review"]["blockers"])
 
     def test_v31_event_assignment_gate_blocks_put_when_assignment_unacceptable(self):
         complete_row = {
@@ -2699,6 +2872,8 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread": 0.15,
             "spread_pct": 11.76,
             "delta": -0.20,
+            "volume": 100,
+            "open_interest": 500,
         }
         master = _master_snapshot([complete_row])
         master["technical"]["QQQ"]["canslim"] = {"passes": True, "score": 78}

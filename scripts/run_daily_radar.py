@@ -25,6 +25,7 @@ DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 INGEST_KEYCHAIN_SERVICE = "stock-ultimus-snapshot-ingest"
 READ_KEYCHAIN_SERVICE = "stock-ultimus-read-access-token"
 DEFAULT_AUDIT_PATH = ROOT / "runtime" / "daily_radar_audit.jsonl"
+DEFAULT_JSON_PATH = ROOT / "runtime" / "daily_radar_latest.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--canslim-timeout", type=int, default=int(os.getenv("CANSLIM_BUILDER_TIMEOUT", "120")))
     parser.add_argument("--full-bridge", action="store_true", help="Use the slower full IBKR option universe.")
     parser.add_argument("--allow-partial", action="store_true", help="Continue to cloud read even if the bridge refresh fails.")
-    parser.add_argument("--json-out", help="Optional path to save the raw /gpt_v31_daily_rankings response.")
+    parser.add_argument(
+        "--json-out",
+        default=os.getenv("STOCK_ULTIMUS_DAILY_RADAR_JSON", str(DEFAULT_JSON_PATH)),
+        help="Path to save the current /gpt_v31_daily_rankings response. Use an empty string to disable.",
+    )
     parser.add_argument(
         "--audit-out",
         default=os.getenv("STOCK_ULTIMUS_DAILY_RADAR_AUDIT", str(DEFAULT_AUDIT_PATH)),

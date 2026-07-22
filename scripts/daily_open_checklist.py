@@ -206,11 +206,16 @@ def request_json(
     token: str | None = None,
     timeout: int = 30,
     method: str = "GET",
+    payload: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     headers = {"Accept": "application/json"}
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
     if token:
         headers["X-Stock-Ultimus-Read-Token"] = token
-    request = urllib.request.Request(url, headers=headers, method=str(method or "GET").upper())
+    request = urllib.request.Request(url, data=body, headers=headers, method=str(method or "GET").upper())
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
@@ -287,11 +292,11 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
         daily_symbols = ",".join(daily_symbols_list)
         env.setdefault("IBKR_WATCHLIST", daily_symbols)
         env.setdefault("IBKR_OPTION_SYMBOLS", daily_symbols)
-        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", str(max(10, len(daily_symbols_list))))
+        env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "14")
         env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
-        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", str(max(40, len(daily_symbols_list) * 4)))
-        env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "0")
-        env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "0")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "56")
+        env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "1")
+        env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "1")
     return run_command(
         "refresh_ibkr_bridge",
         [sys.executable, "ibkr_bridge.py", "--once"],
@@ -421,6 +426,46 @@ def publish_runtime(args: argparse.Namespace, ingest_token: str) -> dict[str, An
     if args.allow_stale_publish:
         command.append("--allow-stale")
     return run_command("publish_runtime_snapshot", command, timeout=90, env=env)
+
+
+def ensure_conservative_premarket_context(base_url: str, read_token: str, timeout: int) -> dict[str, Any]:
+    current_status, current = request_json(
+        f"{base_url}/intraday_futures/premarket_context",
+        token=read_token,
+        timeout=timeout,
+    )
+    if current_status == 200 and current.get("found") is True:
+        return {
+            "ok": True,
+            "status": "EXISTING_CONTEXT_PRESERVED",
+            "context_id": (current.get("context") or {}).get("context_id"),
+            "not_order_instruction": True,
+        }
+
+    template_status, template = request_json(
+        f"{base_url}/intraday_futures/premarket_context/template?mode=automatic_conservative&updated_by=daily_open",
+        token=read_token,
+        timeout=timeout,
+    )
+    context_payload = template.get("payload") if isinstance(template.get("payload"), dict) else {}
+    if template_status != 200 or not context_payload:
+        return {"ok": False, "status": "TEMPLATE_UNAVAILABLE", "http_status": template_status}
+    save_status, saved = request_json(
+        f"{base_url}/intraday_futures/premarket_context",
+        token=read_token,
+        timeout=timeout,
+        method="POST",
+        payload=context_payload,
+    )
+    return {
+        "ok": save_status == 200 and saved.get("status") == "ok",
+        "status": "AUTOMATIC_CONSERVATIVE_CONTEXT_CREATED" if save_status == 200 else "SAVE_FAILED",
+        "http_status": save_status,
+        "context_id": ((saved.get("context") or {}).get("context_id") if isinstance(saved, dict) else None),
+        "manual_validation_required": True,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
 
 
 def operator_counts(operator: dict[str, Any]) -> dict[str, int]:
@@ -586,6 +631,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "unauthorized_status": denied_status,
             "authorized_status": allowed_status,
         }
+        premarket_context = ensure_conservative_premarket_context(
+            base_url, read_token, args.read_timeout
+        )
+        checks["intraday_futures_premarket_context"] = premarket_context
+        report["intraday_futures_premarket_context"] = premarket_context
         reconcile_status, reconciliation = 0, {}
         reconcile_attempts = 0
         for reconcile_attempts in range(1, 3):

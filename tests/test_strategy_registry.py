@@ -43,6 +43,7 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIn("ASSIGNMENT_UNACCEPTABLE", put_strategy["primary_blockers"])
         self.assertIn("ASSIGNMENT_UNACCEPTABLE", covered_call["primary_blockers"])
         self.assertIn("EX_DIVIDEND_WITHIN_WINDOW", covered_call["primary_blockers"])
+        self.assertIn("EARNINGS_WITHIN_7_CALENDAR_DAYS", covered_call["primary_blockers"])
 
     def test_research_only_strategy_adds_blocker_and_never_authorizes_execution(self):
         overlay = strategy_registry.recommendation_overlay(

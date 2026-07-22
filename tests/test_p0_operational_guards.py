@@ -628,6 +628,14 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("run_canslim_builder(args)", source)
         self.assertIn("ibkr_bridge.py", source)
 
+        opening_source = (ROOT / "scripts" / "daily_open_checklist.py").read_text()
+        self.assertIn('env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "1")', opening_source)
+        self.assertIn('env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "1")', opening_source)
+        self.assertIn("ensure_conservative_premarket_context", opening_source)
+
+        outcome_source = (ROOT / "scripts" / "run_daily_outcome_evaluation.py").read_text()
+        self.assertIn('futures_endpoint = "/intraday_futures/evaluate_pending"', outcome_source)
+
     def test_operational_100_preflight_closes_five_gates_safely(self):
         source = OPERATIONAL_100_CHECK.read_text()
 

@@ -79,7 +79,7 @@ class StrategyRegimePolicyTests(unittest.TestCase):
             "evidence": {
                 "technical": {"score": 82},
                 "fundamental": {"canslim": {"score": 76}},
-                "options": {"contract": {"delta": -0.18, "dte": 33, "spread_pct": 11.5}},
+                "options": {"contract": {"delta": -0.18, "dte": 33, "spread_pct": 11.5, "volume": 100, "open_interest": 500}},
             },
         }
 
@@ -127,6 +127,26 @@ class StrategyRegimePolicyTests(unittest.TestCase):
         self.assertEqual(review["status"], "REVIEW_REQUIRED")
         self.assertIn("AVOID_IF_EX_DIVIDEND_WITHIN_WINDOW", review["blockers"])
         self.assertIn("EX_DIVIDEND_WITHIN_WINDOW", review["triggered_avoid_if"])
+
+    def test_parameter_review_blocks_covered_call_earnings_window_and_liquidity(self):
+        overlay = strategy_regime_policy.regime_overlay("COVERED_CALL", "NEUTRAL_RANGE", self.policy)
+        item = {
+            "final_state": "ENTRY_READY",
+            "required_missing_fields": [],
+            "evidence": {
+                "technical": {"score": 82},
+                "fundamental": {},
+                "options": {"contract": {"delta": 0.20, "dte": 33, "spread_pct": 11.5, "volume": 25, "open_interest": 150}},
+                "market": {"earnings_soon": True, "assignment_acceptable": True},
+            },
+        }
+
+        review = strategy_regime_policy.parameter_review(item, overlay)
+
+        self.assertEqual(review["status"], "REVIEW_REQUIRED")
+        self.assertIn("AVOID_IF_EARNINGS_WITHIN_7_CALENDAR_DAYS", review["blockers"])
+        self.assertIn("VOLUME_OUT_OF_REGIME_RANGE", review["blockers"])
+        self.assertIn("OPEN_INTEREST_OUT_OF_REGIME_RANGE", review["blockers"])
 
     def test_parameter_review_blocks_when_regime_blocks_strategy(self):
         overlay = strategy_regime_policy.regime_overlay("INTRADAY_INDEX_FUTURES", "HIGH_VOL_EVENT_RISK", self.policy)

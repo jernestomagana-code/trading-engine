@@ -115,6 +115,72 @@ class PositionManagementTests(unittest.TestCase):
         self.assertIn("SHORT_PUT_UNDERLYING_BELOW_STRIKE", item["blockers"])
         self.assertEqual(payload["status"], "RISK_REVIEW")
 
+    def test_short_put_near_expiration_and_strike_triggers_pin_risk_review(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {
+                        "ticker": "MSFT",
+                        "sec_type": "OPT",
+                        "right": "P",
+                        "strike": 420,
+                        "position_size": -1,
+                        "entry_credit": 5.0,
+                        "option_mark": 2.2,
+                        "dte": 2,
+                        "delta": -0.32,
+                    }
+                ],
+                {
+                    "MSFT": {
+                        "ticker": "MSFT",
+                        "trend": "NEUTRAL",
+                        "price": 419.5,
+                        "support_level": 400,
+                    }
+                },
+            ),
+            playbook=self.playbook,
+        )
+
+        item = payload["positions"][0]
+        self.assertEqual(item["exit_state"], "ASSIGNMENT_REVIEW")
+        self.assertIn("PIN_RISK_NEAR_EXPIRATION", item["blockers"])
+
+    def test_covered_call_itm_into_ex_dividend_window_triggers_early_assignment_review(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "AAPL", "sec_type": "STK", "position_size": 100},
+                    {
+                        "ticker": "AAPL",
+                        "sec_type": "OPT",
+                        "right": "C",
+                        "strike": 210,
+                        "position_size": -1,
+                        "entry_credit": 3.0,
+                        "option_mark": 2.4,
+                        "dte": 5,
+                        "delta": 0.58,
+                    }
+                ],
+                {
+                    "AAPL": {
+                        "ticker": "AAPL",
+                        "trend": "NEUTRAL",
+                        "price": 212,
+                        "resistance_level": 215,
+                        "ex_dividend_soon": True,
+                    }
+                },
+            ),
+            playbook=self.playbook,
+        )
+
+        option_item = [item for item in payload["positions"] if item["strategy"] == "COVERED_CALL"][0]
+        self.assertEqual(option_item["exit_state"], "ASSIGNMENT_REVIEW")
+        self.assertIn("EARLY_ASSIGNMENT_RISK", option_item["blockers"])
+
     def test_uncovered_short_call_is_risk_review(self):
         payload = position_management.build_active_position_management(
             self.snapshot(

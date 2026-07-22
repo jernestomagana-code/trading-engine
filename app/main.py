@@ -1878,6 +1878,19 @@ def intraday_futures_premarket_template(mode="base", session_date=None, updated_
     mode = str(mode or "base").lower().strip()
     session_date = session_date or now_utc().astimezone(MARKET_TZ).date().isoformat()
     templates = {
+        "automatic_conservative": {
+            "market_context_status": "NEEDS_REVIEW",
+            "macro_status": "NEEDS_REVIEW",
+            "volatility_status": "NEEDS_REVIEW",
+            "reference_alignment": "NEEDS_REVIEW",
+            "opening_range_status": "NEEDS_REVIEW",
+            "range_used_status": "NEEDS_REVIEW",
+            "risk_daily_status": "NEEDS_REVIEW",
+            "portfolio_status": "NEEDS_REVIEW",
+            "decision_max_state": "MANUAL_REVIEW",
+            "source": "DAILY_OPEN_AUTOMATIC_CONSERVATIVE",
+            "notes": "Contexto base creado automaticamente por la apertura. No presupone calendario macro, volatilidad ni alineacion; completar o validar en consola antes de aprobar una entrada.",
+        },
         "base": {
             "market_context_status": "CLEAR_MANUAL_INPUT",
             "macro_status": "CLEAR",
@@ -2872,16 +2885,33 @@ def average_or_none(values):
 
 
 def intraday_futures_is_validation_event(event):
-    if event.get("is_validation") is True:
-        return True
+    event = event if isinstance(event, dict) else {}
+    # An explicit boolean is authoritative. Older TradingView payloads included
+    # `is_validation:false`; the former substring heuristic incorrectly treated
+    # the word VALIDATION itself as proof that the event was synthetic.
+    if "is_validation" in event and isinstance(event.get("is_validation"), bool):
+        return event.get("is_validation") is True
 
     source_values = [
         event.get("source"),
         event.get("original_source"),
-        event.get("raw_payload_preview"),
     ]
     source_text = " ".join(str(value or "") for value in source_values).upper()
-    return "SYNTHETIC" in source_text or "VALIDATION" in source_text or "CODEX_" in source_text
+    if "SYNTHETIC" in source_text or "VALIDATION" in source_text or "CODEX_" in source_text:
+        return True
+
+    raw_preview = event.get("raw_payload_preview")
+    if isinstance(raw_preview, str) and raw_preview.strip().startswith("{"):
+        try:
+            raw_payload = json.loads(raw_preview)
+        except Exception:
+            raw_payload = {}
+        if isinstance(raw_payload, dict):
+            if isinstance(raw_payload.get("is_validation"), bool):
+                return raw_payload.get("is_validation") is True
+            raw_source = " ".join(str(raw_payload.get(key) or "") for key in ["source", "original_source"]).upper()
+            return "SYNTHETIC" in raw_source or "VALIDATION" in raw_source or "CODEX_" in raw_source
+    return False
 
 
 def filter_intraday_futures_validation_events(events, include_validation=False):
@@ -6301,6 +6331,8 @@ def intraday_futures_evaluate_pending():
         "status": "ok",
         "engine": "intraday_futures_outcome_engine_v1_phase_3",
         **result,
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -10141,6 +10173,42 @@ def apply_intraday_futures_risk_engine(payload):
     return payload
 
 
+def apply_intraday_futures_account_context(payload):
+    """Fill risk-sizing context from the current broker snapshot when omitted by TV."""
+    payload = dict(payload or {})
+    if not is_intraday_futures_signal(payload):
+        return payload
+    if first_present_float(
+        payload.get("nlv"),
+        payload.get("net_liquidation"),
+        payload.get("net_liquidation_value"),
+        payload.get("account_nlv"),
+    ) is not None:
+        payload.setdefault("account_context_source", "TRADINGVIEW_PAYLOAD")
+        return payload
+
+    discover_master = globals().get("_v29_discover_master_snapshot")
+    account_from_master = globals().get("_v31_account_context_from_master")
+    if not callable(discover_master) or not callable(account_from_master):
+        return payload
+    try:
+        master = discover_master()
+        account_context = account_from_master(master)
+    except Exception:
+        return payload
+
+    nlv = first_present_float(account_context.get("net_liquidation"))
+    if nlv is None:
+        return payload
+    payload["nlv"] = nlv
+    payload["account_nlv"] = nlv
+    payload["account_scope"] = account_context.get("account_scope")
+    payload["account_alias"] = account_context.get("account_alias")
+    payload["account_context_source"] = "CURRENT_BROKER_MASTER_SNAPSHOT"
+    payload["account_context_generated_at"] = account_context.get("generated_at")
+    return payload
+
+
 def normalize_intraday_futures_positions(value):
     if value in [None, "", "null", "None"]:
         return []
@@ -10738,6 +10806,7 @@ def build_intraday_futures_construction(payload):
     payload["warnings"] = warnings
     payload["missing_fields"] = missing_fields
     payload["construction_engine_version"] = construction["construction_engine_version"]
+    payload = apply_intraday_futures_account_context(payload)
     payload = apply_intraday_futures_risk_engine(payload)
     payload = apply_intraday_futures_portfolio_engine(payload)
     payload = apply_premarket_context_to_intraday_futures_payload(payload)
@@ -10775,6 +10844,7 @@ async def technical_snapshot_v15_1(request: Request, x_webhook_secret: Optional[
 
     original_source = parsed.get("source")
     is_validation = intraday_futures_is_validation_event({
+        "is_validation": parsed.get("is_validation") if isinstance(parsed.get("is_validation"), bool) else None,
         "source": original_source,
         "raw_payload_preview": raw_text,
     })
@@ -11277,6 +11347,7 @@ async def technical_snapshot_forced_v15_2(
 
     original_source = parsed.get("source")
     is_validation = intraday_futures_is_validation_event({
+        "is_validation": parsed.get("is_validation") if isinstance(parsed.get("is_validation"), bool) else None,
         "source": original_source,
         "raw_payload_preview": raw_text,
     })
@@ -21339,6 +21410,8 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_iv_for_premium_selling": 0.20,
         "min_iv_rank_for_premium_selling": 40.0,
         "min_iv_hv_spread_for_premium_selling": 0.02,
+        "min_option_volume": 100,
+        "min_open_interest": 300,
     },
     "balanced": {
         "profile_name": "balanced_manual_review",
@@ -21354,6 +21427,8 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
         "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
         "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
+        "min_option_volume": 50,
+        "min_open_interest": 200,
     },
     "aggressive": {
         "profile_name": "aggressive_manual_review",
@@ -21369,6 +21444,8 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_iv_for_premium_selling": 0.15,
         "min_iv_rank_for_premium_selling": 25.0,
         "min_iv_hv_spread_for_premium_selling": 0.0,
+        "min_option_volume": 25,
+        "min_open_interest": 100,
     },
     "paper": {
         "profile_name": "paper_forward_test",
@@ -21384,6 +21461,8 @@ _V31_RISK_PROFILE_PRESETS = {
         "min_iv_for_premium_selling": 0.0,
         "min_iv_rank_for_premium_selling": 0.0,
         "min_iv_hv_spread_for_premium_selling": -1.0,
+        "min_option_volume": 0,
+        "min_open_interest": 0,
     },
 }
 
@@ -21398,6 +21477,8 @@ _V31_STRATEGY_RISK_GUARDS = {
         "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
         "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
         "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
+        "min_option_volume": 50,
+        "min_open_interest": 200,
     },
     "NAKED_PUT": {
         "min_dte": 30,
@@ -21409,6 +21490,8 @@ _V31_STRATEGY_RISK_GUARDS = {
         "min_iv_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV,
         "min_iv_rank_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_RANK,
         "min_iv_hv_spread_for_premium_selling": _V29_MIN_SELL_PREMIUM_IV_HV_SPREAD,
+        "min_option_volume": 50,
+        "min_open_interest": 200,
     },
     "COVERED_CALL": {
         "min_dte": 25,
@@ -21417,6 +21500,8 @@ _V31_STRATEGY_RISK_GUARDS = {
         "max_abs_delta": 0.25,
         "max_spread_pct": 18.0,
         "min_bid": 0.05,
+        "min_option_volume": 50,
+        "min_open_interest": 200,
     },
 }
 
@@ -21619,6 +21704,8 @@ def _v31_risk_profile(name=None):
         "min_iv_for_premium_selling": _v31_env_float("V31_MIN_IV_FOR_PREMIUM_SELLING", preset["min_iv_for_premium_selling"]),
         "min_iv_rank_for_premium_selling": _v31_env_float("V31_MIN_IV_RANK_FOR_PREMIUM_SELLING", preset["min_iv_rank_for_premium_selling"]),
         "min_iv_hv_spread_for_premium_selling": _v31_env_float("V31_MIN_IV_HV_SPREAD_FOR_PREMIUM_SELLING", preset["min_iv_hv_spread_for_premium_selling"]),
+        "min_option_volume": _v31_env_int("V31_MIN_OPTION_VOLUME", preset["min_option_volume"]),
+        "min_open_interest": _v31_env_int("V31_MIN_OPEN_INTEREST", preset["min_open_interest"]),
         "allowed_strategies": allowed_strategies,
         "blocked_tickers": blocked_tickers,
         "not_order_instruction": True,
@@ -21762,6 +21849,32 @@ def _v31_evaluate_risk_profile(decision, profile=None):
             "Bid is below the minimum executable premium threshold.",
         ))
 
+    volume = _v31_profile_value(contract.get("volume"))
+    if volume is not None and volume < profile["min_option_volume"]:
+        blockers.append("RISK_PROFILE_OPTION_VOLUME_TOO_LOW")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_OPTION_VOLUME_TOO_LOW",
+            "selected_contract.volume",
+            volume,
+            ">=",
+            profile["min_option_volume"],
+            True,
+            "Option volume is below the minimum liquidity threshold.",
+        ))
+
+    open_interest = _v31_profile_value(contract.get("open_interest"))
+    if open_interest is not None and open_interest < profile["min_open_interest"]:
+        blockers.append("RISK_PROFILE_OPEN_INTEREST_TOO_LOW")
+        checks.append(_v31_risk_check(
+            "RISK_PROFILE_OPEN_INTEREST_TOO_LOW",
+            "selected_contract.open_interest",
+            open_interest,
+            ">=",
+            profile["min_open_interest"],
+            True,
+            "Open interest is below the minimum liquidity threshold.",
+        ))
+
     premium_selling_strategy = strategy in {"NAKED_PUT", "CASH_SECURED_PUT", "SHORT_PUT", "PUT_SELL"}
     volatility_context = contract.get("volatility_context") if isinstance(contract.get("volatility_context"), dict) else {}
     iv = _v31_profile_value(contract.get("iv") or contract.get("implied_volatility") or volatility_context.get("iv"))
@@ -21777,8 +21890,12 @@ def _v31_evaluate_risk_profile(decision, profile=None):
         or volatility_context.get("iv_hv_spread")
     )
     if premium_selling_strategy:
+        premium_metrics_present = False
+        volatility_blocked = False
         if iv_rank is not None:
+            premium_metrics_present = True
             if iv_rank < profile["min_iv_rank_for_premium_selling"]:
+                volatility_blocked = True
                 blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
                 checks.append(_v31_risk_check(
                     "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
@@ -21789,8 +21906,10 @@ def _v31_evaluate_risk_profile(decision, profile=None):
                     True,
                     "IV rank/percentile is too low for premium selling.",
                 ))
-        elif iv_hv_spread is not None:
+        if iv_hv_spread is not None and not volatility_blocked:
+            premium_metrics_present = True
             if iv_hv_spread < profile["min_iv_hv_spread_for_premium_selling"]:
+                volatility_blocked = True
                 blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
                 checks.append(_v31_risk_check(
                     "RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW",
@@ -21801,7 +21920,8 @@ def _v31_evaluate_risk_profile(decision, profile=None):
                     True,
                     "Implied volatility is not sufficiently above realized/historical volatility.",
                 ))
-        elif iv is not None:
+        if iv is not None and not volatility_blocked:
+            premium_metrics_present = True
             if iv < profile["min_iv_for_premium_selling"]:
                 blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_TOO_LOW")
                 checks.append(_v31_risk_check(
@@ -21813,7 +21933,7 @@ def _v31_evaluate_risk_profile(decision, profile=None):
                     True,
                     "Absolute IV is too low; option premium may be cheap for selling.",
                 ))
-        else:
+        if not premium_metrics_present:
             blockers.append("RISK_PROFILE_VOLATILITY_PREMIUM_MISSING")
             checks.append(_v31_risk_check(
                 "RISK_PROFILE_VOLATILITY_PREMIUM_MISSING",
@@ -21922,6 +22042,28 @@ def _v31_evaluate_risk_profile(decision, profile=None):
                 True,
                 "Bid is below the strategy-specific executable premium floor.",
             ))
+        if volume is not None and volume < strategy_guard.get("min_option_volume", 0) and "RISK_PROFILE_OPTION_VOLUME_TOO_LOW" not in blockers:
+            blockers.append("RISK_PROFILE_OPTION_VOLUME_TOO_LOW")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_OPTION_VOLUME_TOO_LOW",
+                "selected_contract.volume",
+                volume,
+                ">=",
+                strategy_guard.get("min_option_volume", 0),
+                True,
+                "Option volume is below the strategy-specific manual-review liquidity floor.",
+            ))
+        if open_interest is not None and open_interest < strategy_guard.get("min_open_interest", 0) and "RISK_PROFILE_OPEN_INTEREST_TOO_LOW" not in blockers:
+            blockers.append("RISK_PROFILE_OPEN_INTEREST_TOO_LOW")
+            checks.append(_v31_risk_check(
+                "RISK_PROFILE_OPEN_INTEREST_TOO_LOW",
+                "selected_contract.open_interest",
+                open_interest,
+                ">=",
+                strategy_guard.get("min_open_interest", 0),
+                True,
+                "Open interest is below the strategy-specific manual-review liquidity floor.",
+            ))
 
     if blockers:
         notes.append("Risk profile blocked manual-review readiness; no execution is authorized.")
@@ -21990,6 +22132,9 @@ def _v31_apply_event_assignment_gate(decision):
     if bool(market.get("earnings_soon")) and "EARNINGS_SOON" not in blockers:
         blockers.append("EARNINGS_SOON")
         triggered.append("EARNINGS_SOON")
+    if strategy == "COVERED_CALL" and bool(market.get("earnings_soon")) and "EARNINGS_WITHIN_7_CALENDAR_DAYS" not in blockers:
+        blockers.append("EARNINGS_WITHIN_7_CALENDAR_DAYS")
+        triggered.append("EARNINGS_WITHIN_7_CALENDAR_DAYS")
     if bool(market.get("event_risk")) and "EVENT_RISK_ACTIVE" not in blockers:
         blockers.append("EVENT_RISK_ACTIVE")
         triggered.append("EVENT_RISK_ACTIVE")

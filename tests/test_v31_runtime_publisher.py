@@ -1,7 +1,9 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tools import publish_v31_snapshot_from_runtime as publisher
 
@@ -83,9 +85,26 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertNotIn("CONTROL_PANEL", payload["technical_snapshot"])
         self.assertNotIn("RAW", payload["technical_snapshot"])
         self.assertEqual(payload["coberturas_rsp_manual_context"]["spot"], 215.15)
-        self.assertFalse(payload["market"]["is_regular_market_open"])
+        self.assertIn(payload["market"]["is_regular_market_open"], {True, False})
+        self.assertEqual(
+            payload["market"]["is_regular_market_open"],
+            payload["market"]["options_bidask_expected"],
+        )
         self.assertTrue(payload["not_order_instruction"])
         self.assertEqual(payload["bridge_status"], "PUBLISHED_FROM_LOCAL_RUNTIME_WITHOUT_IBKR_CONNECTION")
+
+    def test_market_snapshot_detects_regular_session_and_exchange_holiday(self):
+        regular = publisher.build_market_snapshot(
+            datetime(2026, 7, 22, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+        )
+        holiday = publisher.build_market_snapshot(
+            datetime(2026, 7, 3, 10, 30, tzinfo=ZoneInfo("America/New_York"))
+        )
+
+        self.assertTrue(regular["is_regular_market_open"])
+        self.assertTrue(regular["options_bidask_expected"])
+        self.assertFalse(holiday["is_regular_market_open"])
+        self.assertTrue(holiday["market_holiday"])
 
 
 if __name__ == "__main__":
