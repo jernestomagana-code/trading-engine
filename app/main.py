@@ -2088,6 +2088,9 @@ def load_intraday_futures_alert_events(limit=5000):
                     "is_validation": intraday_futures_is_validation_event(signal_event),
                     "not_order_instruction": True,
                 })
+                reference_builder = globals().get("apply_intraday_futures_reference_levels")
+                if callable(reference_builder):
+                    payload = reference_builder(payload)
                 events.append(event_builder(payload))
         except Exception:
             pass

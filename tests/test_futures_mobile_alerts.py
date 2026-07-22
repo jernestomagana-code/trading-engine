@@ -34,6 +34,24 @@ class FuturesMobileAlertTests(unittest.TestCase):
         self.assertTrue(result["reference_levels_provisional"])
         self.assertEqual(result["reference_level_source"], "ATR_1R_2R")
 
+    def test_durable_ledger_projection_also_recovers_reference_levels(self):
+        signal = {
+            **self.chris_entry(),
+            "event_id": "TV-mobile-durable-1",
+            "accepted_for_engine": True,
+            "received_at": "2026-07-22T14:30:07+00:00",
+            "raw_payload": self.chris_entry(),
+        }
+        with patch.object(main, "supabase_fetch_table_rows", return_value=[]), patch.object(
+            main, "load_intraday_futures_alert_events_from_file", return_value=[]
+        ), patch.object(main, "_v32_load_tradingview_signal_events", return_value=[signal]):
+            events = main.load_intraday_futures_alert_events(limit=100)
+
+        self.assertEqual(events[0]["stop_price"], 7542.59)
+        self.assertEqual(events[0]["tp1_price"], 7524.81)
+        self.assertEqual(events[0]["tp2_price"], 7515.93)
+        self.assertTrue(events[0]["reference_levels_provisional"])
+
     def test_immediate_mobile_message_is_compact_and_action_oriented(self):
         payload = main.apply_intraday_futures_reference_levels(self.chris_entry())
         message = main._v32_intraday_futures_immediate_message(payload, "ENTRY_TRIGGER")
