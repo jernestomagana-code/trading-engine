@@ -1803,6 +1803,12 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
     daily_result = payloads.get("futures_daily") if isinstance(payloads.get("futures_daily"), dict) else {}
     daily = daily_result.get("data") if isinstance(daily_result.get("data"), dict) else {}
     processed_total = ((daily.get("summary") or {}).get("total_events", 0) if isinstance(daily.get("summary"), dict) else 0) or 0
+    daily_events = daily.get("latest_events") if isinstance(daily.get("latest_events"), list) else []
+    latest_entry = next((
+        event for event in reversed(daily_events)
+        if isinstance(event, dict)
+        and remote_futures_event_kind(event) in {"ENTRY", "RISK"}
+    ), None)
     mismatch = bool(today_events and processed_total == 0)
     latest_at = max((remote_signal_received_at(event) for event in today_events if remote_signal_received_at(event)), default=None)
     summary = {
@@ -1821,6 +1827,19 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         "pipeline_mismatch": mismatch,
         "latest_at": latest_at.isoformat() if latest_at else "",
     }
+    if latest_entry:
+        summary["latest_signal"] = {
+            "ticker": latest_entry.get("ticker") or latest_entry.get("symbol"),
+            "event": remote_futures_event_kind(latest_entry),
+            "direction": latest_entry.get("direction") or latest_entry.get("breakout_direction"),
+            "entry_price": latest_entry.get("entry_price") if latest_entry.get("entry_price") is not None else latest_entry.get("price"),
+            "stop_price": latest_entry.get("stop_price") or latest_entry.get("logical_stop"),
+            "tp1_price": latest_entry.get("tp1_price") or latest_entry.get("logical_target"),
+            "tp2_price": latest_entry.get("tp2_price"),
+            "score": latest_entry.get("score") or latest_entry.get("setup_validity_pct"),
+            "reference_levels_provisional": latest_entry.get("reference_levels_provisional") is True,
+            "received_at": latest_entry.get("received_at") or latest_entry.get("saved_at"),
+        }
     intraday = dict(data.get("intraday_futures")) if isinstance(data.get("intraday_futures"), dict) else {}
     intraday["daily_summary"] = summary
     if mismatch:
@@ -4650,15 +4669,32 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
     daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
+    latest_signal = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
     tradingview = reports.get("tradingview") or {}
     if futures_alerts:
         cards = "".join(render_alert_card(alert, account_capacity=console_account_capacity(operator_payload, {})) for alert in futures_alerts[:4])
         body = '<div class="alert-grid">{}</div>'.format(cards)
         status = "Hay futuros intradia para revisar ahora."
     else:
+        latest_signal_tile = ""
+        if latest_signal:
+            latest_signal_tile = (
+                '<div class="tile">Última {event}: {ticker} {direction}'
+                '<span>Disparo {entry} · Stop {stop} · T1 {tp1} · T2 {tp2}{estimate}</span></div>'
+            ).format(
+                event=html_escape(latest_signal.get("event") or "señal"),
+                ticker=html_escape(latest_signal.get("ticker") or "N/D"),
+                direction=html_escape(latest_signal.get("direction") or "N/D"),
+                entry=html_escape(compact_contract_value(latest_signal.get("entry_price"))),
+                stop=html_escape(compact_contract_value(latest_signal.get("stop_price"))),
+                tp1=html_escape(compact_contract_value(latest_signal.get("tp1_price"))),
+                tp2=html_escape(compact_contract_value(latest_signal.get("tp2_price"))),
+                estimate=" · ATR estimados" if latest_signal.get("reference_levels_provisional") else "",
+            )
         body = """
         <div class="tiles">
           <div class="tile">Sin señal vigente<span>No hay una ENTRY/RISK de futuros todavía activa.</span></div>
+          {latest_signal_tile}
           <div class="tile">Entradas hoy: {entries}<span>WATCH: {watch} · snapshots: {snapshots}</span></div>
           <div class="tile">Aceptados hoy: {accepted}<span>Recibidos: {today} · cuarentena: {quarantined}</span></div>
           <div class="tile">Motor diario: {processed}<span>Chris IA: {chris} · entradas: {entries}</span></div>
@@ -4677,6 +4713,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
             processed=html_escape(daily.get("processed_total", 0)),
             chris=html_escape(daily.get("chris_ia", 0)),
             status=html_escape(intraday.get("status") or tradingview.get("status") or "sin reporte"),
+            latest_signal_tile=latest_signal_tile,
         )
         status = intraday.get("message") or "Sin alertas intradia de futuros en este momento."
     return """

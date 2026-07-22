@@ -987,6 +987,45 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(alerts[0]["state"], "MANUAL_REVIEW")
         self.assertTrue(account_console.is_intraday_futures_alert(alerts[0]))
 
+    def test_expired_futures_entry_remains_visible_as_compact_daily_reference(self):
+        received_at = datetime.now(timezone.utc).isoformat()
+        operator = {"ok": True, "data": {"active_alerts": []}}
+        payloads = {
+            "signal_events": {"ok": True, "data": {"events": [{
+                "event_id": "TV-US500-ENTRY",
+                "accepted_for_engine": True,
+                "ticker": "US500F",
+                "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+                "event": "ENTRY",
+                "event_code": "CHRIS_IA_US500F_SHORT_ENTRY_15",
+                "received_at": received_at,
+            }]}},
+            "futures_daily": {"ok": True, "data": {
+                "summary": {"total_events": 1},
+                "latest_events": [{
+                    "ticker": "US500F",
+                    "event": "ENTRY",
+                    "event_code": "CHRIS_IA_US500F_SHORT_ENTRY_15",
+                    "direction": "SHORT",
+                    "entry_price": 7533.7,
+                    "stop_price": 7542.59,
+                    "tp1_price": 7524.81,
+                    "tp2_price": 7515.93,
+                    "reference_levels_provisional": True,
+                    "received_at": received_at,
+                }],
+            }},
+        }
+
+        merged = account_console.merge_remote_futures_into_operator(operator, payloads)
+        latest = merged["data"]["intraday_futures"]["daily_summary"]["latest_signal"]
+        html = account_console.render_intraday_futures_alerts([], merged)
+
+        self.assertEqual(latest["ticker"], "US500F")
+        self.assertEqual(latest["tp2_price"], 7515.93)
+        self.assertIn("Última ENTRY: US500F SHORT", html)
+        self.assertIn("ATR estimados", html)
+
     def test_ready_control_tower_empty_positions_remove_closed_snapshot_position(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
