@@ -987,6 +987,35 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(alerts[0]["state"], "MANUAL_REVIEW")
         self.assertTrue(account_console.is_intraday_futures_alert(alerts[0]))
 
+    def test_ready_control_tower_empty_positions_remove_closed_snapshot_position(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            active_path = runtime / "ibkr_account_active_profile.json"
+            active_path.write_text(json.dumps({"account_alias": "remanente", "account_scope": "remanente"}))
+            (runtime / "unrelated_newer_status.json").write_text(json.dumps({"generated_at": "2026-07-22T01:00:00+00:00"}))
+            (runtime / "broker_control_tower_latest.json").write_text(json.dumps({
+                "generated_at": "2026-07-22T00:05:20+00:00",
+                "accounts": [{
+                    "account_alias": "remanente",
+                    "refresh_status": "READY",
+                    "generated_at": "2026-07-22T00:05:05+00:00",
+                    "positions": [],
+                }],
+                "consolidated_positions": [],
+            }))
+            snapshot = {"data": {
+                "generated_at": "2026-07-21T19:53:00+00:00",
+                "positions": [{"ticker": "MNQ", "sec_type": "FUT", "position_size": -1}],
+            }}
+            with patch.object(account_console, "RUNTIME", runtime), patch.object(
+                account_console, "ACTIVE_PATH", active_path
+            ):
+                context = account_console.console_runtime_position_context(snapshot)
+
+        self.assertEqual(context["positions"], [])
+        self.assertEqual(context["generated_at"], "2026-07-22T00:05:05+00:00")
+        self.assertEqual(context["position_data_source"], "BROKER_CONTROL_TOWER")
+
 
 if __name__ == "__main__":
     unittest.main()

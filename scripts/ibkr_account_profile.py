@@ -4808,6 +4808,11 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
             context[key] = snapshot_data.get(key)
     tower = runtime_data.get("broker_control_tower_latest.json") if isinstance(runtime_data.get("broker_control_tower_latest.json"), dict) else {}
     selected_alias = str((active_profile() or {}).get("account_alias") or "").strip().lower()
+    selected_tower_account = next((
+        row for row in (tower.get("accounts") or [])
+        if isinstance(row, dict)
+        and str(row.get("account_alias") or row.get("account_scope") or "").strip().lower() == selected_alias
+    ), None)
     tower_positions = []
     for row in tower.get("consolidated_positions") or []:
         if not isinstance(row, dict):
@@ -4822,9 +4827,27 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
             "position_size": row.get("quantity") if row.get("quantity") is not None else row.get("position"),
             "source": "BROKER_CONTROL_TOWER",
         })
-    if tower_positions:
+    tower_is_authoritative = bool(
+        selected_tower_account
+        and str(selected_tower_account.get("refresh_status") or "").upper() == "READY"
+    )
+    if tower_is_authoritative:
+        # A fresh READY account snapshot is authoritative even when its position
+        # list is empty.  Replacing (rather than appending) prevents a position
+        # closed in IBKR from being resurrected by an older master snapshot.
+        context["positions"] = tower_positions
+        context["generated_at"] = (
+            selected_tower_account.get("generated_at")
+            or tower.get("generated_at")
+            or generated_at
+        )
+        context["position_data_source"] = "BROKER_CONTROL_TOWER"
+        context["position_data_status"] = "READY"
+    elif tower_positions:
         existing_positions = context.get("positions") if isinstance(context.get("positions"), list) else []
         context["positions"] = existing_positions + tower_positions
+        context["generated_at"] = tower.get("generated_at") or generated_at
+        context["position_data_source"] = "BROKER_CONTROL_TOWER_STALE"
     local_contexts = shared_position_context_store.load_contexts(POSITION_CONTEXTS_PATH)
     context["active_position_contexts"] = local_contexts
     context["gamma_contexts"] = shared_gamma_context_store.load_contexts(GAMMA_CONTEXTS_PATH)
