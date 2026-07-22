@@ -48,24 +48,26 @@ Resumen:
   viva basada en `/v32_operator_daily_summary` y
   `/v32_operator_tracking_status`; la version estatica queda en
   `/v32_project_command_center_static`.
-- El notificador tambien soporta `--pushover`, `--webhook-url` y
-  `--email-summary` para celular, integraciones externas y correo.
+- El notificador también soporta `--pushover`, `--webhook-url` y
+  `--email-summary`; Pushover aplica una política central `ENTRY_ONLY`, mientras
+  Mac, integraciones y correo pueden conservar diagnósticos más amplios.
 - Pushover ya tiene automatizacion local via launchd:
   `scripts/install_v32_pushover_launchd.py --install`; monitor cada 5 minutos,
   post-cierre deduplicado y preflight diario, todo sin secretos en plist.
 - Render declara `PUSHOVER_USER_KEY` y `PUSHOVER_API_TOKEN`; con esos secretos
   cargados, `/v32_operator_pushover_notify/preview` previsualiza y
   `POST /v32_operator_pushover_notify` envia push protegido por read-auth.
-- GitHub Actions agrega scheduler cloud `.github/workflows/v32-cloud-pushover.yml`;
-  el backend deduplica alertas `ACTION`/`RISK` para no repetir pushes.
-- GitHub Actions agrega nudges proactivos `.github/workflows/v32-operator-nudges.yml`;
+- GitHub Actions conserva el scheduler cloud `.github/workflows/v32-cloud-pushover.yml`,
+  pero el resumen general queda suprimido por la política móvil `ENTRY_ONLY`.
+- GitHub Actions conserva nudges proactivos `.github/workflows/v32-operator-nudges.yml`;
   llama `POST /v32_operator_nudge` durante el dia y el backend decide por
   horario NY (`premarket`, `open_check`, `midday`, `power_hour`, `post_close`),
-  dedupe y read-auth. Los nudges preguntan al operador que revisar, no ejecutan.
+  dedupe y read-auth. Permanecen disponibles en consola/preflight, pero no se
+  envían al celular.
 - GitHub Actions agrega watch inmediato `.github/workflows/v32-actionable-signal-watch.yml`;
   llama `POST /v32_actionable_signal_watch` cada 5 minutos durante mercado
-  amplio y avisa por Pushover solo si aparece una nueva senal `ACTION`,
-  `ENTRY_READY` o `manual_review_ready=true` para revision manual en IBKR.
+  amplio y avisa por Pushover sólo si aparece una nueva señal no-futuros en
+  `ENTRY_READY`; los futuros ENTRY usan la ruta inmediata del webhook.
 - Preflight de nudges: `GET /v32_operator_nudge_preflight`; valida Pushover,
   read-auth, slots, prompts del GPT, checklist de primer dia habil y playbook
   de respuestas (`MARK_WATCHLIST`, `REJECT_SETUP`, `CLOSE_ALERT`, etc.).

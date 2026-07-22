@@ -172,14 +172,14 @@ def run_monitor(args: argparse.Namespace) -> dict[str, Any]:
         str(args.timeout),
         "--limit",
         str(args.limit),
-        "--pushover",
     ]
     step = run_command(command, timeout=max(60, args.timeout + 20))
     payload = parse_stdout_json(step)
     return {
         "status": "OK" if step.get("ok") else "ACTION_REQUIRED",
         "reason": payload.get("classification", {}).get("notify_reason"),
-        "notification_sent": bool(payload.get("notification_sent")),
+        "notification_sent": False,
+        "mobile_policy": "ENTRY_ONLY; scheduled local monitor does not duplicate cloud entry routes",
         "operator_status": payload.get("operator_status"),
         "operator_readiness": payload.get("operator_readiness"),
         "step": step,

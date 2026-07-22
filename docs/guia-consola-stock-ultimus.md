@@ -212,11 +212,11 @@ Un punto pendiente en el checklist no debe ignorarse. Si falta contrato, capacid
 
 En una tarjeta de **Futuros Intradía**, la información cambia para evitar conceptos de opciones que no aplican. Muestra evento, dirección, entrada, stop, TP1/TP2, relación riesgo/beneficio, contratos permitidos y los estados de construcción, riesgo, portfolio y contexto pre-market. Usa **Visto**, **Revisando**, **Watch**, **Rechazar** o **Cerrar** para registrar qué hiciste; esos botones nunca envían una orden.
 
-La alerta móvil de una ENTRY/RISK es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2**, vigencia implícita y una sola acción recomendada. Sale con prioridad alta directamente desde el procesamiento del webhook; el monitor local permanece como respaldo. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca deben interpretarse como una orden automática ni reemplazan el límite de riesgo del operador.
+El celular está reservado exclusivamente para **ENTRY**. La alerta es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2** y una sola acción recomendada. Para acciones y opciones se exige `ENTRY_READY`; en futuros se exige un evento de entrada que no haya sido degradado a `WATCH_ONLY`. WATCH, REBOTE, RISK, resúmenes, nudges, postcierre e incidencias técnicas permanecen visibles en la consola, pero no generan Pushover. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca debe interpretarse como una orden automática ni reemplaza el límite de riesgo del operador.
 
-Antes de enviar una ENTRY urgente, el motor aplica una puerta adicional de calidad direccional. Compara la dirección con tendencia, votos multitemporales, MACD, RSI y cruce estocástico. Si una entrada va contra tendencia o contra la mayoría MTF necesita al menos tres confirmaciones y no puede acumular tres o más conflictos. Si no las reúne queda como **WATCH_ONLY**: permanece visible, genera como máximo un aviso móvil normal de radar con la instrucción **esperar confirmación**, y no usa prioridad alta ni sonido de entrada. La tarjeta muestra **confirmaciones a favor**, **conflictos**, calificación de la puerta y motivo del bloqueo.
+Antes de enviar una ENTRY, el motor aplica una puerta adicional de calidad direccional. Compara la dirección con tendencia, votos multitemporales, MACD, RSI y cruce estocástico. Si una entrada va contra tendencia o contra la mayoría MTF necesita al menos tres confirmaciones y no puede acumular tres o más conflictos. Si no las reúne queda como **WATCH_ONLY**: permanece visible únicamente en la consola y no produce aviso móvil. La tarjeta muestra **confirmaciones a favor**, **conflictos**, calificación de la puerta y motivo del bloqueo.
 
-TradingView mantiene tres niveles para no perder oportunidades: **WATCH** detecta el giro inicial, **REBOTE** identifica un patrón fuerte pero contra tendencia o contra la mayoría MTF, y **ENTRY** queda reservado para una señal alineada. Los tres llegan al registro y a la consola. Sólo ENTRY confirmada produce una notificación urgente; REBOTE puede producir el aviso normal de radar y WATCH permanece como actividad de monitoreo.
+TradingView mantiene tres niveles para no perder oportunidades: **WATCH** detecta el giro inicial, **REBOTE** identifica un patrón fuerte pero contra tendencia o contra la mayoría MTF, y **ENTRY** queda reservado para una señal alineada. Los tres llegan al registro y a la consola. Sólo ENTRY confirmada produce una notificación móvil.
 
 El `score` de TradingView mide cuánto coincide la lectura con las reglas internas de ese patrón; **no es una probabilidad de éxito**. Por eso una reversión puede tener score 100 y aun así quedar en WATCH si el mercado continúa alineado en sentido contrario. La consola corrige además el indicador `counter_trend` usando la tendencia y los votos MTF, aunque la fuente lo haya enviado de forma inconsistente.
 
@@ -433,14 +433,9 @@ Es una zona de uso ocasional. Incluye:
 - **Diagnóstico técnico y salud de módulos:** semáforos internos, timeline y detalle para investigar fallas.
 - **Cuentas y perfiles:** selección y configuración de alias de cuenta.
 
-### Prioridad de las notificaciones
+### Política de notificaciones móviles
 
-Las notificaciones distinguen entre una incidencia accionable y el avance normal de validación:
-
-- **Prioridad alta:** se reserva para condiciones `ACTION` que requieren revisión del operador.
-- **Prioridad normal:** informa que la validación continúa, por ejemplo mientras llegan eventos reales de TradingView, se completa la cobertura de opciones o se acumulan resultados cerrados.
-
-El mensaje **Validación operativa en progreso** no indica una desconexión ni una orden pendiente. Si la Torre de Control confirma las cuentas, la notificación dirá **IBKR conectado; cobertura de opciones pendiente de completar**. La conectividad del broker y la disponibilidad del diagnóstico de cadenas son estados diferentes.
+Pushover sólo envía condiciones `ENTRY`/`ENTRY_READY`. Ninguna opción de `force` puede convertir WATCH, RISK, validaciones, problemas de IBKR o resúmenes en una alerta móvil. Esos estados se consultan en **Inicio**, **Pendientes**, **Riesgo** y **Alertas y diagnósticos** dentro de la consola. La prueba manual del canal sigue disponible en Administración y sólo se ejecuta cuando el operador la solicita expresamente.
 
 En perfiles de cuenta:
 

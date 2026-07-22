@@ -199,18 +199,20 @@ def classify(operator: dict[str, Any], force: bool = False) -> dict[str, Any]:
         }
         if str(alert.get("signal_actionability") or "").upper() == "WATCH_ONLY":
             continue
-        if severity in {"ACTION", "RISK"} or manual_ready:
+        event = str(alert.get("event") or "").upper().strip()
+        is_entry = state == "ENTRY_READY" or event == "ENTRY"
+        if is_entry:
             actionable.append(compact)
         elif state == "WAIT_MARKET":
             wait_market.append(compact)
         elif state == "NO_DATA":
             no_data.append(compact)
 
-    should_notify = force or bool(actionable)
+    should_notify = bool(actionable)
     if actionable:
         reason = "ACTIONABLE_OPERATOR_ALERT"
     elif force:
-        reason = "FORCED"
+        reason = "FORCE_CANNOT_BYPASS_MOBILE_ENTRY_ONLY_POLICY"
     elif no_data:
         reason = "DATA_REFRESH_SUPPRESSED"
     elif wait_market:
@@ -327,6 +329,22 @@ def send_webhook_notification(report: dict[str, Any], webhook_url: str, timeout:
 
 
 def send_pushover_notification(report: dict[str, Any], user_key: str, api_token: str, timeout: int) -> dict[str, Any]:
+    classification = report.get("classification") if isinstance(report.get("classification"), dict) else {}
+    alerts = classification.get("actionable_alerts") if isinstance(classification.get("actionable_alerts"), list) else []
+    has_entry = any(
+        str(alert.get("state") or "").upper().strip() == "ENTRY_READY"
+        or str(alert.get("event") or "").upper().strip() == "ENTRY"
+        for alert in alerts
+        if isinstance(alert, dict)
+    )
+    is_explicit_channel_test = classification.get("notify_reason") == "PUSHOVER_CHANNEL_TEST"
+    if not has_entry and not is_explicit_channel_test:
+        return {
+            "sent": False,
+            "provider": "pushover",
+            "reason": "MOBILE_ENTRY_ONLY_POLICY",
+            "allowed": "ENTRY_OR_ENTRY_READY",
+        }
     if not user_key or not api_token:
         missing = []
         if not user_key:
@@ -336,7 +354,6 @@ def send_pushover_notification(report: dict[str, Any], user_key: str, api_token:
         return {"sent": False, "provider": "pushover", "reason": "PUSHOVER_CONFIG_MISSING", "missing": missing}
 
     title, body = notification_text(report)
-    classification = report.get("classification") or {}
     configured_priority = str(classification.get("notification_priority") or "").lower()
     priority = "1" if configured_priority == "high" else "0" if configured_priority == "normal" else (
         "1" if classification.get("actionable_count") else "0"

@@ -97,8 +97,9 @@ class FuturesMobileAlertTests(unittest.TestCase):
         _, _, kwargs = send.mock_calls[0]
         self.assertEqual(kwargs["priority"], 1)
         self.assertEqual(kwargs["sound"], "cashregister")
+        self.assertEqual(kwargs["notification_kind"], "ENTRY")
 
-    def test_local_fallback_uses_same_compact_futures_format(self):
+    def test_local_classifier_recognizes_explicit_entry_event_only(self):
         payload = main.apply_intraday_futures_reference_levels(self.chris_entry())
         operator = {
             "active_alerts": [{
@@ -111,18 +112,30 @@ class FuturesMobileAlertTests(unittest.TestCase):
             }]
         }
         classification = v32_operator_notify.classify(operator)
-        title, body = v32_operator_notify.notification_text({
-            "operator_status": "READY_FOR_TRADING_DAY",
-            "classification": classification,
-        })
+        self.assertTrue(classification["should_notify"])
+        self.assertEqual(classification["actionable_count"], 1)
+        self.assertEqual(classification["actionable_alerts"][0]["event"], "ENTRY")
 
-        self.assertEqual(title, "US500F SHORT · FUTUROS")
-        self.assertIn("Disparo 7,533.70", body)
-        self.assertIn("Stop 7,542.59", body)
-        self.assertIn("T1 7,524.81", body)
-        self.assertIn("T2 7,515.93", body)
-        self.assertNotIn("MANUAL_REVIEW", body)
-        self.assertNotIn("RISK_ENGINE_NEEDS_REVIEW", body)
+    def test_risk_invalidation_is_kept_out_of_mobile(self):
+        payload = {
+            **self.chris_entry(),
+            "event": "RISK_INVALIDATION",
+            "event_code": "MES_RISK_INVALIDATION_5M",
+        }
+        with patch.object(main, "send_pushover_message") as send:
+            result = main._v32_intraday_futures_immediate_notify_payload(payload)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "RISK_SUPPRESSED_BY_MOBILE_ENTRY_POLICY")
+        send.assert_not_called()
+
+    def test_central_pushover_gate_rejects_non_entry_kind(self):
+        with patch.object(main.requests, "post") as post:
+            result = main.send_pushover_message("Riesgo", "Revisar", notification_kind="RISK")
+
+        self.assertFalse(result["pushover_sent"])
+        self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_POLICY")
+        post.assert_not_called()
 
 
 if __name__ == "__main__":

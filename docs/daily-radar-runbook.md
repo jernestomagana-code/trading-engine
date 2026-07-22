@@ -129,8 +129,10 @@ TradingView Pine alert() -> /technical_snapshot -> durable ledger -> fast acknow
 Daily open / service startup -> idempotent reconciliation -> recover any missing operational event
 ```
 
-For `MNQ1!` and `MES1!`, entry triggers and risk invalidations are evaluated as
-soon as the TradingView webhook arrives. This path dedupes repeated events and
+For `MNQ1!` and `MES1!`, all events are evaluated as soon as the TradingView
+webhook arrives, but only confirmed entry triggers can produce mobile push.
+Risk invalidations, WATCH, rebound and session snapshots remain in the console.
+This path dedupes repeated entry events and
 never authorizes execution. The durable TradingView event id is reused by the
 operational futures event, so a restart or repeated delivery cannot create a
 second alert. The opening checklist fails closed when reconciliation cannot be
@@ -142,11 +144,10 @@ Cloud immediate actionable-signal watch:
 .github/workflows/v32-actionable-signal-watch.yml -> POST /v32_actionable_signal_watch
 ```
 
-This runs every 5 minutes during broad US market hours. It is the fallback
-operator reminder loop, not the primary futures timing path. It sends Pushover
-only when a new `ACTION`, `ENTRY_READY`, or `manual_review_ready=true` alert
-appears, deduped by alert id and signal signature. It prompts manual IBKR review
-through the GPT and never authorizes execution.
+This runs every 5 minutes during broad US market hours. It sends Pushover only
+when a new non-futures `ENTRY_READY` alert appears, deduped by alert id and
+signal signature. Futures use the immediate webhook path. Severity `ACTION`,
+`RISK` or `manual_review_ready=true` alone is insufficient for mobile delivery.
 
 ```bash
 python3 scripts/v32_operator_notify.py
@@ -768,12 +769,12 @@ python3 scripts/install_v32_pushover_launchd.py --status
 
 Installed jobs:
 
-- `com.stockultimus.v32-pushover-monitor`: runs every 5 minutes; the wrapper
-  only calls `v32_operator_notify.py --pushover` inside the US market window and
-  the notifier still suppresses `WAIT_MARKET`.
-- `com.stockultimus.v32-pushover-postclose`: runs every 15 minutes; the wrapper
-  only evaluates outcomes once in the post-close window and sends a Pushover
-  summary only if there is something to review.
+- `com.stockultimus.v32-pushover-monitor`: runs every 5 minutes for local health
+  reporting but no longer sends mobile summaries, avoiding duplicates with the
+  dedicated cloud entry routes.
+- `com.stockultimus.v32-pushover-postclose`: runs every 15 minutes and evaluates
+  outcomes once in the post-close window; its summary stays in the console and
+  local report rather than going to the cellphone.
 - `com.stockultimus.v32-pushover-preflight`: daily local channel check.
 
 Manual smoke tests:

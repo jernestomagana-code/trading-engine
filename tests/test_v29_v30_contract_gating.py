@@ -1042,7 +1042,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "skipped")
         self.assertFalse(result["pushover_sent"])
-        self.assertEqual(result["reason"], "NO_ACTIONABLE_V32_ALERTS")
+        self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_USE_DEDICATED_ENTRY_ROUTES")
         send_push.assert_not_called()
 
     def test_v32_operator_pushover_suppresses_data_refresh_issue(self):
@@ -1085,14 +1085,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertFalse(result["would_notify"])
         self.assertFalse(result["pushover_sent"])
-        self.assertEqual(result["notify_reason"], "DATA_REFRESH_SUPPRESSED")
-        self.assertEqual(result["reason"], "DATA_REFRESH_SUPPRESSED")
+        self.assertEqual(result["notify_reason"], "MOBILE_ENTRY_ONLY_USE_DEDICATED_ENTRY_ROUTES")
+        self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_USE_DEDICATED_ENTRY_ROUTES")
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_not_called()
         save_state.assert_not_called()
 
-    def test_v32_operator_pushover_force_sends_decision_support_only(self):
+    def test_v32_operator_pushover_force_cannot_bypass_entry_only_policy(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
             "status": "WAIT_MARKET",
@@ -1109,11 +1109,12 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True):
             result = main._v32_operator_pushover_notify_payload(force=True, dry_run=False)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertTrue(result["pushover_sent"])
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(result["pushover_sent"])
+        self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_USE_DEDICATED_ENTRY_ROUTES")
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
-        send_push.assert_called_once()
+        send_push.assert_not_called()
 
     def test_v32_operator_pushover_dedupes_repeated_action_alert(self):
         summary = {
@@ -1139,14 +1140,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         ), patch.object(main, "send_pushover_message") as send_push:
             result = main._v32_operator_pushover_notify_payload(dry_run=False)
 
-        self.assertEqual(result["status"], "deduped")
+        self.assertEqual(result["status"], "skipped")
         self.assertFalse(result["pushover_sent"])
         self.assertTrue(result["dedupe"]["deduped"])
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
         send_push.assert_not_called()
 
-    def test_v32_operator_pushover_records_dedupe_state_after_send(self):
+    def test_v32_operator_pushover_does_not_duplicate_dedicated_entry_route(self):
         summary = {
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
             "status": "READY_FOR_MANUAL_REVIEW",
@@ -1173,11 +1174,11 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         }) as send_push, patch.object(main, "_v32_save_pushover_dedupe_state", return_value=True) as save_state:
             result = main._v32_operator_pushover_notify_payload(dry_run=False)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertTrue(result["pushover_sent"])
+        self.assertEqual(result["status"], "skipped")
+        self.assertFalse(result["pushover_sent"])
         self.assertFalse(result["dedupe"]["deduped"])
-        send_push.assert_called_once()
-        save_state.assert_called_once()
+        send_push.assert_not_called()
+        save_state.assert_not_called()
 
     def test_v32_operator_nudge_preview_never_sends(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
@@ -1201,14 +1202,14 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(preview["engine"], "V32_OPERATOR_NUDGE")
         self.assertEqual(preview["status"], "preview")
         self.assertEqual(preview["slot"], "midday")
-        self.assertTrue(preview["would_notify"])
+        self.assertFalse(preview["would_notify"])
         self.assertFalse(preview["pushover_sent"])
         self.assertIn("Abre el GPT", preview["message"])
         self.assertFalse(preview["execution_authorized"])
         self.assertTrue(preview["not_order_instruction"])
         send_push.assert_not_called()
 
-    def test_v32_operator_nudge_sends_decision_support_push(self):
+    def test_v32_operator_nudge_is_suppressed_by_entry_only_policy(self):
         with patch.object(main, "_v32_operator_daily_summary_payload", return_value={
             "engine": "V32_OPERATOR_DAILY_SUMMARY",
             "status": "WAIT_MARKET",
@@ -1231,14 +1232,15 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         ) as send_push, patch.object(main, "_v32_save_operator_nudge_state", return_value=True) as save_state:
             result = main._v32_operator_nudge_payload(slot="post_close", dry_run=False)
 
-        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["slot"], "post_close")
-        self.assertTrue(result["pushover_sent"])
+        self.assertFalse(result["pushover_sent"])
         self.assertEqual(result["gpt_prompt"], "haz cierre operativo y backtesting pendiente")
         self.assertFalse(result["execution_authorized"])
         self.assertTrue(result["not_order_instruction"])
-        send_push.assert_called_once()
-        save_state.assert_called_once()
+        self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_POLICY")
+        send_push.assert_not_called()
+        save_state.assert_not_called()
 
     def test_v32_operator_nudge_dedupes_repeated_slot(self):
         summary = {
@@ -1268,7 +1270,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         ), patch.object(main, "_v29_load_json_file", return_value=state), patch.object(main, "send_pushover_message") as send_push:
             result = main._v32_operator_nudge_payload(slot="open_check", dry_run=False)
 
-        self.assertEqual(result["status"], "deduped")
+        self.assertEqual(result["status"], "skipped")
         self.assertTrue(result["dedupe"]["deduped"])
         self.assertFalse(result["pushover_sent"])
         self.assertFalse(result["execution_authorized"])

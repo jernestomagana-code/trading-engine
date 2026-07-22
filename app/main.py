@@ -24993,7 +24993,14 @@ def _v32_save_pushover_dedupe_state(signature, status):
     return True
 
 
-def send_pushover_message(title, message, priority=0, sound=None):
+def send_pushover_message(title, message, priority=0, sound=None, notification_kind=None):
+    if str(notification_kind or "").upper().strip() != "ENTRY":
+        return {
+            "pushover_sent": False,
+            "reason": "MOBILE_ENTRY_ONLY_POLICY",
+            "provider": "pushover",
+            "allowed_notification_kind": "ENTRY",
+        }
     missing = []
     if not PUSHOVER_USER_KEY:
         missing.append("PUSHOVER_USER_KEY")
@@ -25180,21 +25187,13 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "VALIDATION_EVENT_SUPPRESSED"
     elif intraday_futures_is_session_snapshot_event(event_code, event):
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
-    elif (
-        (
-            intraday_futures_is_entry_event(event_code, event)
-            or intraday_futures_is_rebound_event(event_code, event)
-        )
-        and intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY"
-    ):
-        trigger_kind = "SETUP_WATCH"
-        reason = None
+    elif intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY":
+        reason = "WATCH_ONLY_SUPPRESSED_BY_MOBILE_ENTRY_POLICY"
     elif intraday_futures_is_entry_event(event_code, event):
         trigger_kind = "ENTRY_TRIGGER"
         reason = None
     elif intraday_futures_is_risk_invalidation_event(event_code, event):
-        trigger_kind = "RISK_INVALIDATION"
-        reason = None
+        reason = "RISK_SUPPRESSED_BY_MOBILE_ENTRY_POLICY"
     else:
         reason = "NON_ACTIONABLE_INTRADAY_EVENT"
 
@@ -25221,13 +25220,15 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": reason}
     if dedupe.get("deduped"):
         return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_INTRADAY_FUTURES_EVENT"}
-    priority = 0 if trigger_kind == "SETUP_WATCH" else 1
-    sound = (
-        "siren" if trigger_kind == "RISK_INVALIDATION"
-        else "cashregister" if trigger_kind == "ENTRY_TRIGGER"
-        else "pushover"
+    priority = 1
+    sound = "cashregister"
+    result = send_pushover_message(
+        title,
+        message,
+        priority=priority,
+        sound=sound,
+        notification_kind="ENTRY",
     )
-    result = send_pushover_message(title, message, priority=priority, sound=sound)
     if result.get("pushover_sent"):
         _v32_save_intraday_futures_immediate_state(dedupe, "sent")
     return {
@@ -25243,16 +25244,8 @@ def _v32_operator_pushover_notify_payload(force=False, dry_run=False):
     counts = summary.get("counts") or {}
     data_issue = _v32_summary_data_issue(summary)
     has_action_or_risk = bool(counts.get("action") or counts.get("risk"))
-    should_notify = bool(force or has_action_or_risk)
-    notify_reason = (
-        "FORCED"
-        if force else
-        "ACTION_OR_RISK_ALERT"
-        if has_action_or_risk else
-        "DATA_REFRESH_SUPPRESSED"
-        if data_issue else
-        "NO_ACTIONABLE_V32_ALERTS"
-    )
+    should_notify = False
+    notify_reason = "MOBILE_ENTRY_ONLY_USE_DEDICATED_ENTRY_ROUTES"
     message = _v32_operator_pushover_message(summary)
     title = "Stock Ultimus V32: {}".format(summary.get("status") or "UNKNOWN")
     dedupe = _v32_operator_pushover_dedupe_decision(summary, force=force)
@@ -25302,13 +25295,9 @@ def _v32_actionable_signal_candidates(summary, include_risk=False):
         severity = _v29_safe_upper(alert.get("severity"), "")
         state = _v29_safe_upper(alert.get("state"), "")
         operator_status = _v29_safe_upper(alert.get("operator_status"), "NEW")
-        is_actionable = (
-            severity == "ACTION"
-            or state == "ENTRY_READY"
-            or alert.get("manual_review_ready") is True
-        )
-        if include_risk and severity == "RISK":
-            is_actionable = True
+        strategy = _v29_safe_upper(alert.get("strategy"), "")
+        is_futures = strategy in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}
+        is_actionable = state == "ENTRY_READY" and not is_futures
         if not is_actionable or operator_status in closed_statuses:
             continue
         candidates.append({
@@ -25475,7 +25464,7 @@ def _v32_actionable_signal_watch_payload(force=False, dry_run=False, include_ris
         return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": "NO_ACTIONABLE_SIGNAL"}
     if not new_candidates:
         return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_ACTIONABLE_SIGNAL"}
-    result = send_pushover_message(title, message)
+    result = send_pushover_message(title, message, notification_kind="ENTRY")
     if result.get("pushover_sent"):
         _v32_save_actionable_signal_watch_state(dedupe, "sent")
     return {
@@ -25690,7 +25679,7 @@ def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False, summary
         "question": slot_config.get("question"),
         "gpt_prompt": slot_config.get("gpt_prompt"),
         "valid_slots": valid_slots,
-        "would_notify": True,
+        "would_notify": False,
         "title": title,
         "message": message,
         "summary": summary,
@@ -25701,17 +25690,17 @@ def _v32_operator_nudge_payload(slot="auto", force=False, dry_run=False, summary
         "not_order_instruction": True,
     }
     if dry_run:
-        return {**base_payload, "status": "preview", "pushover_sent": False}
-    if dedupe.get("deduped"):
-        return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_V32_OPERATOR_NUDGE"}
-    result = send_pushover_message(title, message)
-    if result.get("pushover_sent"):
-        _v32_save_operator_nudge_state(slot_config["slot"], session_date, signature, "sent")
+        return {
+            **base_payload,
+            "status": "preview",
+            "pushover_sent": False,
+            "reason": "MOBILE_ENTRY_ONLY_POLICY",
+        }
     return {
         **base_payload,
-        "status": "sent" if result.get("pushover_sent") else "not_sent",
-        "pushover_sent": bool(result.get("pushover_sent")),
-        "pushover_result": result,
+        "status": "skipped",
+        "pushover_sent": False,
+        "reason": "MOBILE_ENTRY_ONLY_POLICY",
     }
 
 

@@ -73,7 +73,7 @@ class FuturesSignalQualityTests(unittest.TestCase):
         self.assertEqual(result["confirmation_quality_score"], 100)
         self.assertEqual(result["confirmation_conflicts"], [])
 
-    def test_watch_only_entry_generates_normal_radar_push_not_urgent_entry(self):
+    def test_watch_only_entry_is_suppressed_from_mobile(self):
         payload = main.apply_intraday_futures_signal_quality_gate(
             self.weak_countertrend_short()
         )
@@ -82,13 +82,11 @@ class FuturesSignalQualityTests(unittest.TestCase):
         ), patch.object(main, "send_pushover_message", return_value={"pushover_sent": True}) as send:
             result = main._v32_intraday_futures_immediate_notify_payload(payload)
 
-        self.assertEqual(result["status"], "sent")
-        self.assertEqual(result["trigger_kind"], "SETUP_WATCH")
-        self.assertTrue(result["would_notify"])
-        self.assertIn("esperar confirmación; no entrar todavía", result["message"])
-        _, _, kwargs = send.mock_calls[0]
-        self.assertEqual(kwargs["priority"], 0)
-        self.assertEqual(kwargs["sound"], "pushover")
+        self.assertEqual(result["status"], "skipped")
+        self.assertIsNone(result["trigger_kind"])
+        self.assertFalse(result["would_notify"])
+        self.assertEqual(result["reason"], "WATCH_ONLY_SUPPRESSED_BY_MOBILE_ENTRY_POLICY")
+        send.assert_not_called()
 
     def test_rebound_keeps_radar_alert_and_receives_provisional_levels(self):
         payload = {
