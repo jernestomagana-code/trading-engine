@@ -1762,8 +1762,24 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         else:
             native_count += 1
 
+    daily_result = payloads.get("futures_daily") if isinstance(payloads.get("futures_daily"), dict) else {}
+    daily = daily_result.get("data") if isinstance(daily_result.get("data"), dict) else {}
+    processed_total = ((daily.get("summary") or {}).get("total_events", 0) if isinstance(daily.get("summary"), dict) else 0) or 0
+    daily_events = daily.get("latest_events") if isinstance(daily.get("latest_events"), list) else []
+    processed_by_source_id = {
+        str(item.get("source_event_id")): item
+        for item in daily_events
+        if isinstance(item, dict) and item.get("source_event_id")
+    }
+
     current_alerts = list(data.get("active_alerts")) if isinstance(data.get("active_alerts"), list) else []
-    known_ids = {str(item.get("alert_id") or item.get("event_id") or "") for item in current_alerts if isinstance(item, dict)}
+    known_ids = {
+        str(identifier)
+        for item in current_alerts
+        if isinstance(item, dict)
+        for identifier in (item.get("alert_id"), item.get("event_id"), item.get("source_event_id"))
+        if identifier
+    }
     for event in today_events:
         kind = remote_futures_event_kind(event)
         received_at = remote_signal_received_at(event)
@@ -1777,10 +1793,11 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         if event_id and event_id in known_ids:
             continue
         raw = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        processed = processed_by_source_id.get(event_id) or {}
         strategy = str(event.get("strategy_context") or event.get("strategy") or raw.get("strategy_context") or raw.get("strategy") or "INTRADAY_INDEX_FUTURES")
         direction = str(event.get("breakout_direction") or raw.get("breakout_direction") or "").upper()
         score = event.get("score") if event.get("score") is not None else raw.get("score")
-        signal_actionability = event.get("signal_actionability") or raw.get("signal_actionability")
+        signal_actionability = processed.get("signal_actionability") or event.get("signal_actionability") or raw.get("signal_actionability")
         watch_only = str(signal_actionability or "").upper() == "WATCH_ONLY"
         current_alerts.append({
             "alert_id": event_id,
@@ -1789,28 +1806,29 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "strategy": strategy,
             "severity": "RISK" if kind == "RISK" else "WATCH" if watch_only else "ACTION",
             "state": "RISK_BLOCKED" if kind == "RISK" else "MANUAL_REVIEW",
-            "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else raw.get("main_blocker") or "RISK_CONTEXT_PENDING",
+            "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else processed.get("main_blocker") or raw.get("main_blocker") or "RISK_CONTEXT_PENDING",
             "setup_validity_pct": score,
             "event": kind,
             "event_code": event.get("event_code") or raw.get("event_code"),
             "direction": direction,
-            "entry_price": event.get("price") if event.get("price") is not None else raw.get("price"),
+            "entry_price": processed.get("entry_price") if processed.get("entry_price") is not None else event.get("price") if event.get("price") is not None else raw.get("price"),
+            "stop_price": processed.get("stop_price"),
+            "tp1_price": processed.get("tp1_price"),
+            "tp2_price": processed.get("tp2_price"),
+            "rr_ratio": processed.get("rr_ratio"),
+            "reference_levels_provisional": processed.get("reference_levels_provisional") is True,
             "received_at": received_at.isoformat(),
-            "why": raw.get("decision_explanation") or "Señal real de futuros recibida; requiere revisión de riesgo y contexto antes de cualquier decisión.",
+            "why": processed.get("decision_explanation") or raw.get("decision_explanation") or "Señal real de futuros recibida; requiere revisión de riesgo y contexto antes de cualquier decisión.",
             "manual_review_ready": not watch_only,
             "signal_actionability": signal_actionability,
-            "confirmation_gate_status": event.get("confirmation_gate_status") or raw.get("confirmation_gate_status"),
-            "confirmation_quality_score": event.get("confirmation_quality_score") or raw.get("confirmation_quality_score"),
-            "confirmation_reasons": event.get("confirmation_reasons") or raw.get("confirmation_reasons") or [],
-            "confirmation_conflicts": event.get("confirmation_conflicts") or raw.get("confirmation_conflicts") or [],
+            "confirmation_gate_status": processed.get("confirmation_gate_status") or event.get("confirmation_gate_status") or raw.get("confirmation_gate_status"),
+            "confirmation_quality_score": processed.get("confirmation_quality_score") or event.get("confirmation_quality_score") or raw.get("confirmation_quality_score"),
+            "confirmation_reasons": processed.get("confirmation_reasons") or event.get("confirmation_reasons") or raw.get("confirmation_reasons") or [],
+            "confirmation_conflicts": processed.get("confirmation_conflicts") or event.get("confirmation_conflicts") or raw.get("confirmation_conflicts") or [],
             "not_order_instruction": True,
         })
         known_ids.add(event_id)
 
-    daily_result = payloads.get("futures_daily") if isinstance(payloads.get("futures_daily"), dict) else {}
-    daily = daily_result.get("data") if isinstance(daily_result.get("data"), dict) else {}
-    processed_total = ((daily.get("summary") or {}).get("total_events", 0) if isinstance(daily.get("summary"), dict) else 0) or 0
-    daily_events = daily.get("latest_events") if isinstance(daily.get("latest_events"), list) else []
     latest_entry = next((
         event for event in reversed(daily_events)
         if isinstance(event, dict)

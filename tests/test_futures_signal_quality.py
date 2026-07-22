@@ -1,7 +1,9 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from test_v29_v30_contract_gating import main
+from scripts import ibkr_account_profile
 
 
 class FuturesSignalQualityTests(unittest.TestCase):
@@ -111,6 +113,55 @@ class FuturesSignalQualityTests(unittest.TestCase):
         message = main._v32_intraday_futures_immediate_message(result, "ENTRY_TRIGGER")
 
         self.assertIn("Confirmación: 5 a favor · 0 conflicto(s)", message)
+
+    def test_console_fallback_uses_processed_quality_instead_of_raw_action(self):
+        received_at = datetime.now(timezone.utc).isoformat()
+        raw = self.weak_countertrend_short()
+        operator = {"ok": True, "data": {"active_alerts": [], "intraday_futures": {}}}
+        payloads = {
+            "signal_events": {"data": {"events": [{
+                **raw,
+                "event_id": "TV-console-quality-1",
+                "received_at": received_at,
+                "accepted_for_engine": True,
+                "raw_payload": raw,
+            }]}},
+            "futures_daily": {"data": {
+                "summary": {"total_events": 1},
+                "latest_events": [{
+                    "source_event_id": "TV-console-quality-1",
+                    "received_at": received_at,
+                    "ticker": "US500F",
+                    "event": "ENTRY",
+                    "event_code": "CHRIS_IA_US500F_SHORT_ENTRY_15",
+                    "direction": "SHORT",
+                    "entry_price": 7533.7,
+                    "stop_price": 7542.59,
+                    "tp1_price": 7524.81,
+                    "tp2_price": 7515.93,
+                    "rr_ratio": 2,
+                    "reference_levels_provisional": True,
+                    "signal_actionability": "WATCH_ONLY",
+                    "confirmation_gate_status": "INSUFFICIENT",
+                    "confirmation_quality_score": 20,
+                    "confirmation_reasons": ["CRUCE_ESTOCASTICO_BAJISTA"],
+                    "confirmation_conflicts": [
+                        "TENDENCIA_ALCISTA", "MAYORIA_MTF_LONG", "MACD_POSITIVO", "RSI_SOBRE_50"
+                    ],
+                    "main_blocker": "COUNTERTREND_CONFIRMATION_INSUFFICIENT",
+                    "decision_explanation": "Mantener en WATCH por confirmación insuficiente.",
+                }],
+            }},
+        }
+
+        result = ibkr_account_profile.merge_remote_futures_into_operator(operator, payloads)
+        alert = result["data"]["active_alerts"][0]
+
+        self.assertEqual(alert["severity"], "WATCH")
+        self.assertFalse(alert["manual_review_ready"])
+        self.assertEqual(alert["stop_price"], 7542.59)
+        self.assertEqual(alert["confirmation_gate_status"], "INSUFFICIENT")
+        self.assertEqual(len(alert["confirmation_conflicts"]), 4)
 
 
 if __name__ == "__main__":
