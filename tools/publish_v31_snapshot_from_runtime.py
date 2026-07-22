@@ -56,8 +56,11 @@ PUBLISH_DATA_FILES = (
     "active_position_contexts.json",
 )
 RESERVED_NON_TICKERS = {
+    "ATTEMPTS",
+    "BEST",
     "CANSLIM",
     "CONTROL_PANEL",
+    "FUTURES",
     "GATE",
     "MARKET",
     "OPTIONS",

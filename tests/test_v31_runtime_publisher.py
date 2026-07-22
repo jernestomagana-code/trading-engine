@@ -68,6 +68,8 @@ class V31RuntimePublisherTests(unittest.TestCase):
                 },
                 "control_panel": {"ticker": "CONTROL_PANEL", "score": 100},
                 "RAW": {"score": 99, "trend": "UNKNOWN"},
+                "FUTURES": {"ticker": "FUTURES", "score": 95},
+                "ATTEMPTS": {"ticker": "ATTEMPTS", "score": 90},
             }))
             (runtime / "coberturas_rsp_manual_context.json").write_text(json.dumps({
                 "context_version": "coberturas_rsp_manual_context_v1",
@@ -84,6 +86,8 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertIn("QQQ", payload["technical_snapshot"])
         self.assertNotIn("CONTROL_PANEL", payload["technical_snapshot"])
         self.assertNotIn("RAW", payload["technical_snapshot"])
+        self.assertNotIn("FUTURES", payload["technical_snapshot"])
+        self.assertNotIn("ATTEMPTS", payload["technical_snapshot"])
         self.assertEqual(payload["coberturas_rsp_manual_context"]["spot"], 215.15)
         self.assertIn(payload["market"]["is_regular_market_open"], {True, False})
         self.assertEqual(
