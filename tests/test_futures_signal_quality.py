@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from test_v29_v30_contract_gating import main
@@ -27,6 +28,14 @@ class FuturesSignalQualityTests(unittest.TestCase):
             "counter_trend": False,
             "not_order_instruction": True,
         }
+
+    def test_pine_classifies_opposite_mtf_majority_as_rebound_not_confirmed_entry(self):
+        pine = (Path(__file__).resolve().parents[1] / "pine" / "chris_ia_reversal_engine_pro.pine").read_text()
+
+        self.assertIn("mtfLongVotes <= mtfShortVotes", pine)
+        self.assertIn("mtfShortVotes <= mtfLongVotes", pine)
+        self.assertIn('f_chris_payload("SHORT", "REBOTE"', pine)
+        self.assertIn('f_chris_payload("SHORT", "ENTRY"', pine)
 
     def test_today_short_is_reclassified_as_weak_countertrend_watch(self):
         result = main.apply_intraday_futures_signal_quality_gate(
@@ -64,17 +73,38 @@ class FuturesSignalQualityTests(unittest.TestCase):
         self.assertEqual(result["confirmation_quality_score"], 100)
         self.assertEqual(result["confirmation_conflicts"], [])
 
-    def test_watch_only_entry_does_not_generate_urgent_mobile_push(self):
+    def test_watch_only_entry_generates_normal_radar_push_not_urgent_entry(self):
         payload = main.apply_intraday_futures_signal_quality_gate(
             self.weak_countertrend_short()
         )
-        with patch.object(main, "send_pushover_message") as send:
+        with patch.object(main, "_v29_load_json_file", return_value={}), patch.object(
+            main, "_v32_save_intraday_futures_immediate_state", return_value=True
+        ), patch.object(main, "send_pushover_message", return_value={"pushover_sent": True}) as send:
             result = main._v32_intraday_futures_immediate_notify_payload(payload)
 
-        self.assertEqual(result["status"], "skipped")
-        self.assertEqual(result["reason"], "COUNTERTREND_CONFIRMATION_INSUFFICIENT")
-        self.assertFalse(result["would_notify"])
-        send.assert_not_called()
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["trigger_kind"], "SETUP_WATCH")
+        self.assertTrue(result["would_notify"])
+        self.assertIn("esperar confirmación; no entrar todavía", result["message"])
+        _, _, kwargs = send.mock_calls[0]
+        self.assertEqual(kwargs["priority"], 0)
+        self.assertEqual(kwargs["sound"], "pushover")
+
+    def test_rebound_keeps_radar_alert_and_receives_provisional_levels(self):
+        payload = {
+            **self.weak_countertrend_short(),
+            "event": "REBOTE",
+            "event_code": "CHRIS_IA_US500F_SHORT_REBOTE_15",
+            "breakout_direction": "SHORT",
+            "atr_pct": 0.117949,
+        }
+        result = main.apply_intraday_futures_reference_levels(payload)
+        result = main.apply_intraday_futures_signal_quality_gate(result)
+
+        self.assertEqual(result["signal_actionability"], "WATCH_ONLY")
+        self.assertEqual(result["stop_price"], 7542.59)
+        self.assertEqual(result["tp1_price"], 7524.81)
+        self.assertEqual(result["tp2_price"], 7515.93)
 
     def test_historical_processed_event_is_reclassified_from_durable_ledger(self):
         old_event = main.build_intraday_futures_alert_event({

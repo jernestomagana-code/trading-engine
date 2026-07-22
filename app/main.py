@@ -9657,6 +9657,12 @@ def intraday_futures_is_setup_wait_event(event_code, event=None):
     return "SETUP" in code or name.endswith("_SETUP")
 
 
+def intraday_futures_is_rebound_event(event_code, event=None):
+    code = intraday_futures_event_text(event_code)
+    name = intraday_futures_event_text(event)
+    return "_REBOTE_" in code or name in {"REBOTE", "REBOUND"}
+
+
 def intraday_futures_is_risk_invalidation_event(event_code, event=None):
     code = intraday_futures_event_text(event_code)
     name = intraday_futures_event_text(event)
@@ -9709,7 +9715,10 @@ def apply_intraday_futures_reference_levels(payload):
     payload = dict(payload or {})
     if not is_intraday_futures_signal(payload):
         return payload
-    if not intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event")):
+    if not (
+        intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event"))
+        or intraday_futures_is_rebound_event(payload.get("event_code"), payload.get("event"))
+    ):
         return payload
 
     price = first_present_float(payload.get("entry_price"), payload.get("price"))
@@ -9759,7 +9768,10 @@ def apply_intraday_futures_signal_quality_gate(payload):
     payload = dict(payload or {})
     if not is_intraday_futures_signal(payload):
         return payload
-    if not intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event")):
+    if not (
+        intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event"))
+        or intraday_futures_is_rebound_event(payload.get("event_code"), payload.get("event"))
+    ):
         return payload
 
     direction = intraday_futures_event_text(
@@ -24982,6 +24994,8 @@ def _v32_intraday_futures_immediate_message(payload, trigger_kind):
     state = intraday_futures_event_text(payload.get("final_state") or payload.get("decision_max_state"))
     if trigger_kind == "RISK_INVALIDATION":
         action = "ACCIÓN: proteger/revisar salida ahora."
+    elif trigger_kind == "SETUP_WATCH":
+        action = "ACCIÓN: esperar confirmación; no entrar todavía."
     elif state == "ENTRY_READY":
         action = "ACCIÓN: revisar entrada ahora."
     else:
@@ -25022,10 +25036,14 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
     elif intraday_futures_is_session_snapshot_event(event_code, event):
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
     elif (
-        intraday_futures_is_entry_event(event_code, event)
+        (
+            intraday_futures_is_entry_event(event_code, event)
+            or intraday_futures_is_rebound_event(event_code, event)
+        )
         and intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY"
     ):
-        reason = "COUNTERTREND_CONFIRMATION_INSUFFICIENT"
+        trigger_kind = "SETUP_WATCH"
+        reason = None
     elif intraday_futures_is_entry_event(event_code, event):
         trigger_kind = "ENTRY_TRIGGER"
         reason = None
@@ -25058,12 +25076,13 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         return {**base_payload, "status": "skipped", "pushover_sent": False, "reason": reason}
     if dedupe.get("deduped"):
         return {**base_payload, "status": "deduped", "pushover_sent": False, "reason": "DUPLICATE_INTRADAY_FUTURES_EVENT"}
-    result = send_pushover_message(
-        title,
-        message,
-        priority=1,
-        sound="siren" if trigger_kind == "RISK_INVALIDATION" else "cashregister",
+    priority = 0 if trigger_kind == "SETUP_WATCH" else 1
+    sound = (
+        "siren" if trigger_kind == "RISK_INVALIDATION"
+        else "cashregister" if trigger_kind == "ENTRY_TRIGGER"
+        else "pushover"
     )
+    result = send_pushover_message(title, message, priority=priority, sound=sound)
     if result.get("pushover_sent"):
         _v32_save_intraday_futures_immediate_state(dedupe, "sent")
     return {

@@ -165,8 +165,11 @@ trendLongPass = trendDirT >= 0 or allowCounterTrend
 trendShortPass = trendDirT <= 0 or allowCounterTrend
 mtfLongPass = mtfLongVotes >= minMtfVotes
 mtfShortPass = mtfShortVotes >= minMtfVotes
-counterTrendLong = trendDirT < 0 or mtfLongVotes < minMtfVotes
-counterTrendShort = trendDirT > 0 or mtfShortVotes < minMtfVotes
+// Un solo voto favorable no convierte una señal en alineada cuando la mayoría
+// MTF está en sentido contrario. El radar conserva la señal, pero la clasifica
+// como REBOTE en vez de ENTRY confirmada.
+counterTrendLong = trendDirT < 0 or mtfLongVotes < minMtfVotes or mtfLongVotes <= mtfShortVotes
+counterTrendShort = trendDirT > 0 or mtfShortVotes < minMtfVotes or mtfShortVotes <= mtfLongVotes
 entryLongScoreNeeded = entryScoreInput + (counterTrendLong ? counterTrendExtraScore : 0.0)
 entryShortScoreNeeded = entryScoreInput + (counterTrendShort ? counterTrendExtraScore : 0.0)
 emaTrigger = ta.ema(close, 8)
