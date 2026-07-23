@@ -62,8 +62,7 @@ tablePos = input.string("middle_right", "Posicion panel", options=["top_right", 
 
 grp_alerts = "Alertas"
 useDynamicAlerts = input.bool(true, "Alertas dinamicas alert()", group=grp_alerts)
-alertWatch = input.bool(true, "Alertar WATCH", group=grp_alerts)
-alertEntry = input.bool(true, "Alertar ENTRY", group=grp_alerts)
+alertEntry = input.bool(true, "Alertar solo ENTRY confirmado", group=grp_alerts)
 
 // ==========================================
 // Helpers
@@ -365,23 +364,11 @@ else
 // ==========================================
 // Alerts
 // ==========================================
-alertcondition(longWatch, "Chris IA PRO LONG WATCH", "LONG WATCH: MACD/STO en zona baja con giro inicial. Esperar confirmacion.")
-alertcondition(shortWatch, "Chris IA PRO SHORT WATCH", "SHORT WATCH: MACD/STO en zona alta con giro inicial. Esperar confirmacion.")
 alertcondition(longConfirmed, "Chris IA PRO LONG ENTRY", "LONG ENTRY: cruce confirmado con score PRO y confirmacion MTF.")
 alertcondition(shortConfirmed, "Chris IA PRO SHORT ENTRY", "SHORT ENTRY: cruce confirmado con score PRO y confirmacion MTF.")
-alertcondition(longRebound, "Chris IA PRO LONG REBOTE", "LONG REBOTE: setup extremo con cruce, pero contra tendencia o sin MTF completo.")
-alertcondition(shortRebound, "Chris IA PRO SHORT REBOTE", "SHORT REBOTE: setup extremo con cruce, pero contra tendencia o sin MTF completo.")
 
 if useDynamicAlerts and barstate.isconfirmed
-    if alertWatch and longWatch
-        alert(f_chris_payload("LONG", "WATCH", scoreLong, mtfLongVotes, counterTrendLong, false, "WATCH"), alert.freq_once_per_bar_close)
-    if alertWatch and shortWatch
-        alert(f_chris_payload("SHORT", "WATCH", scoreShort, mtfShortVotes, counterTrendShort, false, "WATCH"), alert.freq_once_per_bar_close)
     if alertEntry and longConfirmed
         alert(f_chris_payload("LONG", "ENTRY", scoreLong, mtfLongVotes, false, false, "CONFIRMED_ENTRY"), alert.freq_once_per_bar_close)
     if alertEntry and shortConfirmed
         alert(f_chris_payload("SHORT", "ENTRY", scoreShort, mtfShortVotes, false, false, "CONFIRMED_ENTRY"), alert.freq_once_per_bar_close)
-    if alertEntry and longRebound
-        alert(f_chris_payload("LONG", "REBOTE", scoreLong, mtfLongVotes, true, true, "AGGRESSIVE_REBOUND"), alert.freq_once_per_bar_close)
-    if alertEntry and shortRebound
-        alert(f_chris_payload("SHORT", "REBOTE", scoreShort, mtfShortVotes, true, true, "AGGRESSIVE_REBOUND"), alert.freq_once_per_bar_close)

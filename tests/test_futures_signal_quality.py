@@ -34,7 +34,8 @@ class FuturesSignalQualityTests(unittest.TestCase):
 
         self.assertIn("mtfLongVotes <= mtfShortVotes", pine)
         self.assertIn("mtfShortVotes <= mtfLongVotes", pine)
-        self.assertIn('f_chris_payload("SHORT", "REBOTE"', pine)
+        self.assertIn("shortRebound = shortEntry and counterTrendShort", pine)
+        self.assertNotIn('alert(f_chris_payload("SHORT", "REBOTE"', pine)
         self.assertIn('f_chris_payload("SHORT", "ENTRY"', pine)
 
     def test_today_short_is_reclassified_as_weak_countertrend_watch(self):

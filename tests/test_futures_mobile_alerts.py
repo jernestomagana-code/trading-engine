@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from test_v29_v30_contract_gating import main
@@ -136,6 +137,22 @@ class FuturesMobileAlertTests(unittest.TestCase):
         self.assertFalse(result["pushover_sent"])
         self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_POLICY")
         post.assert_not_called()
+
+    def test_chris_ia_pine_exposes_only_confirmed_entry_alerts(self):
+        pine = (Path(__file__).resolve().parents[1] / "pine" / "chris_ia_reversal_engine_pro.pine").read_text()
+
+        self.assertIn('input.bool(true, "Alertar solo ENTRY confirmado"', pine)
+        self.assertIn('alertcondition(longConfirmed, "Chris IA PRO LONG ENTRY"', pine)
+        self.assertIn('alertcondition(shortConfirmed, "Chris IA PRO SHORT ENTRY"', pine)
+        self.assertNotIn("Alertar WATCH", pine)
+        self.assertNotIn('alertcondition(longWatch, "Chris IA PRO LONG WATCH"', pine)
+        self.assertNotIn('alertcondition(shortWatch, "Chris IA PRO SHORT WATCH"', pine)
+        self.assertNotIn('alertcondition(longRebound, "Chris IA PRO LONG REBOTE"', pine)
+        self.assertNotIn('alertcondition(shortRebound, "Chris IA PRO SHORT REBOTE"', pine)
+        self.assertNotIn('alert(f_chris_payload("LONG", "WATCH"', pine)
+        self.assertNotIn('alert(f_chris_payload("SHORT", "WATCH"', pine)
+        self.assertNotIn('alert(f_chris_payload("LONG", "REBOTE"', pine)
+        self.assertNotIn('alert(f_chris_payload("SHORT", "REBOTE"', pine)
 
 
 if __name__ == "__main__":
