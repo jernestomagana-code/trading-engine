@@ -1,20 +1,21 @@
 # TradingView Production Active Alerts
 
-Last reviewed: 2026-07-11.
+Last reviewed: 2026-07-26.
 
 This is the single source of truth for the active TradingView alert set. The
-project intentionally uses five consolidated TradingView alerts, not one alert
+project intentionally uses seven consolidated TradingView alerts, not one alert
 per condition, so it stays inside the active-alert limit and avoids noisy,
 duplicated signals.
 
 ## Operating Decision
 
-Five active TradingView alerts are sufficient for the current production
+Seven active TradingView alerts are sufficient for the current production
 TradingView layer:
 
 - Two futures alerts cover `MNQ1!` and `MES1!` intraday index-futures evidence.
 - Three options-underlying alerts cover `QQQ`, `SPY`, and `VIX` context.
-- Those five alerts emit the required logical event codes through Pine
+- Two Chris IA alerts cover reversal confirmation for `USTEC.F` and `US500F`.
+- Those seven alerts emit the required logical event codes through Pine
   `alert()` payloads.
 - The backend handles scoring, setup-validity percentage, deduplication,
   quarantine, strategy gating, IBKR option-chain checks, and manual-review
@@ -34,6 +35,8 @@ slot pressure.
 | 3 | `QQQ` | `15m` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Options-underlying evidence |
 | 4 | `SPY` | `15m` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Options-underlying evidence |
 | 5 | `VIX` | `1D` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Volatility-risk evidence |
+| 6 | `USTEC.F` | `15m` | `chris_ia_reversal_engine_pro.pine` | `Any alert() function call` | Chris IA NAS100 reversal evidence |
+| 7 | `US500F` | `15m` | `chris_ia_reversal_engine_pro.pine` | `Any alert() function call` | Chris IA S&P 500 reversal evidence |
 
 Webhook:
 
@@ -44,15 +47,30 @@ https://trading-engine-p097.onrender.com/technical_snapshot
 Leave the TradingView message field at the default value for alert-function
 alerts. The Pine scripts send the JSON payloads.
 
+Notification channels for all seven project alerts:
+
+- `Webhook URL`: enabled and pointed to the production endpoint above.
+- `Notify in app`: disabled. Direct TradingView mobile pushes would bypass the
+  Stock Ultimus `ENTRY`-only filter.
+- `Show toast notification`: disabled unless the operator explicitly needs a
+  local TradingView-only visual reminder.
+- Mobile delivery: handled centrally by Stock Ultimus/Pushover after event
+  classification. `WATCH`, `REBOTE`, risk, health, and diagnostic events remain
+  in the ledger and console without reaching the phone.
+
 ## Logical Coverage
 
-The five active alerts emit sixteen required logical event codes:
+The seven active alerts emit twenty required logical event codes:
 
 - 10 futures event codes from `MNQ1!` and `MES1!`.
 - 6 options-underlying event codes from `QQQ`, `SPY`, and `VIX`.
+- 4 required Chris IA entry event codes from `USTEC.F` and `US500F`.
 
-There are also four optional snapshot/heartbeat event definitions. They are
-fallback diagnostics only and are not part of the active production set.
+The three coverage contracts define 33 logical event codes in total. In
+addition to the 20 required codes, the remaining codes represent optional
+snapshot/heartbeat diagnostics and Chris IA `WATCH`/`REBOTE` observations. They
+may be stored and shown in the console, but they do not add TradingView alert
+slots and do not generate the project's filtered mobile `ENTRY` notification.
 
 The backend scores, gates, deduplicates, persists, and quarantines these payloads.
 The alert itself is evidence only and never an order instruction.
@@ -73,7 +91,7 @@ engine:
   extra TradingView alerts.
 - Large-cap or single-name opportunities should enter through the backend
   universe, data refresh, IBKR chains, and scoring. Do not add one TradingView
-  alert per stock unless a measured coverage gap proves the five-alert layer is
+  alert per stock unless a measured coverage gap proves the seven-alert layer is
   insufficient.
 - The IBKR option layer ranks underlyings dynamically before opening chains.
   It should select only the highest-priority subset per cycle using core
@@ -111,6 +129,7 @@ Validate the local logical-event contracts:
 ```bash
 python3 scripts/print_tradingview_alert_setup.py --validate
 python3 scripts/print_tradingview_options_underlying_alert_setup.py --validate
+python3 scripts/print_tradingview_alert_setup.py --coverage config/tradingview_chris_ia_alert_coverage_v1.json --validate
 python3 scripts/check_daily_radar_contract.py
 ```
 
@@ -123,9 +142,15 @@ python3 scripts/run_market_open_readiness.py --market-closed-ok
 
 The expected operating model is:
 
-- `active_tradingview_alert_count=5`.
-- `logical_event_coverage_count=16`.
-- Local coverage validators expose this split as
-  `production_active_alert_count` plus `logical_event_count`.
+- Operator-visible active set: `active_tradingview_alert_count=7`.
+- Required logical coverage across all three contracts: `20`.
+- Total logical definitions across all three contracts: `33`.
+- The combined bundle reports all three contracts (`7` active / `20` required).
+  Futures and options-underlying remain the two readiness-gating contracts.
+  Chris IA is the supplemental reversal-confirmation contract: its health and
+  missing events remain visible without blocking unrelated futures/options
+  readiness when no Chris IA entry has occurred yet.
+- The seven TradingView alerts were individually reviewed on 2026-07-26:
+  webhook enabled and direct `Notify in app` disabled on every project alert.
 - `execution_authorized=false`.
 - `not_order_instruction=true`.

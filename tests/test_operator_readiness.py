@@ -84,6 +84,7 @@ def append_all_tv_events(runtime: Path):
     coverage_specs = [
         tradingview_alert_coverage.DEFAULT_COVERAGE_PATH,
         ROOT / "config" / "tradingview_options_underlying_alert_coverage_v1.json",
+        ROOT / "config" / "tradingview_chris_ia_alert_coverage_v1.json",
     ]
     for coverage_path in coverage_specs:
         coverage = tradingview_alert_coverage.load_coverage(coverage_path)
@@ -129,10 +130,10 @@ class OperatorReadinessTests(unittest.TestCase):
             )
 
         self.assertEqual(report["status"], "WAITING_TV")
-        self.assertEqual(report["tradingview_bundle"]["total_production_active_alert_count"], 5)
-        self.assertEqual(report["tradingview_bundle"]["total_required_logical_event_count"], 16)
-        self.assertEqual(report["tradingview_bundle"]["total_expected_alert_count"], 20)
-        self.assertIn("5 consolidated production alerts", checklist["steps"][0]["command"])
+        self.assertEqual(report["tradingview_bundle"]["total_production_active_alert_count"], 7)
+        self.assertEqual(report["tradingview_bundle"]["total_required_logical_event_count"], 20)
+        self.assertEqual(report["tradingview_bundle"]["total_expected_alert_count"], 24)
+        self.assertIn("7 consolidated production alerts", checklist["steps"][0]["command"])
         self.assertEqual(checklist["steps"][1]["status"], "WAIT_REAL_MARKET")
 
     def test_complete_runtime_is_ready_for_manual_review_and_monitor_ok(self):

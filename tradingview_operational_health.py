@@ -30,6 +30,11 @@ DEFAULT_BUNDLE_COVERAGES = [
         "coverage_path": "config/tradingview_options_underlying_alert_coverage_v1.json",
         "required_for_options_entry_ready": True,
     },
+    {
+        "name": "chris_ia_reversal_confirmation",
+        "coverage_path": "config/tradingview_chris_ia_alert_coverage_v1.json",
+        "required_for_bundle_readiness": False,
+    },
 ]
 
 
@@ -629,6 +634,7 @@ def build_alert_bundle_health(
                     "blockers": ["MISSING_COVERAGE_FILE"],
                     "required_for_entry_ready": spec.get("required_for_entry_ready") is True,
                     "required_for_options_entry_ready": spec.get("required_for_options_entry_ready") is True,
+                    "required_for_bundle_readiness": spec.get("required_for_bundle_readiness") is not False,
                 }
             )
             continue
@@ -671,10 +677,24 @@ def build_alert_bundle_health(
                 "local_replay_validation": e2e.get("local_replay_validation"),
                 "required_for_entry_ready": spec.get("required_for_entry_ready") is True,
                 "required_for_options_entry_ready": spec.get("required_for_options_entry_ready") is True,
+                "required_for_bundle_readiness": spec.get("required_for_bundle_readiness") is not False,
             }
         )
     all_valid = all(item.get("coverage_valid") is True for item in reports)
-    real_e2e_confirmed = all(item.get("real_e2e_confirmed") is True for item in reports)
+    readiness_reports = [
+        item for item in reports
+        if item.get("required_for_bundle_readiness") is not False
+    ]
+    supplemental_reports = [
+        item for item in reports
+        if item.get("required_for_bundle_readiness") is False
+    ]
+    real_e2e_confirmed = bool(readiness_reports) and all(
+        item.get("real_e2e_confirmed") is True for item in readiness_reports
+    )
+    supplemental_real_e2e_confirmed = all(
+        item.get("real_e2e_confirmed") is True for item in supplemental_reports
+    )
     missing_required = {
         item["name"]: item.get("missing_required_event_codes") or []
         for item in reports
@@ -699,7 +719,10 @@ def build_alert_bundle_health(
         "status": status,
         "coverage_valid": all_valid,
         "real_e2e_confirmed": real_e2e_confirmed,
+        "supplemental_real_e2e_confirmed": supplemental_real_e2e_confirmed,
         "coverage_count": len(reports),
+        "readiness_coverage_count": len(readiness_reports),
+        "supplemental_coverage_count": len(supplemental_reports),
         "total_production_active_alert_count": sum(int(item.get("production_active_alert_count") or 0) for item in reports),
         "total_logical_event_count": sum(int(item.get("logical_event_count") or 0) for item in reports),
         "total_required_logical_event_count": sum(int(item.get("required_logical_event_count") or 0) for item in reports),

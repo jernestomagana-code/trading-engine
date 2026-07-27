@@ -171,6 +171,14 @@ Este panel permanece cerrado cuando no hay una señal operable. La consola separ
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
+La configuración productiva de TradingView contiene **7 alertas consolidadas**:
+`MNQ1!` y `MES1!` en 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;
+y Chris IA para `USTEC.F` y `US500F` en 15 minutos. Todas usan
+`Any alert() function call` y publican en `/technical_snapshot`. Tus alertas
+personales pueden coexistir, pero no cuentan dentro de esas siete. El inventario
+detallado y su procedimiento de validación están en
+`docs/tradingview-production-active-alerts.md`.
+
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
 
 La apertura crea, sólo cuando no existe uno, un contexto premercado **automático conservador**. Este evita que una señal quede sin expediente de sesión, pero mantiene macro, volatilidad y referencias en `NEEDS_REVIEW`; debes validarlos en la consola antes de aprobar una entrada. El motor también toma automáticamente de la publicación vigente el valor neto de la cuenta para calcular riesgo cuando TradingView no lo incluye. Un valor recibido directamente en la alerta siempre tiene prioridad.
@@ -213,6 +221,11 @@ Un punto pendiente en el checklist no debe ignorarse. Si falta contrato, capacid
 En una tarjeta de **Futuros Intradía**, la información cambia para evitar conceptos de opciones que no aplican. Muestra evento, dirección, entrada, stop, TP1/TP2, relación riesgo/beneficio, contratos permitidos y los estados de construcción, riesgo, portfolio y contexto pre-market. Usa **Visto**, **Revisando**, **Watch**, **Rechazar** o **Cerrar** para registrar qué hiciste; esos botones nunca envían una orden.
 
 El celular está reservado exclusivamente para **ENTRY**. La alerta es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2** y una sola acción recomendada. Para acciones y opciones se exige `ENTRY_READY`; en futuros se exige un evento de entrada que no haya sido degradado a `WATCH_ONLY`. WATCH, REBOTE, RISK, resúmenes, nudges, postcierre e incidencias técnicas permanecen visibles en la consola, pero no generan Pushover. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca debe interpretarse como una orden automática ni reemplaza el límite de riesgo del operador.
+
+Para conservar ese filtro, las siete alertas del proyecto mantienen el webhook
+activo y `Notify in app` apagado dentro de TradingView. No actives el push móvil
+directo de TradingView: ese canal no conoce la clasificación final del motor y
+podría enviar WATCH, REBOTE o diagnósticos al teléfono.
 
 Antes de enviar una ENTRY, el motor aplica una puerta adicional de calidad direccional. Compara la dirección con tendencia, votos multitemporales, MACD, RSI y cruce estocástico. Si una entrada va contra tendencia o contra la mayoría MTF necesita al menos tres confirmaciones y no puede acumular tres o más conflictos. Si no las reúne queda como **WATCH_ONLY**: permanece visible únicamente en la consola y no produce aviso móvil. La tarjeta muestra **confirmaciones a favor**, **conflictos**, calificación de la puerta y motivo del bloqueo.
 

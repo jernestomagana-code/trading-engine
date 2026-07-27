@@ -1,20 +1,26 @@
 # Stock Ultimus Operational Pending Work Register
 
-Last reviewed: 2026-07-11.
+Last reviewed: 2026-07-26.
 
 This register tracks the open work from the TradingView alert and strategy
 review. It is decision-support only and never authorizes order execution.
 
 ## Closed In This Review
 
-- TradingView active alert model reduced to 5 consolidated production alerts.
+- TradingView active alert model uses 7 consolidated production alerts: the 5
+  core futures/options-underlying alerts plus 2 Chris IA alerts.
 - Old per-condition TradingView alerts are no longer part of the active set.
 - Local validators and operator reports now separate active alerts from logical
   event coverage:
-  - `total_production_active_alert_count=5`
-  - `total_required_logical_event_count=16`
-- TradingView alerts panel was visually verified with the 5 consolidated active
-  alerts.
+  - Combined bundle: `total_production_active_alert_count=7` and
+    `total_required_logical_event_count=20`.
+  - Chris IA remains supplemental for readiness: it is monitored in the same
+    report without blocking unrelated futures/options readiness when no Chris
+    IA entry has occurred.
+- TradingView alerts panel was visually verified on 2026-07-26 with all 7
+  consolidated alerts active. Each alert has the production webhook enabled and
+  direct TradingView `Notify in app` disabled so mobile delivery remains under
+  the Stock Ultimus `ENTRY`-only filter.
 - V32 nudge preflight reached production successfully.
 - V32 operator notify handles backend timeouts without traceback.
 - After the targeted IBKR refresh, production operator notify moved from
@@ -51,7 +57,10 @@ These cannot be fully closed on a closed-market day:
 
 1. Confirm real TradingView payloads reach `/technical_snapshot`.
    - Current expected state: `WAITING_TV`.
-   - Target: `logical_received=16/16` after real market triggers.
+   - Core readiness target: `logical_received=16/16` for futures and
+     options-underlying after real market triggers.
+   - Combined visibility target: `logical_received=20/20` once the four Chris
+     IA directional entry codes have also occurred naturally.
 
 2. Confirm intraday futures alerts fire in real time.
    - Active alerts: `MNQ1!` `5m` and `MES1!` `5m`.
@@ -78,8 +87,8 @@ These cannot be fully closed on a closed-market day:
 Do not solve universe coverage by adding many TradingView alerts. The current
 boundary is:
 
-- TradingView: technical confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`, and
-  `VIX`.
+- TradingView: technical confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`,
+  `VIX`, `USTEC.F`, and `US500F`.
 - IBKR: option chains, strike, expiration, DTE, bid/ask, spread, delta, IV,
   account context, and capacity.
 - Strategy registry/regime policy: score thresholds, CANSLIM minimums, delta
@@ -127,7 +136,7 @@ Next implementation target:
 ## Optional Cleanup
 
 TradingView chart layout still may contain duplicate script instances or an old
-compiled-error study. This is visual clutter only if the 5 active alerts remain
+compiled-error study. This is visual clutter only if the 7 active alerts remain
 correct. Remove chart studies only after confirming that alert delivery is
 stable or during an explicit chart-cleanup session.
 
@@ -144,8 +153,9 @@ python3 scripts/run_operational_edge_report.py --top 5 --preview 5
 
 Expected closed-market interpretation:
 
-- `active_alerts=5`
-- `logical_received=0/16` until real alerts fire
+- `active_alerts=7`
+- combined `logical_received=0/20` until real alerts fire; the readiness-gating
+  core remains `0/16`
 - `WAITING_TV` is acceptable
 - `execution_authorized=false`
 - `not_order_instruction=true`

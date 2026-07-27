@@ -297,13 +297,15 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(e2e["local_replay_validation"]["payload_valid"])
         self.assertIn("SPY/QQQ/VIX", e2e["next_real_trigger"])
 
-    def test_tradingview_bundle_health_tracks_futures_and_options_underlying(self):
+    def test_tradingview_bundle_health_tracks_all_three_production_coverages(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
             ledger_path = runtime / "v32_signal_events.json"
             futures_coverage = tradingview_alert_coverage.load_coverage()
             options_coverage_path = ROOT / "config" / "tradingview_options_underlying_alert_coverage_v1.json"
             options_coverage = tradingview_alert_coverage.load_coverage(options_coverage_path)
+            chris_coverage_path = ROOT / "config" / "tradingview_chris_ia_alert_coverage_v1.json"
+            chris_coverage = tradingview_alert_coverage.load_coverage(chris_coverage_path)
             for alert in tradingview_alert_coverage.alerts(futures_coverage):
                 payload = tradingview_operational_health.concrete_payload_for_event_code(alert["event_code"])
                 tradingview_signal_ledger.append_signal_event(
@@ -323,6 +325,17 @@ class SignalLedgerTests(unittest.TestCase):
                     endpoint="/technical_snapshot",
                     path=ledger_path,
                 )
+            for alert in tradingview_alert_coverage.alerts(chris_coverage):
+                payload = tradingview_operational_health.concrete_payload_for_event_code(
+                    alert["event_code"],
+                    coverage_path=chris_coverage_path,
+                )
+                tradingview_signal_ledger.append_signal_event(
+                    payload,
+                    raw_text=json.dumps(payload),
+                    endpoint="/technical_snapshot",
+                    path=ledger_path,
+                )
 
             bundle = tradingview_operational_health.build_alert_bundle_health(
                 runtime,
@@ -334,13 +347,16 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(bundle["bundle_health_version"], "tradingview_alert_bundle_health_v1")
         self.assertTrue(bundle["coverage_valid"])
         self.assertTrue(bundle["real_e2e_confirmed"])
-        self.assertEqual(bundle["coverage_count"], 2)
-        self.assertEqual(bundle["total_production_active_alert_count"], 5)
-        self.assertEqual(bundle["total_required_logical_event_count"], 16)
-        self.assertEqual(bundle["total_expected_alert_count"], 20)
-        self.assertEqual(bundle["total_required_alert_count"], 16)
+        self.assertEqual(bundle["coverage_count"], 3)
+        self.assertEqual(bundle["readiness_coverage_count"], 2)
+        self.assertEqual(bundle["supplemental_coverage_count"], 1)
+        self.assertTrue(bundle["supplemental_real_e2e_confirmed"])
+        self.assertEqual(bundle["total_production_active_alert_count"], 7)
+        self.assertEqual(bundle["total_required_logical_event_count"], 20)
+        self.assertEqual(bundle["total_expected_alert_count"], 24)
+        self.assertEqual(bundle["total_required_alert_count"], 20)
         self.assertEqual(bundle["total_health_alert_count"], 4)
-        self.assertEqual(bundle["total_received_required_event_count"], 16)
+        self.assertEqual(bundle["total_received_required_event_count"], 20)
         self.assertEqual(bundle["total_received_health_event_count"], 4)
         self.assertEqual(bundle["missing_required_event_codes_by_coverage"], {})
         self.assertEqual(bundle["total_quarantine_event_count"], 0)

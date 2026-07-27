@@ -567,8 +567,8 @@ change the decision state.
 
 ## TradingView Alert Boundary
 
-The production TradingView setup uses five active consolidated alerts documented
-in `docs/tradingview-production-active-alerts.md`. Those five alerts are enough
+The production TradingView setup uses seven active consolidated alerts documented
+in `docs/tradingview-production-active-alerts.md`. Those seven alerts are enough
 for the current technical confirmation layer because Pine emits the required
 logical event codes internally.
 
@@ -576,7 +576,7 @@ Do not recreate old per-condition alerts to solve missing strategy evidence.
 Use the right source for the missing field:
 
 - TradingView: technical/event confirmation for `MNQ1!`, `MES1!`, `QQQ`, `SPY`,
-  and `VIX`.
+  `VIX`, `USTEC.F`, and `US500F`.
 - IBKR: option contract, best strike, DTE, bid/ask, spread, delta, IV/volatility
   richness, and account capacity checks.
 - Strategy registry/regime policy: score thresholds, CANSLIM minimums, delta
