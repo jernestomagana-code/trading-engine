@@ -329,9 +329,13 @@ Control-console contract:
   the console is usable but stale, partial, missing a refreshable input, or
   currently running a local process. Red means do not operate the console flow
   until token/production access is restored.
-- When a long process is running, the console shows `La consola esta trabajando`
-  plus a RUNNING/DONE detail link. Do not press another refresh button until the
-  process finishes.
+- When a blocking refresh or checklist is running, the console shows
+  `La consola esta trabajando` plus a RUNNING/DONE detail link. Do not repeat
+  that same action until it finishes.
+- `Post-open monitor` is different: it intentionally runs 18 cycles at
+  five-minute intervals, approximately 90 minutes total. The console labels it
+  `Monitoreo automático activo`; it remains usable and may be refreshed while
+  that background monitor continues.
 - Alert buttons are workflow marks only: `Visto`, `Revisando`, `Watch`,
   `Paper`, `IBKR aplicada`, `No aplicada`, `Missed`, `Rechazar`, and `Cerrar`.
   After clicking, the alert receives a visible status badge and the event is

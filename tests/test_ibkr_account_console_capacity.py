@@ -279,6 +279,47 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             with account_console.WEB_JOBS_LOCK:
                 account_console.WEB_JOBS.clear()
 
+    def test_post_open_monitor_runs_in_background_without_blocking_console(self):
+        active = {"account_scope": "primary", "account_alias": "primary"}
+        snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary"}
+        operator_payload = {
+            "ok": True,
+            "cached": False,
+            "stale_cache": False,
+            "token_present": True,
+            "data": {
+                "account_context": {"account_scope": "primary", "account_alias": "primary"},
+                "account_capacity": {"available_capacity": 50000, "capacity_source": "available_funds"},
+            },
+        }
+        try:
+            with account_console.WEB_JOBS_LOCK:
+                account_console.WEB_JOBS["monitor-test"] = {
+                    "job_id": "monitor-test",
+                    "label": "Post-open monitor",
+                    "alias": "primary",
+                    "status": "RUNNING",
+                    "started_at": account_console.now_iso(),
+                }
+            with patch.object(account_console, "latest_ibkr_connection_status", return_value={
+                "available": True,
+                "connected": True,
+                "account_matches": True,
+                "status": "CONNECTED",
+                "published": True,
+            }):
+                health = account_console.console_health(active, snapshot, operator_payload)
+                process_panel = account_console.render_active_process_panel()
+
+            self.assertNotIn("PROCESS_RUNNING", health["warnings"])
+            self.assertIn("BACKGROUND_MONITOR_RUNNING", health["info"])
+            self.assertEqual(health["blocking_jobs"], [])
+            self.assertIn("Monitoreo automático activo", process_panel)
+            self.assertIn("no bloquea la consola", process_panel)
+        finally:
+            with account_console.WEB_JOBS_LOCK:
+                account_console.WEB_JOBS.clear()
+
     def test_console_health_keeps_fresh_remote_cache_green(self):
         active = {"account_scope": "primary", "account_alias": "primary"}
         snapshot = {"available": True, "account_scope": "primary", "account_alias": "primary"}

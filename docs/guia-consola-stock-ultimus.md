@@ -158,6 +158,13 @@ Los primeros cinco destinos forman el flujo diario. **Análisis** y **Administra
 | Bloqueado | Falta una conexión, credencial o dato esencial. | Resolver el bloqueo antes de operar. |
 | Acumulando evidencia | La apertura técnica terminó, pero faltan eventos reales o resultados cerrados para confiar en `ENTRY_READY`. | Mantener seguimiento y no cambiar parámetros todavía. |
 
+El **Post-open monitor** no bloquea la consola. Se ejecuta en segundo plano
+durante aproximadamente 90 minutos —18 revisiones separadas por cinco minutos—
+y se muestra como **Monitoreo automático activo**. Durante ese periodo puedes
+actualizar la pantalla y usar las demás secciones. La indicación **Procesando**
+y la espera hasta `DONE` quedan reservadas para refrescos o checklists que sí
+deben terminar antes de repetir la misma acción.
+
 Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Análisis.
 
 ## 8. Alertas y diagnósticos

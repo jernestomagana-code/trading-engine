@@ -1453,6 +1453,14 @@ def active_web_jobs() -> list[dict[str, Any]]:
     return sorted(jobs, key=lambda item: str(item.get("started_at") or ""), reverse=True)
 
 
+def is_background_monitor_job(job: dict[str, Any]) -> bool:
+    return str(job.get("label") or "").strip() == "Post-open monitor"
+
+
+def blocking_web_jobs() -> list[dict[str, Any]]:
+    return [job for job in active_web_jobs() if not is_background_monitor_job(job)]
+
+
 def runtime_json_report(path: Path) -> dict[str, Any]:
     data = load_json_file(path)
     if not isinstance(data, dict):
@@ -1975,6 +1983,8 @@ def render_metric(title: str, value: Any, note: str = "") -> str:
 def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_payload: dict[str, Any]) -> dict[str, Any]:
     comparison = selected_vs_published(active, snapshot, operator_payload)
     running = active_web_jobs()
+    blocking = [job for job in running if not is_background_monitor_job(job)]
+    background = [job for job in running if is_background_monitor_job(job)]
     token_present = bool(operator_payload.get("token_present") or read_access_token())
     remote_ok = bool(operator_payload.get("ok"))
     cached = bool(operator_payload.get("cached"))
@@ -2011,14 +2021,16 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     for missing in local_core.get("missing") or []:
         if missing not in warnings:
             warnings.append(missing)
-    if running:
+    if blocking:
         warnings.append("PROCESS_RUNNING")
+    if background:
+        info.append("BACKGROUND_MONITOR_RUNNING")
 
     if blockers:
         level = "red"
         label = "Atencion"
         detail = "No todo esta conectado. Revisa token/produccion antes de operar la consola."
-    elif running:
+    elif blocking:
         level = "amber"
         label = "Pensando"
         detail = "Hay un proceso corriendo. Espera DONE antes de volver a refrescar."
@@ -2042,6 +2054,8 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
         "warnings": warnings,
         "info": info,
         "running_jobs": running,
+        "blocking_jobs": blocking,
+        "background_jobs": background,
         "remote_ok": remote_ok,
         "cached": cached,
         "stale_cache": stale_cache,
@@ -2162,29 +2176,48 @@ def render_active_process_panel() -> str:
     jobs = active_web_jobs()
     if not jobs:
         return ""
+    blocking = [job for job in jobs if not is_background_monitor_job(job)]
+    background_only = not blocking
     rows = []
     for job in jobs[:3]:
+        monitor = is_background_monitor_job(job)
         rows.append("""
         <a class="process-row" href="/console?job_id={job_id}">
           <span class="process-pulse"></span>
           <strong>{label}</strong>
-          <small>alias={alias} | corriendo hace {elapsed} | abre detalle RUNNING/DONE</small>
+          <small>{detail}</small>
         </a>
         """.format(
             job_id=html_escape(job.get("job_id") or ""),
             label=html_escape(job.get("label") or "Proceso local"),
-            alias=html_escape(job.get("alias") or ""),
-            elapsed=html_escape(duration_label(job.get("started_at"))),
+            detail=html_escape(
+                "monitoreo en segundo plano | hace {} | la consola sigue disponible".format(
+                    duration_label(job.get("started_at"))
+                )
+                if monitor
+                else "alias={} | corriendo hace {} | abre detalle RUNNING/DONE".format(
+                    job.get("alias") or "",
+                    duration_label(job.get("started_at")),
+                )
+            ),
         ))
     return """
     <section class="panel process-panel">
       <div class="section-head">
-        <h2>La consola esta trabajando</h2>
-        <p>No presiones Refresh de nuevo hasta que el proceso termine. Puedes abrir el detalle para ver RUNNING/DONE.</p>
+        <h2>{title}</h2>
+        <p>{detail}</p>
       </div>
       <div class="process-list">{rows}</div>
     </section>
-    """.format(rows="".join(rows))
+    """.format(
+        title="Monitoreo automático activo" if background_only else "La consola esta trabajando",
+        detail=(
+            "La vigilancia post-apertura dura aproximadamente 90 minutos y no bloquea la consola. Puedes actualizar o seguir operando normalmente."
+            if background_only
+            else "No repitas la misma acción hasta que el proceso termine. Puedes abrir el detalle para ver RUNNING/DONE."
+        ),
+        rows="".join(rows),
+    )
 
 
 def first_pending_alert(operator_payload: dict[str, Any]) -> dict[str, Any]:
@@ -2219,7 +2252,7 @@ def console_today_summary(active: dict[str, Any], snapshot: dict[str, Any], oper
     if health.get("level") == "red":
         mode = "Bloqueado"
         action = "Resolver conexion/token/produccion antes de operar."
-    elif active_web_jobs():
+    elif blocking_web_jobs():
         mode = "Procesando"
         action = "Esperar DONE; no lanzar otro refresh mientras corre el proceso."
     elif counts["risk"]:
@@ -2459,7 +2492,7 @@ def render_command_center(
 ) -> str:
     health = console_health(active, snapshot, operator_payload)
     pending = build_unified_pending_items(operator_payload, position_payload, risk_payload, rsp_payload)
-    running = active_web_jobs()
+    running = blocking_web_jobs()
     if health.get("level") == "red":
         level, title = "red", "La consola necesita conexión"
         summary = "Resuelve la conexión o publicación antes de usar información operativa."
@@ -3027,7 +3060,14 @@ def console_timeline(snapshot: dict[str, Any], operator_payload: dict[str, Any],
     if snapshot.get("available"):
         append_timeline_event(events, snapshot.get("generated_at") or snapshot.get("mtime"), "Snapshot maestro", "Contexto local disponible", "green")
     for job in active_web_jobs():
-        append_timeline_event(events, job.get("started_at"), "Proceso corriendo", "{} | {}".format(job.get("label") or "Proceso local", job.get("status") or "RUNNING"), "amber")
+        background = is_background_monitor_job(job)
+        append_timeline_event(
+            events,
+            job.get("started_at"),
+            "Monitoreo en segundo plano" if background else "Proceso corriendo",
+            "{} | {}".format(job.get("label") or "Proceso local", job.get("status") or "RUNNING"),
+            "green" if background else "amber",
+        )
     for event in load_operator_events()[-5:]:
         append_timeline_event(events, event.get("recorded_at"), "Alerta marcada", "{} {} -> {}".format(event.get("ticker") or "", event.get("action") or "", event.get("operator_status") or ""), "green")
     notify = reports.get("notify") or {}
