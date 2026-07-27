@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 DEFAULT_HEALTH_OUT = ROOT / "runtime" / "gpt_action_health_latest.json"
+DEFAULT_STATE_OUT = ROOT / "runtime" / "gpt_action_health_state.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
     parser.add_argument("--health-out", default=os.getenv("STOCK_ULTIMUS_GPT_ACTION_HEALTH_OUT", str(DEFAULT_HEALTH_OUT)))
+    parser.add_argument("--state-out", default=os.getenv("STOCK_ULTIMUS_GPT_ACTION_HEALTH_STATE_OUT", str(DEFAULT_STATE_OUT)))
     parser.add_argument("--no-write", action="store_true", help="Do not write the latest health JSON file.")
     return parser.parse_args()
 
@@ -145,6 +147,39 @@ def compact_health(
     }
 
 
+def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text())
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        return default
+    return default
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+
+
+def health_signature(health: dict[str, Any]) -> str:
+    checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
+    http = health.get("http") if isinstance(health.get("http"), dict) else {}
+    readiness = health.get("data_readiness") if isinstance(health.get("data_readiness"), dict) else {}
+    parts = [
+        str(health.get("status") or "UNKNOWN"),
+        str(http.get("authorized_daily_rankings") or ""),
+        str(http.get("authorized_daily_answer") or ""),
+        str(http.get("authorized_daily_now") or ""),
+        str(readiness.get("status") or ""),
+        str(readiness.get("main_blocker") or ""),
+    ]
+    for key in sorted(checks):
+        parts.append(f"{key}={checks.get(key)}")
+    return "|".join(parts)
+
+
 def main() -> int:
     args = parse_args()
     token = args.token
@@ -179,14 +214,35 @@ def main() -> int:
         daily_now_status,
         daily_now_payload,
     )
+    signature = health_signature(health)
+    previous_state = read_json(Path(args.state_out), {})
+    duplicate_failure = (
+        health.get("status") != "OK"
+        and isinstance(previous_state, dict)
+        and previous_state.get("last_status") == health.get("status")
+        and previous_state.get("last_signature") == signature
+    )
 
     if not args.no_write:
         out_path = Path(args.health_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(health, indent=2, sort_keys=True) + "\n")
+        write_json(
+            Path(args.state_out),
+            {
+                "last_checked_at": health.get("checked_at"),
+                "last_signature": signature,
+                "last_status": health.get("status"),
+                "last_duplicate_failure": duplicate_failure,
+            },
+        )
 
     print(json.dumps(health, indent=2, sort_keys=True))
-    return 0 if health["status"] == "OK" else 1
+    if health["status"] == "OK" or duplicate_failure:
+        if duplicate_failure:
+            print("SUPPRESSED_DUPLICATE_FAILURE", file=sys.stderr)
+        return 0
+    return 1
 
 
 if __name__ == "__main__":

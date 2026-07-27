@@ -600,6 +600,11 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("daily_now_ok", source)
         self.assertIn("daily_answer_no_order_guardrail", source)
         self.assertIn("daily_now_no_order_guardrail", source)
+        self.assertIn("DEFAULT_STATE_OUT", source)
+        self.assertIn("--state-out", source)
+        self.assertIn("duplicate_failure", source)
+        self.assertIn("last_duplicate_failure", source)
+        self.assertIn("SUPPRESSED_DUPLICATE_FAILURE", source)
 
     def test_operating_day_runner_orchestrates_bridge_outcomes_and_health_safely(self):
         source = OPERATING_DAY_RUNNER.read_text()
