@@ -188,7 +188,7 @@ detallado y su procedimiento de validación están en
 
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
 
-La apertura crea, sólo cuando no existe uno, un contexto premercado **automático conservador**. Este evita que una señal quede sin expediente de sesión, pero mantiene macro, volatilidad y referencias en `NEEDS_REVIEW`; debes validarlos en la consola antes de aprobar una entrada. El motor también toma automáticamente de la publicación vigente el valor neto de la cuenta para calcular riesgo cuando TradingView no lo incluye. Un valor recibido directamente en la alerta siempre tiene prioridad.
+La apertura crea, sólo cuando no existe uno, un contexto premercado **automático conservador**. Este evita que una señal quede sin expediente de sesión. Los campos macro y volatilidad que todavía no tienen una fuente automática permanecen informativos, pero ya no bloquean por sí solos todas las señales. Una entrada sólo llega a `ENTRY_READY` si además supera confirmación técnica, stop/targets, tamaño por NLV, riesgo diario, cartera y calidad del evento. El motor toma automáticamente de la publicación vigente el valor neto y las posiciones abiertas de futuros; una posición MNQ/MES existente activa la revisión de duplicación. Un valor recibido directamente en la alerta siempre tiene prioridad.
 
 El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **Aceptados hoy** excluye lo enviado a cuarentena; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor diario** confirma que fueron incorporados a la evaluación. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
 
@@ -228,6 +228,8 @@ Un punto pendiente en el checklist no debe ignorarse. Si falta contrato, capacid
 En una tarjeta de **Futuros Intradía**, la información cambia para evitar conceptos de opciones que no aplican. Muestra evento, dirección, entrada, stop, TP1/TP2, relación riesgo/beneficio, contratos permitidos y los estados de construcción, riesgo, portfolio y contexto pre-market. Usa **Visto**, **Revisando**, **Watch**, **Rechazar** o **Cerrar** para registrar qué hiciste; esos botones nunca envían una orden.
 
 El celular está reservado exclusivamente para **ENTRY**. La alerta es deliberadamente breve: **activo y dirección**, **precio de disparo**, **stop**, **Target 1**, **Target 2** y una sola acción recomendada. Para acciones y opciones se exige `ENTRY_READY`; en futuros se exige un evento de entrada que no haya sido degradado a `WATCH_ONLY`. WATCH, REBOTE, RISK, resúmenes, nudges, postcierre e incidencias técnicas permanecen visibles en la consola, pero no generan Pushover. Cuando TradingView confirma una entrada pero no envía niveles, el motor calcula referencias provisionales con ATR: stop a 1 ATR, Target 1 a 1R y Target 2 a 2R. El mensaje las etiqueta como **estimadas por ATR** y exige confirmarlas en la consola; nunca debe interpretarse como una orden automática ni reemplaza el límite de riesgo del operador.
+
+Para opciones, `ENTRY_READY` debe pasar además la puerta operativa final: snapshot no mayor a 75 minutos, cuenta activa identificada, capacidad comprobable, precio del subyacente disponible y contrato no vencido. Si falta cualquiera de esos datos, la tarjeta baja a `WAIT_DATA`, `WAIT_ACCOUNT_CONTEXT` o `RISK_BLOCKED` y no llega al celular.
 
 Para conservar ese filtro, las siete alertas del proyecto mantienen el webhook
 activo y `Notify in app` apagado dentro de TradingView. No actives el push móvil
@@ -293,6 +295,8 @@ La tarjeta destaca primero una sola **Recomendación del motor**, que también p
 Cuando termines de evaluar una posición que requiere decisión humana, presiona **Marcar revisión completada**. La consola guarda una huella de la posición, el estado y los contratos recomendados, y la elimina de **Pendientes priorizados**. Volverá a aparecer si cambia la posición, la acción principal, la cantidad, el strike, el vencimiento o alguna pata de la estructura. Una posición marcada **Actualizar datos** no puede ocultarse sólo como revisada: usa **Ir a actualizar datos** y ejecuta **Refresh posiciones IBKR**; desaparecerá cuando el motor reciba la información necesaria.
 
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
+
+Los candidatos que aprueban el filtro CANSLIM también se incorporan al ranking diario, además de los símbolos base. La consola conserva `candidate_source`, score y rating para distinguir si un activo nació del universo CANSLIM y poder explicar por qué avanzó o quedó descartado. Los contratos vencidos se eliminan antes de publicar el ranking.
 
 Para una acción ya abierta, el escaneo incluye calls **ITM, ATM y OTM**. El tamaño parcial se calcula con lotes reales de 100 acciones: por ejemplo, sobre 1,000 acciones, un objetivo cercano a 25% compara 2 contratos (20%) y 3 contratos (30%). La recomendación usa el ganador del balance; romper soporte o superar 60% del valor neto de la cuenta da prioridad a reducir, mientras que sobreventa y cobertura existente activan sus propios límites de seguridad.
 
@@ -512,6 +516,8 @@ Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos
 ### Aparecen datos viejos
 
 Ejecuta un refresh de IBKR y espera a que termine. No tomes decisiones de contrato, capacidad o riesgo usando un snapshot marcado como viejo.
+
+En días de mercado, el servicio programado repite apertura/publicación aproximadamente cada hora entre 07:35 y 13:35 hora local. Esto mantiene la cuenta, CANSLIM, cadenas y ranking dentro de la ventana de frescura. El botón manual sigue disponible si TWS estaba cerrado o una actualización programada falló.
 
 ### No aparecen oportunidades
 

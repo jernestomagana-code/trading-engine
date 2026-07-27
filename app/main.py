@@ -1882,14 +1882,14 @@ def intraday_futures_premarket_template(mode="base", session_date=None, updated_
             "market_context_status": "NEEDS_REVIEW",
             "macro_status": "NEEDS_REVIEW",
             "volatility_status": "NEEDS_REVIEW",
-            "reference_alignment": "NEEDS_REVIEW",
+            "reference_alignment": "AUTO_FROM_SIGNAL",
             "opening_range_status": "NEEDS_REVIEW",
             "range_used_status": "NEEDS_REVIEW",
             "risk_daily_status": "NEEDS_REVIEW",
             "portfolio_status": "NEEDS_REVIEW",
-            "decision_max_state": "MANUAL_REVIEW",
+            "decision_max_state": "ENTRY_READY",
             "source": "DAILY_OPEN_AUTOMATIC_CONSERVATIVE",
-            "notes": "Contexto base creado automaticamente por la apertura. No presupone calendario macro, volatilidad ni alineacion; completar o validar en consola antes de aprobar una entrada.",
+            "notes": "Contexto base creado automaticamente por la apertura. No aprueba por si solo: la entrada aun debe superar confirmacion tecnica, riesgo, cartera y calidad de datos. Los campos informativos pendientes no imponen un bloqueo estructural.",
         },
         "base": {
             "market_context_status": "CLEAR_MANUAL_INPUT",
@@ -10206,6 +10206,48 @@ def apply_intraday_futures_account_context(payload):
     payload["account_alias"] = account_context.get("account_alias")
     payload["account_context_source"] = "CURRENT_BROKER_MASTER_SNAPSHOT"
     payload["account_context_generated_at"] = account_context.get("generated_at")
+
+    account_futures_positions = normalize_intraday_futures_positions(
+        account_context.get("open_futures_positions")
+    )
+    data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    runtime_data = data.get("runtime_data") if isinstance(data.get("runtime_data"), dict) else {}
+    tower = runtime_data.get("broker_control_tower_latest.json")
+    if not isinstance(tower, dict):
+        tower = data.get("broker_control_tower_latest")
+    accounts = tower.get("accounts") if isinstance(tower, dict) and isinstance(tower.get("accounts"), list) else []
+    active_alias = str(payload.get("account_alias") or "").lower().strip()
+    selected = next(
+        (
+            account for account in accounts
+            if isinstance(account, dict)
+            and (
+                account.get("active") is True
+                or str(account.get("account_alias") or "").lower().strip() == active_alias
+            )
+        ),
+        None,
+    )
+    positions = selected.get("positions") if isinstance(selected, dict) and isinstance(selected.get("positions"), list) else []
+    futures_positions = []
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        symbol = str(position.get("symbol") or position.get("ticker") or "").upper().strip()
+        sec_type = str(
+            position.get("sec_type")
+            or position.get("security_type")
+            or position.get("asset_class")
+            or ""
+        ).upper().strip()
+        if sec_type in {"FUT", "FUTURE", "FUTURES"} or symbol in {"MNQ", "NQ", "MES", "ES"}:
+            futures_positions.append(position)
+    futures_positions = account_futures_positions or futures_positions
+    payload["open_intraday_positions"] = futures_positions
+    payload["portfolio_context_source"] = "CURRENT_BROKER_ACCOUNT_CONTEXT"
+    if not futures_positions:
+        payload["portfolio_engine_result"] = "CLEAR"
+        payload["portfolio_status"] = "CLEAR"
     return payload
 
 
@@ -24113,6 +24155,112 @@ def _v32_alert_capacity_check(alert, account_capacity):
     }
 
 
+def _v32_option_entry_operational_gate(alert, data_readiness, account_context):
+    """Prevent stale or incomplete option ideas from becoming ENTRY/mobile alerts."""
+    alert = dict(alert or {})
+    state = _v29_safe_upper(alert.get("state"), "")
+    if state != "ENTRY_READY" or _v32_is_intraday_futures_alert(alert):
+        alert.setdefault("entry_operational_gate", {
+            "status": "NOT_APPLICABLE",
+            "eligible": False,
+            "blockers": [],
+        })
+        return alert
+
+    readiness = data_readiness if isinstance(data_readiness, dict) else {}
+    runtime_files = readiness.get("runtime_files") if isinstance(readiness.get("runtime_files"), dict) else {}
+    account_context = account_context if isinstance(account_context, dict) else {}
+    contract = alert.get("selected_contract") if isinstance(alert.get("selected_contract"), dict) else {}
+    capacity = alert.get("account_capacity_check") if isinstance(alert.get("account_capacity_check"), dict) else {}
+    blockers = []
+    max_age_minutes = max(15.0, float(os.getenv("V32_ENTRY_MAX_DATA_AGE_MINUTES", "75")))
+    newest_age = _v32_float_or_none(runtime_files.get("newest_age_minutes"))
+    if newest_age is None:
+        blockers.append("ENTRY_DATA_FRESHNESS_UNKNOWN")
+    elif newest_age > max_age_minutes:
+        blockers.append("ENTRY_DATA_STALE")
+
+    account_alias = str(account_context.get("account_alias") or "").strip()
+    account_scope = str(account_context.get("account_scope") or "").strip()
+    if (
+        not account_context.get("selected_account_configured")
+        or not account_alias
+        or account_alias.lower() == "unknown"
+        or not account_scope
+        or account_scope.lower() == "unknown"
+    ):
+        blockers.append("ENTRY_ACCOUNT_CONTEXT_MISSING")
+
+    expiration = str(contract.get("expiration") or "").strip()
+    expiration_date = None
+    if expiration:
+        for value in [expiration[:10], expiration[:8]]:
+            try:
+                expiration_date = datetime.strptime(
+                    value,
+                    "%Y-%m-%d" if "-" in value else "%Y%m%d",
+                ).date()
+                break
+            except Exception:
+                continue
+    if expiration_date is None:
+        blockers.append("ENTRY_EXPIRATION_MISSING_OR_INVALID")
+    elif expiration_date < datetime.now(MARKET_TZ).date():
+        blockers.append("ENTRY_CONTRACT_EXPIRED")
+
+    underlying_price = _v32_first_present(
+        _v32_float_or_none(contract.get("underlying_price")),
+        _v32_float_or_none(alert.get("underlying_price")),
+        _v32_float_or_none(alert.get("spot_price")),
+    )
+    if underlying_price is None:
+        blockers.append("ENTRY_UNDERLYING_PRICE_MISSING")
+
+    capacity_status = _v29_safe_upper(capacity.get("status"), "")
+    if capacity_status in {"", "UNKNOWN_ACCOUNT_CAPACITY", "UNKNOWN_CAPITAL_REQUIRED"}:
+        blockers.append("ENTRY_CAPACITY_UNVERIFIED")
+    elif capacity_status == "INSUFFICIENT_AVAILABLE_CAPACITY":
+        blockers.append("ENTRY_CAPACITY_INSUFFICIENT")
+
+    eligible = not blockers
+    alert["entry_operational_gate"] = {
+        "gate_version": "v32_option_entry_operational_gate_v1",
+        "status": "PASS" if eligible else "BLOCKED",
+        "eligible": eligible,
+        "blockers": blockers,
+        "max_data_age_minutes": max_age_minutes,
+        "newest_data_age_minutes": newest_age,
+        "account_alias": account_alias or None,
+        "expiration": expiration or None,
+        "underlying_price": underlying_price,
+        "capacity_status": capacity_status or None,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    if eligible:
+        return alert
+
+    alert["source_state"] = state
+    alert["state"] = (
+        "WAIT_ACCOUNT_CONTEXT"
+        if "ENTRY_ACCOUNT_CONTEXT_MISSING" in blockers
+        else "RISK_BLOCKED"
+        if "ENTRY_CAPACITY_INSUFFICIENT" in blockers
+        else "WAIT_DATA"
+    )
+    alert["severity"] = "RISK" if alert["state"] == "RISK_BLOCKED" else "WATCH"
+    alert["main_blocker"] = blockers[0]
+    alert["manual_review_ready"] = False
+    alert["alert_delivery_eligible"] = False
+    alert["next_required_action"] = "Resolver: {} antes de revisar una entrada.".format(", ".join(blockers))
+    alert["alert_lifecycle"] = shared_alert_lifecycle.alert_lifecycle_state(alert)
+    alert["performance_eligible"] = alert["alert_lifecycle"].get("performance_eligible")
+    alert["backtesting_bucket"] = alert["alert_lifecycle"].get("backtesting_bucket")
+    alert["quality_score"] = _v32_alert_quality_score(alert)
+    alert["operator_visibility"] = _v32_operator_visibility(alert)
+    return alert
+
+
 def _v32_operator_alert_from_decision(item):
     item = item if isinstance(item, dict) else {}
     contract = item.get("selected_contract") if isinstance(item.get("selected_contract"), dict) else {}
@@ -24575,8 +24723,10 @@ def _v32_operator_today_payload(limit=12):
     ]
     account_context = command.get("account_context") if isinstance(command.get("account_context"), dict) else {}
     account_capacity = _v32_account_capacity_from_context(account_context)
-    for alert in active_alerts:
+    data_readiness = command.get("data_readiness") if isinstance(command.get("data_readiness"), dict) else {}
+    for index, alert in enumerate(active_alerts):
         alert["account_capacity_check"] = _v32_alert_capacity_check(alert, account_capacity)
+        active_alerts[index] = _v32_option_entry_operational_gate(alert, data_readiness, account_context)
     intraday_futures_alerts = [
         alert for alert in active_alerts
         if _v29_safe_upper(alert.get("strategy"), "") == "INTRADAY_INDEX_FUTURES"
@@ -26858,12 +27008,72 @@ def _v31_canonical_decision(ticker):
     decision = shared_source_attribution.apply_source_attribution(decision, d)
     decision = shared_evidence_quality.apply_evidence_quality(decision)
     decision = _v31_apply_entry_evidence_gate(decision)
+    technical = d.get("technical") if isinstance(d.get("technical"), dict) else {}
+    canslim = technical.get("canslim") if isinstance(technical.get("canslim"), dict) else {}
+    canslim_passes = _v32_first_present(
+        technical.get("canslim_passes"),
+        technical.get("passes_canslim"),
+        canslim.get("passes"),
+        canslim.get("canslim_passes"),
+    )
+    canslim_score = _v32_first_present(
+        technical.get("canslim_score"),
+        canslim.get("score"),
+        canslim.get("canslim_score"),
+    )
+    if canslim_passes is not None or canslim_score is not None:
+        decision["candidate_source"] = "CANSLIM_FREE_ENGINE"
+        decision["canslim_passes"] = canslim_passes
+        decision["canslim_score"] = canslim_score
+        decision["canslim_rating"] = _v32_first_present(
+            technical.get("canslim_rating"),
+            canslim.get("rating"),
+        )
     return shared_evidence_quality.apply_evidence_quality(decision)
+
+
+def _v31_dynamic_decision_tickers():
+    ordered = list(_V29_DEFAULT_TICKERS)
+    master = _v29_discover_master_snapshot()
+    data = master.get("data") if isinstance(master.get("data"), dict) else {}
+    technical = data.get("technical_snapshot") if isinstance(data.get("technical_snapshot"), dict) else {}
+    option_rows = data.get("options_rows") if isinstance(data.get("options_rows"), list) else []
+    option_tickers = {
+        str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        for row in option_rows
+        if isinstance(row, dict)
+    }
+    candidates = []
+    for ticker, item in technical.items():
+        if not isinstance(item, dict):
+            continue
+        canslim = item.get("canslim") if isinstance(item.get("canslim"), dict) else {}
+        passes = _v32_first_present(
+            item.get("canslim_passes"),
+            item.get("passes_canslim"),
+            canslim.get("passes"),
+            canslim.get("canslim_passes"),
+        )
+        score = _v32_float_or_none(_v32_first_present(
+            item.get("canslim_score"),
+            canslim.get("score"),
+            canslim.get("canslim_score"),
+        ))
+        if (
+            str(ticker).upper().strip() in option_tickers
+            and (passes is True or str(passes).upper() in {"TRUE", "PASS", "PASSED", "YES", "1"})
+        ):
+            candidates.append((str(ticker).upper().strip(), score or 0.0))
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    for ticker, _score in candidates:
+        if ticker and ticker not in ordered:
+            ordered.append(ticker)
+    return ordered[:14]
 
 
 def _v31_all_decisions(tickers=None):
     if not tickers:
-        tickers = _V29_DEFAULT_TICKERS
+        tickers = _v31_dynamic_decision_tickers()
     return [_v31_canonical_decision(t) for t in tickers]
 
 
@@ -26902,6 +27112,7 @@ def _v31_account_context_from_master(master):
         "generated_at",
         "source",
         "sensitive_identifiers_excluded",
+        "open_futures_positions",
     ]:
         if account_context.get(key) is not None:
             sanitized[key] = account_context.get(key)
@@ -27684,6 +27895,7 @@ def _v31_command_center_payload():
         "account_context": account_context,
         "account_scope": account_context.get("account_scope"),
         "account_alias": account_context.get("account_alias"),
+        "data_readiness": readiness,
         "summary": {
             **summary,
             "items": len(compact.get("items") or []),

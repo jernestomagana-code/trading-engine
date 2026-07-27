@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,6 +17,31 @@ import tradingview_signal_ledger
 
 
 class SignalLedgerTests(unittest.TestCase):
+    def test_default_ledger_falls_back_to_console_remote_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            ledger = runtime / "v32_signal_events.json"
+            cache = runtime / "stock_ultimus_console_remote_cache.json"
+            cache.write_text(json.dumps({
+                "entries": {
+                    "/v32_signal_events?limit=1000": {
+                        "result": {
+                            "data": {
+                                "events": [{"event_id": "REMOTE-1", "ticker": "MNQ"}],
+                            },
+                        },
+                    },
+                },
+            }))
+            with patch.object(tradingview_signal_ledger, "DEFAULT_LEDGER_PATH", ledger), patch.object(
+                tradingview_signal_ledger,
+                "DEFAULT_REMOTE_CACHE_PATH",
+                cache,
+            ):
+                events = tradingview_signal_ledger.load_signal_events()
+
+        self.assertEqual(events[0]["event_id"], "REMOTE-1")
+
     def test_tradingview_alert_coverage_generates_valid_minimum_messages(self):
         coverage = tradingview_alert_coverage.load_coverage()
         validation = tradingview_alert_coverage.validate_coverage(coverage)

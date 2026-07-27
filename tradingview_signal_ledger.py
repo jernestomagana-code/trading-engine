@@ -52,6 +52,7 @@ CHRIS_IA_CONTEXT_FIELDS = [
 ]
 DEFAULT_LEDGER_PATH = Path("runtime/v32_signal_events.json")
 DEFAULT_WEBHOOK_STATUS_PATH = Path("runtime/v32_tradingview_webhook_status.json")
+DEFAULT_REMOTE_CACHE_PATH = Path("runtime/stock_ultimus_console_remote_cache.json")
 MAX_EVENTS = 20000
 DEFAULT_COVERAGE_PATH = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH
 DEFAULT_EXTRA_COVERAGE_PATHS = [
@@ -357,12 +358,24 @@ def append_signal_event(
     }
 
 
-def load_signal_events(path: str | Path = DEFAULT_LEDGER_PATH, limit: int = 1000) -> list[dict[str, Any]]:
+def load_signal_events(path: str | Path | None = None, limit: int = 1000) -> list[dict[str, Any]]:
     try:
         limit = max(1, min(int(limit or 1000), MAX_EVENTS))
     except Exception:
         limit = 1000
-    return _read_events(Path(path))[-limit:]
+    target = Path(path) if path is not None else DEFAULT_LEDGER_PATH
+    events = _read_events(target)
+    if events or target != DEFAULT_LEDGER_PATH:
+        return events[-limit:]
+    try:
+        cache = json.loads(DEFAULT_REMOTE_CACHE_PATH.read_text())
+        entry = (cache.get("entries") or {}).get("/v32_signal_events?limit=1000") or {}
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        remote_events = data.get("events") if isinstance(data.get("events"), list) else []
+        return [item for item in remote_events if isinstance(item, dict)][-limit:]
+    except Exception:
+        return []
 
 
 def load_webhook_status(path: str | Path = DEFAULT_WEBHOOK_STATUS_PATH) -> dict[str, Any]:

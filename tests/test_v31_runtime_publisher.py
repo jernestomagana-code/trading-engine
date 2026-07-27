@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -42,6 +42,7 @@ class V31RuntimePublisherTests(unittest.TestCase):
         self.assertEqual(freshness["considered_files"], ["decision_desk_snapshot.json"])
 
     def test_build_payload_extracts_options_and_technical_without_ibkr(self):
+        future_expiration = (datetime.now(ZoneInfo("America/New_York")) + timedelta(days=30)).strftime("%Y%m%d")
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
             (runtime / "sample.json").write_text(json.dumps({
@@ -52,7 +53,7 @@ class V31RuntimePublisherTests(unittest.TestCase):
                         "decision": "ENTRY_READY",
                         "score": 90,
                         "strike": 710,
-                        "expiration": "20260717",
+                        "expiration": future_expiration,
                         "dte": 33,
                         "bid": 1.20,
                         "ask": 1.35,
@@ -96,6 +97,46 @@ class V31RuntimePublisherTests(unittest.TestCase):
         )
         self.assertTrue(payload["not_order_instruction"])
         self.assertEqual(payload["bridge_status"], "PUBLISHED_FROM_LOCAL_RUNTIME_WITHOUT_IBKR_CONNECTION")
+
+    def test_publisher_uses_fresh_active_tower_capacity_and_filters_expired_contracts(self):
+        future_expiration = (datetime.now(ZoneInfo("America/New_York")) + timedelta(days=30)).strftime("%Y%m%d")
+        expired = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=1)).strftime("%Y%m%d")
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            (runtime / "ibkr_account_active_profile.json").write_text(json.dumps({
+                "account_scope": "remanente",
+                "account_alias": "remanente",
+            }))
+            (runtime / "ibkr_account_capacity_latest.json").write_text(json.dumps({
+                "account_scope": "remanente",
+                "account_alias": "remanente",
+                "available_capacity": 15.76,
+            }))
+            (runtime / "broker_control_tower_latest.json").write_text(json.dumps({
+                "accounts": [{
+                    "account_scope": "remanente",
+                    "account_alias": "remanente",
+                    "active": True,
+                    "refresh_status": "READY",
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "capacity": {
+                        "available_capacity": 18459.26,
+                        "net_liquidation": 53968.97,
+                    },
+                    "positions": [],
+                }],
+            }))
+            rows = [
+                {"ticker": "QQQ", "strategy": "NAKED_PUT", "decision": "RADAR", "expiration": future_expiration, "dte": 30},
+                {"ticker": "SPY", "strategy": "NAKED_PUT", "decision": "RADAR", "expiration": expired, "dte": -1},
+            ]
+            (runtime / "rows.json").write_text(json.dumps({"options_rows": rows}))
+
+            payload = publisher.build_payload(runtime)
+
+        self.assertEqual(payload["account_context"]["available_capacity"], 18459.26)
+        self.assertEqual(payload["account_context"]["source"], "BROKER_CONTROL_TOWER_ACTIVE_ACCOUNT")
+        self.assertEqual([row["ticker"] for row in payload["options_rows"]], ["QQQ"])
 
     def test_market_snapshot_detects_regular_session_and_exchange_holiday(self):
         regular = publisher.build_market_snapshot(

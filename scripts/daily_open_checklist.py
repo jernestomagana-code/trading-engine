@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ibkr-host", default=os.getenv("IBKR_HOST", "127.0.0.1"))
     parser.add_argument("--ibkr-port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
-    parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "240")))
+    parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "600")))
     parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "120")))
     parser.add_argument("--capacity-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_CAPACITY_TIMEOUT", "20")))
     parser.add_argument("--rsp-account-alias", default=os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro"))
@@ -280,6 +280,11 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
     env["IBKR_PORT"] = str(args.ibkr_port)
     env["PYTHONUNBUFFERED"] = "1"
     env["IBKR_DISABLE_INCREMENTAL_ENGINE_POSTS"] = "1"
+    env.setdefault("IBKR_HISTORICAL_DATA_TIMEOUT_SECONDS", "4")
+    env.setdefault("IBKR_OPTION_CONTRACT_MARKET_DATA_TIMEOUT_SECONDS", "4")
+    env.setdefault("IBKR_OPTION_MARKET_DATA_WAIT_SECONDS", "1.5")
+    env.setdefault("IBKR_OPTION_SNAPSHOT_WAIT_SECONDS", "1")
+    env.setdefault("IBKR_OPTION_SECOND_PASS_WAIT_SECONDS", "1")
     if not args.full_bridge:
         env.setdefault("DAILY_RADAR_FAST", "1")
         configured_symbols = os.getenv(
@@ -293,8 +298,8 @@ def refresh_bridge(args: argparse.Namespace, ingest_token: str) -> dict[str, Any
         env.setdefault("IBKR_WATCHLIST", daily_symbols)
         env.setdefault("IBKR_OPTION_SYMBOLS", daily_symbols)
         env.setdefault("IBKR_MAX_OPTION_SYMBOLS_PER_RUN", "14")
-        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "4")
-        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "56")
+        env.setdefault("IBKR_MAX_OPTIONS_PER_SYMBOL", "2")
+        env.setdefault("IBKR_MAX_TOTAL_OPTION_CONTRACTS_PER_RUN", "28")
         env.setdefault("IBKR_DYNAMIC_OPTION_UNIVERSE_ENABLED", "1")
         env.setdefault("IBKR_INCLUDE_RUNTIME_TECHNICAL_OPTION_CANDIDATES", "1")
     return run_command(
@@ -584,6 +589,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "not_order_instruction": True,
     }
 
+    premarket_context = None
+    if read_token:
+        premarket_context = ensure_conservative_premarket_context(
+            base_url, read_token, args.read_timeout
+        )
+        checks["intraday_futures_premarket_context"] = premarket_context
+        report["intraday_futures_premarket_context"] = premarket_context
+
     if args.refresh:
         report["canslim_step"] = build_canslim_candidates(args)
         if not ingest_token:
@@ -631,11 +644,6 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "unauthorized_status": denied_status,
             "authorized_status": allowed_status,
         }
-        premarket_context = ensure_conservative_premarket_context(
-            base_url, read_token, args.read_timeout
-        )
-        checks["intraday_futures_premarket_context"] = premarket_context
-        report["intraday_futures_premarket_context"] = premarket_context
         reconcile_status, reconciliation = 0, {}
         reconcile_attempts = 0
         for reconcile_attempts in range(1, 3):

@@ -795,6 +795,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
     def test_v32_operator_today_guides_manual_review_without_execution(self):
         fresh_generated_at = datetime.now(timezone.utc).isoformat()
+        future_expiration = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
         with patch.object(main, "_v31_command_center_payload", return_value={
             "status": "READY_FOR_DECISION_REVIEW",
             "operational_readiness": "READY_FOR_MANUAL_REVIEW",
@@ -806,7 +807,9 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "buying_power": 100000,
                 "net_liquidation": 150000,
                 "currency": "USD",
+                "selected_account_configured": True,
             },
+            "data_readiness": {"runtime_files": {"newest_age_minutes": 5}},
             "account_scope": "primary",
             "account_alias": "primary",
             "summary": {"entry_ready": 1, "manual_review_ready": 1},
@@ -818,12 +821,13 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "manual_review_ready": True,
                 "selected_contract": {
                     "strike": 645,
-                    "expiration": "20260731",
+                    "expiration": future_expiration,
                     "dte": 30,
                     "bid": 6.1,
                     "ask": 6.2,
                     "mid": 6.15,
                     "delta": -0.2,
+                    "underlying_price": 650,
                 },
                 "next_required_action": "Validar spread, liquidez y ticket broker.",
             }],
@@ -866,6 +870,55 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(payload["execution_authorized"])
         self.assertTrue(payload["not_order_instruction"])
 
+    def test_v32_option_entry_gate_blocks_stale_or_incomplete_mobile_candidate(self):
+        alert = {
+            "ticker": "QQQ",
+            "strategy": "NAKED_PUT",
+            "state": "ENTRY_READY",
+            "severity": "ACTION",
+            "manual_review_ready": True,
+            "selected_contract": {
+                "expiration": (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat(),
+                "strike": 600,
+            },
+            "account_capacity_check": {
+                "status": "WITHIN_AVAILABLE_CAPACITY",
+            },
+        }
+        gated = main._v32_option_entry_operational_gate(
+            alert,
+            {"runtime_files": {"newest_age_minutes": 180}},
+            {
+                "account_scope": "primary",
+                "account_alias": "primary",
+                "selected_account_configured": True,
+            },
+        )
+
+        self.assertEqual(gated["state"], "WAIT_DATA")
+        self.assertEqual(gated["severity"], "WATCH")
+        self.assertFalse(gated["alert_delivery_eligible"])
+        self.assertIn("ENTRY_DATA_STALE", gated["entry_operational_gate"]["blockers"])
+        self.assertIn("ENTRY_UNDERLYING_PRICE_MISSING", gated["entry_operational_gate"]["blockers"])
+
+    def test_v31_dynamic_tickers_include_passing_canslim_candidates(self):
+        with patch.object(main, "_v29_discover_master_snapshot", return_value={
+            "data": {
+                "options_rows": [
+                    {"ticker": "PLTR", "strike": 150, "expiration": "2026-09-18"},
+                    {"ticker": "XYZ", "strike": 50, "expiration": "2026-09-18"},
+                ],
+                "technical_snapshot": {
+                    "PLTR": {"canslim_passes": True, "canslim_score": 98},
+                    "XYZ": {"canslim_passes": False, "canslim_score": 99},
+                },
+            },
+        }):
+            tickers = main._v31_dynamic_decision_tickers()
+
+        self.assertIn("PLTR", tickers)
+        self.assertNotIn("XYZ", tickers)
+
     def test_v32_operator_event_maps_to_manual_review_journal(self):
         with patch.object(main, "_v31_record_manual_review", return_value={
             "status": "RECORDED",
@@ -900,9 +953,17 @@ class V31CanonicalDecisionTests(unittest.TestCase):
 
     def test_v32_operator_daily_summary_and_tracking_are_read_only(self):
         fresh_generated_at = datetime.now(timezone.utc).isoformat()
+        future_expiration = (datetime.now(timezone.utc) + timedelta(days=30)).date().isoformat()
         with patch.object(main, "_v31_command_center_payload", return_value={
             "status": "READY_FOR_DECISION_REVIEW",
             "operational_readiness": "READY_FOR_MANUAL_REVIEW",
+            "account_context": {
+                "account_scope": "primary",
+                "account_alias": "primary",
+                "selected_account_configured": True,
+                "available_funds": 70000,
+            },
+            "data_readiness": {"runtime_files": {"newest_age_minutes": 5}},
             "summary": {"entry_ready": 1, "manual_review_ready": 1},
             "top_recommendations": [{
                 "ticker": "QQQ",
@@ -912,12 +973,13 @@ class V31CanonicalDecisionTests(unittest.TestCase):
                 "generated_at": fresh_generated_at,
                 "selected_contract": {
                     "strike": 645,
-                    "expiration": "20260731",
+                    "expiration": future_expiration,
                     "dte": 18,
                     "bid": 6.1,
                     "ask": 6.2,
                     "mid": 6.15,
                     "delta": -0.2,
+                    "underlying_price": 650,
                 },
                 "next_required_action": "Validar spread, liquidez y ticket broker.",
             }],
@@ -1413,6 +1475,37 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertFalse(result["decision"].get("execution_authorized", False))
         self.assertTrue(result["not_order_instruction"])
 
+    def test_valid_futures_entry_can_pass_automatic_context_without_rule_relaxation(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "timeframe": "5",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MNQ_ORB_BREAKOUT_LONG_5M",
+            "direction": "LONG",
+            "price": 25000.0,
+            "logical_stop": 24980.0,
+            "logical_target": 25040.0,
+            "nlv": 53968.97,
+            "portfolio_status": "CLEAR",
+            "portfolio_engine_result": "CLEAR",
+            "not_order_instruction": True,
+        }
+        automatic = main.intraday_futures_premarket_template(
+            mode="automatic_conservative",
+            session_date="2026-07-27",
+        )["payload"]
+        with patch.object(main, "get_intraday_futures_premarket_context", return_value={
+            "found": True,
+            "context": automatic,
+        }):
+            result = main.build_intraday_futures_construction(payload)
+
+        self.assertEqual(result["final_state"], "ENTRY_READY")
+        self.assertGreaterEqual(result["contracts_allowed"], 1)
+        self.assertEqual(result["risk_status"], "CLEAR")
+        self.assertEqual(result["portfolio_status"], "CLEAR")
+
     def test_tradingview_alert_only_defaults_to_no_order_guardrail(self):
         payload = {
             "source": "TRADINGVIEW",
@@ -1569,14 +1662,15 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(enriched["account_nlv"], 7000.0)
         self.assertEqual(enriched["account_context_source"], "CURRENT_BROKER_MASTER_SNAPSHOT")
 
-    def test_automatic_premarket_template_remains_manual_review(self):
+    def test_automatic_premarket_template_does_not_structurally_block_valid_entry(self):
         template = main.intraday_futures_premarket_template(
             mode="automatic_conservative",
             session_date="2026-07-22",
             updated_by="daily_open",
         )
         payload = template["payload"]
-        self.assertEqual(payload["decision_max_state"], "MANUAL_REVIEW")
+        self.assertEqual(payload["decision_max_state"], "ENTRY_READY")
+        self.assertEqual(payload["reference_alignment"], "AUTO_FROM_SIGNAL")
         self.assertEqual(payload["macro_status"], "NEEDS_REVIEW")
         self.assertEqual(payload["source"], "DAILY_OPEN_AUTOMATIC_CONSERVATIVE")
 

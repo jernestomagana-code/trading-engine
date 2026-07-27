@@ -52,6 +52,8 @@ PUBLISH_DATA_FILES = (
     "v28_master_snapshot.json",
     "v25_master_snapshot.json",
     "ibkr_account_capacity_latest.json",
+    "ibkr_account_active_profile.json",
+    "broker_control_tower_latest.json",
     "gamma_contexts.json",
     "active_position_contexts.json",
 )
@@ -200,6 +202,78 @@ def active_account_context(runtime_dir: Path) -> dict[str, Any]:
                     context[key] = capacity.get(key)
             context["account_context_version"] = "local_runtime_account_context_with_capacity_v1"
             context["capacity_source_file"] = str(capacity_path)
+
+    tower_path = runtime_dir / "broker_control_tower_latest.json"
+    try:
+        tower = json.loads(tower_path.read_text())
+    except Exception:
+        tower = {}
+    accounts = tower.get("accounts") if isinstance(tower, dict) and isinstance(tower.get("accounts"), list) else []
+    selected = next(
+        (
+            account for account in accounts
+            if isinstance(account, dict)
+            and (
+                str(account.get("account_alias") or "") == str(context.get("account_alias") or "")
+                or (
+                    account.get("active") is True
+                    and str(context.get("account_alias") or "").lower() in {"", "unknown"}
+                )
+            )
+        ),
+        None,
+    )
+    tower_capacity = selected.get("capacity") if isinstance(selected, dict) and isinstance(selected.get("capacity"), dict) else {}
+    if tower_capacity and str(selected.get("refresh_status") or "").upper() == "READY":
+        for key in [
+            "available_capacity",
+            "net_liquidation",
+            "buying_power",
+            "available_funds",
+            "excess_liquidity",
+            "total_cash_value",
+            "initial_margin_required",
+            "maintenance_margin_required",
+            "gross_position_value",
+            "cushion",
+        ]:
+            if tower_capacity.get(key) is not None:
+                context[key] = tower_capacity.get(key)
+        context["available"] = True
+        context["generated_at"] = selected.get("generated_at") or tower.get("generated_at")
+        context["source"] = "BROKER_CONTROL_TOWER_ACTIVE_ACCOUNT"
+        context["account_context_version"] = "local_runtime_broker_tower_account_context_v1"
+        context["capacity_source_file"] = str(tower_path)
+        positions = selected.get("positions") if isinstance(selected.get("positions"), list) else []
+        context["open_futures_positions"] = [
+            {
+                key: position.get(key)
+                for key in [
+                    "symbol",
+                    "ticker",
+                    "sec_type",
+                    "security_type",
+                    "asset_class",
+                    "quantity",
+                    "position",
+                    "average_cost",
+                    "currency",
+                    "expiration",
+                ]
+                if position.get(key) is not None
+            }
+            for position in positions
+            if isinstance(position, dict)
+            and (
+                str(
+                    position.get("sec_type")
+                    or position.get("security_type")
+                    or position.get("asset_class")
+                    or ""
+                ).upper() in {"FUT", "FUTURE", "FUTURES"}
+                or str(position.get("symbol") or position.get("ticker") or "").upper() in {"MNQ", "NQ", "MES", "ES"}
+            )
+        ]
     return context
 
 
@@ -293,6 +367,7 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
         "spread",
         "spread_pct",
         "delta",
+        "underlying_price",
     ]
 
     def completeness_score(row: dict[str, Any]) -> tuple[int, float]:
@@ -310,44 +385,81 @@ def extract_options_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     def add_from(obj: Any) -> None:
         if isinstance(obj, list):
             for item in obj:
-                if isinstance(item, dict):
-                    rows.append(dict(item))
+                add_from(item)
             return
 
         if not isinstance(obj, dict):
             return
 
-        for key in ["options_rows", "rows", "top", "top_5", "sample_rows", "best_rows"]:
-            value = obj.get(key)
-            if isinstance(value, list):
+        rows.append(dict(obj))
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
                 add_from(value)
-
-        options = obj.get("options")
-        if isinstance(options, dict):
-            add_from(options)
-
-        for key in ["best_row", "best", "next_best_action"]:
-            value = obj.get(key)
-            if isinstance(value, dict):
-                rows.append(dict(value))
 
     for data in runtime_data.values():
         add_from(data)
 
     best_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     for row in rows:
+        selected_contract = row.get("selected_contract")
+        if isinstance(selected_contract, dict):
+            row = {
+                **selected_contract,
+                **{
+                    key: value
+                    for key, value in row.items()
+                    if key != "selected_contract"
+                },
+            }
+        if not any(
+            row.get(field) not in [None, "", "None"]
+            for field in [
+                "strike",
+                "expiration",
+                "expiry",
+                "exp",
+                "bid",
+                "ask",
+                "mid",
+                "delta",
+                "local_symbol",
+            ]
+        ):
+            continue
         ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
         if not valid_market_symbol(ticker):
             continue
 
         row["ticker"] = ticker
         row["strategy"] = str(row.get("strategy") or row.get("strategy_hint") or row.get("best_strategy") or "UNKNOWN").upper()
-        row["decision"] = str(row.get("decision") or row.get("final_decision") or row.get("state") or "RADAR").upper()
+        raw_decision = row.get("decision")
+        if isinstance(raw_decision, dict):
+            raw_decision = raw_decision.get("final_state") or raw_decision.get("decision")
+        row["decision"] = str(raw_decision or row.get("final_decision") or row.get("final_state") or row.get("state") or "RADAR").upper()
         row["score"] = row.get("score") or row.get("combined_score") or row.get("master_score") or row.get("options_score")
         row["price"] = row.get("price") or row.get("premium") or row.get("option_price") or row.get("mid")
         row["data_quality"] = row.get("data_quality") or row.get("quality") or "UNKNOWN"
 
         row["expiration"] = row.get("expiration") or row.get("expiry") or row.get("exp")
+        expiration = str(row.get("expiration") or "").strip()
+        expiration_date = None
+        if expiration:
+            for value in [expiration[:10], expiration[:8]]:
+                try:
+                    expiration_date = datetime.strptime(
+                        value,
+                        "%Y-%m-%d" if "-" in value else "%Y%m%d",
+                    ).date()
+                    break
+                except Exception:
+                    continue
+        try:
+            dte = float(row.get("dte")) if row.get("dte") not in [None, ""] else None
+        except Exception:
+            dte = None
+        if (expiration_date is not None and expiration_date < today) or (dte is not None and dte < 0):
+            continue
 
         key = (str(row.get("ticker")), str(row.get("strategy")), str(row.get("decision")))
         current = best_by_key.get(key)
@@ -388,6 +500,10 @@ def extract_technical_snapshot(runtime_data: dict[str, Any]) -> dict[str, dict[s
                 "range_breakout",
                 "score",
                 "technical_score",
+                "canslim",
+                "canslim_score",
+                "canslim_passes",
+                "canslim_rating",
             ]
         )
         if looks_technical:
@@ -431,6 +547,18 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         for ticker, value in technical_snapshot.items()
         if valid_market_symbol(ticker) and isinstance(value, dict)
     }
+    for row in options_rows:
+        ticker = str(row.get("ticker") or "").upper().strip()
+        technical = technical_snapshot.get(ticker) if isinstance(technical_snapshot.get(ticker), dict) else {}
+        canslim = technical.get("canslim") if isinstance(technical.get("canslim"), dict) else {}
+        passes = technical.get("canslim_passes")
+        if passes is None:
+            passes = canslim.get("passes")
+        if passes is not None:
+            row["canslim_passes"] = passes
+            row["canslim_score"] = technical.get("canslim_score", canslim.get("score"))
+            row["canslim_rating"] = technical.get("canslim_rating", canslim.get("rating"))
+            row["candidate_source"] = "CANSLIM_FREE_ENGINE"
     broker_context = {
         "account_scope": account_context.get("account_scope"),
         "account_alias": account_context.get("account_alias"),

@@ -43,9 +43,17 @@ JOBS = {
         "calendar": [
             {"Weekday": day, "Hour": hour, "Minute": minute}
             for day in range(1, 6)
-            for hour, minute in [(8, 35), (9, 5), (9, 35)]
+            for hour, minute in [
+                (7, 35),
+                (8, 35),
+                (9, 35),
+                (10, 35),
+                (11, 35),
+                (12, 35),
+                (13, 35),
+            ]
         ],
-        "description": "Builds CANSLIM, refreshes IBKR, publishes V31 snapshot, and validates V32 after market open.",
+        "description": "Builds CANSLIM, refreshes IBKR/account context, and republishes V31 hourly through the regular session.",
     },
     "market-open-readiness": {
         "label": "com.stockultimus.market-open-readiness",
