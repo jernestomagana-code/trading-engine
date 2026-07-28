@@ -430,7 +430,21 @@ def publish_runtime(args: argparse.Namespace, ingest_token: str) -> dict[str, An
     command = [sys.executable, "tools/publish_v31_snapshot_from_runtime.py", "--publish"]
     if args.allow_stale_publish:
         command.append("--allow-stale")
-    return run_command("publish_runtime_snapshot", command, timeout=90, env=env)
+    attempt_timeout = max(1, int(env.get("TRADING_ENGINE_PUBLISH_TIMEOUT_SECONDS", "45")))
+    attempts = max(1, int(env.get("TRADING_ENGINE_PUBLISH_RETRIES", "3")))
+    retry_sleep = max(0.0, float(env.get("TRADING_ENGINE_PUBLISH_RETRY_SLEEP_SECONDS", "3")))
+    # The previous fixed 90-second wrapper killed a publisher configured for
+    # three 45-second attempts before its own retry policy could finish.
+    wrapper_timeout = max(
+        90,
+        int((attempt_timeout * attempts) + (retry_sleep * max(attempts - 1, 0)) + 15),
+    )
+    return run_command(
+        "publish_runtime_snapshot",
+        command,
+        timeout=wrapper_timeout,
+        env=env,
+    )
 
 
 def ensure_conservative_premarket_context(base_url: str, read_token: str, timeout: int) -> dict[str, Any]:

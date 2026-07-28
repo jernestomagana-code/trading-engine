@@ -39,6 +39,8 @@ import re
 import os
 import math
 import hmac
+import threading
+import time
 import requests
 
 import audit_log as shared_audit_log
@@ -881,6 +883,7 @@ def supabase_upsert_row(table, row, conflict_key):
             timeout=10,
         )
         if response.status_code in [200, 201, 204]:
+            _invalidate_supabase_table_read_cache(table)
             return {"enabled": True, "saved": True, "status_code": response.status_code}
         return {
             "enabled": True,
@@ -914,26 +917,64 @@ def supabase_fetch_signals(limit=3000):
         return []
 
 
+_SUPABASE_TABLE_READ_CACHE = {}
+_SUPABASE_TABLE_READ_CACHE_LOCK = threading.Lock()
+
+
+def _supabase_table_read_cache_enabled():
+    return str(DEPLOYMENT_ENV or "").strip().lower() == "production"
+
+
+def _invalidate_supabase_table_read_cache(table):
+    with _SUPABASE_TABLE_READ_CACHE_LOCK:
+        for key in list(_SUPABASE_TABLE_READ_CACHE):
+            if key[0] == str(table):
+                _SUPABASE_TABLE_READ_CACHE.pop(key, None)
+
+
 def supabase_fetch_table_rows(table, order_column="received_at", limit=1000):
     if not supabase_enabled():
         return []
 
     safe_limit = max(1, min(int(limit or 1000), 50000))
+    cache_key = (str(table), str(order_column))
+    cache_ttl = max(5.0, float(os.getenv("SUPABASE_READ_CACHE_SECONDS", "30")))
+    cache_enabled = _supabase_table_read_cache_enabled()
+    cached = None
+    if cache_enabled:
+        with _SUPABASE_TABLE_READ_CACHE_LOCK:
+            cached = _SUPABASE_TABLE_READ_CACHE.get(cache_key)
+        if (
+            isinstance(cached, dict)
+            and int(cached.get("limit") or 0) >= safe_limit
+            and (time.monotonic() - float(cached.get("saved_at") or 0)) <= cache_ttl
+        ):
+            return list(cached.get("rows") or [])[-safe_limit:]
+
     url = (
         f"{SUPABASE_URL}/rest/v1/{table}"
         f"?select=*&order={order_column}.desc&limit={safe_limit}"
     )
 
     try:
-        response = requests.get(url, headers=supabase_headers(None), timeout=10)
+        timeout = max(1.0, float(os.getenv("SUPABASE_READ_TIMEOUT_SECONDS", "5")))
+        response = requests.get(url, headers=supabase_headers(None), timeout=timeout)
         if response.status_code != 200:
-            return []
+            return list((cached or {}).get("rows") or [])[-safe_limit:]
         rows = response.json()
         if isinstance(rows, list):
-            return list(reversed(rows))
-        return []
+            rows = list(reversed(rows))
+            if cache_enabled:
+                with _SUPABASE_TABLE_READ_CACHE_LOCK:
+                    _SUPABASE_TABLE_READ_CACHE[cache_key] = {
+                        "rows": rows,
+                        "limit": safe_limit,
+                        "saved_at": time.monotonic(),
+                    }
+            return rows
+        return list((cached or {}).get("rows") or [])[-safe_limit:]
     except Exception:
-        return []
+        return list((cached or {}).get("rows") or [])[-safe_limit:]
 
 
 def supabase_fetch_single_row(table, filters=None, select="*"):
@@ -5215,12 +5256,15 @@ def root():
 
 @app.get("/health")
 def health():
-    signals = load_signals(limit=100)
+    # Render uses this endpoint as a liveness probe.  It must never wait on
+    # Supabase or another external dependency; detailed remote diagnostics are
+    # available through the authenticated operational-health endpoints.
+    signals = load_signals_from_file()[-100:]
     try:
         tv_health = shared_tradingview_operational_health.build_alert_health(
             Path("runtime"),
             market_closed_ok=True,
-            events_override=_v32_load_tradingview_signal_events(limit=20000),
+            events_override=shared_tradingview_signal_ledger.load_signal_events(limit=20000),
         )
         tradingview_visible_health = tv_health.get("visible_health") or {}
     except Exception as exc:
@@ -5234,6 +5278,7 @@ def health():
 
     return {
         "status": "ok",
+        "health_scope": "LOCAL_LIVENESS_ONLY",
         "engine": "Super Engine Bolsa v8.0",
         "mode": "Unified Decision Engine",
         "operating_mode": OPERATING_MODE,
@@ -29835,12 +29880,12 @@ async def v31_operating_suite():
 
 
 @app.get("/v32_operator_today")
-async def v32_operator_today(limit: int = 12):
+def v32_operator_today(limit: int = 12):
     return _v32_operator_today_payload(limit=limit)
 
 
 @app.get("/gpt_v32_operator_today")
-async def gpt_v32_operator_today(limit: int = 12):
+def gpt_v32_operator_today(limit: int = 12):
     payload = _v32_operator_today_payload(limit=limit)
     _record_audit_event(
         "GPT_V32_OPERATOR_TODAY_SERVED",
@@ -29857,7 +29902,7 @@ async def gpt_v32_operator_today(limit: int = 12):
 
 
 @app.get("/v32_operator_next_actions")
-async def v32_operator_next_actions(limit: int = 12):
+def v32_operator_next_actions(limit: int = 12):
     payload = _v32_operator_today_payload(limit=limit)
     return {
         "engine": "V32_OPERATOR_ASSISTANT",

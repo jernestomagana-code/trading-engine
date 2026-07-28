@@ -4344,16 +4344,17 @@ def send_options_intelligence():
         generated_at=now_iso(),
         symbol_plan=symbol_plan,
     )
-    saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
-    position_chain_store = ibkr_diagnostics.merge_position_chain_store(diagnostic)
     if COBERTURAS_RSP_WEEKLY:
-        # Keep the dedicated weekly RSP chain independent from the general
-        # option-universe diagnostic. A later general refresh must not erase a
-        # valid 7-14 DTE RSP reading.
-        ibkr_diagnostics.write_cycle_diagnostic(
+        # Keep the weekly RSP scan completely independent from the general
+        # option universe.  Writing the default diagnostic here used to erase
+        # the 14-symbol daily radar immediately after it completed.
+        saved = ibkr_diagnostics.write_cycle_diagnostic(
             diagnostic,
             _v283_Path("runtime") / "coberturas_rsp_chain_coverage_latest.json",
         )
+    else:
+        saved = ibkr_diagnostics.write_cycle_diagnostic(diagnostic)
+    position_chain_store = ibkr_diagnostics.merge_position_chain_store(diagnostic)
     print(
         "IBKR CHAIN COVERAGE DIAGNOSTIC"
         f" | rows:{diagnostic.get('option_row_count')}"
@@ -4483,7 +4484,11 @@ import json as _v18_json
 from pathlib import Path as _v18_Path
 from datetime import datetime as _v18_datetime, timezone as _v18_timezone
 
-V18_SNAPSHOT_PATH = _v18_Path("runtime/decision_desk_snapshot.json")
+V18_SNAPSHOT_PATH = _v18_Path(
+    "runtime/coberturas_rsp_decision_desk_latest.json"
+    if COBERTURAS_RSP_WEEKLY
+    else "runtime/decision_desk_snapshot.json"
+)
 
 def v18_safe_float(value, default=0.0):
     try:

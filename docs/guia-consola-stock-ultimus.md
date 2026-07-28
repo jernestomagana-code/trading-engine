@@ -64,7 +64,7 @@ El navegador puede cerrarse sin apagar el servicio. Volver a abrir el acceso dir
 7. Lee **Inicio** y sus **Pendientes priorizados**.
 8. Sigue el orden propuesto por la consola: **Riesgo**, **Posiciones**, **RSP** y después oportunidades/alertas.
 
-La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. Mientras la consola muestre que está trabajando, no inicies una segunda apertura.
+La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. El radar diario consulta como máximo 14 subyacentes, 2 contratos por símbolo y 28 contratos en total. Mientras la consola muestre que está trabajando, no inicies una segunda apertura. La publicación final admite sus tres reintentos completos; una respuesta lenta de Render no debe cortar prematuramente el proceso.
 
 Durante la apertura, el puente reúne primero precios, posiciones y contratos en el entorno local. La publicación se realiza después como un snapshot consolidado; así una respuesta lenta de producción no detiene cada contrato individual.
 
@@ -344,7 +344,7 @@ Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta i
 
 Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. El motor excluye de candidatos vigentes cualquier contrato que no provenga de la cadena RSP actual o quede fuera de 7–14 DTE. Los contratos históricos sólo pueden aparecer en diagnóstico técnico.
 
-La cadena semanal RSP se conserva en un archivo independiente: un refresco general ya no puede reemplazarla. La apertura también actualiza la capacidad de la cuenta antes de comparar estrategias.
+La cadena semanal RSP se conserva en un archivo independiente: un refresco general ya no puede reemplazarla y, de forma recíproca, el refresh RSP tampoco reemplaza el radar general ni su Decision Desk. La apertura también actualiza la capacidad de la cuenta antes de comparar estrategias.
 
 En capital, la consola diferencia:
 
