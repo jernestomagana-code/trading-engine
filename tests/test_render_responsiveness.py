@@ -55,6 +55,22 @@ class RenderResponsivenessTests(unittest.TestCase):
         self.assertFalse(inspect.iscoroutinefunction(main.gpt_v32_operator_today))
         self.assertFalse(inspect.iscoroutinefunction(main.v32_operator_next_actions))
 
+    def test_operator_reuses_command_center_readiness(self):
+        command = {
+            "status": "READY_FOR_DECISION_REVIEW",
+            "operational_readiness": "READY",
+            "data_readiness": {
+                "status": "READY_FOR_DECISION_REVIEW",
+                "main_blocker": None,
+            },
+        }
+
+        readiness = main._v32_operator_readiness_from_command(command)
+
+        self.assertEqual(readiness["status"], "READY_FOR_DECISION_REVIEW")
+        self.assertEqual(readiness["operational_readiness"], "READY")
+        self.assertEqual(readiness["source"], "COMMAND_CENTER_REUSED")
+
     def test_daily_publisher_wrapper_allows_all_configured_retries(self):
         args = Mock(allow_stale_publish=True)
         captured = {}

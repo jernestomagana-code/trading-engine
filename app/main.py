@@ -24726,13 +24726,49 @@ def _v32_summary_data_issue(summary):
     )
 
 
+def _v32_operator_readiness_from_command(command):
+    """Reuse the command-center decision pass instead of recomputing it."""
+    command = command if isinstance(command, dict) else {}
+    data_readiness = (
+        command.get("data_readiness")
+        if isinstance(command.get("data_readiness"), dict)
+        else {}
+    )
+    return {
+        "status": (
+            data_readiness.get("status")
+            or command.get("operational_readiness")
+            or command.get("status")
+            or "UNKNOWN"
+        ),
+        "operational_readiness": (
+            data_readiness.get("operational_readiness")
+            or command.get("operational_readiness")
+        ),
+        "main_blocker": data_readiness.get("main_blocker") or command.get("main_blocker"),
+        "blockers": data_readiness.get("blockers") or [],
+        "warnings": data_readiness.get("warnings") or [],
+        "next_required_actions": (
+            data_readiness.get("next_required_actions")
+            or command.get("next_required_actions")
+            or []
+        ),
+        "source": "COMMAND_CENTER_REUSED",
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _v32_operator_today_payload(limit=12):
     try:
         limit = max(1, min(int(limit or 12), 25))
     except Exception:
         limit = 12
     command = _v31_command_center_payload()
-    readiness = _v31_trading_day_readiness_payload()
+    # Command Center already computed the complete canonical decision set.
+    # Re-running trading-day readiness here repeated that expensive pass
+    # several times and could push the operator endpoint beyond 30 seconds.
+    readiness = _v32_operator_readiness_from_command(command)
     manual_reviews = _v31_manual_reviews_payload(limit=100)
     learning = _v31_manual_review_learning_payload(limit=500)
     outcome_status = {
