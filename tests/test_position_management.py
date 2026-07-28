@@ -462,11 +462,65 @@ class PositionManagementTests(unittest.TestCase):
             playbook=self.playbook,
         )
         stock = next(item for item in payload["positions"] if item["sec_type"] == "STK")
+        call = next(item for item in payload["positions"] if item["sec_type"] == "OPT")
         alternatives = {item["alternative_id"]: item for item in stock["management_alternatives"]["alternatives"]}
 
+        self.assertEqual(payload["position_management_version"], "active_position_management_v6")
+        self.assertEqual(stock["position_structure"]["state"], "FULLY_COVERED_CALL")
+        self.assertEqual(stock["position_structure"]["coverage_pct"], 100.0)
+        self.assertEqual(stock["position_structure"]["new_covered_call_capacity_contracts"], 0)
+        self.assertEqual(call["strategy"], "COVERED_CALL")
+        self.assertIn("one covered-call structure", stock["reasons"][0])
         self.assertEqual(stock["management_alternatives"]["recommendation"]["alternative_id"], "HOLD_MONITOR")
         self.assertEqual(alternatives["REDUCE_25"]["status"], "RISK_BLOCKED_COVERAGE")
         self.assertEqual(alternatives["EXIT_FULL"]["status"], "RISK_BLOCKED_COVERAGE")
+
+    def test_aggregate_short_calls_cannot_each_reuse_the_same_shares(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "NFLX", "sec_type": "STK", "position_size": 100, "market_price": 75},
+                    {"ticker": "NFLX", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 76, "option_mark": 1, "entry_credit": 1.5, "dte": 3},
+                    {"ticker": "NFLX", "sec_type": "OPT", "right": "C", "position_size": -1, "strike": 80, "option_mark": 0.5, "entry_credit": 1, "dte": 10},
+                ],
+                {"NFLX": {"ticker": "NFLX", "price": 75, "trend": "NEUTRAL"}},
+            ),
+            playbook=self.playbook,
+        )
+
+        calls = [item for item in payload["positions"] if item["sec_type"] == "OPT"]
+        self.assertEqual({item["strategy"] for item in calls}, {"SHORT_CALL_UNCOVERED_REVIEW"})
+        self.assertEqual(calls[0]["position_structure"]["excess_short_call_contracts"], 1)
+        self.assertIn("UNCOVERED_SHORT_CALLS_PRESENT", payload["portfolio_risk"]["risk_flags"])
+
+    def test_ibkr_option_average_cost_is_converted_from_contract_to_per_share(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "market_price": 73.33},
+                    {
+                        "ticker": "NFLX",
+                        "sec_type": "OPT",
+                        "right": "C",
+                        "position_size": -10,
+                        "strike": 76,
+                        "expiration": "20260731",
+                        "average_cost": 10.3132,
+                        "market_price": 0.2958,
+                        "multiplier": "100",
+                        "dte": 3,
+                        "delta": 0.19,
+                    },
+                ],
+                {"NFLX": {"ticker": "NFLX", "price": 73.33, "trend": "NEUTRAL"}},
+            ),
+            playbook=self.playbook,
+        )
+
+        call = next(item for item in payload["positions"] if item["sec_type"] == "OPT")
+        self.assertAlmostEqual(call["entry_credit"], 0.1031, places=4)
+        self.assertLess(call["premium_capture_pct"], 0)
+        self.assertNotEqual(call["management_action"], "REVIEW_CLOSE_OR_BUY_BACK")
 
     def test_identical_position_copies_are_deduplicated(self):
         row = {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "market_price": 213}

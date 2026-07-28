@@ -17,7 +17,7 @@ import position_context_store
 import strategy_exit_playbook
 
 
-POSITION_MANAGEMENT_VERSION = "active_position_management_v5"
+POSITION_MANAGEMENT_VERSION = "active_position_management_v6"
 DEFAULT_MAX_CONTEXT_AGE_MINUTES = 15
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
@@ -141,6 +141,14 @@ def normalize_position(row: dict[str, Any]) -> dict[str, Any]:
     if dte is None:
         parsed_dte = days_to_expiration(expiration)
         dte = float(parsed_dte) if parsed_dte is not None else None
+    avg_cost = safe_float(row.get("avg_cost"))
+    if avg_cost is None:
+        avg_cost = safe_float(row.get("average_cost"))
+        # IBKR's portfolio averageCost for options is the contract value,
+        # while marks and entry-credit rules are expressed per underlying
+        # share. Preserve explicitly supplied avg_cost values as-is.
+        if avg_cost is not None and sec_type in ["OPT", "OPTION"] and multiplier:
+            avg_cost = avg_cost / multiplier
     normalized = dict(row)
     normalized.update({
         "position_id": str(row.get("position_id") or _position_key(row)),
@@ -151,7 +159,7 @@ def normalize_position(row: dict[str, Any]) -> dict[str, Any]:
         "expiration": expiration,
         "dte": dte,
         "position_size": qty,
-        "avg_cost": safe_float(row.get("avg_cost")),
+        "avg_cost": avg_cost,
         "market_price": safe_float(row.get("market_price") or row.get("price")),
         "market_value": safe_float(row.get("market_value")),
         "unrealized_pl": safe_float(row.get("unrealized_pl") or row.get("unrealized_pnl")),
@@ -319,19 +327,84 @@ def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any
     groups: dict[str, dict[str, Any]] = {}
     for row in positions:
         ticker = safe_upper(row.get("ticker"), "UNKNOWN")
-        group = groups.setdefault(ticker, {"shares": 0.0, "stock_value": 0.0, "short_calls": 0.0, "short_puts": 0.0})
+        group = groups.setdefault(ticker, {
+            "shares": 0.0,
+            "stock_value": 0.0,
+            "short_calls": 0.0,
+            "short_puts": 0.0,
+            "stock_position_ids": [],
+            "short_call_position_ids": [],
+            "short_call_legs": [],
+        })
         qty = safe_float(row.get("position_size"), 0.0) or 0.0
         sec_type = safe_upper(row.get("sec_type"))
         right = safe_upper(row.get("right"))
         if sec_type in ["STK", "STOCK", "EQUITY"]:
             group["shares"] += qty
             group["stock_value"] += abs(safe_float(row.get("market_value"), 0.0) or 0.0)
+            group["stock_position_ids"].append(row.get("position_id"))
         if sec_type in ["OPT", "OPTION"]:
             if right == "C" and qty < 0:
                 group["short_calls"] += abs(qty)
+                group["short_call_position_ids"].append(row.get("position_id"))
+                group["short_call_legs"].append({
+                    "position_id": row.get("position_id"),
+                    "contracts": abs(qty),
+                    "strike": safe_float(row.get("strike")),
+                    "expiration": row.get("expiration"),
+                    "market_price": safe_float(row.get("market_price")),
+                    "unrealized_pl": safe_float(row.get("unrealized_pl")),
+                })
             if right == "P" and qty < 0:
                 group["short_puts"] += abs(qty)
+    for group in groups.values():
+        shares = max(0.0, safe_float(group.get("shares"), 0.0) or 0.0)
+        share_lots = int(shares // DEFAULT_CONTRACT_MULTIPLIER)
+        short_calls = int(safe_float(group.get("short_calls"), 0.0) or 0.0)
+        covered_contracts = min(share_lots, short_calls)
+        group["share_lots"] = share_lots
+        group["covered_call_contracts"] = covered_contracts
+        group["uncovered_share_lots"] = max(0, share_lots - short_calls)
+        group["excess_short_call_contracts"] = max(0, short_calls - share_lots)
+        group["covered_call_coverage_pct"] = (
+            round((covered_contracts / share_lots) * 100.0, 1) if share_lots else 0.0
+        )
     return groups
+
+
+def _position_structure(group: dict[str, Any]) -> dict[str, Any]:
+    shares = max(0.0, safe_float(group.get("shares"), 0.0) or 0.0)
+    short_calls = int(safe_float(group.get("short_calls"), 0.0) or 0.0)
+    share_lots = int(safe_float(group.get("share_lots"), shares // DEFAULT_CONTRACT_MULTIPLIER) or 0)
+    covered_contracts = int(safe_float(group.get("covered_call_contracts"), min(share_lots, short_calls)) or 0)
+    uncovered_share_lots = max(0, int(safe_float(group.get("uncovered_share_lots"), share_lots - short_calls) or 0))
+    excess_short_calls = max(0, int(safe_float(group.get("excess_short_call_contracts"), short_calls - share_lots) or 0))
+    if not short_calls:
+        state = "LONG_STOCK_ONLY" if shares else "NO_COVERED_CALL_STRUCTURE"
+    elif excess_short_calls:
+        state = "OVER_COVERED_SHORT_CALL_RISK"
+    elif uncovered_share_lots:
+        state = "PARTIAL_COVERED_CALL"
+    else:
+        state = "FULLY_COVERED_CALL"
+    return {
+        "structure_version": "covered_call_structure_v1",
+        "state": state,
+        "shares": shares,
+        "share_lots": share_lots,
+        "short_call_contracts": short_calls,
+        "covered_contracts": covered_contracts,
+        "covered_shares": covered_contracts * DEFAULT_CONTRACT_MULTIPLIER,
+        "coverage_pct": group.get("covered_call_coverage_pct"),
+        "uncovered_share_lots": uncovered_share_lots,
+        "new_covered_call_capacity_contracts": uncovered_share_lots,
+        "excess_short_call_contracts": excess_short_calls,
+        "stock_position_ids": list(group.get("stock_position_ids") or []),
+        "short_call_position_ids": list(group.get("short_call_position_ids") or []),
+        "short_call_legs": list(group.get("short_call_legs") or []),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
 
 
 def _dedupe_position_copies(positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -462,7 +535,7 @@ def infer_strategy(row: dict[str, Any], group: dict[str, Any] | None = None) -> 
     if sec_type in ["OPT", "OPTION"] and right == "P" and qty < 0:
         return "CASH_SECURED_PUT"
     if sec_type in ["OPT", "OPTION"] and right == "C" and qty < 0:
-        required_shares = abs(qty) * DEFAULT_CONTRACT_MULTIPLIER
+        required_shares = (safe_float(group.get("short_calls"), abs(qty)) or abs(qty)) * DEFAULT_CONTRACT_MULTIPLIER
         return "COVERED_CALL" if (safe_float(group.get("shares"), 0.0) or 0.0) >= required_shares else "SHORT_CALL_UNCOVERED_REVIEW"
     if sec_type in ["OPT", "OPTION"] and right == "C" and qty > 0:
         return "LONG_CALL"
@@ -1367,6 +1440,7 @@ def evaluate_position(
     strategy = infer_strategy(row, group)
     technical = _technical_context(row, technical_store)
     report = _base_position_report(row, strategy, technical, account_context, playbook)
+    report["position_structure"] = _position_structure(group)
     strategy_rules = strategy_exit_playbook.get_exit_strategy(playbook, strategy) or {}
     regime_adjustment = report["exit_overlay"].get("regime_exit_adjustment") or {}
     take_profit = strategy_rules.get("take_profit_review") if isinstance(strategy_rules.get("take_profit_review"), dict) else {}
@@ -1439,12 +1513,19 @@ def evaluate_position(
             report["reasons"].append("Covered call has no deterministic exit trigger; monitor.")
     elif strategy == "LONG_STOCK":
         weight = safe_float(row.get("portfolio_weight_pct"))
+        structure_state = report["position_structure"].get("state")
+        if structure_state == "FULLY_COVERED_CALL":
+            report["reasons"].append("Long shares are already fully paired with detected short calls; manage them as one covered-call structure.")
+        elif structure_state == "PARTIAL_COVERED_CALL":
+            report["reasons"].append("Long shares are partially paired with detected short calls; only uncovered share lots have capacity for another covered call.")
         if event_or_damage:
             set_review("EXIT_REVIEW", "REVIEW_DEFENSIVE_EXIT", "Long-stock thesis may be damaged by event risk or a broken support level.", "LONG_STOCK_THESIS_RISK")
         elif trend in ["BEARISH", "DOWN", "SELL"]:
             set_review("RISK_REVIEW", "REVIEW_RISK", "Bearish trend with intact support requires comparing hold, income overlays, protection, and reduction.", "LONG_STOCK_BEARISH_REVIEW")
         elif weight is not None and weight >= 35:
             set_review("RISK_REVIEW", "REVIEW_RISK", "Long-stock position is a high portfolio concentration.", "LONG_STOCK_CONCENTRATION_HIGH")
+        elif structure_state in {"FULLY_COVERED_CALL", "PARTIAL_COVERED_CALL"}:
+            pass
         elif qty >= DEFAULT_CONTRACT_MULTIPLIER:
             report["reasons"].append("Long stock is eligible for covered-call review, but no exit trigger is active.")
         else:

@@ -2356,6 +2356,7 @@ FRIENDLY_OPERATOR_STATES = {
     "REFRESH_DATA": "Actualizar datos",
     "ASSIGNMENT_REVIEW": "Revisar asignación",
     "TAKE_PROFIT_REVIEW": "Revisar toma de ganancia",
+    "NO_ACTION_RECOMMENDED": "Mantener sin cambios",
     "FRESH": "Actualizados",
     "WATCH": "Vigilancia",
     "MONITOR": "Monitoreo",
@@ -4947,7 +4948,12 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
         and str(row.get("account_alias") or row.get("account_scope") or "").strip().lower() == selected_alias
     ), None)
     tower_positions = []
-    for row in tower.get("consolidated_positions") or []:
+    detailed_account_positions = (
+        selected_tower_account.get("positions")
+        if isinstance(selected_tower_account, dict) and isinstance(selected_tower_account.get("positions"), list)
+        else None
+    )
+    for row in detailed_account_positions if detailed_account_positions is not None else (tower.get("consolidated_positions") or []):
         if not isinstance(row, dict):
             continue
         aliases = [str(value or "").strip().lower() for value in (row.get("account_aliases") or [])]
@@ -4958,6 +4964,7 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
             "ticker": row.get("ticker") or row.get("symbol"),
             "sec_type": row.get("security_type") or row.get("sec_type"),
             "position_size": row.get("quantity") if row.get("quantity") is not None else row.get("position"),
+            "account_alias": selected_alias or row.get("account_alias"),
             "source": "BROKER_CONTROL_TOWER",
         })
     tower_is_authoritative = bool(
@@ -5096,6 +5103,9 @@ def friendly_position_reason(text: str) -> str:
     replacements = {
         "Underlying is below the short-put strike; assignment risk needs review.": "El precio está por debajo del strike de la put vendida; revisa el riesgo de asignación.",
         "Long stock is eligible for covered-call review, but no exit trigger is active.": "La posición permite evaluar un covered call, pero no existe una señal de salida activa.",
+        "Long shares are already fully paired with detected short calls; manage them as one covered-call structure.": "Las acciones ya están vinculadas por completo con las calls vendidas; gestiona ambas patas como un solo covered call.",
+        "Long shares are partially paired with detected short calls; only uncovered share lots have capacity for another covered call.": "Las acciones están cubiertas parcialmente; sólo los lotes todavía libres permiten vender otra call cubierta.",
+        "Covered call has no deterministic exit trigger; monitor.": "El covered call no tiene un disparador de salida activo; mantener y monitorear.",
         "Bearish trend with intact support requires comparing hold, income overlays, protection, and reduction.": "La tendencia es bajista, pero el soporte sigue intacto; comparar mantener, generar prima, proteger y reducir.",
         "Long-stock thesis may be damaged by event risk or a broken support level.": "La tesis de las acciones puede estar dañada por un evento de riesgo o por ruptura de soporte.",
         "Open futures exposure conflicts with the latest technical context; review stop, reduction, or exit manually.": "La posición de futuros contradice el contexto técnico; revisar manualmente stop, reducción o salida.",
@@ -5325,12 +5335,17 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
     )
 
 
-def render_position_management_card(item: dict[str, Any], acknowledged_event: dict[str, Any] | None = None) -> str:
+def render_position_management_card(
+    item: dict[str, Any],
+    acknowledged_event: dict[str, Any] | None = None,
+    related_stock: dict[str, Any] | None = None,
+) -> str:
     technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
     thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
     reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
     warnings = item.get("warnings") if isinstance(item.get("warnings"), list) else []
     blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+    structure = item.get("position_structure") if isinstance(item.get("position_structure"), dict) else {}
     reason_text = "; ".join(friendly_position_reason(str(x)) for x in (reasons[:2] or warnings[:2] or blockers[:2])) or "Sin nota adicional."
     stock_position = str(item.get("sec_type") or "").upper() in {"STK", "STOCK", "EQUITY"}
     strike_value = console_float_or_none(item.get("strike"))
@@ -5376,12 +5391,56 @@ def render_position_management_card(item: dict[str, Any], acknowledged_event: di
             state=html_escape(item.get("exit_state") or ""),
             fingerprint=html_escape(management_fingerprint),
         )
+    structure_html = ""
+    if structure.get("state") in {"FULLY_COVERED_CALL", "PARTIAL_COVERED_CALL", "OVER_COVERED_SHORT_CALL_RISK"}:
+        state_labels = {
+            "FULLY_COVERED_CALL": "Covered call completo reconocido",
+            "PARTIAL_COVERED_CALL": "Covered call parcial reconocido",
+            "OVER_COVERED_SHORT_CALL_RISK": "Calls vendidas exceden la cobertura",
+        }
+        legs = []
+        for leg in structure.get("short_call_legs") or []:
+            if not isinstance(leg, dict):
+                continue
+            legs.append(
+                "{} call(s) C{} · vence {}".format(
+                    int(console_float_or_none(leg.get("contracts")) or 0),
+                    leg.get("strike") if leg.get("strike") is not None else "N/D",
+                    leg.get("expiration") or "N/D",
+                )
+            )
+        structure_html = """
+        <div class="position-linkage {risk_class}">
+          <div><b>{state}</b><span>Cobertura {coverage}%</span></div>
+          <p>{shares} acciones + {calls} calls vendidas forman una sola estructura económica.</p>
+          <small>{legs} · Capacidad para calls nuevas: {capacity} contrato(s).</small>
+        </div>
+        """.format(
+            risk_class="linkage-risk" if structure.get("state") == "OVER_COVERED_SHORT_CALL_RISK" else "",
+            state=html_escape(state_labels.get(structure.get("state"), structure.get("state"))),
+            coverage=html_escape(structure.get("coverage_pct") if structure.get("coverage_pct") is not None else "N/D"),
+            shares=html_escape(int(console_float_or_none(structure.get("shares")) or 0)),
+            calls=html_escape(int(console_float_or_none(structure.get("short_call_contracts")) or 0)),
+            legs=html_escape("; ".join(legs) or "Detalle de calls pendiente"),
+            capacity=html_escape(int(console_float_or_none(structure.get("new_covered_call_capacity_contracts")) or 0)),
+        )
+    related_stock_html = ""
+    if isinstance(related_stock, dict):
+        related_stock_html = """
+        <details class="position-related-stock">
+          <summary>Ver gestión de las acciones vinculadas</summary>
+          <p>Las alternativas sobre las acciones se muestran aquí porque no son una operación independiente de las calls cubiertas.</p>
+          {alternatives}
+        </details>
+        """.format(alternatives=render_position_alternatives(related_stock))
     return """
     <article class="alert-card position-card">
       <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
       <div class="review-line">{reason}</div>
       <p class="position-summary">{contract}</p>
+      {structure}
       {alternatives}
+      {related_stock}
       {review_control}
       <details class="position-details"{open_attr}>
         <summary>Ver detalles y registrar gestión</summary>
@@ -5453,12 +5512,14 @@ def render_position_management_card(item: dict[str, Any], acknowledged_event: di
         state=position_badge(item.get("exit_state")),
         open_attr=" open" if needs_attention else "",
         contract=html_escape(" | ".join(str(bit) for bit in contract_bits if bit not in [None, ""])),
+        structure=structure_html,
         capture=html_escape(str(item.get("premium_capture_pct") if item.get("premium_capture_pct") is not None else "pendiente")),
         pnl=html_escape(str(item.get("unrealized_pl") if item.get("unrealized_pl") is not None else "pendiente")),
         weight=html_escape(str(item.get("portfolio_weight_pct") if item.get("portfolio_weight_pct") is not None else "pendiente")),
         market=html_escape(" | ".join(market_bits)),
         reason=html_escape(reason_text),
         alternatives=render_position_alternatives(item),
+        related_stock=related_stock_html,
         review_control=review_control,
         warnings=html_escape(", ".join(str(x) for x in warnings[:4]) or "none"),
         blockers=html_escape(", ".join(str(x) for x in blockers[:4]) or "none"),
@@ -5487,11 +5548,32 @@ def render_active_positions_panel(
         payload,
         path=POSITION_MANAGEMENT_JOURNAL_PATH,
     )
+    fully_covered_stock_by_ticker = {
+        str(item.get("ticker") or "").upper(): item
+        for item in positions
+        if isinstance(item, dict)
+        and str(item.get("sec_type") or "").upper() in {"STK", "STOCK", "EQUITY"}
+        and isinstance(item.get("position_structure"), dict)
+        and item["position_structure"].get("state") == "FULLY_COVERED_CALL"
+    }
+    linked_stock_ids = {
+        str(item.get("position_id") or "")
+        for item in fully_covered_stock_by_ticker.values()
+    }
+    visible_positions = [
+        item for item in positions
+        if isinstance(item, dict) and str(item.get("position_id") or "") not in linked_stock_ids
+    ]
     if positions:
         priority = lambda item: 0 if any(word in str((item or {}).get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW")) else 1
         cards = "".join(
-            render_position_management_card(item, acknowledged_positions.get(str(item.get("position_id") or "")))
-            for item in sorted(positions, key=priority)[:8]
+            render_position_management_card(
+                item,
+                acknowledged_positions.get(str(item.get("position_id") or "")),
+                fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
+                if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
+            )
+            for item in sorted(visible_positions, key=priority)[:8]
             if isinstance(item, dict)
         )
     else:
@@ -5532,7 +5614,7 @@ def render_active_positions_panel(
         <p>{next_text}</p>
       </div>
       <div class="position-overview">
-        <div><span>Posiciones</span><strong>{positions_found}</strong><small>{review_count} requieren revisión</small></div>
+        <div><span>Estructuras visibles</span><strong>{visible_count}</strong><small>{positions_found} instrumentos · {review_count} requieren revisión</small></div>
         <div><span>Riesgo inmediato</span><strong>{risk_count}</strong><small>{portfolio_status}</small></div>
         <div><span>Datos</span><strong>{freshness}</strong><small>{age}</small></div>
         <div><span>Seguimiento</span><strong>{pending_followup}</strong><small>pendiente(s)</small></div>
@@ -5548,6 +5630,7 @@ def render_active_positions_panel(
     """.format(
         next_text=html_escape(next_text),
         positions_found=html_escape(payload.get("positions_found", 0)),
+        visible_count=html_escape(len(visible_positions)),
         review_count=html_escape(payload.get("positions_requiring_review", 0)),
         risk_count=html_escape(payload.get("risk_review_count", 0)),
         portfolio_status=html_escape(portfolio_risk.get("status") or "UNKNOWN"),
@@ -7378,6 +7461,14 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-structure-result {{ display:grid; gap:2px; padding-top:7px; border-top:1px solid var(--line); }}
           .position-structure-result span {{ font-weight:900; font-size:.8rem; color:var(--ink); }}
           .position-structure-result small {{ font-size:.7rem; }}
+          .position-linkage {{ display:grid; gap:4px; margin:10px 0; padding:10px; border:1px solid #86efac; border-left:5px solid #16a34a; border-radius:8px; background:#f0fdf4; }}
+          .position-linkage > div {{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; }}
+          .position-linkage > div span {{ color:#166534; font-size:.76rem; font-weight:900; }}
+          .position-linkage p {{ margin:0; font-size:.82rem; }}
+          .position-linkage small {{ color:var(--muted); }}
+          .position-linkage.linkage-risk {{ border-color:#fca5a5; border-left-color:#dc2626; background:#fef2f2; }}
+          .position-related-stock {{ margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }}
+          .position-related-stock > p {{ color:var(--muted); font-size:.78rem; }}
           .position-comparison {{ display:grid; gap:7px; }}
           .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:6px; }}
           .position-profile {{ display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fbfdff; }}

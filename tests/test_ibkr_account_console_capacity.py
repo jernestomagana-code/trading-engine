@@ -556,6 +556,67 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("requiere datos, no sólo confirmación", refresh_card)
         self.assertIn('href="#position-refresh"', refresh_card)
 
+    def test_console_groups_fully_covered_stock_and_short_call_as_one_structure(self):
+        structure = {
+            "state": "FULLY_COVERED_CALL",
+            "shares": 1000,
+            "short_call_contracts": 10,
+            "covered_contracts": 10,
+            "coverage_pct": 100.0,
+            "new_covered_call_capacity_contracts": 0,
+            "short_call_legs": [{"contracts": 10, "strike": 76, "expiration": "20260731"}],
+        }
+        stock = {
+            "position_id": "NFLX|STK|0|||",
+            "ticker": "NFLX",
+            "strategy": "LONG_STOCK",
+            "sec_type": "STK",
+            "position_size": 1000,
+            "management_action": "NO_ACTION_RECOMMENDED",
+            "exit_state": "MONITOR",
+            "position_structure": structure,
+            "management_alternatives": {
+                "recommendation": {"alternative_id": "HOLD_MONITOR", "label": "Mantener y monitorear", "status": "READY_FOR_MANUAL_REVIEW"},
+                "alternatives": [{"alternative_id": "HOLD_MONITOR", "label": "Mantener y monitorear", "status": "READY_FOR_MANUAL_REVIEW"}],
+            },
+        }
+        call = {
+            "position_id": "NFLX|OPT|C|76|20260731|",
+            "ticker": "NFLX",
+            "strategy": "COVERED_CALL",
+            "sec_type": "OPT",
+            "right": "C",
+            "position_size": -10,
+            "strike": 76,
+            "expiration": "20260731",
+            "management_action": "NO_ACTION_RECOMMENDED",
+            "exit_state": "MONITOR",
+            "position_structure": structure,
+            "management_alternatives": {
+                "recommendation": {"alternative_id": "HOLD_MONITOR", "label": "Mantener y monitorear", "status": "READY_FOR_MANUAL_REVIEW"},
+                "alternatives": [{"alternative_id": "HOLD_MONITOR", "label": "Mantener y monitorear", "status": "READY_FOR_MANUAL_REVIEW"}],
+            },
+        }
+        payload = {
+            "positions": [stock, call],
+            "positions_found": 2,
+            "positions_requiring_review": 0,
+            "risk_review_count": 0,
+            "manual_review_required": False,
+            "freshness": {"status": "OK"},
+            "portfolio_risk": {"status": "OK"},
+        }
+
+        html = account_console.render_active_positions_panel({}, {}, {"account_alias": "remanente"}, payload)
+
+        self.assertEqual(html.count('class="alert-card position-card"'), 1)
+        self.assertIn("Covered call completo reconocido", html)
+        self.assertIn("1000 acciones + 10 calls vendidas", html)
+        self.assertIn("10 call(s) C76", html)
+        self.assertIn("Capacidad para calls nuevas: 0 contrato(s)", html)
+        self.assertIn("Ver gestión de las acciones vinculadas", html)
+        self.assertIn("1</strong><small>2 instrumentos", html)
+
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_runtime = account_console.RUNTIME
