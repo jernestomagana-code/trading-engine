@@ -17,7 +17,7 @@ import position_context_store
 import strategy_exit_playbook
 
 
-POSITION_MANAGEMENT_VERSION = "active_position_management_v6"
+POSITION_MANAGEMENT_VERSION = "active_position_management_v7"
 DEFAULT_MAX_CONTEXT_AGE_MINUTES = 15
 DEFAULT_CONTRACT_MULTIPLIER = 100
 
@@ -867,6 +867,195 @@ def _rank_contracts(rows: list[dict[str, Any]], right: str, price: float | None)
     return candidates
 
 
+def _covered_call_expiry_comparison(
+    row: dict[str, Any],
+    technical: dict[str, Any],
+    calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compare hold, buyback and conservative roll paths from the current state."""
+    qty = abs(safe_float(row.get("position_size"), 0.0) or 0.0)
+    contracts = int(qty)
+    price = safe_float(technical.get("price"))
+    strike = safe_float(row.get("strike"))
+    dte = safe_float(row.get("dte"))
+    delta = safe_float(row.get("delta") or row.get("option_delta"))
+    mark = _option_mark(row)
+    entry_credit = _entry_credit(row)
+    multiplier = safe_float(row.get("multiplier"), DEFAULT_CONTRACT_MULTIPLIER) or DEFAULT_CONTRACT_MULTIPLIER
+    expiration = str(row.get("expiration") or "")
+    if not contracts or price is None or strike is None or strike <= 0 or dte is None or mark is None:
+        return {
+            "comparison_version": "covered_call_expiry_comparison_v1",
+            "available": False,
+            "reason": "CURRENT_CONTRACT_DATA_INCOMPLETE",
+            "recommended_alternative_id": "HOLD_MONITOR",
+            "variants": [],
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+    distance_dollars = strike - price
+    distance_pct = (distance_dollars / price) * 100.0 if price else None
+    abs_delta = abs(delta) if delta is not None else None
+    close_cost_total = mark * contracts * multiplier
+    entry_credit_total = entry_credit * contracts * multiplier if entry_credit is not None else None
+    premium_pnl_total = (
+        (entry_credit - mark) * contracts * multiplier if entry_credit is not None else None
+    )
+    capture_pct = _premium_capture_pct(row)
+    near_expiration = dte <= 7
+    pin_or_itm = distance_pct is not None and distance_pct <= 1.0
+    comfortably_otm = bool(
+        distance_pct is not None
+        and distance_pct >= 2.0
+        and (abs_delta is None or abs_delta <= 0.25)
+    )
+
+    valid_rolls = []
+    for candidate in calls:
+        candidate_strike = safe_float(candidate.get("strike"))
+        candidate_dte = safe_float(candidate.get("dte"))
+        candidate_bid = safe_float(candidate.get("bid"))
+        candidate_delta = safe_float(candidate.get("delta"))
+        candidate_expiration = str(candidate.get("expiration") or "")
+        if candidate.get("review_status") != "READY_FOR_MANUAL_REVIEW":
+            continue
+        if candidate_strike is None or candidate_strike < strike:
+            continue
+        if candidate_bid is None or candidate_bid <= 0:
+            continue
+        if candidate_delta is not None and abs(candidate_delta) > 0.45:
+            continue
+        if candidate_dte is not None and candidate_dte <= dte:
+            continue
+        if expiration and candidate_expiration and candidate_expiration <= expiration:
+            continue
+        net_credit_per_share = candidate_bid - mark
+        valid_rolls.append({
+            "contract": candidate,
+            "net_credit_per_share": round(net_credit_per_share, 4),
+            "net_credit_total": round(net_credit_per_share * contracts * multiplier, 2),
+            "strike_change": round(candidate_strike - strike, 4),
+            "extra_dte": round(candidate_dte - dte, 1) if candidate_dte is not None else None,
+            "abs_delta": round(abs(candidate_delta), 4) if candidate_delta is not None else None,
+            "net_credit_per_extra_day": (
+                round(net_credit_per_share / (candidate_dte - dte), 4)
+                if candidate_dte is not None and candidate_dte > dte else None
+            ),
+        })
+
+    def roll_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        net_credit = safe_float(item.get("net_credit_per_share"))
+        candidate_abs_delta = safe_float(item.get("abs_delta"))
+        strike_change = safe_float(item.get("strike_change"), 0.0) or 0.0
+        return (
+            0 if net_credit is not None and net_credit >= 0 else 1,
+            abs((candidate_abs_delta if candidate_abs_delta is not None else 0.25) - 0.25),
+            -strike_change,
+            -(net_credit if net_credit is not None else -999.0),
+        )
+
+    valid_rolls.sort(key=roll_sort_key)
+    best_roll = valid_rolls[0] if valid_rolls else None
+    trend = safe_upper(technical.get("trend"), "UNKNOWN")
+    bullish = trend in {"BULLISH", "UP", "BUY", "NEUTRAL_TO_BULLISH"} or bool(technical.get("resistance_breakout"))
+
+    recommendation = "HOLD_MONITOR"
+    confidence = "MEDIUM"
+    reason = "Mantener conserva la prima restante sin pagar el cierre; vigilar precio, delta y distancia al strike."
+    if capture_pct is not None and capture_pct >= 50:
+        recommendation = "BUY_BACK_CALL"
+        confidence = "HIGH"
+        reason = "La mayor parte de la prima ya fue capturada; recomprar elimina el riesgo residual por un costo relativamente pequeño."
+    elif near_expiration and pin_or_itm and bullish and best_roll and best_roll["net_credit_per_share"] >= 0:
+        recommendation = "ROLL_CALL"
+        confidence = "HIGH"
+        reason = "Cerca del vencimiento y del strike, el roll seleccionado sube o conserva el strike y mantiene crédito neto estimado."
+    elif near_expiration and pin_or_itm and not bullish:
+        recommendation = "ACCEPT_CALLED_AWAY"
+        confidence = "MEDIUM"
+        reason = "La call está cerca o dentro del dinero y no hay impulso alcista suficiente para pagar por conservar el upside."
+    elif near_expiration and pin_or_itm and bullish:
+        recommendation = "ACCEPT_CALLED_AWAY"
+        confidence = "LOW"
+        reason = "La call está cerca o dentro del dinero y no existe un roll seguro visible; aceptar asignación domina a improvisar un débito o bajar el strike."
+    elif near_expiration and comfortably_otm:
+        recommendation = "HOLD_MONITOR"
+        confidence = "HIGH"
+        reason = "La call permanece al menos 2% OTM y su delta no supera 0.25; mantener domina a cristalizar la pérdida o rolar sin necesidad."
+    elif near_expiration and best_roll and best_roll["net_credit_per_share"] >= 0 and (bullish or (abs_delta is not None and abs_delta >= 0.25)):
+        recommendation = "ROLL_CALL"
+        confidence = "MEDIUM"
+        reason = "El vencimiento está próximo y existe un roll líquido al mismo o mayor strike con crédito neto estimado no negativo."
+
+    variants = [
+        {
+            "alternative_id": "HOLD_MONITOR",
+            "label": "Mantener hasta nueva señal",
+            "cash_flow_now": 0.0,
+            "remaining_premium_if_worthless_total": round(close_cost_total, 2),
+            "distance_to_strike_dollars": round(distance_dollars, 4),
+            "distance_to_strike_pct": round(distance_pct, 2) if distance_pct is not None else None,
+            "abs_delta": round(abs_delta, 4) if abs_delta is not None else None,
+            "dte": dte,
+        },
+        {
+            "alternative_id": "BUY_BACK_CALL",
+            "label": "Recomprar ahora",
+            "cash_flow_now": round(-close_cost_total, 2),
+            "estimated_premium_pnl_total": round(premium_pnl_total, 2) if premium_pnl_total is not None else None,
+            "entry_credit_total": round(entry_credit_total, 2) if entry_credit_total is not None else None,
+            "close_cost_total": round(close_cost_total, 2),
+            "premium_capture_pct": capture_pct,
+        },
+    ]
+    if best_roll:
+        variants.append({
+            "alternative_id": "ROLL_CALL",
+            "label": "Rolar",
+            "available": True,
+            **best_roll,
+        })
+    else:
+        variants.append({
+            "alternative_id": "ROLL_CALL",
+            "label": "Rolar",
+            "available": False,
+            "status": "WAIT_OPTION_CHAIN",
+            "reason": "No hay una call posterior líquida al mismo o mayor strike con datos suficientes.",
+        })
+    return {
+        "comparison_version": "covered_call_expiry_comparison_v1",
+        "available": True,
+        "near_expiration": near_expiration,
+        "recommended_alternative_id": recommendation,
+        "recommendation_reason": reason,
+        "confidence": confidence,
+        "current_contract": {
+            "contracts": contracts,
+            "strike": strike,
+            "expiration": row.get("expiration"),
+            "dte": dte,
+            "mark": mark,
+            "entry_credit": entry_credit,
+            "premium_capture_pct": capture_pct,
+            "distance_to_strike_dollars": round(distance_dollars, 4),
+            "distance_to_strike_pct": round(distance_pct, 2) if distance_pct is not None else None,
+            "abs_delta": round(abs_delta, 4) if abs_delta is not None else None,
+        },
+        "best_roll": best_roll,
+        "valid_roll_count": len(valid_rolls),
+        "variants": variants,
+        "limitations": [
+            "El cierre usa el mark actual cuando no existe ask de la posición abierta.",
+            "El roll usa bid de la nueva call y exige mismo o mayor strike; comisiones e impuestos no están incluidos.",
+            "La comparación apoya una revisión manual y no crea ni autoriza órdenes.",
+        ],
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def _alternative(
     alternative_id: str,
     label: str,
@@ -1095,6 +1284,11 @@ def _management_alternatives(
         if strategy == "LONG_STOCK"
         else {"available": False, "variants": []}
     )
+    covered_call_comparison = (
+        _covered_call_expiry_comparison(row, technical, calls)
+        if strategy == "COVERED_CALL"
+        else {"available": False, "variants": []}
+    )
     preferred_call = strategy_comparison.get("preferred_covered_call") if isinstance(strategy_comparison.get("preferred_covered_call"), dict) else {}
     preferred_collar = strategy_comparison.get("preferred_collar") if isinstance(strategy_comparison.get("preferred_collar"), dict) else {}
     profile_leaders = strategy_comparison.get("profile_leaders") if isinstance(strategy_comparison.get("profile_leaders"), dict) else {}
@@ -1221,6 +1415,12 @@ def _management_alternatives(
         choose("ROLL_PUT" if strategy == "CASH_SECURED_PUT" else "ROLL_CALL", "DTE y delta activaron revisión de roll; priorizar sólo un contrato que no aumente el riesgo.", "HIGH")
     elif management_action == "REFRESH_DATA":
         choose("HOLD_MONITOR", "No hacer cambios hasta completar los datos económicos de la posición y recalcular la recomendación.", "LOW")
+    elif strategy == "COVERED_CALL" and covered_call_comparison.get("available"):
+        choose(
+            str(covered_call_comparison.get("recommended_alternative_id") or "HOLD_MONITOR"),
+            str(covered_call_comparison.get("recommendation_reason") or "Mantener y monitorear."),
+            str(covered_call_comparison.get("confidence") or "MEDIUM"),
+        )
     elif strategy == "LONG_STOCK":
         weight = safe_float(row.get("portfolio_weight_pct") or group.get("portfolio_stock_weight_pct"))
         indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
@@ -1319,6 +1519,7 @@ def _management_alternatives(
         "share_lots": share_lots,
         "uncovered_share_lots": uncovered_share_lots,
         "strategy_comparison": strategy_comparison,
+        "covered_call_expiry_comparison": covered_call_comparison,
         "recommendation": recommendation,
         "alternatives": alternatives,
         "manual_review_required": True,
@@ -1568,6 +1769,23 @@ def evaluate_position(
         option_rows,
         report["management_action"],
     )
+    if strategy == "COVERED_CALL" and report["management_action"] in {
+        "NO_ACTION_RECOMMENDED",
+        "REVIEW_ASSIGNMENT",
+        "REVIEW_ROLL",
+        "REVIEW_CLOSE_OR_BUY_BACK",
+    }:
+        recommendation = report["management_alternatives"].get("recommendation") or {}
+        comparison_action_map = {
+            "BUY_BACK_CALL": ("TAKE_PROFIT_REVIEW", "REVIEW_CLOSE_OR_BUY_BACK"),
+            "ROLL_CALL": ("ROLL_REVIEW", "REVIEW_ROLL"),
+            "ACCEPT_CALLED_AWAY": ("ASSIGNMENT_REVIEW", "REVIEW_ASSIGNMENT"),
+        }
+        mapped = comparison_action_map.get(str(recommendation.get("alternative_id") or ""))
+        if mapped:
+            report["exit_state"], report["management_action"] = mapped
+            report["manual_review_required"] = True
+            report["reasons"].append(str(recommendation.get("reason") or "Covered-call expiry comparison requires review."))
     report["urgency_rank"] = ACTION_PRIORITY.get(report["management_action"], 0)
     report["management_outcome_template"] = _management_outcome_template(report)
     return report

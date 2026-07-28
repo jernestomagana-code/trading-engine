@@ -308,6 +308,16 @@ La misma apertura obtiene velas históricas de cada subyacente abierto aunque ya
 
 El motor tampoco propone reducir acciones si eso dejaría una call descubierta, ni prioriza vender una covered call nueva sobre un activo sobrevendido sin confirmación adicional. En posiciones cubiertas, la pata de acciones remite la gestión a la operación completa.
 
+Cuando una covered call tiene **7 DTE o menos**, la tarjeta incorpora **Decisión próxima al vencimiento** y compara tres rutas con números actuales:
+
+| Ruta | Qué calcula | Cuándo puede ganar |
+|---|---|---|
+| Mantener | Prima todavía en juego, distancia al strike, delta y DTE | Si la call permanece al menos 2% OTM y la delta absoluta no supera 0.25, mantener evita cristalizar una pérdida o rolar sin necesidad. |
+| Recomprar | Costo estimado de cierre, P/L de prima y porcentaje capturado | Si ya se capturó al menos 50% de la prima —umbral predeterminado del plan—, elimina el riesgo residual por un costo relativamente pequeño. |
+| Rolar | Nueva call, cambio de strike, DTE adicional y crédito o débito neto estimado | Sólo se considera un candidato líquido, con vencimiento posterior y strike igual o mayor. Cerca del strike, el motor lo prioriza únicamente si el crédito neto estimado no es negativo y el contexto favorece conservar las acciones. |
+
+Si la call está cerca o dentro del dinero y no existe un roll seguro visible, la recomendación prioriza respetar la posible asignación sobre improvisar un débito o bajar el strike. El costo de cierre usa el mark cuando IBKR no entrega el ask de la posición abierta; el roll usa el bid de la nueva call. Son estimaciones antes de comisiones e impuestos y siempre requieren revisión manual.
+
 Las posiciones abiertas de futuros (`FUT`), por ejemplo MNQ, también se importan desde la Torre de Control aunque no estén presentes en el snapshot antiguo de posiciones. Aparecen como revisión explícita de riesgo direccional: dirección, cantidad, vencimiento y valor de mercado. La consola exige revisar el plan de riesgo; no inventa stop ni objetivo cuando esos datos no existen y nunca cierra la posición automáticamente.
 
 En **Capacidad y administración operativa → Contexto técnico complementario** puedes seleccionar cualquier activo abierto y pegar el mismo JSON o texto usado para RSP. Spot, soportes, resistencias, expected move y gamma complementan la lectura automática; no sustituyen las velas ni convierten la recomendación en una orden.

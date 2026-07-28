@@ -5190,6 +5190,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
 
     recommendation = payload.get("recommendation") if isinstance(payload.get("recommendation"), dict) else {}
     comparison = payload.get("strategy_comparison") if isinstance(payload.get("strategy_comparison"), dict) else {}
+    expiry_comparison = payload.get("covered_call_expiry_comparison") if isinstance(payload.get("covered_call_expiry_comparison"), dict) else {}
     primary_id = recommendation.get("alternative_id")
     primary = next((value for value in alternatives if isinstance(value, dict) and value.get("alternative_id") == primary_id), alternatives[0])
     contract = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
@@ -5254,6 +5255,72 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
                 "{} acciones permanecen sin esta estructura y conservan toda su exposición.".format(free_shares)
                 if free_shares is not None else "Revisar las acciones restantes antes de ejecutar."
             ),
+        )
+    expiry_comparison_html = ""
+    if expiry_comparison.get("available") and expiry_comparison.get("near_expiration"):
+        current = expiry_comparison.get("current_contract") if isinstance(expiry_comparison.get("current_contract"), dict) else {}
+        recommended_id = str(expiry_comparison.get("recommended_alternative_id") or "")
+        expiry_cards = []
+        for variant in expiry_comparison.get("variants") or []:
+            if not isinstance(variant, dict):
+                continue
+            alternative_id = str(variant.get("alternative_id") or "")
+            metrics = []
+            if alternative_id == "HOLD_MONITOR":
+                metrics = [
+                    "Prima todavía en juego: {}".format(coberturas_money(variant.get("remaining_premium_if_worthless_total"))),
+                    "Distancia al strike: {} ({:.2f}%)".format(
+                        coberturas_money(variant.get("distance_to_strike_dollars")),
+                        console_float_or_none(variant.get("distance_to_strike_pct")) or 0.0,
+                    ),
+                    "Delta abs.: {}".format(coberturas_plain(variant.get("abs_delta"))),
+                ]
+            elif alternative_id == "BUY_BACK_CALL":
+                metrics = [
+                    "Costo estimado de cierre: {}".format(coberturas_money(variant.get("close_cost_total"))),
+                    "P/L de prima estimado: {}".format(coberturas_money(variant.get("estimated_premium_pnl_total"))),
+                    "Captura: {}%".format(coberturas_plain(variant.get("premium_capture_pct"))),
+                ]
+            elif variant.get("available"):
+                contract_value = variant.get("contract") if isinstance(variant.get("contract"), dict) else {}
+                metrics = [
+                    "Nueva call: C{} · {}".format(
+                        coberturas_plain(contract_value.get("strike")),
+                        expiration_label(contract_value.get("expiration")),
+                    ),
+                    "Crédito neto estimado: {}".format(coberturas_money(variant.get("net_credit_total"))),
+                    "Cambio de strike: {} · +{} DTE".format(
+                        coberturas_plain(variant.get("strike_change")),
+                        coberturas_plain(variant.get("extra_dte")),
+                    ),
+                ]
+            else:
+                metrics = [str(variant.get("reason") or "Falta una cadena posterior utilizable.")]
+            expiry_cards.append(
+                '<div class="expiry-choice {recommended}"><span>{tag}</span><b>{label}</b><small>{metrics}</small></div>'.format(
+                    recommended="expiry-choice-primary" if alternative_id == recommended_id else "",
+                    tag="RECOMENDADA" if alternative_id == recommended_id else "COMPARADA",
+                    label=html_escape(variant.get("label") or alternative_id),
+                    metrics=html_escape(" · ".join(metrics)),
+                )
+            )
+        expiry_comparison_html = """
+        <div class="covered-call-expiry-comparison">
+          <div class="position-alternatives-head"><b>Decisión próxima al vencimiento</b><span>{dte} DTE</span></div>
+          <p>{reason}</p>
+          <div class="expiry-current">Actual: C{strike} · mark {mark} · entrada {entry} · distancia {distance}% · delta {delta}</div>
+          <div class="expiry-choice-grid">{cards}</div>
+          <small>Cierre estimado con mark y roll con bid de la nueva call. Sin comisiones ni impuestos; revisión manual obligatoria.</small>
+        </div>
+        """.format(
+            dte=html_escape(coberturas_plain(current.get("dte"))),
+            reason=html_escape(expiry_comparison.get("recommendation_reason") or ""),
+            strike=html_escape(coberturas_plain(current.get("strike"))),
+            mark=html_escape(coberturas_money(current.get("mark"))),
+            entry=html_escape(coberturas_money(current.get("entry_credit"))),
+            distance=html_escape(coberturas_plain(current.get("distance_to_strike_pct"))),
+            delta=html_escape(coberturas_plain(current.get("abs_delta"))),
+            cards="".join(expiry_cards),
         )
     profile_labels = {
         "capital_protection": "Mayor protección",
@@ -5322,6 +5389,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
           {structure}
         </div>
         {comparison}
+        {expiry_comparison}
         {more}
       </div>
     """.format(
@@ -5331,6 +5399,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         reason=html_escape(recommendation.get("reason") or primary.get("reason") or ""),
         structure=structure_html,
         comparison=comparison_html,
+        expiry_comparison=expiry_comparison_html,
         more=more,
     )
 
@@ -7469,6 +7538,16 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-linkage.linkage-risk {{ border-color:#fca5a5; border-left-color:#dc2626; background:#fef2f2; }}
           .position-related-stock {{ margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }}
           .position-related-stock > p {{ color:var(--muted); font-size:.78rem; }}
+          .covered-call-expiry-comparison {{ display:grid; gap:8px; margin-top:10px; padding:11px; border:1px solid #c4b5fd; border-left:5px solid #7c3aed; border-radius:8px; background:#faf5ff; }}
+          .covered-call-expiry-comparison > p {{ margin:0; font-size:.82rem; }}
+          .covered-call-expiry-comparison > small,.expiry-current {{ color:var(--muted); font-size:.72rem; }}
+          .expiry-current {{ padding:7px 8px; border-radius:6px; background:#fff; }}
+          .expiry-choice-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }}
+          .expiry-choice {{ display:grid; align-content:start; gap:3px; min-width:0; padding:8px; border:1px solid var(--line); border-radius:7px; background:#fff; }}
+          .expiry-choice span {{ color:var(--muted); font-size:.62rem; font-weight:900; }}
+          .expiry-choice b {{ font-size:.82rem; }}
+          .expiry-choice small {{ color:var(--muted); font-size:.69rem; line-height:1.35; }}
+          .expiry-choice.expiry-choice-primary {{ border:2px solid #7c3aed; background:#f5f3ff; }}
           .position-comparison {{ display:grid; gap:7px; }}
           .position-profile-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:6px; }}
           .position-profile {{ display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fbfdff; }}
@@ -7614,7 +7693,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .section-head {{ display:block; }} .section-head p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .section-head {{ display:block; }} .section-head p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>

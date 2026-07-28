@@ -617,6 +617,71 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Ver gestión de las acciones vinculadas", html)
         self.assertIn("1</strong><small>2 instrumentos", html)
 
+    def test_console_renders_quantitative_covered_call_expiry_comparison(self):
+        item = {
+            "management_alternatives": {
+                "recommendation": {
+                    "alternative_id": "HOLD_MONITOR",
+                    "label": "Mantener y monitorear",
+                    "status": "READY_FOR_MANUAL_REVIEW",
+                    "confidence": "HIGH",
+                    "reason": "La call permanece al menos 2% OTM.",
+                },
+                "alternatives": [
+                    {"alternative_id": "HOLD_MONITOR", "label": "Mantener y monitorear", "status": "READY_FOR_MANUAL_REVIEW"},
+                    {"alternative_id": "BUY_BACK_CALL", "label": "Comprar call para cerrar", "status": "READY_FOR_MANUAL_REVIEW"},
+                    {"alternative_id": "ROLL_CALL", "label": "Rolar call", "status": "WAIT_OPTION_CHAIN"},
+                ],
+                "covered_call_expiry_comparison": {
+                    "available": True,
+                    "near_expiration": True,
+                    "recommended_alternative_id": "HOLD_MONITOR",
+                    "recommendation_reason": "La call permanece al menos 2% OTM y su delta no supera 0.25.",
+                    "current_contract": {
+                        "strike": 76,
+                        "dte": 3,
+                        "mark": 0.2958,
+                        "entry_credit": 0.1031,
+                        "distance_to_strike_pct": 3.64,
+                        "abs_delta": 0.19,
+                    },
+                    "variants": [
+                        {
+                            "alternative_id": "HOLD_MONITOR",
+                            "label": "Mantener hasta nueva señal",
+                            "remaining_premium_if_worthless_total": 295.8,
+                            "distance_to_strike_dollars": 2.67,
+                            "distance_to_strike_pct": 3.64,
+                            "abs_delta": 0.19,
+                        },
+                        {
+                            "alternative_id": "BUY_BACK_CALL",
+                            "label": "Recomprar ahora",
+                            "close_cost_total": 295.8,
+                            "estimated_premium_pnl_total": -192.7,
+                            "premium_capture_pct": -186.91,
+                        },
+                        {
+                            "alternative_id": "ROLL_CALL",
+                            "label": "Rolar",
+                            "available": False,
+                            "reason": "No hay una call posterior líquida al mismo o mayor strike con datos suficientes.",
+                        },
+                    ],
+                },
+            },
+        }
+
+        html = account_console.render_position_alternatives(item)
+
+        self.assertIn("Decisión próxima al vencimiento", html)
+        self.assertIn("Actual: C76 · mark $0.30 · entrada $0.10 · distancia 3.64% · delta 0.19", html)
+        self.assertIn("Prima todavía en juego: $295.80", html)
+        self.assertIn("Costo estimado de cierre: $295.80", html)
+        self.assertIn("P/L de prima estimado: $-192.70", html)
+        self.assertIn("No hay una call posterior líquida", html)
+        self.assertIn("RECOMENDADA", html)
+
     def test_latest_master_snapshot_prefers_fresh_decision_desk_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             original_runtime = account_console.RUNTIME

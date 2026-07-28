@@ -1800,6 +1800,23 @@ def _bridge_held_underlying_symbols():
     return set(_bridge_unique_symbols(held))
 
 
+def _bridge_held_short_call_strikes(symbol):
+    target = str(symbol or "").upper().strip()
+    strikes = []
+    for row in _bridge_cycle_position_rows():
+        row_symbol = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+        right = str(row.get("right") or "").upper().strip()
+        security_type = str(row.get("security_type") or row.get("sec_type") or "").upper().strip()
+        try:
+            size = float(row.get("position_size") or row.get("position") or row.get("quantity") or 0)
+            strike = float(row.get("strike") or 0)
+        except Exception:
+            continue
+        if row_symbol == target and security_type in {"OPT", "OPTION"} and right == "C" and size < 0 and strike > 0:
+            strikes.append(strike)
+    return sorted(set(strikes))
+
+
 def _bridge_option_universe_runtime_context():
     runtime_data = _v283_load_runtime_jsons()
     option_rows = _v283_extract_options_rows(runtime_data)
@@ -3304,7 +3321,7 @@ def pick_call_strikes(strikes, stock_price):
     return selected
 
 
-def pick_position_management_call_strikes(strikes, stock_price, limit=4):
+def pick_position_management_call_strikes(strikes, stock_price, limit=4, preferred_strikes=None):
     """Represent ITM, ATM and OTM choices for already-held stock."""
     eligible = [
         float(strike)
@@ -3313,6 +3330,11 @@ def pick_position_management_call_strikes(strikes, stock_price, limit=4):
     ]
     targets = [-0.08, -0.04, 0.0, 0.03, 0.07, 0.12]
     selected = []
+    for preferred in preferred_strikes or []:
+        remaining = [strike for strike in eligible if strike not in selected]
+        if not remaining:
+            break
+        selected.append(min(remaining, key=lambda strike: abs(strike - float(preferred))))
     for target in targets:
         remaining = [strike for strike in eligible if strike not in selected]
         if not remaining:
@@ -3355,7 +3377,12 @@ def build_option_candidates(symbol, stock_price):
         if ENABLE_COVERED_CALLS:
             held_call_limit = max(4, min(6, MAX_OPTIONS_PER_SYMBOL - len(puts)))
             calls = (
-                pick_position_management_call_strikes(strikes, stock_price, limit=held_call_limit)
+                pick_position_management_call_strikes(
+                    strikes,
+                    stock_price,
+                    limit=held_call_limit,
+                    preferred_strikes=_bridge_held_short_call_strikes(symbol),
+                )
                 if held_symbol
                 else pick_call_strikes(strikes, stock_price)
             )
@@ -3374,8 +3401,18 @@ def build_option_candidates(symbol, stock_price):
             if index < len(rsp_calls):
                 contract_specs.append((rsp_calls[index], "C", "COVERED_CALL"))
     else:
-        contract_specs.extend((strike, "P", "NAKED_PUT") for strike in puts)
-        contract_specs.extend((strike, "C", "COVERED_CALL") for strike in calls)
+        if held_symbol:
+            # Active-position management gets one call before discovery puts.
+            # Interleaving preserves both use cases under the fast two-contract
+            # budget and prevents puts from consuming the entire symbol quota.
+            for index in range(max(len(puts), len(calls))):
+                if index < len(calls):
+                    contract_specs.append((calls[index], "C", "COVERED_CALL"))
+                if index < len(puts):
+                    contract_specs.append((puts[index], "P", "NAKED_PUT"))
+        else:
+            contract_specs.extend((strike, "P", "NAKED_PUT") for strike in puts)
+            contract_specs.extend((strike, "C", "COVERED_CALL") for strike in calls)
 
     for strike, right, strategy in contract_specs:
         contract = qualify_option(

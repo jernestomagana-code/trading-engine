@@ -465,7 +465,7 @@ class PositionManagementTests(unittest.TestCase):
         call = next(item for item in payload["positions"] if item["sec_type"] == "OPT")
         alternatives = {item["alternative_id"]: item for item in stock["management_alternatives"]["alternatives"]}
 
-        self.assertEqual(payload["position_management_version"], "active_position_management_v6")
+        self.assertEqual(payload["position_management_version"], "active_position_management_v7")
         self.assertEqual(stock["position_structure"]["state"], "FULLY_COVERED_CALL")
         self.assertEqual(stock["position_structure"]["coverage_pct"], 100.0)
         self.assertEqual(stock["position_structure"]["new_covered_call_capacity_contracts"], 0)
@@ -521,6 +521,101 @@ class PositionManagementTests(unittest.TestCase):
         self.assertAlmostEqual(call["entry_credit"], 0.1031, places=4)
         self.assertLess(call["premium_capture_pct"], 0)
         self.assertNotEqual(call["management_action"], "REVIEW_CLOSE_OR_BUY_BACK")
+
+    def test_near_expiry_otm_covered_call_quantitatively_prefers_hold(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "NFLX", "sec_type": "STK", "position_size": 1000, "market_price": 73.33},
+                    {
+                        "ticker": "NFLX",
+                        "sec_type": "OPT",
+                        "right": "C",
+                        "position_size": -10,
+                        "strike": 76,
+                        "expiration": "20260731",
+                        "average_cost": 10.3132,
+                        "market_price": 0.2958,
+                        "multiplier": "100",
+                        "dte": 3,
+                        "delta": 0.19,
+                    },
+                ],
+                {"NFLX": {"ticker": "NFLX", "price": 73.33, "trend": "NEUTRAL"}},
+            ),
+            playbook=self.playbook,
+        )
+
+        call = next(item for item in payload["positions"] if item["sec_type"] == "OPT")
+        management = call["management_alternatives"]
+        comparison = management["covered_call_expiry_comparison"]
+
+        self.assertTrue(comparison["available"])
+        self.assertTrue(comparison["near_expiration"])
+        self.assertEqual(comparison["recommended_alternative_id"], "HOLD_MONITOR")
+        self.assertEqual(management["recommendation"]["alternative_id"], "HOLD_MONITOR")
+        self.assertEqual(management["recommendation"]["confidence"], "HIGH")
+        self.assertAlmostEqual(comparison["current_contract"]["distance_to_strike_pct"], 3.64, places=2)
+        self.assertAlmostEqual(comparison["variants"][1]["close_cost_total"], 295.8, places=2)
+        self.assertEqual(call["management_action"], "NO_ACTION_RECOMMENDED")
+
+    def test_near_expiry_bullish_covered_call_prefers_non_debit_roll_up(self):
+        snapshot = self.snapshot(
+            [
+                {"ticker": "AAPL", "sec_type": "STK", "position_size": 100, "market_price": 204},
+                {
+                    "ticker": "AAPL",
+                    "sec_type": "OPT",
+                    "right": "C",
+                    "position_size": -1,
+                    "strike": 205,
+                    "expiration": "20260731",
+                    "entry_credit": 0.5,
+                    "market_price": 1.0,
+                    "dte": 3,
+                    "delta": 0.34,
+                },
+            ],
+            {"AAPL": {"ticker": "AAPL", "price": 204, "trend": "BULLISH"}},
+        )
+        snapshot["active_position_option_chains"] = {
+            "by_ticker": {"AAPL": {"option_rows": [
+                {
+                    "ticker": "AAPL",
+                    "right": "C",
+                    "strike": 210,
+                    "expiration": "20260828",
+                    "dte": 31,
+                    "bid": 1.25,
+                    "ask": 1.35,
+                    "mid": 1.30,
+                    "delta": 0.25,
+                    "spread_pct": 7.69,
+                },
+                {
+                    "ticker": "AAPL",
+                    "right": "C",
+                    "strike": 202.5,
+                    "expiration": "20260828",
+                    "dte": 31,
+                    "bid": 4.5,
+                    "ask": 4.7,
+                    "mid": 4.6,
+                    "delta": 0.6,
+                    "spread_pct": 4.35,
+                },
+            ]}},
+        }
+
+        payload = position_management.build_active_position_management(snapshot, playbook=self.playbook)
+        call = next(item for item in payload["positions"] if item["sec_type"] == "OPT")
+        comparison = call["management_alternatives"]["covered_call_expiry_comparison"]
+
+        self.assertEqual(comparison["recommended_alternative_id"], "ROLL_CALL")
+        self.assertEqual(comparison["best_roll"]["contract"]["strike"], 210)
+        self.assertEqual(comparison["best_roll"]["net_credit_total"], 25.0)
+        self.assertEqual(call["management_alternatives"]["recommendation"]["alternative_id"], "ROLL_CALL")
+        self.assertEqual(call["management_action"], "REVIEW_ROLL")
 
     def test_identical_position_copies_are_deduplicated(self):
         row = {"ticker": "RSP", "sec_type": "STK", "position_size": 100, "market_price": 213}
