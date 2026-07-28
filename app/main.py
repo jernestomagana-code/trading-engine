@@ -28470,6 +28470,48 @@ def _v31_canonical_durable_payload(snapshot):
     durable["options_rows"] = snapshot.get("options_rows") if isinstance(snapshot.get("options_rows"), list) else []
     durable["technical_snapshot"] = snapshot.get("technical_snapshot") if isinstance(snapshot.get("technical_snapshot"), dict) else {}
     durable["market"] = snapshot.get("market") if isinstance(snapshot.get("market"), dict) else {}
+    account_context = snapshot.get("account_context")
+    if (
+        isinstance(account_context, dict)
+        and account_context.get("real_account_id_excluded") is True
+    ):
+        safe_account_fields = [
+            "account_context_version",
+            "account_scope",
+            "account_alias",
+            "selected_at",
+            "selected_account_configured",
+            "real_account_id_excluded",
+            "available",
+            "currency",
+            "net_liquidation",
+            "buying_power",
+            "available_funds",
+            "excess_liquidity",
+            "available_capacity",
+            "total_cash_value",
+            "initial_margin_required",
+            "maintenance_margin_required",
+            "gross_position_value",
+            "cushion",
+            "generated_at",
+            "source",
+            "sensitive_identifiers_excluded",
+            "open_futures_positions",
+            "execution_authorized",
+            "not_order_instruction",
+        ]
+        durable_account = {
+            key: account_context.get(key)
+            for key in safe_account_fields
+            if account_context.get(key) is not None
+        }
+        durable_account["real_account_id_excluded"] = True
+        durable_account["execution_authorized"] = False
+        durable_account["not_order_instruction"] = True
+        durable["account_context"] = durable_account
+        durable["account_scope"] = durable_account.get("account_scope")
+        durable["account_alias"] = durable_account.get("account_alias")
     durable["not_order_instruction"] = True
     return durable
 

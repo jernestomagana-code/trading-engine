@@ -3298,6 +3298,31 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertNotIn("account_context", durable)
         self.assertNotIn("positions", durable)
 
+    def test_v31_durable_payload_keeps_only_sanitized_account_context(self):
+        durable = main._v31_canonical_durable_payload({
+            "source": "UNIT_TEST",
+            "options_rows": [],
+            "technical_snapshot": {},
+            "account_id": "SENSITIVE",
+            "account_context": {
+                "account_id": "SENSITIVE",
+                "account_scope": "remanente",
+                "account_alias": "remanente",
+                "net_liquidation": 53969.0,
+                "available_capacity": 21044.22,
+                "real_account_id_excluded": True,
+                "execution_authorized": True,
+            },
+        })
+
+        self.assertEqual(durable["account_scope"], "remanente")
+        self.assertEqual(durable["account_alias"], "remanente")
+        self.assertEqual(durable["account_context"]["net_liquidation"], 53969.0)
+        self.assertEqual(durable["account_context"]["available_capacity"], 21044.22)
+        self.assertFalse(durable["account_context"]["execution_authorized"])
+        self.assertNotIn("account_id", durable)
+        self.assertNotIn("account_id", durable["account_context"])
+
     def test_v31_persist_uses_singleton_supabase_row(self):
         snapshot = {
             "source": "UNIT_TEST",
