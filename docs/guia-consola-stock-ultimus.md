@@ -392,6 +392,8 @@ Se abre sólo para análisis de cartera o multicuenta.
 
 Consolida las cuentas configuradas sin mostrar sus identificadores reales. Enseña NAV, fondos disponibles, buying power, frescura y número de posiciones por alias.
 
+Al publicar, la consola conserva de forma durable únicamente el contexto sanitizado de la cuenta activa —alias, alcance, capacidad y posiciones de futuros resumidas— para que un despliegue de Render no vuelva a `unknown`. El identificador real de IBKR no se publica ni se guarda en ese snapshot; permanece local en Keychain.
+
 `READY` significa que las cuentas esperadas tienen información utilizable. `WAIT_ACCOUNT_REFRESH` indica que alguna necesita actualización.
 
 ### Estrés y escenarios multicuenta
