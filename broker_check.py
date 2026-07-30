@@ -142,7 +142,7 @@ def extract_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             found.append(dict(item))
 
     cleaned: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str, str, str, str]] = set()
     for row in found:
         ticker = safe_upper(row.get("ticker") or row.get("symbol"))
         if not ticker:
@@ -153,11 +153,17 @@ def extract_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
             0.0,
         )
         local_symbol = str(row.get("local_symbol") or "")
-        key = (ticker, sec_type, str(position_size), local_symbol)
+        right = safe_upper(row.get("right"))
+        strike = str(safe_float(row.get("strike")) or "")
+        expiration = str(row.get("expiration") or row.get("lastTradeDateOrContractMonth") or "")
+        account_alias = str(row.get("account_alias") or row.get("account_scope") or "")
+        key = (ticker, sec_type, right, strike, expiration, str(position_size), local_symbol, account_alias)
         if key in seen:
             continue
         seen.add(key)
         cleaned.append({
+            "account_alias": row.get("account_alias"),
+            "account_scope": row.get("account_scope"),
             "ticker": ticker,
             "sec_type": sec_type,
             "right": row.get("right"),

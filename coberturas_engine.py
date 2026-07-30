@@ -441,9 +441,8 @@ def extract_option_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def extract_rsp_underlying_price(runtime_data: dict[str, Any], manual_context: dict[str, Any]) -> float | None:
-    manual_spot = safe_float(manual_context.get("spot"), None)
-    if manual_spot is not None:
-        return manual_spot
+    # Broker/market data is authoritative for the current spot. A pasted gamma
+    # JSON can remain useful for levels, but its spot becomes stale quickly.
     for payload in runtime_data.values():
         for item in scan_dicts(payload):
             ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
@@ -451,7 +450,7 @@ def extract_rsp_underlying_price(runtime_data: dict[str, Any], manual_context: d
                 price = safe_float(item.get("stock_price") or item.get("underlying_price") or item.get("spot") or item.get("price"), None)
                 if price is not None and price > 0:
                     return price
-    return None
+    return safe_float(manual_context.get("spot"), None)
 
 
 def extract_position_state(runtime_data: dict[str, Any], manual_context: dict[str, Any]) -> dict[str, Any]:
@@ -1863,18 +1862,38 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     manual_context = load_manual_context()
     if not manual_context.get("available"):
         manual_context = extract_manual_context(runtime_data) or manual_context
+    manual_context_age_hours = timestamp_age_hours(manual_context.get("updated_at"))
+    manual_context_fresh = (
+        manual_context_age_hours is not None
+        and manual_context_age_hours <= RSP_CHAIN_MAX_AGE_HOURS
+    )
+    effective_context = dict(manual_context)
+    if not manual_context_fresh:
+        # Never let old gamma walls or expected-move levels influence a new
+        # entry. Position mode AUTO and current broker data remain usable.
+        for key in [
+            "support_levels",
+            "resistance_levels",
+            "expected_move_low",
+            "expected_move_high",
+            "call_wall",
+            "put_wall",
+            "gamma_bias",
+        ]:
+            effective_context.pop(key, None)
+        effective_context["stale_manual_gamma_excluded"] = True
     option_rows = extract_option_rows(runtime_data)
-    spot = extract_rsp_underlying_price(runtime_data, manual_context)
+    spot = extract_rsp_underlying_price(runtime_data, effective_context)
     position = extract_position_state(runtime_data, manual_context)
     mode, mode_reason = strategy_for_position(position.get("state"))
 
     scored_put_candidates = [
-        score_candidate(row, "SELL_PUT", spot, manual_context)
+        score_candidate(row, "SELL_PUT", spot, effective_context)
         for row in option_rows
         if candidate_side(row) == "PUT"
     ]
     scored_call_candidates = [
-        score_candidate(row, "SELL_COVERED_CALL", spot, manual_context)
+        score_candidate(row, "SELL_COVERED_CALL", spot, effective_context)
         for row in option_rows
         if candidate_side(row) == "CALL"
     ]
@@ -1939,9 +1958,9 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             margin_preview,
             account_capacity,
         ),
-        manual_context,
+        effective_context,
     )
-    scenarios = apply_expected_value(scenarios, manual_context, spot)
+    scenarios = apply_expected_value(scenarios, effective_context, spot)
 
     blockers: list[str] = []
     if position.get("state") == "UNKNOWN":
@@ -1966,7 +1985,7 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         len(candidate_rows),
     )
 
-    operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, manual_context, management_spot)
+    operating_plan = strategy_operating_plan(position, scenarios, strategy_recommendation, effective_context, management_spot)
 
     if mode == "SELL_PUT" and put_candidates and call_candidates:
         recommendation_status = str(strategy_recommendation.get("status") or "")
@@ -2017,6 +2036,14 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "position": position,
         "spot": spot,
         "manual_context": manual_context,
+        "context_freshness": {
+            "manual_gamma_fresh": manual_context_fresh,
+            "manual_gamma_age_hours": round(manual_context_age_hours, 2) if manual_context_age_hours is not None else None,
+            "stale_manual_gamma_excluded_from_new_entry": not manual_context_fresh,
+            "automatic_market_data_fresh": chain_is_fresh,
+            "spot_source_priority": "IBKR_OR_RUNTIME_THEN_MANUAL_FALLBACK",
+            "not_order_instruction": True,
+        },
         "candidate_count": len(candidate_rows),
         "top_candidates": candidate_rows[:5],
         "put_candidate_count": len(put_candidates),
@@ -2059,6 +2086,13 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             "chain_coverage_source": chain_source_file,
             "chain_age_hours": round(chain_age_hours, 2) if chain_age_hours is not None else None,
             "chain_is_fresh": chain_is_fresh,
+            "executable_quote_count": sum(
+                1
+                for row in put_candidates + call_candidates
+                if safe_float(row.get("bid"), None) is not None
+                and safe_float(row.get("ask"), None) is not None
+                and safe_float(row.get("spread_pct"), None) is not None
+            ),
         },
         "manual_review_required": True,
         "execution_authorized": False,

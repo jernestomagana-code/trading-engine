@@ -8,6 +8,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import broker_control_tower as control_tower
 
@@ -28,6 +29,15 @@ DEFAULT_POLICY: dict[str, Any] = {
     "negative_cash_severity": "WATCH",
     "account_overrides": {},
 }
+
+
+def _weekday_after_risk_window(reference: datetime) -> bool:
+    try:
+        local = reference.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return False
+    minute = local.hour * 60 + local.minute
+    return local.weekday() < 5 and minute > 17 * 60 + 30
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -248,17 +258,23 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any] | Non
         computed_age = control_tower.snapshot_age_minutes({"generated_at": account.get("generated_at")}, reference)
         age = computed_age if computed_age is not None else _number(account.get("snapshot_age_minutes"))
         max_age = _number(local_policy.get("max_data_age_minutes")) or 15.0
-        if state == "READY" and age is not None and age > max_age:
+        aged_from_ready = state in {"READY", "STALE"} and age is not None and age > max_age
+        if aged_from_ready:
             state = "STALE"
 
         if state != "READY" or age is None or age > max_age:
+            stale_after_hours = aged_from_ready and _weekday_after_risk_window(reference)
             alerts.append(make_alert(
                 scope="ACCOUNT",
                 rule="ACCOUNT_DATA_NOT_READY",
-                severity="CRITICAL",
+                severity="WATCH" if stale_after_hours else "CRITICAL",
                 title=f"Datos no confiables en {alias}",
                 message=f"Estado {state}; antigüedad {age if age is not None else 'N/D'} minutos.",
-                recommended_action="Refrescar esta cuenta y no aumentar riesgo hasta recuperar datos válidos.",
+                recommended_action=(
+                    "Datos de cierre conservados para consulta; refrescar antes de la siguiente decisión de riesgo."
+                    if stale_after_hours
+                    else "Refrescar esta cuenta y no aumentar riesgo hasta recuperar datos válidos."
+                ),
                 metric="snapshot_age_minutes",
                 value=age,
                 threshold=max_age,

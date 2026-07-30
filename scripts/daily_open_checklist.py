@@ -379,19 +379,39 @@ def coberturas_rsp_summary() -> dict[str, Any]:
     context_age_minutes = age_minutes(updated_at)
     context_fresh = context_age_minutes is not None and context_age_minutes <= 24 * 60
     chain_has_rsp = ibkr.get("chain_has_rsp") is True
+    chain_is_fresh = ibkr.get("chain_is_fresh") is True
+    executable_quote_count = int(ibkr.get("executable_quote_count") or 0)
     context_available = context.get("available") is True
+    position = payload.get("position") if isinstance(payload.get("position"), dict) else {}
+    automatic_ready = bool(
+        chain_has_rsp
+        and chain_is_fresh
+        and payload.get("spot") is not None
+        and position.get("state") not in {None, "", "UNKNOWN"}
+    )
     return {
-        "ok": bool(context_available and context_fresh and chain_has_rsp),
-        "status": "RSP_READY_FOR_MANUAL_REVIEW" if context_available and context_fresh and chain_has_rsp else "RSP_ACTION_REQUIRED",
+        "ok": automatic_ready,
+        "status": (
+            "RSP_READY_FOR_MANUAL_REVIEW"
+            if automatic_ready and context_fresh
+            else "RSP_READY_WITH_STALE_OPTIONAL_GAMMA"
+            if automatic_ready
+            else "RSP_ACTION_REQUIRED"
+        ),
         "decision": payload.get("decision"),
         "next_action": payload.get("next_action"),
         "manual_context_available": context_available,
         "manual_context_updated_at": updated_at,
         "manual_context_age_minutes": context_age_minutes,
         "manual_context_fresh": context_fresh,
+        "stale_manual_gamma_excluded_from_new_entry": (
+            (payload.get("context_freshness") or {}).get("stale_manual_gamma_excluded_from_new_entry") is True
+        ),
         "spot": payload.get("spot"),
         "gamma_bias": context.get("gamma_bias"),
         "chain_has_rsp": chain_has_rsp,
+        "chain_is_fresh": chain_is_fresh,
+        "executable_quote_count": executable_quote_count,
         "chain_coverage_generated_at": ibkr.get("chain_coverage_generated_at"),
         "candidate_count": payload.get("candidate_count") or 0,
         "blockers": payload.get("blockers") or [],
@@ -535,8 +555,8 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         return "ACTION_REQUIRED", "No se pudo reconciliar la bandeja de futuros con las señales recibidas; revisar producción antes de operar intradía."
     rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
     if report.get("refresh_requested") and not report.get("rsp_refresh_step", {}).get("skipped") and rsp.get("ok") is False:
-        if not rsp.get("manual_context_available") or not rsp.get("manual_context_fresh"):
-            return "ACTION_REQUIRED", "Pegar/guardar una lectura RSP fresca antes de depender de Coberturas."
+        if not rsp.get("manual_context_available"):
+            return "ACTION_REQUIRED", "Falta contexto RSP inicial; guardar una lectura antes de depender de niveles gamma."
         return "ACTION_REQUIRED", "La lectura RSP esta guardada, pero falta una cadena IBKR RSP fresca de 7-14 DTE."
     if checks.get("v32_operator_today", {}).get("ok") is False:
         return "ACTION_REQUIRED", "Produccion autentico correctamente, pero la lectura V32 fue lenta; reintentar solo Actualizar estado."

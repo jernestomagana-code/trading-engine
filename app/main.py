@@ -233,7 +233,7 @@ INTRADAY_FUTURES_OUTCOME_CLASSIFICATIONS = [
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 V31_DURABLE_SNAPSHOT_ID = os.getenv("V31_DURABLE_SNAPSHOT_ID", "canonical")
-V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES = os.getenv("V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES", "180")
+V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES = os.getenv("V31_DURABLE_SNAPSHOT_MAX_AGE_MINUTES", "1440")
 DEPLOYMENT_ENV = os.getenv("DEPLOYMENT_ENV", "local")
 DEPLOYMENT_SCOPE = os.getenv("DEPLOYMENT_SCOPE", "personal")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
@@ -2555,6 +2555,15 @@ def build_intraday_futures_alert_event(payload):
         "source_event_id": source_event_id or None,
         "received_at": received_at,
         "saved_at": now_utc().isoformat(),
+        "signal_bar_open_time_ms": payload.get("signal_bar_open_time_ms"),
+        "signal_bar_close_time_ms": payload.get("signal_bar_close_time_ms"),
+        "alert_emitted_time_ms": payload.get("alert_emitted_time_ms"),
+        "server_receive_latency_ms": payload.get("server_receive_latency_ms"),
+        "mobile_notification": (
+            payload.get("mobile_notification")
+            if isinstance(payload.get("mobile_notification"), dict)
+            else {}
+        ),
         "session_date": session_date_from_iso(received_at),
         "strategy": payload.get("strategy") or payload.get("strategy_context") or "INTRADAY_INDEX_FUTURES",
         "strategy_version": payload.get("strategy_version"),
@@ -11345,6 +11354,21 @@ def _v32_process_intraday_futures_alert(payload, notify=True):
             "not_order_instruction": True,
         }
     )
+    payload["mobile_notification"] = {
+        key: notify_result.get(key)
+        for key in [
+            "status",
+            "reason",
+            "trigger_kind",
+            "push_requested_at",
+            "provider_ack_at",
+            "signal_age_seconds_at_push",
+            "provider_latency_ms",
+            "signal_to_provider_ack_ms",
+            "pushover_sent",
+        ]
+        if notify_result.get(key) is not None
+    }
     event_storage = save_intraday_futures_alert_event(payload)
     price_storage = save_intraday_futures_price_point(payload)
     return {
@@ -25412,6 +25436,20 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
     event_code = payload.get("event_code")
     event = payload.get("event")
     trigger_kind = None
+    push_requested_at = _v29_now()
+    stale_seconds = None
+    try:
+        signal_ms = float(payload.get("alert_emitted_time_ms") or payload.get("signal_bar_close_time_ms"))
+        stale_seconds = max(0.0, (datetime.now(timezone.utc).timestamp() * 1000.0 - signal_ms) / 1000.0)
+    except Exception:
+        stale_seconds = None
+    try:
+        max_signal_age_seconds = max(
+            15,
+            int(os.getenv("V32_INTRADAY_MOBILE_MAX_SIGNAL_AGE_SECONDS", "90") or "90"),
+        )
+    except Exception:
+        max_signal_age_seconds = 90
     if not is_intraday_futures_signal(payload):
         reason = "NOT_INTRADAY_INDEX_FUTURES"
     elif payload.get("is_validation"):
@@ -25420,6 +25458,8 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
     elif intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY":
         reason = "WATCH_ONLY_SUPPRESSED_BY_MOBILE_ENTRY_POLICY"
+    elif stale_seconds is not None and stale_seconds > max_signal_age_seconds and not force:
+        reason = "STALE_INTRADAY_ENTRY_SUPPRESSED"
     elif intraday_futures_is_entry_event(event_code, event):
         trigger_kind = "ENTRY_TRIGGER"
         reason = None
@@ -25436,6 +25476,9 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
     base_payload = {
         "engine": "V32_INTRADAY_FUTURES_IMMEDIATE_NOTIFY",
         "generated_at": _v29_now(),
+        "push_requested_at": push_requested_at,
+        "signal_age_seconds_at_push": round(stale_seconds, 3) if stale_seconds is not None else None,
+        "max_signal_age_seconds": max_signal_age_seconds,
         "trigger_kind": trigger_kind,
         "would_notify": bool(trigger_kind),
         "dedupe": dedupe,
@@ -25460,12 +25503,28 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         sound=sound,
         notification_kind="ENTRY",
     )
+    provider_ack_at = _v29_now()
+    requested_dt = parse_iso_datetime(push_requested_at)
+    ack_dt = parse_iso_datetime(provider_ack_at)
+    provider_latency_ms = (
+        round(max(0.0, (ack_dt - requested_dt).total_seconds() * 1000.0), 3)
+        if requested_dt is not None and ack_dt is not None
+        else None
+    )
+    signal_to_provider_ack_ms = (
+        round((stale_seconds or 0.0) * 1000.0 + provider_latency_ms, 3)
+        if stale_seconds is not None and provider_latency_ms is not None
+        else None
+    )
     if result.get("pushover_sent"):
         _v32_save_intraday_futures_immediate_state(dedupe, "sent")
     return {
         **base_payload,
         "status": "sent" if result.get("pushover_sent") else "not_sent",
         "pushover_sent": bool(result.get("pushover_sent")),
+        "provider_ack_at": provider_ack_at,
+        "provider_latency_ms": provider_latency_ms,
+        "signal_to_provider_ack_ms": signal_to_provider_ack_ms,
         "pushover_result": result,
     }
 
@@ -28465,6 +28524,15 @@ def _v31_canonical_durable_payload(snapshot):
         "bridge_status",
         "runtime_files_seen",
         "not_order_instruction",
+        "account_scope",
+        "account_alias",
+        "positions",
+        "active_position_contexts",
+        "gamma_contexts",
+        "broker_checks",
+        "broker_check_summary",
+        "active_position_management",
+        "coberturas_rsp_manual_context",
     ]
     durable = {key: snapshot.get(key) for key in allowed_fields if key in snapshot}
     durable["options_rows"] = snapshot.get("options_rows") if isinstance(snapshot.get("options_rows"), list) else []
@@ -28512,6 +28580,42 @@ def _v31_canonical_durable_payload(snapshot):
         durable["account_context"] = durable_account
         durable["account_scope"] = durable_account.get("account_scope")
         durable["account_alias"] = durable_account.get("account_alias")
+        durable["positions"] = snapshot.get("positions") if isinstance(snapshot.get("positions"), list) else []
+        durable["active_position_contexts"] = (
+            snapshot.get("active_position_contexts")
+            if isinstance(snapshot.get("active_position_contexts"), dict)
+            else {}
+        )
+        durable["gamma_contexts"] = snapshot.get("gamma_contexts") if isinstance(snapshot.get("gamma_contexts"), dict) else {}
+        durable["broker_checks"] = snapshot.get("broker_checks") if isinstance(snapshot.get("broker_checks"), list) else []
+        durable["broker_check_summary"] = (
+            snapshot.get("broker_check_summary")
+            if isinstance(snapshot.get("broker_check_summary"), dict)
+            else {}
+        )
+        durable["active_position_management"] = (
+            snapshot.get("active_position_management")
+            if isinstance(snapshot.get("active_position_management"), dict)
+            else {}
+        )
+        durable["coberturas_rsp_manual_context"] = (
+            snapshot.get("coberturas_rsp_manual_context")
+            if isinstance(snapshot.get("coberturas_rsp_manual_context"), dict)
+            else {}
+        )
+    else:
+        for key in [
+            "account_scope",
+            "account_alias",
+            "positions",
+            "active_position_contexts",
+            "gamma_contexts",
+            "broker_checks",
+            "broker_check_summary",
+            "active_position_management",
+            "coberturas_rsp_manual_context",
+        ]:
+            durable.pop(key, None)
     durable["not_order_instruction"] = True
     return durable
 
@@ -28582,6 +28686,7 @@ def _v31_restore_durable_snapshot(force=False):
     state.update({
         "restored": True,
         "status": "RESTORED",
+        "restored_for_read_only": bool(age_minutes and age_minutes > 10),
         "rows_found": restored.get("rows_found"),
         "technical_available": restored.get("technical_available"),
         "received_at": restored.get("received_at"),

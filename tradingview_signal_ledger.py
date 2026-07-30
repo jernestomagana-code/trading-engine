@@ -226,12 +226,31 @@ def normalize_signal_event(
         quarantine_reasons.append("NON_DICT_PAYLOAD")
     accepted_for_engine = not quarantine_reasons
     session_state = normalized_payload.get("session_state")
+    signal_bar_open_time_ms = normalized_payload.get("signal_bar_open_time_ms")
+    signal_bar_close_time_ms = normalized_payload.get("signal_bar_close_time_ms")
+    alert_emitted_time_ms = normalized_payload.get("alert_emitted_time_ms")
+
+    def latency_ms(start_value: Any, end_iso: str) -> float | None:
+        try:
+            start_ms = float(start_value)
+            end_dt = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            return round(max(0.0, end_dt.timestamp() * 1000.0 - start_ms), 3)
+        except Exception:
+            return None
+
+    server_receive_latency_ms = latency_ms(alert_emitted_time_ms or signal_bar_close_time_ms, received_at)
     event = {
         "id": event_id,
         "event_id": event_id,
         "ledger_version": LEDGER_VERSION,
         "payload_contract_version": tradingview_payload_contract.PAYLOAD_CONTRACT_VERSION,
         "received_at": received_at,
+        "signal_bar_open_time_ms": signal_bar_open_time_ms,
+        "signal_bar_close_time_ms": signal_bar_close_time_ms,
+        "alert_emitted_time_ms": alert_emitted_time_ms,
+        "server_receive_latency_ms": server_receive_latency_ms,
         "endpoint": endpoint,
         "ticker": ticker,
         "timeframe": timeframe,

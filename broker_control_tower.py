@@ -129,10 +129,14 @@ def account_snapshot(
         else capacity.get("available_funds")
     )
     clean_positions = []
+    normalized_alias = normalize_alias(alias)
+    normalized_scope = normalize_alias(scope or alias)
     for item in positions or []:
         if not isinstance(item, dict):
             continue
         clean_positions.append({
+            "account_alias": normalized_alias,
+            "account_scope": normalized_scope,
             "ticker": str(item.get("ticker") or item.get("symbol") or "UNKNOWN").upper().strip(),
             "security_type": str(item.get("security_type") or item.get("sec_type") or "UNKNOWN").upper(),
             "currency": str(item.get("currency") or "").upper(),
@@ -161,8 +165,8 @@ def account_snapshot(
         "account_snapshot_version": ACCOUNT_SNAPSHOT_VERSION,
         "generated_at": generated_at or now_iso(),
         "broker": str(broker or "UNKNOWN").upper(),
-        "account_alias": normalize_alias(alias),
-        "account_scope": normalize_alias(scope or alias),
+        "account_alias": normalized_alias,
+        "account_scope": normalized_scope,
         "status": effective_status,
         "ok": bool(ready),
         "capacity": clean_capacity,

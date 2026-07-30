@@ -292,6 +292,27 @@ def json_safe(obj: Any) -> Any:
             return str(obj)
 
 
+def account_scoped_positions(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prefer the control tower because it preserves each broker account boundary."""
+    tower = runtime_data.get("broker_control_tower_latest.json")
+    accounts = tower.get("accounts") if isinstance(tower, dict) and isinstance(tower.get("accounts"), list) else []
+    rows: list[dict[str, Any]] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        alias = account.get("account_alias")
+        scope = account.get("account_scope") or alias
+        for position in account.get("positions") or []:
+            if not isinstance(position, dict):
+                continue
+            rows.append({
+                **position,
+                "account_alias": alias,
+                "account_scope": scope,
+            })
+    return broker_check.extract_positions({"positions": rows}) if rows else []
+
+
 def load_runtime_json(runtime_dir: Path) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if not runtime_dir.exists():
@@ -572,7 +593,7 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
     broker_context["active_position_contexts"] = active_position_contexts
     gamma_contexts = runtime_data.get("gamma_contexts.json") or gamma_context_store.load_contexts(runtime_dir / "gamma_contexts.json")
     broker_context["gamma_contexts"] = gamma_contexts
-    positions = broker_check.extract_positions(broker_context)
+    positions = account_scoped_positions(runtime_data) or broker_check.extract_positions(broker_context)
     broker_context["positions"] = positions
     broker_enriched = broker_check.merge_broker_checks(broker_context, rows=options_rows)
     active_position_management = position_management.build_active_position_management(broker_context)

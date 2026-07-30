@@ -4,6 +4,27 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 **Documento oficial del proyecto:** la consola muestra directamente este archivo mediante el botón **Ayuda**. Toda modificación que agregue, quite o cambie una sección, estado, botón o flujo operativo debe actualizar también esta guía. Las validaciones automáticas comprueban que las secciones principales de navegación continúen documentadas.
 
+## Cambios operativos de julio de 2026
+
+- El snapshot V31 se conserva de forma durable durante 24 horas para consulta,
+  incluyendo posiciones, gestión, CANSLIM y contexto sanitario de cuentas.
+  Un snapshot restaurado puede verse después del cierre, pero las compuertas
+  de frescura siguen impidiendo tratarlo como dato válido para riesgo nuevo.
+- El proceso postcierre puede recuperarse hasta las 23:59 de Nueva York si la
+  Mac estuvo dormida durante su horario original.
+- Las alertas de futuros registran apertura/cierre de vela, emisión,
+  recepción del servidor, solicitud de Pushover y confirmación del proveedor.
+  Una entrada con más de 90 segundos de antigüedad no se envía al celular.
+- La capa rápida recomendada usa gráfico de 1 minuto con contexto técnico
+  cerrado de 5 minutos. Se instala reemplazando, no duplicando, las alertas
+  MES/MNQ anteriores.
+- RSP prioriza el spot actual de IBKR. Si el JSON gamma tiene más de 24 horas,
+  sus walls/expected move no participan en una entrada nueva; la cadena,
+  posiciones y gestión automática continúan actualizándose.
+- Después del cierre, la antigüedad normal de una cuenta se muestra como
+  observación. Una falla real de conexión o los problemas de margen/liquidez
+  mantienen su severidad propia.
+
 ## 1. Qué es la consola
 
 Stock Ultimus Console es el centro de lectura, revisión y seguimiento de la operación. Reúne en una sola pantalla:
@@ -406,7 +427,7 @@ Se abre sólo para análisis de cartera o multicuenta.
 
 Consolida las cuentas configuradas sin mostrar sus identificadores reales. Enseña NAV, fondos disponibles, buying power, frescura y número de posiciones por alias.
 
-Al publicar, la consola conserva de forma durable únicamente el contexto sanitizado de la cuenta activa —alias, alcance, capacidad y posiciones de futuros resumidas— para que un despliegue de Render no vuelva a `unknown`. El identificador real de IBKR no se publica ni se guarda en ese snapshot; permanece local en Keychain.
+Al publicar, la consola conserva de forma durable el contexto sanitizado de las cuentas —alias, alcance, capacidad y posiciones abiertas— para que un despliegue de Render no vuelva a `unknown` ni pierda la gestión de posiciones. Cada posición conserva su alias (`remanente`, `retiro` o `marginal`), por lo que dos contratos del mismo ticker en cuentas diferentes nunca se fusionan. El identificador real de IBKR no se publica ni se guarda en ese snapshot; permanece local en Keychain.
 
 `READY` significa que las cuentas esperadas tienen información utilizable. `WAIT_ACCOUNT_REFRESH` indica que alguna necesita actualización.
 

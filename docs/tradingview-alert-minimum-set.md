@@ -70,6 +70,19 @@ setup is unavailable:
 | `MES_VWAP_REJECT_SHORT_5M` | `MES1!` | Entry confirmation |
 | `MES_RISK_INVALIDATION_5M` | `MES1!` | Invalidation |
 
+### Capa rápida recomendada
+
+Para reducir la demora sin aceptar señales intrabar no confirmadas, usar
+`tradingview/stock_ultimus_intraday_futures_fast_v2.pine` sobre gráficos de
+1 minuto de `MNQ1!` y `MES1!`. La entrada confirma al cierre de 1 minuto,
+pero ADX, ATR, RVOL y VWAP proceden del contexto de 5 minutos ya cerrado.
+
+Al activarla, reemplazar las dos alertas creadas con el script v1; no mantener
+v1 y FAST v2 simultáneamente. FAST v2 conserva los mismos `event_code`
+lógicos para no romper el motor, añade `signal_layer`, las horas de
+apertura/cierre de vela y la hora real de emisión. El backend descarta del
+celular cualquier entrada que llegue con más de 90 segundos de antigüedad.
+
 ## Optional Health Alerts
 
 Keep these paused unless the plan has spare active alert capacity. They are

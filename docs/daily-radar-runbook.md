@@ -3,6 +3,17 @@
 This runbook keeps the Super Engine Bolsa daily question tied to the real
 Stock Ultimus decision engine.
 
+## Recovery and persistence
+
+The durable V31 snapshot retains rows, technical data, CANSLIM, positions,
+and position management for 24 hours. Restoration provides continuity and
+read-only consultation; market freshness is evaluated separately and still
+blocks entries based on old data.
+
+The post-close process can run from 16:10 through 23:59 New York time. This
+extended window recovers a missed run after the Mac was asleep. Daily state
+prevents a second execution for the same market date.
+
 ## Official GPT
 
 Use `SUPER ENGINE BOLSA` as the official ChatGPT interface.

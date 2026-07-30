@@ -2,6 +2,18 @@
 
 Modulo independiente dentro de Stock Ultimus para recomendar la estrategia RSP de cobro de prima.
 
+La cotización actual de IBKR/runtime tiene prioridad sobre el spot pegado en
+el JSON. El contexto gamma manual vence para decisiones nuevas después de
+24 horas: al vencer, soportes, resistencias, expected move, call wall, put
+wall y sesgo gamma se excluyen del cálculo hasta pegar una lectura nueva.
+Esto no detiene la detección automática de posiciones ni la gestión de un
+ciclo abierto.
+
+La apertura diaria refresca automáticamente posición, capacidad y cadena
+RSP de 7–14 DTE. Una recomendación sólo se presenta como revisable cuando la
+cadena es fresca; bid, ask y spread siguen siendo obligatorios para considerar
+un contrato ejecutable.
+
 ## Alcance V0
 
 - Activo unico: RSP.

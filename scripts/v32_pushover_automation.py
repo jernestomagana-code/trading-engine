@@ -4,7 +4,7 @@
 Modes:
 - monitor: run the actionable-alert notifier during the market window.
 - post-close: run post-close outcome evaluation once per US trading date and
-  send a Pushover summary only when there is something to review.
+  keep the result in the console/runtime report without a mobile notification.
 - preflight: verify the local Pushover channel and write a status artifact.
 
 This script never places orders, never authorizes execution, and never prints
@@ -68,7 +68,9 @@ def market_monitor_window() -> bool:
 
 
 def post_close_window() -> bool:
-    return in_weekday_window(time(16, 10), time(18, 30))
+    # Keep a same-day recovery window open until midnight. launchd does not
+    # replay interval jobs that were missed while the Mac was asleep.
+    return in_weekday_window(time(16, 10), time(23, 59, 59))
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -232,15 +234,7 @@ def run_post_close(args: argparse.Namespace) -> dict[str, Any]:
     step = run_command(command, timeout=max(180, args.timeout * 8))
     payload = parse_stdout_json(step)
     counts = outcome_review_counts(payload)
-    should_notify = (not step.get("ok")) or counts["evaluated"] or counts["not_evaluated"]
-    notification_result = None
-    if should_notify:
-        message = (
-            "Post-cierre Stock Ultimus: "
-            f"evaluated={counts['evaluated']}, not_evaluated={counts['not_evaluated']}, saved={counts['saved']}. "
-            "Revisar backtesting/outcomes. No orden autorizada."
-        )
-        notification_result = send_pushover_summary(message, args.timeout)
+    review_required = bool((not step.get("ok")) or counts["not_evaluated"])
     if step.get("ok"):
         mark_post_close("OK")
     return {
@@ -248,8 +242,13 @@ def run_post_close(args: argparse.Namespace) -> dict[str, Any]:
         "reason": "POST_CLOSE_OUTCOME_EVALUATION",
         "market_date": ny_market_date(),
         "counts": counts,
-        "notification_sent": bool((notification_result or {}).get("sent")),
-        "notification_result": notification_result,
+        # Mobile policy is deliberately strict: only actionable entry events
+        # may reach Pushover. Post-close results remain available in the
+        # console/runtime report for the operator to review.
+        "mobile_policy": "ENTRY_ONLY",
+        "review_required": review_required,
+        "notification_sent": False,
+        "notification_result": None,
         "step": step,
     }
 

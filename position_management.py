@@ -120,6 +120,7 @@ def _raw_positions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _position_key(row: dict[str, Any]) -> str:
     parts = [
+        safe_upper(row.get("account_alias") or row.get("account_scope") or row.get("account"), "UNSCOPED"),
         safe_upper(row.get("ticker") or row.get("symbol"), "UNKNOWN"),
         safe_upper(row.get("sec_type") or row.get("security_type"), "UNKNOWN"),
         safe_upper(row.get("right")),
@@ -323,11 +324,20 @@ def _technical_by_ticker(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _position_group_key(row: dict[str, Any]) -> str:
+    ticker = safe_upper(row.get("ticker"), "UNKNOWN")
+    account = safe_upper(row.get("account_alias") or row.get("account_scope") or row.get("account"), "UNSCOPED")
+    return f"{account}|{ticker}"
+
+
 def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for row in positions:
         ticker = safe_upper(row.get("ticker"), "UNKNOWN")
-        group = groups.setdefault(ticker, {
+        account_alias = str(row.get("account_alias") or row.get("account_scope") or "").strip().lower()
+        group = groups.setdefault(_position_group_key(row), {
+            "ticker": ticker,
+            "account_alias": account_alias or None,
             "shares": 0.0,
             "stock_value": 0.0,
             "short_calls": 0.0,
@@ -1532,6 +1542,7 @@ def _management_outcome_template(report: dict[str, Any]) -> dict[str, Any]:
     return {
         "outcome_template_version": "position_management_outcome_v1",
         "position_id": report.get("position_id"),
+        "account_alias": report.get("account_alias"),
         "ticker": report.get("ticker"),
         "strategy": report.get("strategy"),
         "recommended_action": report.get("management_action"),
@@ -1575,6 +1586,8 @@ def _base_position_report(row: dict[str, Any], strategy: str, technical: dict[st
         "position_management_version": POSITION_MANAGEMENT_VERSION,
         "generated_at": now_iso(),
         "position_id": row.get("position_id"),
+        "account_alias": row.get("account_alias") or row.get("account_scope"),
+        "account_scope": row.get("account_scope") or row.get("account_alias"),
         "ticker": row.get("ticker"),
         "strategy": strategy,
         "sec_type": row.get("sec_type"),
@@ -1929,7 +1942,7 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
     reports = [
         evaluate_position(
             row,
-            group=groups.get(safe_upper(row.get("ticker")), {}),
+            group=groups.get(_position_group_key(row), {}),
             technical_store=technical_store,
             account_context=account_context,
             playbook=playbook,
