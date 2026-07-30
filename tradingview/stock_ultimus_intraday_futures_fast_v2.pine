@@ -41,8 +41,7 @@ crossUp(x) => persistence == 1 ? ta.crossover(close, x) : close > x and close[1]
 crossDown(x) => persistence == 1 ? ta.crossunder(close, x) : close < x and close[1] < x and close[2] >= x
 
 code = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
-payload(ev, evCode, direction) =>
-    "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
+payload(ev, evCode, direction) => "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
 
 quality = adx5 >= minAdx and rvol5 >= minRvol
 hasOr = not na(orHigh) and not na(orLow)
@@ -59,13 +58,11 @@ target := newDay ? na : (orbL or vwapL) ? close + atr5 * 2 : (orbS or vwapS) ? c
 
 if orbL
     alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
-else if orbS
+if orbS
     alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
-else if vwapL
+if vwapL
     alert(payload("VWAP_RECLAIM", code + "_VWAP_RECLAIM_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
-else if vwapS
+if vwapS
     alert(payload("VWAP_REJECT", code + "_VWAP_REJECT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
-else if risk
+if risk
     alert(payload("RISK_INVALIDATION", code + "_RISK_INVALIDATION_5M", "NONE"), alert.freq_once_per_bar_close)
-plot(vwap5, "5m VWAP", color.blue, 2)
-bgcolor(not is1m ? color.new(color.red, 80) : na)
