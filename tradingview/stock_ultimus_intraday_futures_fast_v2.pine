@@ -1,111 +1,71 @@
 //@version=6
-indicator("Stock Ultimus Intraday Futures FAST v2", overlay=true, max_labels_count=200)
+indicator("Stock Ultimus Intraday Futures FAST v2", overlay=true)
 
-// Run on a 1-minute MES1!/MNQ1! chart. Entries use the last completed
-// 5-minute context and a confirmed 1-minute close. Technical evidence only.
+tz = input.string("America/New_York", "Session timezone")
+pmSession = input.session("0400-0929", "Premarket")
+orSession = input.session("0930-0935", "Opening range")
+rthSession = input.session("0930-1600", "Regular session")
+minAdx = input.float(18.0, "Minimum 5m ADX", step=0.5)
+minRvol = input.float(1.10, "Minimum 5m RVOL", step=0.05)
+persistence = input.int(1, "Confirmed 1m closes", minval=1, maxval=2)
 
-timezoneInput = input.string("America/New_York", "Session timezone")
-premarketSession = input.session("0400-0929", "Premarket session")
-openingRangeSession = input.session("0930-0935", "Opening range session")
-regularSession = input.session("0930-1600", "Regular session")
-minAdx = input.float(18.0, "Minimum 5m ADX", minval=0.0, step=0.5)
-minRvol = input.float(1.10, "Minimum 5m RVOL", minval=0.0, step=0.05)
-adxLength = input.int(14, "5m ADX length", minval=1)
-adxSmoothing = input.int(14, "5m ADX smoothing", minval=1)
-atrLength = input.int(14, "5m ATR length", minval=1)
-rvolLength = input.int(20, "5m RVOL length", minval=1)
-persistenceBars = input.int(1, "Confirmed 1m closes", minval=1, maxval=2)
-stopAtrMultiple = input.float(1.0, "Stop ATR multiple", minval=0.1, step=0.1)
-targetAtrMultiple = input.float(2.0, "Target ATR multiple", minval=0.1, step=0.1)
-snapshotEveryBars = input.int(60, "Snapshot every N 1m bars", minval=1)
+inPm = not na(time(timeframe.period, pmSession, tz))
+inOr = not na(time(timeframe.period, orSession, tz))
+inRth = not na(time(timeframe.period, rthSession, tz))
+newDay = ta.change(time("D", "0000-2359", tz)) != 0
+newRth = inRth and not inRth[1]
+is1m = timeframe.isminutes and timeframe.multiplier == 1
 
-inPremarket = not na(time(timeframe.period, premarketSession, timezoneInput))
-inOpeningRange = not na(time(timeframe.period, openingRangeSession, timezoneInput))
-inRegular = not na(time(timeframe.period, regularSession, timezoneInput))
-newDay = ta.change(time("D", "0000-2359", timezoneInput)) != 0
-newRegularSession = inRegular and not inRegular[1]
+var float pmHigh = na
+var float pmLow = na
+var float orHigh = na
+var float orLow = na
+var float stop = na
+var float target = na
+var int side = 0
 
-var float premarketHigh = na
-var float premarketLow = na
-var float openingRangeHigh = na
-var float openingRangeLow = na
-var int lastSignalDirection = 0
-var float logicalStop = na
-var float logicalTarget = na
-
-premarketHigh := newDay ? na : inPremarket ? (na(premarketHigh) ? high : math.max(premarketHigh, high)) : premarketHigh
-premarketLow := newDay ? na : inPremarket ? (na(premarketLow) ? low : math.min(premarketLow, low)) : premarketLow
-openingRangeHigh := newDay ? na : newRegularSession ? high : inOpeningRange ? (na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)) : openingRangeHigh
-openingRangeLow := newDay ? na : newRegularSession ? low : inOpeningRange ? (na(openingRangeLow) ? low : math.min(openingRangeLow, low)) : openingRangeLow
+pmHigh := newDay ? na : inPm ? (na(pmHigh) ? high : math.max(pmHigh, high)) : pmHigh
+pmLow := newDay ? na : inPm ? (na(pmLow) ? low : math.min(pmLow, low)) : pmLow
+orHigh := newDay ? na : newRth ? high : inOr ? (na(orHigh) ? high : math.max(orHigh, high)) : orHigh
+orLow := newDay ? na : newRth ? low : inOr ? (na(orLow) ? low : math.min(orLow, low)) : orLow
 
 vwap5 = request.security(syminfo.tickerid, "5", ta.vwap(hlc3), lookahead=barmerge.lookahead_off)
-[plusDi5, minusDi5, adx5] = request.security(syminfo.tickerid, "5", ta.dmi(adxLength, adxSmoothing), lookahead=barmerge.lookahead_off)
-atr5 = request.security(syminfo.tickerid, "5", ta.atr(atrLength), lookahead=barmerge.lookahead_off)
-rvol5 = request.security(syminfo.tickerid, "5", volume / ta.sma(volume, rvolLength), lookahead=barmerge.lookahead_off)
+[plus5, minus5, adx5] = request.security(syminfo.tickerid, "5", ta.dmi(14, 14), lookahead=barmerge.lookahead_off)
+atr5 = request.security(syminfo.tickerid, "5", ta.atr(14), lookahead=barmerge.lookahead_off)
+rvol5 = request.security(syminfo.tickerid, "5", volume / ta.sma(volume, 20), lookahead=barmerge.lookahead_off)
 
-jsonNumber(value) =>
-    na(value) ? "0" : str.tostring(value, format.mintick)
+num(x) => na(x) ? "0" : str.tostring(x)
+pair(k, v) => "\"" + k + "\":\"" + v + "\""
+numpair(k, v) => "\"" + k + "\":" + num(v)
+crossUp(x) => persistence == 1 ? ta.crossover(close, x) : close > x and close[1] > x and close[2] <= x
+crossDown(x) => persistence == 1 ? ta.crossunder(close, x) : close < x and close[1] < x and close[2] >= x
 
-jsonStringPair(key, value) =>
-    "\"" + key + "\":\"" + value + "\""
+code = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
+payload(ev, evCode, direction) =>
+    "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
 
-jsonNumberPair(key, value) =>
-    "\"" + key + "\":" + jsonNumber(value)
+quality = adx5 >= minAdx and rvol5 >= minRvol
+hasOr = not na(orHigh) and not na(orLow)
+afterOr = inRth and not inOr
+orbL = is1m and barstate.isconfirmed and afterOr and hasOr and crossUp(orHigh) and close > vwap5 and quality
+orbS = is1m and barstate.isconfirmed and afterOr and hasOr and crossDown(orLow) and close < vwap5 and quality
+vwapL = is1m and barstate.isconfirmed and inRth and not orbL and crossUp(vwap5) and quality
+vwapS = is1m and barstate.isconfirmed and inRth and not orbS and crossDown(vwap5) and quality
+risk = is1m and barstate.isconfirmed and inRth and ((side == 1 and ta.crossunder(close, vwap5)) or (side == -1 and ta.crossover(close, vwap5)))
 
-jsonBoolPair(key, value) =>
-    "\"" + key + "\":" + (value ? "true" : "false")
+side := newDay ? 0 : (orbL or vwapL) ? 1 : (orbS or vwapS) ? -1 : risk ? 0 : side
+stop := newDay ? na : (orbL or vwapL) ? close - atr5 : (orbS or vwapS) ? close + atr5 : stop
+target := newDay ? na : (orbL or vwapL) ? close + atr5 * 2 : (orbS or vwapS) ? close - atr5 * 2 : target
 
-confirmedAbove(level) =>
-    persistenceBars == 1 ? ta.crossover(close, level) : close > level and close[1] > level and close[2] <= level
-
-confirmedBelow(level) =>
-    persistenceBars == 1 ? ta.crossunder(close, level) : close < level and close[1] < level and close[2] >= level
-
-symbolCode = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
-
-buildPayload(eventName, eventCode, direction, sessionState, vwapPosition, invalidationText) =>
-    "{" + jsonStringPair("action", "ALERT_ONLY") + "," + jsonNumberPair("adx", adx5) + "," + jsonNumberPair("atr", atr5) + "," + jsonNumberPair("alert_emitted_time_ms", timenow) + "," + jsonStringPair("breakout_direction", direction) + "," + jsonStringPair("context_timeframe", "5m") + "," + jsonStringPair("event", eventName) + "," + jsonStringPair("event_code", eventCode) + "," + jsonBoolPair("execution_authorized", false) + "," + jsonStringPair("invalidation", invalidationText) + "," + jsonNumberPair("logical_stop", logicalStop) + "," + jsonNumberPair("logical_target", logicalTarget) + "," + jsonStringPair("major_event_window", "NONE") + "," + jsonBoolPair("not_order_instruction", true) + "," + jsonNumberPair("opening_range_high", openingRangeHigh) + "," + jsonNumberPair("opening_range_low", openingRangeLow) + "," + jsonStringPair("portfolio_status", "OK") + "," + jsonNumberPair("premarket_high", premarketHigh) + "," + jsonNumberPair("premarket_low", premarketLow) + "," + jsonNumberPair("price", close) + "," + jsonStringPair("risk_daily_status", "OK") + "," + jsonStringPair("session_state", sessionState) + "," + jsonNumberPair("signal_bar_close_time_ms", time_close) + "," + jsonNumberPair("signal_bar_open_time_ms", time) + "," + jsonStringPair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + "," + jsonStringPair("source", "TRADINGVIEW") + "," + jsonStringPair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + jsonStringPair("ticker", syminfo.ticker) + "," + jsonStringPair("timeframe", "1m") + "," + jsonNumberPair("volume_relative", rvol5) + "," + jsonNumberPair("vwap", vwap5) + "," + jsonStringPair("vwap_position", vwapPosition) + "}"
-
-hasOpeningRange = not na(openingRangeHigh) and not na(openingRangeLow)
-qualityOk = adx5 >= minAdx and rvol5 >= minRvol
-afterOpeningRange = inRegular and not inOpeningRange
-chartIsOneMinute = timeframe.isminutes and timeframe.multiplier == 1
-
-orbBreakoutLong = chartIsOneMinute and barstate.isconfirmed and afterOpeningRange and hasOpeningRange and confirmedAbove(openingRangeHigh) and close > vwap5 and qualityOk
-orbBreakoutShort = chartIsOneMinute and barstate.isconfirmed and afterOpeningRange and hasOpeningRange and confirmedBelow(openingRangeLow) and close < vwap5 and qualityOk
-vwapReclaimLong = chartIsOneMinute and barstate.isconfirmed and inRegular and not orbBreakoutLong and confirmedAbove(vwap5) and (not hasOpeningRange or close > openingRangeLow) and qualityOk
-vwapRejectShort = chartIsOneMinute and barstate.isconfirmed and inRegular and not orbBreakoutShort and confirmedBelow(vwap5) and (not hasOpeningRange or close < openingRangeHigh) and qualityOk
-
-longSignal = orbBreakoutLong or vwapReclaimLong
-shortSignal = orbBreakoutShort or vwapRejectShort
-longInvalidation = lastSignalDirection == 1 and (ta.crossunder(close, vwap5) or (hasOpeningRange and close < openingRangeHigh))
-shortInvalidation = lastSignalDirection == -1 and (ta.crossover(close, vwap5) or (hasOpeningRange and close > openingRangeLow))
-riskInvalidation = chartIsOneMinute and barstate.isconfirmed and inRegular and (longInvalidation or shortInvalidation)
-
-lastSignalDirection := newDay ? 0 : longSignal ? 1 : shortSignal ? -1 : riskInvalidation ? 0 : lastSignalDirection
-logicalStop := newDay ? na : longSignal ? math.min(vwap5, close - atr5 * stopAtrMultiple) : shortSignal ? math.max(vwap5, close + atr5 * stopAtrMultiple) : logicalStop
-logicalTarget := newDay ? na : longSignal ? close + atr5 * targetAtrMultiple : shortSignal ? close - atr5 * targetAtrMultiple : logicalTarget
-
-sessionSnapshot = chartIsOneMinute and barstate.isconfirmed and inRegular and bar_index % snapshotEveryBars == 0
-
-if orbBreakoutLong
-    alert(buildPayload("ORB_BREAKOUT", symbolCode + "_ORB_BREAKOUT_LONG_5M", "LONG", "OPENING_RANGE", "ABOVE", "VWAP_LOST_OR_BACK_INSIDE_ORB"), alert.freq_once_per_bar_close)
-if orbBreakoutShort
-    alert(buildPayload("ORB_BREAKOUT", symbolCode + "_ORB_BREAKOUT_SHORT_5M", "SHORT", "OPENING_RANGE", "BELOW", "VWAP_RECLAIMED_OR_BACK_INSIDE_ORB"), alert.freq_once_per_bar_close)
-if vwapReclaimLong
-    alert(buildPayload("VWAP_RECLAIM", symbolCode + "_VWAP_RECLAIM_LONG_5M", "LONG", "REGULAR", "ABOVE", "VWAP_LOST"), alert.freq_once_per_bar_close)
-if vwapRejectShort
-    alert(buildPayload("VWAP_REJECT", symbolCode + "_VWAP_REJECT_SHORT_5M", "SHORT", "REGULAR", "BELOW", "VWAP_RECLAIMED"), alert.freq_once_per_bar_close)
-if riskInvalidation
-    alert(buildPayload("RISK_INVALIDATION", symbolCode + "_RISK_INVALIDATION_5M", "NONE", "REGULAR", "UNKNOWN", "TECHNICAL_OR_RISK_INVALIDATED"), alert.freq_once_per_bar_close)
-if sessionSnapshot
-    alert(buildPayload("SESSION_SNAPSHOT", symbolCode + "_SESSION_SNAPSHOT_5M", "NONE", "REGULAR", "UNKNOWN", "NONE"), alert.freq_once_per_bar_close)
-
-plot(vwap5, title="5m VWAP", color=color.new(color.blue, 0), linewidth=2)
-plot(openingRangeHigh, title="ORH", color=color.new(color.green, 0), style=plot.style_linebr)
-plot(openingRangeLow, title="ORL", color=color.new(color.red, 0), style=plot.style_linebr)
-plot(logicalStop, title="STOP", color=color.new(color.red, 55), style=plot.style_linebr)
-plot(logicalTarget, title="TARGET", color=color.new(color.green, 55), style=plot.style_linebr)
-plotshape(longSignal, title="Fast long", style=shape.triangleup, color=color.green, location=location.belowbar, size=size.tiny, text="FAST L")
-plotshape(shortSignal, title="Fast short", style=shape.triangledown, color=color.red, location=location.abovebar, size=size.tiny, text="FAST S")
-bgcolor(not chartIsOneMinute ? color.new(color.red, 80) : na, title="Wrong timeframe warning")
+if orbL
+    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
+else if orbS
+    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
+else if vwapL
+    alert(payload("VWAP_RECLAIM", code + "_VWAP_RECLAIM_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
+else if vwapS
+    alert(payload("VWAP_REJECT", code + "_VWAP_REJECT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
+else if risk
+    alert(payload("RISK_INVALIDATION", code + "_RISK_INVALIDATION_5M", "NONE"), alert.freq_once_per_bar_close)
+plot(vwap5, "5m VWAP", color.blue, 2)
+bgcolor(not is1m ? color.new(color.red, 80) : na)
