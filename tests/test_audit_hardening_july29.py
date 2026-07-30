@@ -30,11 +30,16 @@ class AuditHardeningJuly29Tests(unittest.TestCase):
             },
             "positions": [{"ticker": "NFLX", "sec_type": "STK", "position_size": 100}],
             "active_position_management": {"positions_found": 1},
+            "coberturas_rsp_chain_coverage": {
+                "generated_at": main._v29_now(),
+                "chain_by_ticker": {"RSP": {"option_rows": []}},
+            },
         })
 
         self.assertEqual(durable["positions"][0]["ticker"], "NFLX")
         self.assertEqual(durable["active_position_management"]["positions_found"], 1)
         self.assertEqual(durable["account_alias"], "remanente")
+        self.assertIn("RSP", durable["coberturas_rsp_chain_coverage"]["chain_by_ticker"])
 
     def test_post_close_recovery_window_remains_open_in_evening(self):
         evening = datetime(2026, 7, 29, 21, 30, tzinfo=v32_pushover_automation.NY_TZ)
@@ -119,6 +124,22 @@ class AuditHardeningJuly29Tests(unittest.TestCase):
             {"spot": 210.0},
         )
         self.assertEqual(spot, 219.25)
+
+    def test_rsp_chain_recovers_from_durable_master(self):
+        chain = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "chain_by_ticker": {"RSP": {"option_rows": [{"ticker": "RSP"}]}},
+        }
+        runtime_data = {
+            "v28_master_snapshot.json": {
+                "coberturas_rsp_chain_coverage": chain,
+            },
+        }
+
+        self.assertEqual(
+            coberturas_engine.extract_embedded_rsp_chain(runtime_data),
+            chain,
+        )
 
     def test_weekday_after_close_staleness_is_watch_not_critical(self):
         reference = datetime(2026, 7, 29, 23, 35, tzinfo=timezone.utc)

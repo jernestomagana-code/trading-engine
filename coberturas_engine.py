@@ -332,6 +332,16 @@ def extract_manual_context(runtime_data: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def extract_embedded_rsp_chain(runtime_data: dict[str, Any]) -> dict[str, Any]:
+    """Recover the dedicated RSP chain carried by a durable master snapshot."""
+    for payload in runtime_data.values():
+        for item in scan_dicts(payload):
+            nested = item.get("coberturas_rsp_chain_coverage")
+            if isinstance(nested, dict) and nested:
+                return dict(nested)
+    return {}
+
+
 def runtime_files(runtime_dir: Path) -> list[Path]:
     if not runtime_dir.exists():
         return []
@@ -1844,9 +1854,16 @@ def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_c
 def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     runtime_data = load_runtime_jsons(runtime_dir)
     dedicated_chain = load_json(runtime_dir / RSP_CHAIN_PATH)
+    embedded_chain = extract_embedded_rsp_chain(runtime_data)
     general_chain = load_json(runtime_dir / "v32_ibkr_chain_coverage.json")
-    chain_coverage = dedicated_chain or general_chain
-    chain_source_file = RSP_CHAIN_PATH if dedicated_chain else "v32_ibkr_chain_coverage.json"
+    chain_coverage = dedicated_chain or embedded_chain or general_chain
+    chain_source_file = (
+        RSP_CHAIN_PATH
+        if dedicated_chain
+        else "durable_master_snapshot"
+        if embedded_chain
+        else "v32_ibkr_chain_coverage.json"
+    )
     chain_age_hours = timestamp_age_hours(chain_coverage.get("generated_at"))
     if chain_coverage and chain_age_hours is None:
         try:

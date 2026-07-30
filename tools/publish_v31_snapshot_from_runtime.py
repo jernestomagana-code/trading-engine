@@ -607,6 +607,9 @@ def build_payload(runtime_dir: Path) -> dict[str, Any]:
         "coberturas_rsp_manual_context": json_safe(
             runtime_data.get("coberturas_rsp_manual_context.json") or {}
         ),
+        "coberturas_rsp_chain_coverage": json_safe(
+            runtime_data.get("coberturas_rsp_chain_coverage_latest.json") or {}
+        ),
         "positions": json_safe(positions),
         "active_position_contexts": json_safe(active_position_contexts),
         "gamma_contexts": json_safe(gamma_contexts),

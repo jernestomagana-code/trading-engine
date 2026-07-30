@@ -28533,6 +28533,7 @@ def _v31_canonical_durable_payload(snapshot):
         "broker_check_summary",
         "active_position_management",
         "coberturas_rsp_manual_context",
+        "coberturas_rsp_chain_coverage",
     ]
     durable = {key: snapshot.get(key) for key in allowed_fields if key in snapshot}
     durable["options_rows"] = snapshot.get("options_rows") if isinstance(snapshot.get("options_rows"), list) else []
@@ -28603,6 +28604,11 @@ def _v31_canonical_durable_payload(snapshot):
             if isinstance(snapshot.get("coberturas_rsp_manual_context"), dict)
             else {}
         )
+        durable["coberturas_rsp_chain_coverage"] = (
+            snapshot.get("coberturas_rsp_chain_coverage")
+            if isinstance(snapshot.get("coberturas_rsp_chain_coverage"), dict)
+            else {}
+        )
     else:
         for key in [
             "account_scope",
@@ -28614,6 +28620,7 @@ def _v31_canonical_durable_payload(snapshot):
             "broker_check_summary",
             "active_position_management",
             "coberturas_rsp_manual_context",
+            "coberturas_rsp_chain_coverage",
         ]:
             durable.pop(key, None)
     durable["not_order_instruction"] = True

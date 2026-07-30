@@ -14,6 +14,10 @@ RSP de 7–14 DTE. Una recomendación sólo se presenta como revisable cuando la
 cadena es fresca; bid, ask y spread siguen siendo obligatorios para considerar
 un contrato ejecutable.
 
+La cadena dedicada también se incluye en el snapshot durable sanitizado. Si
+Render reinicia, el motor recupera su último timestamp y sus campos de
+ejecución; no confunde el reinicio con una ausencia de datos.
+
 ## Alcance V0
 
 - Activo unico: RSP.
