@@ -34,12 +34,17 @@ class AuditHardeningJuly29Tests(unittest.TestCase):
                 "generated_at": main._v29_now(),
                 "chain_by_ticker": {"RSP": {"option_rows": []}},
             },
+            "coberturas_rsp_account_capacity": {
+                "account_alias": "retiro",
+                "available_funds": 7000,
+            },
         })
 
         self.assertEqual(durable["positions"][0]["ticker"], "NFLX")
         self.assertEqual(durable["active_position_management"]["positions_found"], 1)
         self.assertEqual(durable["account_alias"], "remanente")
         self.assertIn("RSP", durable["coberturas_rsp_chain_coverage"]["chain_by_ticker"])
+        self.assertEqual(durable["coberturas_rsp_account_capacity"]["account_alias"], "retiro")
 
     def test_post_close_recovery_window_remains_open_in_evening(self):
         evening = datetime(2026, 7, 29, 21, 30, tzinfo=v32_pushover_automation.NY_TZ)
@@ -128,7 +133,18 @@ class AuditHardeningJuly29Tests(unittest.TestCase):
     def test_rsp_chain_recovers_from_durable_master(self):
         chain = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "chain_by_ticker": {"RSP": {"option_rows": [{"ticker": "RSP"}]}},
+            "chain_by_ticker": {
+                "RSP": {
+                    "option_rows": [{
+                        "ticker": "RSP",
+                        "strategy": "COVERED_CALL",
+                        "strike": 220,
+                        "dte": 9,
+                        "bid": 1.0,
+                        "ask": 1.1,
+                    }],
+                },
+            },
         }
         runtime_data = {
             "v28_master_snapshot.json": {
@@ -140,6 +156,28 @@ class AuditHardeningJuly29Tests(unittest.TestCase):
             coberturas_engine.extract_embedded_rsp_chain(runtime_data),
             chain,
         )
+        rows = coberturas_engine.extract_option_rows(runtime_data)
+        self.assertEqual(rows[0]["source_file"], "durable_master_snapshot")
+
+    def test_rsp_capacity_prefers_configured_retiro_account(self):
+        runtime_data = {
+            "master.json": {
+                "account_context": {
+                    "account_alias": "remanente",
+                    "available_funds": 50000,
+                    "buying_power": 100000,
+                },
+                "coberturas_rsp_account_capacity": {
+                    "account_alias": "retiro",
+                    "available_funds": 7000,
+                    "buying_power": 14000,
+                },
+            },
+        }
+
+        capacity = coberturas_engine.extract_account_capacity(runtime_data)
+
+        self.assertEqual(capacity["account_alias"], "retiro")
 
     def test_weekday_after_close_staleness_is_watch_not_critical(self):
         reference = datetime(2026, 7, 29, 23, 35, tzinfo=timezone.utc)

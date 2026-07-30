@@ -379,35 +379,42 @@ def extract_option_rows(runtime_data: dict[str, Any]) -> list[dict[str, Any]]:
     for file_name, payload in runtime_data.items():
         if file_name == "coberturas_rsp_margin_preview_latest.json":
             continue
-        for item in scan_dicts(payload):
-            ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
-            if ticker != TICKER:
-                continue
-            option_like = any(key in item for key in ["strike", "expiration", "expiry", "dte", "delta", "bid", "ask"])
-            strategy_like = any(word in safe_upper(item.get("strategy") or item.get("strategy_hint"), "") for word in ["PUT", "CALL"])
-            if not option_like and not strategy_like:
-                continue
-            row = dict(item)
-            row["ticker"] = TICKER
-            row["source_file"] = file_name
-            row["strategy"] = safe_upper(row.get("strategy") or row.get("strategy_hint"), "UNKNOWN")
-            row["expiration"] = row.get("expiration") or row.get("expiry") or row.get("exp")
-            row["strike"] = safe_float(row.get("strike"), None)
-            row["dte"] = safe_int(row.get("dte"), -1)
-            row["delta"] = safe_float(row.get("delta"), None)
-            row["bid"] = safe_float(row.get("bid"), None)
-            row["ask"] = safe_float(row.get("ask"), None)
-            row["mid"] = row_mid(row)
-            row["premium_100"] = round(row["mid"] * 100, 2) if row.get("mid") is not None else None
-            row["spread_pct"] = safe_float(row.get("spread_pct"), None)
-            if row["spread_pct"] is None and row.get("bid") and row.get("ask") and row.get("mid"):
-                row["spread_pct"] = round(((row["ask"] - row["bid"]) / row["mid"]) * 100, 2)
-            row["open_interest"] = safe_float(row.get("open_interest") or row.get("oi"), None)
-            row["volume"] = safe_float(row.get("volume"), None)
-            row["not_order_instruction"] = True
-            rows.append(row)
+        embedded_chain = extract_embedded_rsp_chain({file_name: payload})
+        sources = []
+        if embedded_chain:
+            sources.append(("durable_master_snapshot", embedded_chain))
+        sources.append((file_name, payload))
+        for source_name, source_payload in sources:
+            for item in scan_dicts(source_payload):
+                ticker = safe_upper(item.get("ticker") or item.get("symbol"), "")
+                if ticker != TICKER:
+                    continue
+                option_like = any(key in item for key in ["strike", "expiration", "expiry", "dte", "delta", "bid", "ask"])
+                strategy_like = any(word in safe_upper(item.get("strategy") or item.get("strategy_hint"), "") for word in ["PUT", "CALL"])
+                if not option_like and not strategy_like:
+                    continue
+                row = dict(item)
+                row["ticker"] = TICKER
+                row["source_file"] = source_name
+                row["strategy"] = safe_upper(row.get("strategy") or row.get("strategy_hint"), "UNKNOWN")
+                row["expiration"] = row.get("expiration") or row.get("expiry") or row.get("exp")
+                row["strike"] = safe_float(row.get("strike"), None)
+                row["dte"] = safe_int(row.get("dte"), -1)
+                row["delta"] = safe_float(row.get("delta"), None)
+                row["bid"] = safe_float(row.get("bid"), None)
+                row["ask"] = safe_float(row.get("ask"), None)
+                row["mid"] = row_mid(row)
+                row["premium_100"] = round(row["mid"] * 100, 2) if row.get("mid") is not None else None
+                row["spread_pct"] = safe_float(row.get("spread_pct"), None)
+                if row["spread_pct"] is None and row.get("bid") and row.get("ask") and row.get("mid"):
+                    row["spread_pct"] = round(((row["ask"] - row["bid"]) / row["mid"]) * 100, 2)
+                row["open_interest"] = safe_float(row.get("open_interest") or row.get("oi"), None)
+                row["volume"] = safe_float(row.get("volume"), None)
+                row["not_order_instruction"] = True
+                rows.append(row)
     priority = {
         RSP_CHAIN_PATH: 0,
+        "durable_master_snapshot": 0,
         "v32_ibkr_chain_coverage.json": 1,
         "decision_desk_snapshot.json": 2,
     }
@@ -610,10 +617,12 @@ def extract_account_capacity(runtime_data: dict[str, Any]) -> dict[str, Any]:
     if not candidates:
         return {}
 
-    def score(item: dict[str, Any]) -> tuple[int, int]:
+    def score(item: dict[str, Any]) -> tuple[int, int, int]:
+        alias = safe_upper(item.get("account_alias") or item.get("account_scope"), "")
+        account_match = int(alias == safe_upper(RSP_ACCOUNT_ALIAS, ""))
         present = sum(item.get(field) is not None for field in capacity_fields)
         sanitized = int(bool(item.get("sensitive_identifiers_excluded")))
-        return present, sanitized
+        return account_match, present, sanitized
 
     selected = max(candidates, key=score)
     selected.setdefault("available", any(selected.get(field) is not None for field in capacity_fields))
