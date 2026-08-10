@@ -81,11 +81,26 @@ class FuturesMobileAlertTests(unittest.TestCase):
             main,
             "save_intraday_futures_price_point",
             side_effect=lambda payload: calls.append("price_storage") or {"saved": True},
+        ), patch.object(
+            main,
+            "_durable_supabase_persist",
+            side_effect=lambda kind, payload: calls.append("mobile_telemetry") or {"saved": True},
         ):
             result = main._v32_process_intraday_futures_alert(self.chris_entry(), notify=True)
 
-        self.assertEqual(calls, ["notify", "event_storage", "price_storage"])
+        self.assertEqual(calls, ["notify", "mobile_telemetry", "event_storage", "price_storage"])
         self.assertTrue(result["immediate_notify"]["pushover_sent"])
+        self.assertTrue(result["mobile_telemetry_storage"]["saved"])
+
+    def test_missing_source_timestamp_is_disclosed_without_suppressing_entry(self):
+        with patch.object(main, "_v29_load_json_file", return_value={}), patch.object(
+            main, "_v32_save_intraday_futures_immediate_state", return_value=True
+        ), patch.object(main, "send_pushover_message", return_value={"pushover_sent": True}):
+            result = main._v32_intraday_futures_immediate_notify_payload(self.chris_entry())
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["signal_timestamp_source"], "received_at")
+        self.assertEqual(result["signal_timestamp_status"], "RECEIVED_AT_FALLBACK")
 
     def test_immediate_entry_push_uses_high_priority_and_distinct_sound(self):
         payload = main.apply_intraday_futures_reference_levels(self.chris_entry())

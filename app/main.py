@@ -33,6 +33,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import json
+import hashlib
 import html
 import urllib.parse
 import re
@@ -11280,9 +11281,17 @@ def _v32_load_tradingview_signal_events(limit=1000):
     local_events = shared_tradingview_signal_ledger.load_signal_events(limit=bounded_limit)
     durable_rows = _durable_supabase_fetch("audit", limit=max(500, bounded_limit))
     durable_events = []
+    mobile_by_source = {}
     if isinstance(durable_rows, list):
         for row in durable_rows:
-            if not isinstance(row, dict) or row.get("audit_type") != "tradingview_signal_event":
+            if not isinstance(row, dict):
+                continue
+            if row.get("audit_type") == "intraday_mobile_notification":
+                source_id = str(row.get("source_event_id") or "")
+                if source_id:
+                    mobile_by_source[source_id] = row.get("mobile_notification") or {}
+                continue
+            if row.get("audit_type") != "tradingview_signal_event":
                 continue
             event = row.get("signal_event")
             if isinstance(event, dict):
@@ -11293,7 +11302,10 @@ def _v32_load_tradingview_signal_events(limit=1000):
             continue
         key = event.get("event_id") or event.get("id")
         if key:
-            merged[str(key)] = event
+            normalized = dict(event)
+            if str(key) in mobile_by_source:
+                normalized["mobile_notification"] = mobile_by_source[str(key)]
+            merged[str(key)] = normalized
     rows = sorted(
         merged.values(),
         key=lambda item: str(item.get("received_at") or item.get("saved_at") or ""),
@@ -11316,6 +11328,9 @@ def _v32_intraday_payload_from_signal_event(signal_event):
     payload.setdefault("breakout_direction", signal_event.get("breakout_direction"))
     payload.setdefault("logical_stop", signal_event.get("logical_stop"))
     payload.setdefault("logical_target", signal_event.get("logical_target"))
+    payload.setdefault("signal_bar_open_time_ms", signal_event.get("signal_bar_open_time_ms"))
+    payload.setdefault("signal_bar_close_time_ms", signal_event.get("signal_bar_close_time_ms"))
+    payload.setdefault("alert_emitted_time_ms", signal_event.get("alert_emitted_time_ms"))
     payload.setdefault("not_order_instruction", True)
     payload = enrich_stock_ultimus_technical_payload(payload)
     source_event_id = signal_event.get("event_id") or signal_event.get("id")
@@ -11365,10 +11380,25 @@ def _v32_process_intraday_futures_alert(payload, notify=True):
             "signal_age_seconds_at_push",
             "provider_latency_ms",
             "signal_to_provider_ack_ms",
+            "signal_timestamp_source",
+            "signal_timestamp_status",
             "pushover_sent",
         ]
         if notify_result.get(key) is not None
     }
+    source_event_id = payload.get("source_event_id") or payload.get("tradingview_event_id")
+    mobile_telemetry = _durable_supabase_persist("audit", {
+        "audit_type": "intraday_mobile_notification",
+        "event_type": "intraday_mobile_notification",
+        "event_id": "MOBILE-{}".format(source_event_id or hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:24]),
+        "source_event_id": source_event_id,
+        "recorded_at": payload["mobile_notification"].get("provider_ack_at") or payload["mobile_notification"].get("push_requested_at") or _v29_now(),
+        "mobile_notification": payload["mobile_notification"],
+        "ticker": payload.get("ticker"),
+        "event_code": payload.get("event_code"),
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    })
     event_storage = save_intraday_futures_alert_event(payload)
     price_storage = save_intraday_futures_price_point(payload)
     return {
@@ -11376,6 +11406,7 @@ def _v32_process_intraday_futures_alert(payload, notify=True):
         "event_storage": event_storage,
         "price_point_storage": price_storage,
         "immediate_notify": notify_result,
+        "mobile_telemetry_storage": mobile_telemetry,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -25438,8 +25469,18 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
     trigger_kind = None
     push_requested_at = _v29_now()
     stale_seconds = None
+    signal_timestamp_source = "alert_emitted_time_ms" if payload.get("alert_emitted_time_ms") not in [None, ""] else (
+        "signal_bar_close_time_ms" if payload.get("signal_bar_close_time_ms") not in [None, ""] else "received_at"
+    )
+    signal_timestamp_status = "SOURCE_TIMESTAMP_PRESENT" if signal_timestamp_source != "received_at" else "RECEIVED_AT_FALLBACK"
     try:
-        signal_ms = float(payload.get("alert_emitted_time_ms") or payload.get("signal_bar_close_time_ms"))
+        if signal_timestamp_source == "received_at":
+            signal_dt = parse_iso_datetime(payload.get("received_at"))
+            signal_ms = signal_dt.timestamp() * 1000.0 if signal_dt is not None else None
+        else:
+            signal_ms = float(payload.get("alert_emitted_time_ms") or payload.get("signal_bar_close_time_ms"))
+        if signal_ms is None:
+            raise ValueError("missing timestamp")
         stale_seconds = max(0.0, (datetime.now(timezone.utc).timestamp() * 1000.0 - signal_ms) / 1000.0)
     except Exception:
         stale_seconds = None
@@ -25458,7 +25499,7 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
     elif intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY":
         reason = "WATCH_ONLY_SUPPRESSED_BY_MOBILE_ENTRY_POLICY"
-    elif stale_seconds is not None and stale_seconds > max_signal_age_seconds and not force:
+    elif signal_timestamp_status == "SOURCE_TIMESTAMP_PRESENT" and stale_seconds is not None and stale_seconds > max_signal_age_seconds and not force:
         reason = "STALE_INTRADAY_ENTRY_SUPPRESSED"
     elif intraday_futures_is_entry_event(event_code, event):
         trigger_kind = "ENTRY_TRIGGER"
@@ -25478,6 +25519,8 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         "generated_at": _v29_now(),
         "push_requested_at": push_requested_at,
         "signal_age_seconds_at_push": round(stale_seconds, 3) if stale_seconds is not None else None,
+        "signal_timestamp_source": signal_timestamp_source,
+        "signal_timestamp_status": signal_timestamp_status,
         "max_signal_age_seconds": max_signal_age_seconds,
         "trigger_kind": trigger_kind,
         "would_notify": bool(trigger_kind),
