@@ -8,6 +8,7 @@ only receive logical aliases/scopes such as "primary" or "income".
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import html
 import json
 import os
@@ -53,6 +54,7 @@ PROFILES_PATH = RUNTIME / "ibkr_account_profiles.local.json"
 ACTIVE_PATH = RUNTIME / "ibkr_account_active_profile.json"
 WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
+REMOTE_REFRESH_STATUS_PATH = RUNTIME / "stock_ultimus_console_remote_refresh_latest.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
 POSITION_MANAGEMENT_JOURNAL_PATH = RUNTIME / "active_position_management_journal.json"
 POSITION_CONTEXTS_PATH = RUNTIME / "active_position_contexts.json"
@@ -120,6 +122,8 @@ CONSOLE_OPTION_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_WAIT_SECON
 CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS = os.getenv("STOCK_ULTIMUS_CONSOLE_OPTION_SNAPSHOT_WAIT_SECONDS", "1")
 WEB_JOBS: dict[str, dict[str, Any]] = {}
 WEB_JOBS_LOCK = threading.Lock()
+JSON_WRITE_LOCK = threading.RLock()
+REMOTE_CACHE_LOCK = threading.RLock()
 UNKNOWN_CONTEXT_VALUES = {"", "UNKNOWN", "NONE", "NULL", "N/A"}
 CLOSED_OPERATOR_STATUSES = {
     "REJECTED",
@@ -740,11 +744,13 @@ def daily_open_command() -> list[str]:
         "--allow-stale-publish",
         "--soft-exit",
         "--bridge-timeout",
-        "600",
+        "180",
         "--rsp-bridge-timeout",
-        "120",
+        "90",
         "--capacity-timeout",
         "20",
+        "--control-tower-timeout",
+        "90",
         "--read-timeout",
         "30",
     ]
@@ -774,7 +780,7 @@ def environment_alerts_command() -> list[str]:
     return [
         sys.executable,
         "scripts/run_environment_alerts.py",
-        "--notify-watch",
+        "--auto-repair",
         "--pushover",
     ]
 
@@ -1230,8 +1236,21 @@ def load_json_file(path: Path) -> dict[str, Any]:
 
 
 def write_json_file(path: Path, data: dict[str, Any]) -> None:
-    RUNTIME.mkdir(exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    """Write JSON atomically so concurrent console requests never see partial data."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    temporary = path.with_name(
+        ".{}.{}.{}.tmp".format(path.name, os.getpid(), threading.get_ident())
+    )
+    with JSON_WRITE_LOCK:
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def load_operator_events() -> list[dict[str, Any]]:
@@ -1529,27 +1548,28 @@ def cache_age_seconds(cached_at: Any) -> float | None:
 def write_remote_cache(path: str, result: dict[str, Any]) -> None:
     if not result.get("ok"):
         return
-    cache = load_json_file(REMOTE_CACHE_PATH)
-    entries = cache.get("entries") if isinstance(cache.get("entries"), dict) else {}
-    entries[path] = {
-        "cached_at": now_iso(),
-        "result": {
-            "ok": True,
-            "error": "",
-            "token_present": bool(result.get("token_present")),
-            "url": result.get("url"),
-            "data": result.get("data") if isinstance(result.get("data"), dict) else {},
-        },
-    }
-    payload = {
-        "cache_version": "stock_ultimus_console_remote_cache_v2",
-        "cached_at": now_iso(),
-        "entries": entries,
-        "secrets_printed": False,
-        "execution_authorized": False,
-        "not_order_instruction": True,
-    }
-    write_json_file(REMOTE_CACHE_PATH, payload)
+    with REMOTE_CACHE_LOCK:
+        cache = load_json_file(REMOTE_CACHE_PATH)
+        entries = dict(cache.get("entries")) if isinstance(cache.get("entries"), dict) else {}
+        entries[path] = {
+            "cached_at": now_iso(),
+            "result": {
+                "ok": True,
+                "error": "",
+                "token_present": bool(result.get("token_present")),
+                "url": result.get("url"),
+                "data": result.get("data") if isinstance(result.get("data"), dict) else {},
+            },
+        }
+        payload = {
+            "cache_version": "stock_ultimus_console_remote_cache_v2",
+            "cached_at": now_iso(),
+            "entries": entries,
+            "secrets_printed": False,
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+        write_json_file(REMOTE_CACHE_PATH, payload)
 
 
 def read_remote_cache(path: str, live_error: str = "", allow_stale: bool = False) -> dict[str, Any] | None:
@@ -1581,6 +1601,11 @@ def read_remote_cache(path: str, live_error: str = "", allow_stale: bool = False
 
 def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, prefer_cache: bool = False) -> dict[str, Any]:
     if prefer_cache:
+        # Interactive renders must never wait on production.  Explicit refresh
+        # actions revalidate the remote endpoints in background, while normal
+        # navigation may reuse a labelled stale cache.  Active positions remain
+        # safe because a READY all-account Control Tower snapshot is
+        # authoritative and stale remote positions are ignored downstream.
         cached = read_remote_cache(path, live_error="CACHE_FIRST_CONSOLE_RENDER", allow_stale=True)
         if cached:
             return cached
@@ -1682,19 +1707,163 @@ def console_operator_payload(prefer_cache: bool = False) -> dict[str, Any]:
     return apply_local_operator_events(fetch_remote_json("/gpt_v32_operator_today?limit=12", prefer_cache=prefer_cache))
 
 
-def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]]:
-    return {
-        "executive": fetch_remote_json("/gpt_v31_executive_status?limit=8", prefer_cache=prefer_cache),
-        "rankings": fetch_remote_json("/gpt_v31_daily_rankings", prefer_cache=prefer_cache),
-        "active_positions": fetch_remote_json("/v31_active_position_management", prefer_cache=prefer_cache),
-        "monitor": fetch_remote_json("/v31_monitor_status", prefer_cache=prefer_cache),
-        "reviews": fetch_remote_json("/v31_manual_reviews?limit=250", prefer_cache=prefer_cache),
-        "learning": fetch_remote_json("/v31_manual_review_learning?limit=250", prefer_cache=prefer_cache),
-        "performance": fetch_remote_json("/v32_strategy_performance?limit=500", prefer_cache=prefer_cache),
-        "signal_events": fetch_remote_json("/v32_signal_events?limit=1000", prefer_cache=prefer_cache),
-        "futures_daily": fetch_remote_json("/intraday_futures/report/daily?include_validation=false", prefer_cache=prefer_cache),
-        "webhook_status": fetch_remote_json("/v32_tradingview_webhook_status", prefer_cache=prefer_cache),
+def merge_local_canslim_context(operator_payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach the local CANSLIM origin to final operator alerts for display.
+
+    Production decides the final state.  This merge only restores traceability
+    that is already present in the daily local candidate file.
+    """
+    output = dict(operator_payload) if isinstance(operator_payload, dict) else {"ok": False, "data": {}}
+    data = dict(output.get("data")) if isinstance(output.get("data"), dict) else {}
+    candidates_payload = load_json_file(RUNTIME / "canslim_candidates_latest.json")
+    candidates = candidates_payload.get("candidates") if isinstance(candidates_payload.get("candidates"), list) else []
+    by_ticker = {
+        str(item.get("ticker") or "").upper(): item
+        for item in candidates
+        if isinstance(item, dict) and item.get("ticker")
     }
+    for field in ("active_alerts", "diagnostic_alerts"):
+        alerts = data.get(field) if isinstance(data.get(field), list) else []
+        enriched = []
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            item = dict(alert)
+            candidate = by_ticker.get(str(item.get("ticker") or "").upper())
+            if candidate:
+                if item.get("canslim_score") in [None, ""]:
+                    item["canslim_score"] = candidate.get("canslim_score")
+                if item.get("canslim_rating") in [None, ""]:
+                    item["canslim_rating"] = candidate.get("canslim_rating") or candidate.get("rating")
+                if item.get("canslim_passes") is None:
+                    item["canslim_passes"] = candidate.get("canslim_passes")
+                if item.get("canslim_source") in [None, ""]:
+                    item["canslim_source"] = candidate.get("source") or "CANSLIM_FREE_ENGINE"
+            enriched.append(item)
+        data[field] = enriched
+    output["data"] = data
+    return output
+
+
+def remote_console_endpoints() -> dict[str, str]:
+    return {
+        "executive": "/gpt_v31_executive_status?limit=8",
+        "rankings": "/gpt_v31_daily_rankings",
+        "active_positions": "/v31_active_position_management",
+        "monitor": "/v31_monitor_status",
+        "reviews": "/v31_manual_reviews?limit=250",
+        "learning": "/v31_manual_review_learning?limit=250",
+        "performance": "/v32_strategy_performance?limit=500",
+        "signal_events": "/v32_signal_events?limit=1000",
+        "futures_daily": "/intraday_futures/report/daily?include_validation=false",
+        "webhook_status": "/v32_tradingview_webhook_status",
+    }
+
+
+def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]]:
+    endpoints = remote_console_endpoints()
+    # Stale endpoints are refreshed concurrently.  The page therefore waits
+    # for at most one remote timeout window instead of ten sequential ones.
+    # Cached page rendering is cheap and parallel. Explicit live refreshes use
+    # only two workers and the verification timeout so a slow production
+    # endpoint cannot overload the service or leave most sources unchanged.
+    timeout = REMOTE_READ_TIMEOUT_SECONDS if prefer_cache else REMOTE_VERIFY_TIMEOUT_SECONDS
+    max_workers = 6 if prefer_cache else 2
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            key: executor.submit(fetch_remote_json, path, timeout, prefer_cache)
+            for key, path in endpoints.items()
+        }
+        return {key: future.result() for key, future in futures.items()}
+
+
+def start_remote_refresh_job() -> str:
+    """Refresh console sources gradually while exposing truthful progress."""
+    label = "Actualización remota de consola"
+    running = running_web_job_by_label(label)
+    if running:
+        return str(running.get("job_id") or "")
+    job_id = uuid.uuid4().hex[:12]
+    endpoints = {"operator": "/gpt_v32_operator_today?limit=12", **remote_console_endpoints()}
+    job = {
+        "job_id": job_id,
+        "job_version": "stock_ultimus_remote_refresh_v1",
+        "status": "RUNNING",
+        "label": label,
+        "alias": str(active_profile().get("account_alias") or ""),
+        "command": "refresh protected console sources",
+        "started_at": now_iso(),
+        "finished_at": None,
+        "progress": {"completed": 0, "total": len(endpoints), "current": "operator"},
+        "result": None,
+        "error": "",
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    with WEB_JOBS_LOCK:
+        WEB_JOBS[job_id] = job
+
+    def worker() -> None:
+        results: dict[str, Any] = {}
+        try:
+            for index, (key, path) in enumerate(endpoints.items(), start=1):
+                with WEB_JOBS_LOCK:
+                    WEB_JOBS[job_id]["progress"] = {
+                        "completed": index - 1,
+                        "total": len(endpoints),
+                        "current": key,
+                    }
+                results[key] = fetch_remote_json(
+                    path,
+                    timeout=max(REMOTE_VERIFY_TIMEOUT_SECONDS, 30.0),
+                    prefer_cache=False,
+                )
+            live_ok = [key for key, value in results.items() if value.get("ok") and not value.get("cached")]
+            stale = [key for key, value in results.items() if value.get("cached")]
+            failed = [key for key, value in results.items() if not value.get("ok")]
+            operator_ok = bool(results.get("operator", {}).get("ok"))
+            summary = {
+                "refresh_version": "stock_ultimus_remote_refresh_v1",
+                "generated_at": now_iso(),
+                "status": "READY" if operator_ok and not failed and not stale else ("PARTIAL" if operator_ok else "ERROR"),
+                "live_source_count": len(live_ok),
+                "source_count": len(endpoints),
+                "live_sources": live_ok,
+                "cached_sources": stale,
+                "failed_sources": failed,
+                "errors": {
+                    key: str(value.get("live_error") or value.get("error") or "")
+                    for key, value in results.items()
+                    if value.get("live_error") or not value.get("ok")
+                },
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
+            write_json_file(REMOTE_REFRESH_STATUS_PATH, summary)
+            with WEB_JOBS_LOCK:
+                WEB_JOBS[job_id] = {
+                    **WEB_JOBS[job_id],
+                    "status": "DONE" if operator_ok else "ERROR",
+                    "finished_at": now_iso(),
+                    "progress": {"completed": len(endpoints), "total": len(endpoints), "current": ""},
+                    "result": {
+                        "returncode": 0 if operator_ok else 1,
+                        "stdout_tail": json.dumps(summary, indent=2, sort_keys=True),
+                        "remote_refresh": summary,
+                    },
+                    "error": "" if operator_ok else "OPERATOR_SOURCE_UNAVAILABLE",
+                }
+        except Exception as exc:
+            with WEB_JOBS_LOCK:
+                WEB_JOBS[job_id] = {
+                    **WEB_JOBS.get(job_id, job),
+                    "status": "ERROR",
+                    "finished_at": now_iso(),
+                    "error": str(exc),
+                }
+
+    threading.Thread(target=worker, name=f"stock-ultimus-remote-{job_id}", daemon=True).start()
+    return job_id
 
 
 FUTURES_MARKET_TZ = ZoneInfo("America/New_York")
@@ -1755,6 +1924,7 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             today_received_events.append(event)
 
     today_events = [event for event in today_received_events if event.get("accepted_for_engine") is not False]
+    quarantined_events = [event for event in today_received_events if event.get("accepted_for_engine") is False]
     quarantined_count = len(today_received_events) - len(today_events)
 
     counts = {"ENTRY": 0, "RISK": 0, "WATCH": 0, "SNAPSHOT": 0, "OTHER": 0}
@@ -1861,7 +2031,38 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         "processed_total": processed_total,
         "pipeline_mismatch": mismatch,
         "latest_at": latest_at.isoformat() if latest_at else "",
+        "recent_events": [
+            {
+                "ticker": event.get("ticker") or ((event.get("raw_payload") or {}).get("ticker") if isinstance(event.get("raw_payload"), dict) else None),
+                "event": remote_futures_event_kind(event),
+                "event_code": event.get("event_code"),
+                "price": event.get("price"),
+                "received_at": (remote_signal_received_at(event) or now).isoformat(),
+                "accepted": event.get("accepted_for_engine") is not False,
+                "quarantine_reasons": event.get("quarantine_reasons") or [],
+                "missing_fields": event.get("missing_context_fields") or [],
+            }
+            for event in sorted(
+                today_received_events,
+                key=lambda item: remote_signal_received_at(item) or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )[:8]
+        ],
     }
+    if quarantined_events:
+        latest_quarantined = max(
+            quarantined_events,
+            key=lambda item: remote_signal_received_at(item) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        summary["latest_quarantined"] = {
+            "ticker": latest_quarantined.get("ticker") or "FUTURES",
+            "event": remote_futures_event_kind(latest_quarantined),
+            "event_code": latest_quarantined.get("event_code"),
+            "price": latest_quarantined.get("price"),
+            "received_at": (remote_signal_received_at(latest_quarantined) or now).isoformat(),
+            "reasons": latest_quarantined.get("quarantine_reasons") or [],
+            "missing_fields": latest_quarantined.get("missing_context_fields") or [],
+        }
     if latest_entry:
         summary["latest_signal"] = {
             "ticker": latest_entry.get("ticker") or latest_entry.get("symbol"),
@@ -1878,6 +2079,8 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "confirmation_quality_score": latest_entry.get("confirmation_quality_score"),
             "confirmation_reasons": latest_entry.get("confirmation_reasons") or [],
             "confirmation_conflicts": latest_entry.get("confirmation_conflicts") or [],
+            "main_blocker": latest_entry.get("main_blocker"),
+            "decision_explanation": latest_entry.get("decision_explanation") or ((latest_entry.get("decision") or {}).get("explanation") if isinstance(latest_entry.get("decision"), dict) else None),
             "received_at": latest_entry.get("received_at") or latest_entry.get("saved_at"),
         }
     intraday = dict(data.get("intraday_futures")) if isinstance(data.get("intraday_futures"), dict) else {}
@@ -1991,6 +2194,7 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     stale_cache = bool(operator_payload.get("stale_cache"))
     capacity = console_account_capacity(operator_payload, snapshot)
     local_core = console_local_core_status(active, snapshot, capacity)
+    capacity_confirmed = bool(capacity.get("available") and local_core.get("ibkr_connected"))
     blockers = []
     warnings = []
     info = []
@@ -2021,6 +2225,8 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
     for missing in local_core.get("missing") or []:
         if missing not in warnings:
             warnings.append(missing)
+    if capacity.get("available") and not capacity_confirmed:
+        warnings.append("ACCOUNT_CAPACITY_UNCONFIRMED")
     if blocking:
         warnings.append("PROCESS_RUNNING")
     if background:
@@ -2062,7 +2268,7 @@ def console_health(active: dict[str, Any], snapshot: dict[str, Any], operator_pa
         "token_present": token_present,
         "context_status": "LOCAL_READY_REMOTE_PENDING" if remote_context_pending_after_publish else comparison.get("status"),
         "snapshot_available": bool(snapshot.get("available")),
-        "capacity_available": bool(capacity.get("available")),
+        "capacity_available": capacity_confirmed,
         "ibkr_connected": bool(local_core.get("ibkr_connected")),
         "bridge_published": bool(local_core.get("bridge_published")),
         "local_core_ready": bool(local_core.get("ready")),
@@ -2128,15 +2334,16 @@ def render_console_health(
           <input name="alias" value="{active_alias}" type="hidden">
           <button class="primary-action"{refresh_all_disabled}>Ejecutar apertura diaria</button>
         </form>
-        <form method="post" action="/refresh-remote" data-busy="Actualizando estado" data-busy-detail="Relee el estado publicado sin cambiar de cuenta.">
-          <button class="secondary">Actualizar</button>
+        <form method="post" action="/refresh-remote" data-busy="Actualizando estado" data-busy-detail="Relee cada fuente publicada y muestra el progreso." data-background-submit="true" data-reload-on-done="true" data-status-target="remote-refresh-status">
+          <button class="secondary">Actualizar pantalla</button>
+          <small id="remote-refresh-status" class="muted">Actualización gradual; puedes seguir viendo la consola.</small>
         </form>
         <details class="header-more">
           <summary>Más opciones</summary>
           <div>
-            <form method="post" action="/ibkr-quick-check" data-busy="Validando IBKR/TWS">
+            <form method="post" action="/ibkr-quick-check" data-busy="Validando cuenta activa" data-busy-detail="Prueba TWS y capacidad sólo para la cuenta seleccionada; no actualiza las demás cuentas ni todas las posiciones.">
               <input name="alias" value="{active_alias}" type="hidden">
-              <button class="secondary"{refresh_all_disabled}>Validar conexión IBKR</button>
+              <button class="secondary"{refresh_all_disabled}>Validar cuenta activa</button>
             </form>
             <form method="post" action="/refresh-all" data-busy="Alineando y publicando contexto">
               <input name="alias" value="{active_alias}" type="hidden">
@@ -2353,16 +2560,37 @@ FRIENDLY_OPERATOR_STATES = {
     "REVIEW_DEFENSIVE_EXIT": "Revisar defensa",
     "RISK_REVIEW": "Revisión de riesgo",
     "REVIEW_ASSIGNMENT": "Revisar posible asignación",
+    "REVIEW_CLOSE_OR_BUY_BACK": "Revisar cierre o recompra",
+    "REVIEW_ROLL": "Revisar rolleo",
     "REFRESH_DATA": "Actualizar datos",
     "ASSIGNMENT_REVIEW": "Revisar asignación",
     "TAKE_PROFIT_REVIEW": "Revisar toma de ganancia",
     "NO_ACTION_RECOMMENDED": "Mantener sin cambios",
     "FRESH": "Actualizados",
+    "STALE": "Desactualizados",
+    "READY_FOR_DECISION_REVIEW": "Listo para revisar decisiones",
+    "NO_NEW_RISK": "No aumentar riesgo",
     "WATCH": "Vigilancia",
     "MONITOR": "Monitoreo",
     "BLOCKED": "Bloqueado",
     "SELL_PUT": "Venta de put",
     "SELL_COVERED_CALL": "Covered call",
+    "CASH_SECURED_PUT": "Put garantizada con efectivo",
+    "NAKED_PUT": "Venta de put",
+    "COVERED_CALL": "Covered call",
+    "LONG_CALL": "Call comprada",
+    "LONG_PUT": "Put comprada",
+    "MANAGE_COVERED_CALL": "Gestionar covered call abierto",
+    "MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_DATA": "Gestionar la posición actual y esperar datos para una nueva entrada",
+    "FULLY_COVERED_CALL": "Covered call completo",
+    "PARTIAL_COVERED_CALL": "Covered call parcial",
+    "LONG_STOCK": "Acciones compradas",
+    "FUTURES_POSITION": "Posición de futuros",
+    "STK": "Acciones",
+    "FUT": "Futuro",
+    "OPT": "Opción",
+    "WATCH_ONLY": "Sólo vigilancia",
+    "ENTRY_COMPARISON_MODE": "Comparar alternativas de entrada",
     "NO_SHARES": "Sin acciones RSP",
     "ACUMULANDO EVIDENCIA": "Aprendizaje en curso",
 }
@@ -2372,7 +2600,11 @@ def friendly_operator_state(value: Any, fallback: str = "Pendiente") -> str:
     raw = str(value or "").strip()
     if not raw:
         return fallback
-    return FRIENDLY_OPERATOR_STATES.get(raw.upper(), raw.replace("_", " ").capitalize())
+    friendly = FRIENDLY_OPERATOR_STATES.get(raw.upper())
+    if friendly:
+        return friendly
+    label = raw.replace("_", " ").strip()
+    return label[:1].upper() + label[1:]
 
 
 def friendly_age(value: Any) -> str:
@@ -2501,12 +2733,8 @@ def render_command_center(
         level, title = "blue", "La apertura está trabajando"
         summary = "Espera a que termine; no inicies un segundo proceso."
     elif pending:
-        level, title = "amber", "Hay {} {} prioritario{}".format(
-            len(pending),
-            "pendiente" if len(pending) == 1 else "pendientes",
-            "" if len(pending) == 1 else "s",
-        )
-        summary = pending[0]["title"] + ". " + pending[0]["detail"]
+        level, title = "amber", pending[0]["title"]
+        summary = pending[0]["detail"]
     else:
         level, title = "green", "Todo listo para monitorear"
         summary = "No hay acciones prioritarias. Mantén el monitoreo y espera señales válidas."
@@ -2525,9 +2753,8 @@ def render_command_center(
         "actualizado" if rsp_open.get("ok") else "pendiente",
     ) if daily else "Ejecuta Apertura diaria al comenzar la jornada."
 
-    task_rows = []
-    for index, item in enumerate(pending[:6], start=1):
-        task_rows.append(
+    def render_task(item: dict[str, str], index: int) -> str:
+        return (
             '<a class="operator-task task-{level}" href="{href}"><span>{index}</span>'
             '<div><small>{area}</small><strong>{title}</strong><p>{detail}</p></div>'
             '<b>Revisar →</b></a>'.format(
@@ -2539,25 +2766,36 @@ def render_command_center(
                 detail=html_escape(item.get("detail") or ""),
             )
         )
+
+    task_rows = []
+    for index, item in enumerate(pending[:3], start=1):
+        task_rows.append(render_task(item, index))
     if not task_rows:
         task_rows.append('<div class="empty-state"><strong>Sin pendientes prioritarios</strong><span>La consola continuará monitoreando.</span></div>')
+    remaining_tasks = ""
+    if len(pending) > 3:
+        remaining_tasks = '<details class="remaining-priorities"><summary>Ver los otros {} pendientes</summary>{}</details>'.format(
+            len(pending) - 3,
+            "".join(render_task(item, index) for index, item in enumerate(pending[3:], start=4)),
+        )
 
     risk_counts = risk_payload.get("alert_counts") if isinstance(risk_payload.get("alert_counts"), dict) else {}
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
-        <div><p class="eyebrow">Inicio</p><h2>{title}</h2><p>{summary}</p></div>
+        <div><p class="eyebrow">Qué debes hacer ahora</p><h2>{title}</h2><p>{summary}</p></div>
         <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
       </div>
       <div class="command-facts">
-        <div><span>Riesgo</span><strong>{risk_label}</strong><small>{high} alta(s) · {watch} vigilancia</small></div>
+        <div><span>Riesgo</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></div>
         <div><span>Posiciones</span><strong>{positions}</strong><small>{reviews} requieren revisión</small></div>
         <div><span>RSP</span><strong>{rsp_status}</strong><small>{rsp_candidates} candidato(s) válidos 7–14 DTE</small></div>
         <div><span>Mercado</span><strong>{market}</strong><small>{operator_state}</small></div>
       </div>
       <div id="pendientes" class="pending-queue">
-        <div class="queue-head"><h3>Pendientes priorizados</h3><span>Primero riesgo, después gestión y oportunidades.</span></div>
+        <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} pendiente(s) en total · primero riesgo, después gestión y oportunidades.</span></div>
         {tasks}
+        {remaining_tasks}
       </div>
     </section>
     """.format(
@@ -2567,6 +2805,7 @@ def render_command_center(
         opening=html_escape(opening_label),
         opening_detail=html_escape(opening_detail),
         risk_label=html_escape("Alto" if (risk_counts.get("critical") or risk_counts.get("high")) else "Vigilancia" if risk_counts.get("watch") else "Controlado"),
+        critical=html_escape(risk_counts.get("critical") or 0),
         high=html_escape(risk_counts.get("high") or 0),
         watch=html_escape(risk_counts.get("watch") or 0),
         positions=html_escape(position_payload.get("positions_found") or 0),
@@ -2576,6 +2815,8 @@ def render_command_center(
         market=html_escape("Abierto" if is_us_market_session_now() else "Cerrado"),
         operator_state=html_escape(friendly_operator_state((operator_payload.get("data") or {}).get("status"))),
         tasks="".join(task_rows),
+        remaining_tasks=remaining_tasks,
+        pending_count=html_escape(len(pending)),
     )
 
 
@@ -3280,7 +3521,7 @@ def coberturas_badge(value: Any) -> str:
         klass = "info"
     elif "BLOCK" in state:
         klass = "risk"
-    return '<span class="badge {}">{}</span>'.format(klass, html_escape(state))
+    return '<span class="badge {}">{}</span>'.format(klass, html_escape(friendly_operator_state(state)))
 
 
 
@@ -3710,8 +3951,8 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
       </div>
     """.format(
         management_badge=coberturas_badge(manager.get("status") or ("MANAGE" if managing_position else "MONITOR")),
-        management_action=html_escape(manager.get("primary_action") or "Sin posición abierta que gestionar."),
-        position_state=html_escape(position.get("state") or "UNKNOWN"),
+        management_action=html_escape(friendly_operator_state(manager.get("primary_action"), "Sin posición abierta que gestionar.")),
+        position_state=html_escape(friendly_operator_state(position.get("state") or "UNKNOWN")),
         active_cycles=html_escape(cycle_capacity.get("active_cycles", 0)),
         entry_badge=coberturas_badge(new_entry_status),
         entry_action=html_escape(new_entry.get("primary_action") or "Evaluación pendiente."),
@@ -4758,6 +4999,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
     daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
     latest_signal = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
+    latest_quarantined = daily.get("latest_quarantined") if isinstance(daily.get("latest_quarantined"), dict) else {}
     tradingview = reports.get("tradingview") or {}
     if futures_alerts:
         cards = "".join(render_alert_card(alert, account_capacity=console_account_capacity(operator_payload, {})) for alert in futures_alerts[:4])
@@ -4769,7 +5011,9 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
             latest_signal_tile = (
                 '<div class="tile">Última {event}: {ticker} {direction}'
                 '<span>Disparo {entry} · Stop {stop} · T1 {tp1} · T2 {tp2}{estimate}</span>'
-                '<span>Calidad: {quality} · {confirmations} a favor / {conflicts} en contra</span></div>'
+                '<span>Calidad: {quality} · {confirmations} a favor / {conflicts} en contra</span>'
+                '<span>Resultado: {actionability}. Celular: {mobile}</span>'
+                '<span>{explanation}</span></div>'
             ).format(
                 event=html_escape(latest_signal.get("event") or "señal"),
                 ticker=html_escape(latest_signal.get("ticker") or "N/D"),
@@ -4782,6 +5026,9 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
                 quality=html_escape(latest_signal.get("confirmation_gate_status") or "sin evaluar"),
                 confirmations=html_escape(len(latest_signal.get("confirmation_reasons") or [])),
                 conflicts=html_escape(len(latest_signal.get("confirmation_conflicts") or [])),
+                actionability=html_escape(friendly_operator_state(latest_signal.get("signal_actionability") or "Revisión final pendiente")),
+                mobile=html_escape("enviado" if str(latest_signal.get("signal_actionability") or "").upper() == "ENTRY_READY" else "no enviado; no alcanzó ENTRY_READY"),
+                explanation=html_escape(latest_signal.get("decision_explanation") or friendly_operator_state(latest_signal.get("main_blocker"), "Sin explicación adicional.")),
             )
         body = """
         <div class="tiles">
@@ -4808,6 +5055,42 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
             latest_signal_tile=latest_signal_tile,
         )
         status = intraday.get("message") or "Sin alertas intradia de futuros en este momento."
+    recent_rows = []
+    for event in daily.get("recent_events") or []:
+        if not isinstance(event, dict):
+            continue
+        accepted = event.get("accepted") is True
+        outcome = "Evaluada" if accepted else "Cuarentena"
+        reason = ""
+        if not accepted:
+            missing = event.get("missing_fields") if isinstance(event.get("missing_fields"), list) else []
+            reason = "Faltan: {}".format(", ".join(str(item) for item in missing[:5])) if missing else ", ".join(str(item) for item in (event.get("quarantine_reasons") or [])[:3])
+        recent_rows.append(
+            '<li class="futures-event {klass}"><span>{time}</span><strong>{ticker} · {event}</strong><small>{price} · {outcome}{reason}</small></li>'.format(
+                klass="event-ok" if accepted else "event-quarantine",
+                time=html_escape(friendly_age(event.get("received_at"))),
+                ticker=html_escape(event.get("ticker") or "FUTURES"),
+                event=html_escape(event.get("event") or event.get("event_code") or "Evento"),
+                price=html_escape("Disparo " + compact_contract_value(event.get("price")) if event.get("price") is not None else "Sin precio"),
+                outcome=html_escape(outcome),
+                reason=html_escape(" · " + reason if reason else ""),
+            )
+        )
+    quarantine_summary = ""
+    if latest_quarantined:
+        quarantine_summary = '<p class="review-line"><strong>Última señal en cuarentena:</strong> {ticker} {event} en {price}. {reason}</p>'.format(
+            ticker=html_escape(latest_quarantined.get("ticker") or "FUTURES"),
+            event=html_escape(latest_quarantined.get("event") or latest_quarantined.get("event_code") or "evento"),
+            price=html_escape(compact_contract_value(latest_quarantined.get("price"))),
+            reason=html_escape(
+                "Faltan campos: " + ", ".join(str(item) for item in (latest_quarantined.get("missing_fields") or [])[:5])
+                if latest_quarantined.get("missing_fields") else "Motivo: " + ", ".join(str(item) for item in (latest_quarantined.get("reasons") or [])[:3])
+            ),
+        )
+    if recent_rows:
+        body += '<details class="futures-history" open><summary>Actividad de futuros recibida hoy ({})</summary>{}<ol>{}</ol></details>'.format(
+            len(recent_rows), quarantine_summary, "".join(recent_rows)
+        )
     return """
     <section class="panel intraday-panel">
       <div class="section-head">
@@ -4817,6 +5100,140 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
       {body}
     </section>
     """.format(status=html_escape(status), body=body)
+
+
+def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
+    candidates_payload = load_json_file(RUNTIME / "canslim_candidates_latest.json")
+    decision_payload = load_json_file(RUNTIME / "decision_desk_snapshot.json")
+    candidates = candidates_payload.get("candidates") if isinstance(candidates_payload.get("candidates"), list) else []
+    passed = [item for item in candidates if isinstance(item, dict) and item.get("canslim_passes") is True]
+    decisions = decision_payload.get("by_ticker") if isinstance(decision_payload.get("by_ticker"), list) else []
+    decision_by_ticker = {
+        str(item.get("ticker") or "").upper(): (item.get("best") if isinstance(item.get("best"), dict) else {})
+        for item in decisions
+        if isinstance(item, dict) and item.get("ticker")
+    }
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    final_alerts = []
+    for field in ("active_alerts", "diagnostic_alerts"):
+        final_alerts.extend(item for item in (data.get(field) or []) if isinstance(item, dict))
+    final_by_ticker: dict[str, dict[str, Any]] = {}
+    for alert in final_alerts:
+        ticker = str(alert.get("ticker") or "").upper()
+        if ticker and (ticker not in final_by_ticker or alert in (data.get("active_alerts") or [])):
+            final_by_ticker[ticker] = alert
+
+    available_capacity = console_float_or_none((data.get("account_capacity") or {}).get("available_capacity"))
+    blocker_labels = {
+        "WAIT_TECHNICAL": "Espera confirmación técnica antes de elevarse a entrada.",
+        "RISK_BLOCKED": "La compuerta final de riesgo o capacidad no permite una entrada nueva.",
+        "WAIT_OPTIONS_DATA": "Faltan datos completos de opciones.",
+        "WAIT_MARKET": "Espera una condición válida de mercado.",
+    }
+
+    def row(item: dict[str, Any]) -> str:
+        ticker = str(item.get("ticker") or "UNKNOWN").upper()
+        score = item.get("canslim_score")
+        rating = item.get("canslim_rating") or item.get("rating") or "Aprobado"
+        canslim = item.get("canslim") if isinstance(item.get("canslim"), dict) else {}
+        components = canslim.get("components") if isinstance(canslim.get("components"), dict) else {}
+        missing_components = item.get("canslim_missing_components") or canslim.get("missing_components") or [
+            key[:1] for key, value in components.items() if value is None
+        ]
+        coverage = item.get("canslim_component_coverage_pct") or canslim.get("component_coverage_pct")
+        decision = decision_by_ticker.get(ticker) or {}
+        final = final_by_ticker.get(ticker) or {}
+        final_state = str(final.get("state") or final.get("final_state") or "").upper()
+        if final_state:
+            stage = friendly_operator_state(final_state)
+            detail = blocker_labels.get(str(final.get("main_blocker") or final_state).upper(), alert_reason_plain(final))
+            capital = console_float_or_none((final.get("economics") or {}).get("capital_required"))
+            if final_state == "RISK_BLOCKED" and capital is not None and available_capacity is not None and capital > available_capacity:
+                detail = "Capital estimado {} frente a {} disponibles en la cuenta activa.".format(
+                    coberturas_money(capital), coberturas_money(available_capacity)
+                )
+        elif decision:
+            stage = "Preselección técnica"
+            detail = "El radar local encontró contrato, pero la evaluación final no la elevó como oportunidad operable."
+        else:
+            stage = "Filtro fundamental aprobado"
+            detail = "No se seleccionó contrato dentro del radar acotado de hoy."
+        contract = ""
+        if decision:
+            contract = "{} · {} DTE · strike {}".format(
+                friendly_operator_state(decision.get("strategy") or "Estrategia pendiente"),
+                decision.get("dte") if decision.get("dte") is not None else "N/D",
+                decision.get("strike") if decision.get("strike") is not None else "N/D",
+            )
+        return """
+        <article class="canslim-row">
+          <div><strong>{ticker}</strong><small>Score C/A/L/M {score} · {rating} · cobertura {coverage}</small></div>
+          <div><b>{stage}</b><small>{detail}</small></div>
+          <span>{contract}</span>
+        </article>
+        """.format(
+            ticker=html_escape(ticker),
+            score=html_escape(score if score is not None else "N/D"),
+            rating=html_escape(friendly_operator_state(rating)),
+            coverage=html_escape("{}%".format(coverage) if coverage is not None else ("parcial; falta " + ",".join(missing_components) if missing_components else "sin detalle")),
+            stage=html_escape(stage),
+            detail=html_escape(detail),
+            contract=html_escape(contract or "Sin contrato priorizado"),
+        )
+
+    ordered = sorted(
+        passed,
+        key=lambda item: (
+            str(item.get("ticker") or "").upper() not in final_by_ticker,
+            str(item.get("ticker") or "").upper() not in decision_by_ticker,
+            -(console_float_or_none(item.get("canslim_score")) or 0.0),
+        ),
+    )
+    passed_tickers = {str(item.get("ticker") or "").upper() for item in passed}
+    contract_evaluated_count = len(passed_tickers & set(decision_by_ticker))
+    final_evaluated_count = len(passed_tickers & set(final_by_ticker))
+    evaluated_count = len(passed_tickers & (set(decision_by_ticker) | set(final_by_ticker)))
+    ready_count = sum(
+        1 for item in passed
+        if str((final_by_ticker.get(str(item.get("ticker") or "").upper()) or {}).get("state") or "").upper() == "ENTRY_READY"
+    )
+    visible = ordered[:8]
+    remaining = ordered[8:]
+    remaining_html = ""
+    if remaining:
+        remaining_html = '<details class="remaining-canslim"><summary>Ver los otros {} preseleccionados</summary>{}</details>'.format(
+            len(remaining), "".join(row(item) for item in remaining)
+        )
+    generated_at = candidates_payload.get("generated_at")
+    network = candidates_payload.get("network_health") if isinstance(candidates_payload.get("network_health"), dict) else {}
+    return """
+    <section id="canslim-radar" class="panel canslim-panel">
+      <div class="section-head">
+        <div><p class="eyebrow">Radar CANSLIM</p><h2>De preselección C/A/L/M a decisión final</h2></div>
+        <p>El score usa los componentes disponibles y muestra su cobertura; opciones, técnica, riesgo y capacidad deciden si merece revisión.</p>
+      </div>
+      <div class="position-overview">
+        <div><span>Analizados</span><strong>{analyzed}</strong><small>{freshness}</small></div>
+        <div><span>Preseleccionados</span><strong>{passed}</strong><small>score disponible ≥ 70; revisa cobertura C/A/L/M</small></div>
+        <div><span>Evaluados por el motor</span><strong>{evaluated}</strong><small>{contract_evaluated} con contrato · {final_evaluated} en compuerta final</small></div>
+        <div><span>Entrada final</span><strong>{ready}</strong><small>{network}</small></div>
+      </div>
+      <p class="canslim-explanation"><strong>Lectura correcta:</strong> una preselección no significa comprar. Si falta L o M el score se identifica como parcial; una entrada sólo aparece cuando además supera técnica, contrato, riesgo y capacidad.</p>
+      <div class="canslim-list">{rows}</div>
+      {remaining}
+    </section>
+    """.format(
+        analyzed=html_escape(candidates_payload.get("candidate_count") or len(candidates)),
+        passed=html_escape(len(passed)),
+        evaluated=html_escape(evaluated_count),
+        contract_evaluated=html_escape(contract_evaluated_count),
+        final_evaluated=html_escape(final_evaluated_count),
+        ready=html_escape(ready_count),
+        freshness=html_escape(friendly_age(generated_at)),
+        network=html_escape("Fuentes OK" if network.get("status") == "OK" else "Revisar fuentes"),
+        rows="".join(row(item) for item in visible) or '<div class="empty-state"><strong>Sin candidatos CANSLIM</strong><span>Ejecuta la apertura diaria para actualizar el universo.</span></div>',
+        remaining=remaining_html,
+    )
 
 
 def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str, Any] | None = None, reports: dict[str, dict[str, Any]] | None = None) -> str:
@@ -4891,6 +5308,7 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
         label=action.get("label") or "Sin accion inmediata",
     )
     return """
+    {intraday_alerts}
     <section class="panel operator-alerts-panel">
       <div class="section-head">
         <h2>Alertas Operables</h2>
@@ -4900,7 +5318,6 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
       {diagnostic_alerts}
       {closed_alerts}
     </section>
-    {intraday_alerts}
     """.format(
         next_action=html_escape(next_action),
         alerts=alert_html,
@@ -4941,48 +5358,40 @@ def console_runtime_position_context(snapshot: dict[str, Any]) -> dict[str, Any]
         if snapshot_data.get(key) not in [None, "", [], {}]:
             context[key] = snapshot_data.get(key)
     tower = runtime_data.get("broker_control_tower_latest.json") if isinstance(runtime_data.get("broker_control_tower_latest.json"), dict) else {}
-    selected_alias = str((active_profile() or {}).get("account_alias") or "").strip().lower()
-    selected_tower_account = next((
-        row for row in (tower.get("accounts") or [])
-        if isinstance(row, dict)
-        and str(row.get("account_alias") or row.get("account_scope") or "").strip().lower() == selected_alias
-    ), None)
+    tower_accounts = [row for row in (tower.get("accounts") or []) if isinstance(row, dict)]
     tower_positions = []
-    detailed_account_positions = (
-        selected_tower_account.get("positions")
-        if isinstance(selected_tower_account, dict) and isinstance(selected_tower_account.get("positions"), list)
-        else None
-    )
-    for row in detailed_account_positions if detailed_account_positions is not None else (tower.get("consolidated_positions") or []):
-        if not isinstance(row, dict):
-            continue
-        aliases = [str(value or "").strip().lower() for value in (row.get("account_aliases") or [])]
-        if selected_alias and aliases and selected_alias not in aliases:
-            continue
-        tower_positions.append({
-            **row,
-            "ticker": row.get("ticker") or row.get("symbol"),
-            "sec_type": row.get("security_type") or row.get("sec_type"),
-            "position_size": row.get("quantity") if row.get("quantity") is not None else row.get("position"),
-            "account_alias": selected_alias or row.get("account_alias"),
-            "source": "BROKER_CONTROL_TOWER",
-        })
+    for tower_account in tower_accounts:
+        account_alias = str(tower_account.get("account_alias") or tower_account.get("account_scope") or "").strip().lower()
+        for row in tower_account.get("positions") or []:
+            if not isinstance(row, dict):
+                continue
+            tower_positions.append({
+                **row,
+                "ticker": row.get("ticker") or row.get("symbol"),
+                "sec_type": row.get("security_type") or row.get("sec_type"),
+                "position_size": row.get("quantity") if row.get("quantity") is not None else row.get("position"),
+                "account_alias": account_alias or row.get("account_alias"),
+                "account_scope": tower_account.get("account_scope") or account_alias or row.get("account_scope"),
+                "source": "BROKER_CONTROL_TOWER",
+            })
     tower_is_authoritative = bool(
-        selected_tower_account
-        and str(selected_tower_account.get("refresh_status") or "").upper() == "READY"
+        tower_accounts
+        and all(str(row.get("refresh_status") or "").upper() == "READY" for row in tower_accounts)
     )
     if tower_is_authoritative:
-        # A fresh READY account snapshot is authoritative even when its position
-        # list is empty.  Replacing (rather than appending) prevents a position
-        # closed in IBKR from being resurrected by an older master snapshot.
+        # Fresh READY account snapshots are authoritative even when their
+        # position lists are empty.  Keep every alias so the main management
+        # screen is truly multi-account rather than silently hiding positions
+        # outside the currently selected account.
         context["positions"] = tower_positions
         context["generated_at"] = (
-            selected_tower_account.get("generated_at")
+            max((str(row.get("generated_at") or "") for row in tower_accounts), default="")
             or tower.get("generated_at")
             or generated_at
         )
         context["position_data_source"] = "BROKER_CONTROL_TOWER"
         context["position_data_status"] = "READY"
+        context["position_data_scope"] = "ALL_READY_ACCOUNTS"
     elif tower_positions:
         existing_positions = context.get("positions") if isinstance(context.get("positions"), list) else []
         context["positions"] = existing_positions + tower_positions
@@ -5053,7 +5462,14 @@ def console_active_position_management(snapshot: dict[str, Any] | None = None, v
         pass
     remote_positions = int(remote.get("positions_found") or 0) if remote else 0
     local_positions = int(local.get("positions_found") or 0)
-    if remote.get("position_management_version") and (local_positions == 0 and remote_positions > 0):
+    remote_age_seconds = cache_age_seconds(remote.get("generated_at"))
+    remote_fresh = bool(
+        remote.get("position_management_version")
+        and not remote_result.get("stale_cache")
+        and remote_age_seconds is not None
+        and remote_age_seconds <= REMOTE_CACHE_MAX_AGE_SECONDS
+    )
+    if remote_fresh and local_positions == 0 and remote_positions > 0:
         payload = dict(remote)
         payload["source"] = "remote_v31_active_position_management"
         payload["remote_cached"] = bool(remote_result.get("cached"))
@@ -5061,22 +5477,115 @@ def console_active_position_management(snapshot: dict[str, Any] | None = None, v
     else:
         payload = local
         payload["remote_available"] = bool(remote.get("position_management_version"))
+        payload["remote_fresh"] = remote_fresh
+        payload["stale_remote_position_count_ignored"] = remote_positions if remote_positions and not remote_fresh else 0
         payload["remote_error"] = remote_result.get("live_error") or remote_result.get("error") or ""
+        if remote_positions and not remote_fresh:
+            payload["position_data_warning"] = "STALE_REMOTE_POSITIONS_IGNORED_REFRESH_IBKR"
+    # A recent Control Tower refresh in which no account could be read is
+    # stronger evidence than an old master snapshot.  Historical positions are
+    # useful for diagnosis, but must not reappear as current positions (or emit
+    # false close/open lifecycle alerts) while IBKR is disconnected.
+    broker_positions_unconfirmed = False
+    if snapshot.get("path"):
+        tower = load_json_file(CONTROL_TOWER_PATH)
+        tower_accounts = [row for row in (tower.get("accounts") or []) if isinstance(row, dict)]
+        tower_age_seconds = cache_age_seconds(tower.get("generated_at"))
+        snapshot_data_for_freshness = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+        snapshot_generated_at = (
+            snapshot_data_for_freshness.get("generated_at")
+            or snapshot.get("generated_at")
+            or snapshot.get("mtime")
+        )
+        failed_refresh_is_newer = bool(
+            timestamp_sort_value(tower.get("generated_at"))
+            >= timestamp_sort_value(snapshot_generated_at)
+        )
+        ready_accounts = sum(
+            1 for row in tower_accounts
+            if str(row.get("refresh_status") or "").upper() == "READY"
+        )
+        failed_accounts = sum(
+            1 for row in tower_accounts
+            if str(row.get("refresh_status") or "").upper() in {"BROKER_REFRESH_FAILED", "ERROR", "TIMEOUT"}
+        )
+        broker_positions_unconfirmed = bool(
+            tower_accounts
+            and ready_accounts == 0
+            and failed_accounts > 0
+            and tower_age_seconds is not None
+            and tower_age_seconds <= 15 * 60
+            and failed_refresh_is_newer
+        )
+    if broker_positions_unconfirmed:
+        suppressed_positions = [row for row in (payload.get("positions") or []) if isinstance(row, dict)]
+        payload["positions"] = []
+        payload["positions_found"] = 0
+        payload["positions_requiring_review"] = 0
+        payload["risk_review_count"] = 0
+        payload["status"] = "WAIT_ACCOUNT_REFRESH"
+        payload["source"] = "broker_refresh_failed_positions_unconfirmed"
+        payload["position_data_warning"] = "BROKER_REFRESH_FAILED_POSITIONS_UNCONFIRMED"
+        payload["historical_positions_suppressed"] = len(suppressed_positions)
+        payload["freshness"] = {
+            "ok": False,
+            "status": "UNCONFIRMED",
+            "blockers": ["IBKR_ACCOUNT_REFRESH_REQUIRED"],
+            "warnings": [],
+            "not_order_instruction": True,
+        }
+        payload["summary"] = {
+            "positions_found": 0,
+            "positions_requiring_review": 0,
+            "risk_review_count": 0,
+            "status": "WAIT_ACCOUNT_REFRESH",
+        }
+        payload["portfolio_risk"] = {
+            "status": "UNCONFIRMED",
+            "risk_flags": ["IBKR_ACCOUNT_REFRESH_REQUIRED"],
+            "position_count": 0,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+        payload["battle_plan"] = {
+            "battle_plan_version": "active_position_battle_plan_v1",
+            "steps": [{
+                "type": "DATA",
+                "priority": 1,
+                "label": "Volver a iniciar sesión en TWS y refrescar posiciones IBKR.",
+                "reason": "IBKR_ACCOUNT_REFRESH_REQUIRED",
+            }],
+            "top_step": {
+                "type": "DATA",
+                "priority": 1,
+                "label": "Volver a iniciar sesión en TWS y refrescar posiciones IBKR.",
+                "reason": "IBKR_ACCOUNT_REFRESH_REQUIRED",
+            },
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
     payload["console_endpoint"] = "/active-positions"
     payload["not_order_instruction"] = True
     payload["execution_authorized"] = False
     payload["can_operate"] = False
-    try:
-        state_alerts = shared_position_state_alerts.update_from_management(payload, POSITION_STATE_ALERTS_PATH)
+    if broker_positions_unconfirmed:
         payload["state_change_alerts"] = {
-            "state_alert_version": state_alerts.get("state_alert_version"),
-            "latest_alerts": state_alerts.get("latest_alerts") or [],
-            "alert_count": len(state_alerts.get("alerts") or []),
-            "not_order_instruction": True,
-            "execution_authorized": False,
+            **shared_position_state_alerts.summary(POSITION_STATE_ALERTS_PATH),
+            "update_skipped": True,
+            "skip_reason": "IBKR_ACCOUNT_REFRESH_REQUIRED",
         }
-    except Exception:
-        payload["state_change_alerts"] = shared_position_state_alerts.summary(POSITION_STATE_ALERTS_PATH)
+    else:
+        try:
+            state_alerts = shared_position_state_alerts.update_from_management(payload, POSITION_STATE_ALERTS_PATH)
+            payload["state_change_alerts"] = {
+                "state_alert_version": state_alerts.get("state_alert_version"),
+                "latest_alerts": state_alerts.get("latest_alerts") or [],
+                "alert_count": len(state_alerts.get("alerts") or []),
+                "not_order_instruction": True,
+                "execution_authorized": False,
+            }
+        except Exception:
+            payload["state_change_alerts"] = shared_position_state_alerts.summary(POSITION_STATE_ALERTS_PATH)
     payload["management_journal"] = shared_position_management_journal.summary(POSITION_MANAGEMENT_JOURNAL_PATH)
     payload["management_journal_evaluation"] = shared_position_management_journal.evaluate_against_management(
         payload,
@@ -5255,6 +5764,32 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
                 "{} acciones permanecen sin esta estructura y conservan toda su exposición.".format(free_shares)
                 if free_shares is not None else "Revisar las acciones restantes antes de ejecutar."
             ),
+        )
+    futures_structure = item.get("futures_structure") if isinstance(item.get("futures_structure"), dict) else {}
+    if futures_structure and len(futures_structure.get("legs") or []) > 1:
+        type_labels = {
+            "CALENDAR_SPREAD": "Spread calendario reconocido",
+            "RATIO_CALENDAR_SPREAD": "Spread calendario en proporción reconocido",
+            "MULTI_EXPIRY_DIRECTIONAL": "Exposición de futuros con varios vencimientos",
+        }
+        legs = []
+        for leg in futures_structure.get("legs") or []:
+            if not isinstance(leg, dict):
+                continue
+            quantity = console_float_or_none(leg.get("quantity")) or 0
+            side = "Largo" if quantity > 0 else "Corto"
+            legs.append("{} {} · vence {}".format(side, abs(quantity), leg.get("expiration") or "N/D"))
+        structure_html = """
+        <div class="position-linkage">
+          <div><b>{state}</b><span>Neto {net} · Bruto {gross} contrato(s)</span></div>
+          <p>{legs}</p>
+          <small>La consola conserva las piernas del broker, pero genera una sola revisión para la estructura completa.</small>
+        </div>
+        """.format(
+            state=html_escape(type_labels.get(futures_structure.get("structure_type"), "Estructura de futuros reconocida")),
+            net=html_escape(futures_structure.get("net_contracts")),
+            gross=html_escape(futures_structure.get("gross_contracts")),
+            legs=html_escape(" · ".join(legs)),
         )
     expiry_comparison_html = ""
     if expiry_comparison.get("available") and expiry_comparison.get("near_expiration"):
@@ -5503,16 +6038,19 @@ def render_position_management_card(
         </details>
         """.format(alternatives=render_position_alternatives(related_stock))
     return """
-    <article class="alert-card position-card">
-      <div class="alert-title"><strong>{ticker}</strong><em>{action}</em></div>
-      <div class="review-line">{reason}</div>
-      <p class="position-summary">{contract}</p>
+    <details class="alert-card position-card" data-position-card data-ticker="{ticker_raw}">
+      <summary class="position-card-summary">
+        <span class="position-card-identity"><strong>{ticker}</strong><small>{contract}</small></span>
+        <span class="position-card-recommendation"><small>Recomendación principal</small><b>{primary_action}</b><em>{reason}</em></span>
+        <span class="position-card-open">Ver gestión</span>
+      </summary>
+      <div class="position-card-body">
       {structure}
       {alternatives}
       {related_stock}
       {review_control}
-      <details class="position-details"{open_attr}>
-        <summary>Ver detalles y registrar gestión</summary>
+      <details class="position-details">
+        <summary>Ver datos, tesis y registrar gestión</summary>
         <div class="position-detail-grid">
           <div><span>Estado</span><strong>{state}</strong></div>
           <div><span>Prima capturada</span><strong>{capture}</strong></div>
@@ -5562,7 +6100,8 @@ def render_position_management_card(
         </form>
         <details class="technical-details"><summary>Ver diagnóstico técnico</summary><small>Advertencias: {warnings} · Bloqueadores: {blockers}</small></details>
       </details>
-    </article>
+      </div>
+    </details>
     """.format(
         ticker=html_escape(item.get("ticker") or "UNKNOWN"),
         ticker_raw=html_escape(item.get("ticker") or ""),
@@ -5578,9 +6117,9 @@ def render_position_management_card(
         entry_date=html_escape(item.get("entry_date") or ""),
         roll_plan=html_escape(thesis.get("roll_plan") or ""),
         action=position_badge(item.get("management_action"), primary_action),
+        primary_action=html_escape(primary_action),
         state=position_badge(item.get("exit_state")),
-        open_attr=" open" if needs_attention else "",
-        contract=html_escape(" | ".join(str(bit) for bit in contract_bits if bit not in [None, ""])),
+        contract=html_escape(" · ".join(friendly_operator_state(bit) if str(bit).upper() in FRIENDLY_OPERATOR_STATES else str(bit) for bit in contract_bits if bit not in [None, ""])),
         structure=structure_html,
         capture=html_escape(str(item.get("premium_capture_pct") if item.get("premium_capture_pct") is not None else "pendiente")),
         pnl=html_escape(str(item.get("unrealized_pl") if item.get("unrealized_pl") is not None else "pendiente")),
@@ -5629,10 +6168,21 @@ def render_active_positions_panel(
         str(item.get("position_id") or "")
         for item in fully_covered_stock_by_ticker.values()
     }
+    linked_futures_ids = {
+        str(item.get("position_id") or "")
+        for item in positions
+        if isinstance(item, dict)
+        and isinstance(item.get("futures_structure"), dict)
+        and len(item["futures_structure"].get("legs") or []) > 1
+        and str(item.get("position_id") or "") != str(item["futures_structure"].get("primary_position_id") or "")
+    }
     visible_positions = [
         item for item in positions
-        if isinstance(item, dict) and str(item.get("position_id") or "") not in linked_stock_ids
+        if isinstance(item, dict)
+        and str(item.get("position_id") or "") not in linked_stock_ids
+        and str(item.get("position_id") or "") not in linked_futures_ids
     ]
+    positions_unconfirmed = payload.get("position_data_warning") == "BROKER_REFRESH_FAILED_POSITIONS_UNCONFIRMED"
     if positions:
         priority = lambda item: 0 if any(word in str((item or {}).get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW")) else 1
         cards = "".join(
@@ -5645,6 +6195,13 @@ def render_active_positions_panel(
             for item in sorted(visible_positions, key=priority)[:8]
             if isinstance(item, dict)
         )
+    elif positions_unconfirmed:
+        cards = """
+        <div class="tiles">
+          <div class="tile">Posiciones sin confirmar<span>Inicia sesión en TWS y actualiza todas las cuentas y posiciones.</span></div>
+          <div class="tile">Histórico protegido<span>{count} registro(s) viejo(s) no se muestran como posiciones abiertas.</span></div>
+        </div>
+        """.format(count=html_escape(payload.get("historical_positions_suppressed", 0)))
     else:
         cards = """
         <div class="tiles">
@@ -5662,14 +6219,24 @@ def render_active_positions_panel(
         if isinstance(alert, dict)
     )
     alerts_html = ""
-    if alert_rows:
+    if state_alerts.get("update_skipped"):
+        alerts_html = """
+        <div class="daily-open-summary summary-amber">
+          <h3>Historial de estados en pausa</h3>
+          <p>No se generan aperturas ni cierres detectados hasta confirmar las posiciones con IBKR.</p>
+        </div>
+        """
+    elif alert_rows:
         alerts_html = """
         <div class="daily-open-summary summary-amber">
           <h3>Cambios de estado detectados</h3>
           <ol class="timeline">{rows}</ol>
         </div>
         """.format(rows=alert_rows)
-    next_text = "Sin acción inmediata; mantener monitoreo." if not payload.get("manual_review_required") else "Hay posiciones que requieren revisión manual."
+    if positions_unconfirmed:
+        next_text = "No se pudo confirmar la cartera: inicia sesión en TWS y refresca IBKR."
+    else:
+        next_text = "Sin acción inmediata; mantener monitoreo." if not payload.get("manual_review_required") else "Hay posiciones que requieren revisión manual."
     if summary.get("top_action"):
         next_text = "{} Prioridad: {} — {}.".format(
             next_text,
@@ -5688,12 +6255,18 @@ def render_active_positions_panel(
         <div><span>Datos</span><strong>{freshness}</strong><small>{age}</small></div>
         <div><span>Seguimiento</span><strong>{pending_followup}</strong><small>pendiente(s)</small></div>
       </div>
-      <div class="alert-grid">{cards}</div>
+      <div class="position-explorer-tools">
+        <label for="position-search">Buscar una posición</label>
+        <input id="position-search" type="search" placeholder="Escribe un ticker, por ejemplo NFLX" autocomplete="off">
+        <small id="position-search-status">Selecciona una posición para ver su recomendación y alternativas.</small>
+      </div>
+      <div class="position-list" id="position-list">{cards}</div>
+      <div id="position-search-empty" class="empty-state" hidden><strong>No encontré ese ticker</strong><span>Prueba con otro símbolo o actualiza IBKR.</span></div>
       {alerts_html}
-      <form id="position-refresh" method="post" action="/bridge" class="hero-actions" data-busy="Refrescando posiciones IBKR" data-busy-detail="Lee broker, posiciones, opciones y publica snapshot. No ejecuta ordenes.">
+    <form id="position-refresh" method="post" action="/control-tower-refresh" class="hero-actions" data-busy="Actualizando cuentas y posiciones IBKR" data-busy-detail="Lee en modo read-only todas las cuentas, capacidad y posiciones. No ejecuta órdenes.">
         <input name="alias" value="{alias}" type="hidden">
-        <button{disabled}>Refresh posiciones IBKR</button>
-        <span>Úsalo cuando la consola indique datos desactualizados o incompletos.</span>
+        <button{disabled}>Actualizar cuentas y posiciones IBKR</button>
+        <span>Es el refresh recomendado cuando la consola indique datos desactualizados o incompletos.</span>
       </form>
     </section>
     """.format(
@@ -5704,7 +6277,7 @@ def render_active_positions_panel(
         risk_count=html_escape(payload.get("risk_review_count", 0)),
         portfolio_status=html_escape(portfolio_risk.get("status") or "UNKNOWN"),
         freshness=html_escape(friendly_operator_state(freshness.get("status") or "UNKNOWN")),
-        age=html_escape(friendly_age(payload.get("generated_at"))),
+        age=html_escape("requiere refresh" if positions_unconfirmed else friendly_age(payload.get("generated_at"))),
         journal_count=html_escape(journal_summary.get("event_count", 0)),
         pending_followup=html_escape(journal_evaluation.get("pending_followup_count", 0)),
         cards=cards,
@@ -5820,9 +6393,12 @@ def effective_daily_open_status(report: dict[str, Any]) -> str:
     status = str(report.get("status") or "UNKNOWN")
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     foundation = checks.get("foundation_health") if isinstance(checks.get("foundation_health"), dict) else {}
+    mechanics_keys = ["refresh_step", "capacity_refresh_step", "rsp_refresh_step", "coberturas_rsp", "publish_step"]
+    if "control_tower_refresh_step" in report:
+        mechanics_keys.insert(0, "control_tower_refresh_step")
     mechanics_ok = all(
         isinstance(report.get(key), dict) and report[key].get("ok") is True
-        for key in ["refresh_step", "capacity_refresh_step", "rsp_refresh_step", "coberturas_rsp", "publish_step"]
+        for key in mechanics_keys
     )
     production_ok = (checks.get("production_auth") or {}).get("ok") is True and (checks.get("v32_operator_today") or {}).get("ok") is True
     if status == "ACTION_REQUIRED" and mechanics_ok and production_ok and foundation.get("status") == "FAIL":
@@ -5851,6 +6427,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
     canslim = report.get("canslim_step") if isinstance(report.get("canslim_step"), dict) else {}
     refresh = report.get("refresh_step") if isinstance(report.get("refresh_step"), dict) else {}
+    control_tower_refresh = report.get("control_tower_refresh_step") if isinstance(report.get("control_tower_refresh_step"), dict) else {}
     capacity_refresh = report.get("capacity_refresh_step") if isinstance(report.get("capacity_refresh_step"), dict) else {}
     rsp_refresh = report.get("rsp_refresh_step") if isinstance(report.get("rsp_refresh_step"), dict) else {}
     rsp = report.get("coberturas_rsp") if isinstance(report.get("coberturas_rsp"), dict) else {}
@@ -5892,7 +6469,12 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
     if overall == "EVIDENCE_COLLECTION_ONLY":
         next_action = "Apertura tecnica completa. Continuar acumulando evidencia; no cambiar parametros ni forzar ENTRY_READY."
     level = "green" if overall in {"READY", "WAIT_MARKET", "REVIEW_REQUIRED"} and refresh.get("ok") else "amber"
-    if overall == "ACTION_REQUIRED" or (refresh.get("ok") is False and not recovered_after_timeout) or publish.get("ok") is False:
+    if (
+        overall == "ACTION_REQUIRED"
+        or control_tower_refresh.get("ok") is False
+        or (refresh.get("ok") is False and not recovered_after_timeout)
+        or publish.get("ok") is False
+    ):
         level = "red"
     rsp_status = status_word(rsp_refresh.get("ok"), good="ACTUALIZADO")
     if rsp_refresh.get("skipped"):
@@ -5914,6 +6496,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
       <div class="tiles compact-status">
         <div class="tile">CANSLIM<span>{canslim_status}. Candidatos actualizados si el paso marco OK.</span></div>
         <div class="tile">IBKR/TWS<span>{ibkr_status}: {ibkr_detail}</span></div>
+        <div class="tile">Cuentas IBKR<span>{control_tower_status}. Control Tower confirma posiciones y capacidad multicuenta.</span></div>
         <div class="tile">Capacidad de cuenta<span>{capacity_status}. Lectura incluida en la apertura.</span></div>
         <div class="tile">Coberturas RSP<span>{rsp_status}: {rsp_detail}</span></div>
         <div class="tile">Publicacion<span>{publish_status}: {publish_detail}</span></div>
@@ -5929,6 +6512,7 @@ def render_daily_open_summary(result: dict[str, Any]) -> str:
         canslim_status=html_escape(status_word(canslim.get("ok"))),
         ibkr_status=html_escape(ibkr_status),
         ibkr_detail=html_escape(ibkr_detail),
+        control_tower_status=html_escape(status_word(control_tower_refresh.get("ok"), good="ACTUALIZADAS")),
         capacity_status=html_escape(status_word(capacity_refresh.get("ok"), good="ACTUALIZADA")),
         rsp_status=html_escape(rsp_status),
         rsp_detail=html_escape(rsp_detail),
@@ -6363,7 +6947,7 @@ def render_portfolio_factor_panel(profiles: dict[str, Any], active: dict[str, An
 
 def load_portfolio_rebalance(profiles: dict[str, Any], active: dict[str, Any]) -> dict[str, Any]:
     persisted = shared_risk_operations.load_json(PORTFOLIO_REBALANCE_PATH)
-    if persisted.get("rebalance_engine_version"):
+    if persisted.get("rebalance_engine_version") or isinstance(persisted.get("candidates"), list):
         return persisted
     tower = load_control_tower(profiles, active)
     return shared_portfolio_rebalance.evaluate(
@@ -6779,6 +7363,23 @@ def render_executive_report_panel() -> str:
     portfolio = daily.get("portfolio") or {}
     evidence = daily.get("decisions_and_results") or {}
     weekly_activity = weekly.get("period_activity") or {}
+    live_risk = shared_risk_operations.load_json(PORTFOLIO_RISK_PATH)
+    daily_age_seconds = cache_age_seconds(daily.get("generated_at"))
+    historical = daily_age_seconds is None or daily_age_seconds > 24 * 60 * 60
+    report_context = (
+        "HISTÓRICO · generado {}. No reemplaza el estado actual. Riesgo actual: {} · score {}."
+        .format(
+            age_label(daily.get("generated_at")) if daily.get("generated_at") else "sin fecha",
+            live_risk.get("status") or "SIN LECTURA",
+            live_risk.get("risk_score") if live_risk.get("risk_score") is not None else "N/D",
+        )
+        if historical
+        else "VIGENTE · generado {}. Riesgo actual: {} · score {}.".format(
+            age_label(daily.get("generated_at")),
+            live_risk.get("status") or "SIN LECTURA",
+            live_risk.get("risk_score") if live_risk.get("risk_score") is not None else "N/D",
+        )
+    )
     pending_rows = []
     for item in daily.get("pending_actions") or []:
         pending_rows.append("""
@@ -6798,6 +7399,7 @@ def render_executive_report_panel() -> str:
         <div><h2>Reporte ejecutivo</h2><p>Resumen diario y semanal de cartera, riesgo, evidencia y mantenimiento.</p></div>
         <strong>{status}</strong>
       </div>
+      <div class="notice"><strong>{report_context}</strong></div>
       <div class="notice"><strong>{headline}</strong></div>
       <div class="control-facts">
         <div><span>Cuentas</span><strong>{accounts}</strong></div>
@@ -6827,6 +7429,7 @@ def render_executive_report_panel() -> str:
         status_class=html_escape(str(daily.get("status") or "unknown").lower()),
         status=html_escape(daily.get("status") or "SIN REPORTE"),
         headline=html_escape(daily.get("headline") or "Sin lectura ejecutiva."),
+        report_context=html_escape(report_context),
         accounts=html_escape(portfolio.get("account_count") or 0),
         risk=html_escape(portfolio.get("risk_status") or "UNKNOWN"),
         risk_score=html_escape(portfolio.get("risk_score") if portfolio.get("risk_score") is not None else "N/D"),
@@ -7251,6 +7854,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     operator_payload = console_operator_payload(prefer_cache=prefer_cache)
     v31_payloads = console_v31_payloads(prefer_cache=prefer_cache)
     operator_payload = merge_remote_futures_into_operator(operator_payload, v31_payloads)
+    operator_payload = merge_local_canslim_context(operator_payload)
     reports = merge_remote_tradingview_report(console_reports(), v31_payloads)
     position_payload = console_active_position_management(snapshot, v31_payloads)
     risk_payload = load_portfolio_risk(profiles, active)
@@ -7259,6 +7863,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     refresh_meta, job_panel = render_job_panel(job_id)
     manual_review_html = render_v31_manual_review_panel(v31_payloads)
     coberturas = render_coberturas_inline_panel(rsp_payload)
+    canslim_radar = render_canslim_radar_panel(operator_payload)
     v31_console_support = render_support_bundle(
         "Estado Ejecutivo y Revision Manual V31",
         render_v31_executive_panel(v31_payloads),
@@ -7372,10 +7977,31 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .operator-task small {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
           .operator-task strong {{ margin-top:2px; }} .operator-task p {{ color:var(--muted); font-size:.84rem; margin-top:2px; line-height:1.3; }}
           .operator-task > b {{ color:var(--accent-strong); font-size:.82rem; white-space:nowrap; }}
+          .remaining-priorities {{ margin-top:12px; }}
+          .remaining-priorities > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
           .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}
           .empty-state span {{ color:var(--muted); }}
           .secondary-workspace {{ margin-top:14px; }}
           .position-overview {{ margin:14px 0; border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+          .position-explorer-tools {{ display:grid; grid-template-columns:minmax(180px,.35fr) minmax(240px,1fr); gap:5px 12px; align-items:center; margin:14px 0; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--soft); }}
+          .position-explorer-tools label {{ margin:0; }}
+          .position-explorer-tools input {{ width:100%; }}
+          .position-explorer-tools small {{ grid-column:2; color:var(--muted); }}
+          .position-list {{ display:grid; gap:10px; }}
+          .position-card {{ display:block; padding:0; overflow:hidden; }}
+          .position-card[hidden] {{ display:none; }}
+          .position-card-summary {{ cursor:pointer; list-style:none; display:grid; grid-template-columns:minmax(150px,.55fr) minmax(260px,1.45fr) auto; gap:14px; align-items:center; padding:14px 16px; }}
+          .position-card-summary::-webkit-details-marker {{ display:none; }}
+          .position-card[open] > .position-card-summary {{ border-bottom:1px solid var(--line); background:var(--soft); }}
+          .position-card-identity strong,.position-card-identity small,.position-card-recommendation small,.position-card-recommendation b,.position-card-recommendation em {{ display:block; }}
+          .position-card-identity strong {{ font-size:1.2rem; }}
+          .position-card-identity small,.position-card-recommendation small {{ color:var(--muted); margin-top:3px; font-size:.75rem; }}
+          .position-card-recommendation b {{ margin:2px 0; }}
+          .position-card-recommendation em {{ color:var(--muted); font-style:normal; font-size:.8rem; line-height:1.3; }}
+          .position-card-open {{ color:var(--accent-strong); font-size:.8rem; font-weight:900; white-space:nowrap; }}
+          .position-card[open] .position-card-open {{ font-size:0; }}
+          .position-card[open] .position-card-open::before {{ content:"Cerrar"; font-size:.8rem; }}
+          .position-card-body {{ padding:14px 16px 16px; }}
           .position-summary {{ color:var(--muted); margin:10px 0 0; line-height:1.35; }}
           .position-details,.operator-subsection {{ border:1px solid var(--line); border-radius:10px; margin-top:12px; background:#fff; overflow:hidden; }}
           .position-details > summary,.operator-subsection > summary {{ cursor:pointer; padding:12px 14px; font-weight:850; color:var(--accent-strong); }}
@@ -7426,6 +8052,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .operator-nav {{ position:sticky; top:8px; z-index:10; display:flex; gap:6px; align-items:center; overflow-x:auto; margin:0 0 14px; padding:7px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.96); box-shadow:0 8px 24px rgba(17,24,39,.10); backdrop-filter:blur(10px); }}
           .operator-nav a {{ flex:0 0 auto; color:var(--ink); text-decoration:none; font-size:.84rem; font-weight:850; border-radius:7px; padding:8px 10px; }}
           .operator-nav a:hover,.operator-nav a:focus-visible {{ color:var(--accent-strong); background:#eaf6f2; outline:none; }}
+          .operator-nav a[aria-current="page"] {{ color:white; background:var(--accent-strong); }}
+          .console-view {{ min-width:0; }}
+          .console-view[hidden] {{ display:none; }}
+          .view-intro {{ display:flex; justify-content:space-between; gap:18px; align-items:end; margin:4px 0 12px; padding:4px 2px; }}
+          .view-intro h2,.view-intro p {{ margin:0; }}
+          .view-intro p {{ color:var(--muted); max-width:620px; }}
           .operator-workspace {{ padding:0; overflow:hidden; margin-top:18px; background:#fbfcfe; }}
           .operator-workspace > summary {{ cursor:pointer; list-style:none; display:flex; justify-content:space-between; gap:18px; align-items:center; padding:17px 20px; }}
           .operator-workspace > summary::-webkit-details-marker {{ display:none; }}
@@ -7574,6 +8206,20 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-data-required {{ border-color:#f2c47c; background:#fff8e8; }}
           .position-data-required a {{ color:#174ea6; font-weight:900; }}
           .operator-alerts-panel {{ border-left:6px solid #d97706; }}
+          .canslim-panel {{ border-left:6px solid #2563eb; }}
+          .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
+          .canslim-list {{ display:grid; gap:8px; }}
+          .canslim-row {{ display:grid; grid-template-columns:minmax(120px,.35fr) minmax(260px,1.25fr) minmax(180px,.7fr); gap:12px; align-items:center; border:1px solid var(--line); border-radius:9px; padding:11px 13px; background:#fff; }}
+          .canslim-row strong,.canslim-row small,.canslim-row b,.canslim-row span {{ display:block; }}
+          .canslim-row small,.canslim-row span {{ color:var(--muted); font-size:.78rem; line-height:1.3; }}
+          .remaining-canslim {{ margin-top:10px; }}
+          .remaining-canslim > summary,.futures-history > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
+          .remaining-canslim .canslim-row {{ margin-top:8px; }}
+          .futures-history {{ margin-top:12px; border:1px solid var(--line); border-radius:9px; padding:8px 12px; background:var(--soft); }}
+          .futures-history ol {{ list-style:none; margin:8px 0 0; padding:0; display:grid; gap:6px; }}
+          .futures-event {{ display:grid; grid-template-columns:90px minmax(160px,.55fr) minmax(260px,1fr); gap:10px; align-items:center; border-left:4px solid #16a34a; padding:8px 10px; background:white; }}
+          .futures-event.event-quarantine {{ border-left-color:#b42318; }}
+          .futures-event span,.futures-event small {{ color:var(--muted); font-size:.78rem; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
           .support-details .panel {{ box-shadow:none; margin-top:12px; }}
@@ -7693,7 +8339,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .section-head {{ display:block; }} .section-head p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.canslim-row,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>
@@ -7707,30 +8353,27 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <h1 class="sr-only">Stock Ultimus Console</h1>
           {health}
           <nav class="operator-nav" aria-label="Navegación principal de la consola">
-            <a href="#hoy">Inicio</a>
-            <a href="#pendientes">Pendientes</a>
-            <a href="#riesgo">Riesgo</a>
-            <a href="#posiciones">Posiciones</a>
-            <a href="#coberturas-rsp">RSP</a>
-            <a href="#analisis">Análisis</a>
-            <a href="#herramientas">Administración</a>
+            <a href="#view-hoy" data-console-view-link="hoy">Hoy</a>
+            <a href="#view-cartera" data-console-view-link="cartera">Cartera</a>
+            <a href="#view-oportunidades" data-console-view-link="oportunidades">Oportunidades</a>
+            <a href="#view-historial" data-console-view-link="historial">Historial</a>
+            <a href="#view-configuracion" data-console-view-link="configuracion">Configuración</a>
             <a href="/guide">Ayuda</a>
           </nav>
-          {active_process}
-          {command_center}
-          {message}
-          {job_panel}
-          <details id="alertas" class="panel operator-workspace secondary-workspace"{alert_open}>
-            <summary><span>Alertas y diagnósticos<small>Señales operables, futuros intradía y eventos descartados por baja calidad.</small></span></summary>
-            <div class="workspace-body">{alerts}</div>
-          </details>
-          <div id="riesgo">{portfolio_risk}</div>
-          <div id="posiciones">{active_positions}</div>
-          {coberturas}
+          <section id="view-hoy" class="console-view" data-console-view="hoy">
+            {active_process}
+            {command_center}
+            {message}
+            {job_panel}
+          </section>
 
-          <details id="analisis" class="panel operator-workspace">
-            <summary><span>Análisis<small>Cartera avanzada, escenarios, resultados y aprendizaje.</small></span></summary>
-            <div class="workspace-body">
+          <section id="view-cartera" class="console-view" data-console-view="cartera">
+            <div class="view-intro"><div><p class="eyebrow">Cartera</p><h2>Posiciones, riesgo y capacidad</h2></div><p>Busca un ticker, abre sólo la posición que quieras gestionar y revisa primero la recomendación principal.</p></div>
+            <div id="riesgo">{portfolio_risk}</div>
+            <div id="posiciones">{active_positions}</div>
+            <details id="analisis-cartera" class="panel operator-workspace">
+              <summary><span>Análisis avanzado de cartera<small>Escenarios, factores, estrés, rebalanceo y simulaciones.</small></span></summary>
+              <div class="workspace-body">
               <details id="cartera" class="operator-subsection">
                 <summary>Cartera, riesgo y escenarios avanzados</summary>
                 {control_tower}
@@ -7740,17 +8383,39 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 {portfolio_whatif}
                 {portfolio_operations}
               </details>
-              <details id="resultados" class="operator-subsection">
+              </div>
+            </details>
+          </section>
+
+          <section id="view-oportunidades" class="console-view" data-console-view="oportunidades">
+            <div class="view-intro"><div><p class="eyebrow">Oportunidades</p><h2>CANSLIM, futuros, alertas y RSP</h2></div><p>Sigue el embudo desde candidato hasta decisión final; una alerta nunca ejecuta una orden.</p></div>
+            {canslim_radar}
+            <details id="alertas" class="panel operator-workspace secondary-workspace" open>
+              <summary><span>Futuros y alertas de entrada<small>Actividad de hoy, señales operables y motivos de descarte.</small></span></summary>
+              <div class="workspace-body">{alerts}</div>
+            </details>
+            {coberturas}
+          </section>
+
+          <section id="view-historial" class="console-view" data-console-view="historial">
+            <div class="view-intro"><div><p class="eyebrow">Historial</p><h2>Resultados y aprendizaje</h2></div><p>Consulta decisiones previas, efectividad, reportes y evolución del motor.</p></div>
+            <details id="analisis" class="panel operator-workspace" open>
+              <summary><span>Resultados y aprendizaje<small>Seguimiento de decisiones, alertas y reportes.</small></span></summary>
+              <div class="workspace-body">
+              <details id="resultados" class="operator-subsection" open>
                 <summary>Resultados, reportes y aprendizaje</summary>
                 {decision_outcomes}
                 {alert_effectiveness}
                 {executive_report}
                 {v31_learning}
               </details>
-            </div>
-          </details>
+              </div>
+            </details>
+          </section>
 
-          <details id="herramientas" class="panel operator-workspace">
+          <section id="view-configuracion" class="console-view" data-console-view="configuracion">
+          <div class="view-intro"><div><p class="eyebrow">Configuración</p><h2>Conexiones y mantenimiento</h2></div><p>Herramientas ocasionales para cuentas, publicación, diagnóstico y soporte.</p></div>
+          <details id="herramientas" class="panel operator-workspace" open>
             <summary><span>Administración<small>Cuentas, conexión, publicación, mantenimiento y diagnóstico técnico.</small></span></summary>
             <div class="workspace-body">
               {v31_console_support}
@@ -7791,9 +8456,63 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               {output}
             </div>
           </details>
+          </section>
           <footer>Decision support solamente. Esta pantalla no autoriza ordenes ni ejecuciones automaticas.</footer>
         </main>
         <script>
+          (() => {{
+            const views = Array.from(document.querySelectorAll("[data-console-view]"));
+            const viewLinks = Array.from(document.querySelectorAll("[data-console-view-link]"));
+            if (!views.length) return;
+            const targetViews = {{
+              hoy:"hoy", pendientes:"hoy",
+              riesgo:"cartera", posiciones:"cartera", cartera:"cartera", "analisis-cartera":"cartera",
+              "coberturas-rsp":"oportunidades", alertas:"oportunidades", oportunidades:"oportunidades",
+              analisis:"historial", resultados:"historial", historial:"historial",
+              herramientas:"configuracion", configuracion:"configuracion"
+            }};
+            const savedView = (() => {{ try {{ return localStorage.getItem("stockUltimusConsoleView"); }} catch (_) {{ return null; }} }})();
+            const hashTarget = window.location.hash.replace(/^#(?:view-)?/, "");
+            const initialView = targetViews[hashTarget] || targetViews[savedView] || "hoy";
+            const showView = (name, remember = true) => {{
+              const selected = targetViews[name] || "hoy";
+              views.forEach((view) => {{ view.hidden = view.dataset.consoleView !== selected; }});
+              viewLinks.forEach((link) => {{
+                if (link.dataset.consoleViewLink === selected) link.setAttribute("aria-current", "page");
+                else link.removeAttribute("aria-current");
+              }});
+              if (remember) {{ try {{ localStorage.setItem("stockUltimusConsoleView", selected); }} catch (_) {{}} }}
+            }};
+            showView(initialView, false);
+            viewLinks.forEach((link) => link.addEventListener("click", () => showView(link.dataset.consoleViewLink)));
+            document.addEventListener("click", (event) => {{
+              const anchor = event.target.closest('a[href^="#"]');
+              if (!anchor) return;
+              const targetId = anchor.getAttribute("href").slice(1);
+              const selected = targetViews[targetId.replace(/^view-/, "")];
+              if (!selected) return;
+              showView(selected);
+              if (!targetId.startsWith("view-")) setTimeout(() => document.getElementById(targetId)?.scrollIntoView({{behavior:"smooth", block:"start"}}), 0);
+            }});
+
+            const search = document.getElementById("position-search");
+            const cards = Array.from(document.querySelectorAll("[data-position-card]"));
+            const empty = document.getElementById("position-search-empty");
+            const status = document.getElementById("position-search-status");
+            if (search && cards.length) search.addEventListener("input", () => {{
+              const query = search.value.trim().toUpperCase();
+              let visible = 0;
+              cards.forEach((card) => {{
+                const matches = !query || (card.dataset.ticker || "").includes(query);
+                card.hidden = !matches;
+                if (matches) visible += 1;
+              }});
+              if (empty) empty.hidden = visible !== 0;
+              if (status) status.textContent = query ? `${{visible}} posición(es) coinciden con ${{query}}.` : "Selecciona una posición para ver su recomendación y alternativas.";
+              if (query && visible === 1) cards.find((card) => !card.hidden)?.setAttribute("open", "");
+            }});
+          }})();
+
           (() => {{
             const overlay = document.getElementById("busy-overlay");
             if (!overlay) return;
@@ -7858,10 +8577,33 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                     .then((response) => response.json())
                     .then((payload) => {{
                       const job = payload.job_id ? " Job: " + payload.job_id : "";
-                      const message = payload.message || (payload.ok ? "Refresh RSP iniciado." : "No pude iniciar Refresh RSP.");
-                      title.textContent = payload.already_running ? "Refresh RSP ya esta corriendo" : "Refresh RSP iniciado";
+                      const message = payload.message || (payload.ok ? "Proceso iniciado." : "No pude iniciar el proceso.");
+                      title.textContent = payload.already_running ? "El proceso ya está corriendo" : "Proceso iniciado";
                       detail.textContent = message + job;
                       if (statusTarget) statusTarget.textContent = message + job;
+                      if (payload.job_id && form.dataset.reloadOnDone === "true") {{
+                        const poll = () => fetch("/job-status?id=" + encodeURIComponent(payload.job_id), {{headers: {{"Accept": "application/json"}}}})
+                          .then((response) => response.json())
+                          .then((state) => {{
+                            const progress = state.progress || {{}};
+                            const progressText = progress.total ? ` ${{progress.completed || 0}}/${{progress.total}} · ${{progress.current || "finalizando"}}` : "";
+                            if (statusTarget) statusTarget.textContent = (state.label || "Actualización") + progressText;
+                            if (state.status === "DONE") {{
+                              if (statusTarget) statusTarget.textContent = "Actualización terminada. Recargando datos…";
+                              window.setTimeout(() => window.location.reload(), 450);
+                              return;
+                            }}
+                            if (state.status === "ERROR") {{
+                              title.textContent = "Actualización incompleta";
+                              detail.textContent = state.error || "Revisa el resultado del proceso.";
+                              if (statusTarget) statusTarget.textContent = "Actualización incompleta: " + (state.error || "fuente remota no disponible");
+                              return;
+                            }}
+                            window.setTimeout(poll, 900);
+                          }})
+                          .catch(() => window.setTimeout(poll, 1600));
+                        window.setTimeout(poll, 500);
+                      }}
                     }})
                     .catch((error) => {{
                       title.textContent = "Refresh RSP no confirmado";
@@ -7911,6 +8653,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         alert_open=" open" if any(alert_operator_visibility(alert) in {"HIGH_PROBABILITY", "RADAR"} and not is_handled_alert(alert) for alert in ((operator_payload.get("data") or {}).get("active_alerts") or []) if isinstance(alert, dict)) else "",
         active_positions=render_active_positions_panel(snapshot, v31_payloads, active, position_payload),
         v31_learning=render_v31_learning_panel(v31_payloads),
+        canslim_radar=canslim_radar,
         coberturas=coberturas,
         v31_console_support=v31_console_support,
         question_support=question_support,
@@ -8437,23 +9180,18 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(page)
             elif self.path == "/refresh-remote":
-                result = fetch_remote_json(
-                    "/gpt_v32_operator_today?limit=12",
-                    timeout=REMOTE_VERIFY_TIMEOUT_SECONDS,
-                    prefer_cache=False,
-                )
-                # Refresh every source used by the console, including the
-                # durable futures ledger and daily report, in the same action.
-                console_v31_payloads(prefer_cache=False)
-                data = result.get("data") if isinstance(result.get("data"), dict) else {}
-                if result.get("ok"):
-                    comparison = selected_vs_published(active_profile(), latest_master_snapshot(), result)
-                    self.send_html(operator_state_message(data, comparison.get("display_alias") or ""))
+                existing = running_web_job_by_label("Actualización remota de consola")
+                job_id = start_remote_refresh_job()
+                response = {
+                    "ok": True,
+                    "job_id": job_id,
+                    "already_running": bool(existing),
+                    "message": "La consola está actualizando sus fuentes una por una.",
+                }
+                if "application/json" in (self.headers.get("Accept") or ""):
+                    self.send_json(response)
                 else:
-                    self.send_html(
-                        "No pude actualizar estado remoto: {}".format(result.get("error") or "unknown"),
-                        status=400,
-                    )
+                    self.send_html(response["message"], result={"job_id": job_id, "returncode": 0})
             elif self.path == "/notification-preview":
                 email_preview = fetch_remote_json("/v32_operator_daily_summary_email/preview?force=true", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
                 push_preview = fetch_remote_json("/v32_operator_pushover_notify/preview?force=true", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)

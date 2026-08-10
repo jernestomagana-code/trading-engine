@@ -597,6 +597,10 @@ def score_companyfacts(
         (m_score, 0.15),
     ]
     available_weight = sum(weight for value, weight in weighted if value is not None)
+    available_components = [name for name, value in {
+        "C": c_score, "A": a_score, "L": l_score, "M": m_score,
+    }.items() if value is not None]
+    missing_components = [name for name in ["C", "A", "L", "M"] if name not in available_components]
     total = None
     if available_weight > 0:
         total = round(sum((value or 0) * weight for value, weight in weighted if value is not None) / available_weight, 2)
@@ -610,6 +614,10 @@ def score_companyfacts(
         "canslim_score": total,
         "canslim_passes": passes,
         "canslim_rating": rating,
+        "canslim_component_coverage_pct": round(len(available_components) / 4 * 100.0, 1),
+        "canslim_available_components": available_components,
+        "canslim_missing_components": missing_components,
+        "canslim_scope": "FULL_C_A_L_M" if not missing_components else "PARTIAL_AVAILABLE_COMPONENTS",
         "rating": rating,
         "canslim": {
             "available": True,
@@ -624,6 +632,10 @@ def score_companyfacts(
                 "M_market": m_score,
             },
             "minimum_score": minimum_score,
+            "component_coverage_pct": round(len(available_components) / 4 * 100.0, 1),
+            "available_components": available_components,
+            "missing_components": missing_components,
+            "scope": "FULL_C_A_L_M" if not missing_components else "PARTIAL_AVAILABLE_COMPONENTS",
         },
         "fundamental": {
             "eps_growth": metrics.get("quarterly_eps_growth"),

@@ -74,9 +74,28 @@ class PortfolioStressEngineTests(unittest.TestCase):
         result = stress.evaluate(payload, self.policy, reference=self.now)
 
         self.assertEqual(result["status"], "PARTIAL")
-        self.assertEqual(result["valuation_coverage_ratio"], 0.0)
+        self.assertEqual(result["valuation_coverage_ratio"], 1.0)
         self.assertEqual(result["estimated_value"], 2000.0)
-        self.assertIn("LOW_MARKET_VALUE_COVERAGE", result["warnings"])
+        self.assertIn("ESTIMATED_POSITION_VALUATION", result["warnings"])
+        self.assertNotIn("LOW_MARKET_VALUE_COVERAGE", result["warnings"])
+
+    def test_futures_spreads_use_reference_notional_and_preserve_worst_account(self):
+        payload = self.payload({
+            "remanente": self.snapshot("remanente", 10000, [
+                {"ticker": "MNQ", "security_type": "FUT", "quantity": -1, "market_value": 0, "market_price": 30000, "multiplier": 2},
+            ]),
+            "retiro": self.snapshot("retiro", 10000, [
+                {"ticker": "MNQ", "security_type": "FUT", "quantity": 1, "market_value": 0, "market_price": 30000, "multiplier": 2},
+            ]),
+        })
+
+        result = stress.evaluate(payload, self.policy, reference=self.now)
+        severe = next(item for item in result["scenarios"] if item["scenario_id"] == "severe_drawdown")
+
+        self.assertEqual(severe["estimated_pnl"], 0.0)
+        self.assertGreater(severe["worst_account_loss_nav_ratio"], 0.0)
+        self.assertEqual(result["worst_loss_nav_ratio"], severe["worst_account_loss_nav_ratio"])
+        self.assertIn(severe["severity"], {"HIGH", "CRITICAL"})
 
     def test_portfolio_normalizer_keeps_market_data_but_redacts_account(self):
         contract = SimpleNamespace(

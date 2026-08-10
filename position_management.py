@@ -345,6 +345,7 @@ def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any
             "stock_position_ids": [],
             "short_call_position_ids": [],
             "short_call_legs": [],
+            "futures_legs": [],
         })
         qty = safe_float(row.get("position_size"), 0.0) or 0.0
         sec_type = safe_upper(row.get("sec_type"))
@@ -367,6 +368,16 @@ def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any
                 })
             if right == "P" and qty < 0:
                 group["short_puts"] += abs(qty)
+        if sec_type in ["FUT", "CONTFUT"]:
+            group["futures_legs"].append({
+                "position_id": row.get("position_id"),
+                "expiration": row.get("expiration"),
+                "quantity": qty,
+                "multiplier": safe_float(row.get("multiplier")),
+                "market_price": safe_float(row.get("market_price")),
+                "average_cost": safe_float(row.get("avg_cost") or row.get("average_cost")),
+                "unrealized_pl": safe_float(row.get("unrealized_pl")),
+            })
     for group in groups.values():
         shares = max(0.0, safe_float(group.get("shares"), 0.0) or 0.0)
         share_lots = int(shares // DEFAULT_CONTRACT_MULTIPLIER)
@@ -379,6 +390,34 @@ def _position_groups(positions: list[dict[str, Any]]) -> dict[str, dict[str, Any
         group["covered_call_coverage_pct"] = (
             round((covered_contracts / share_lots) * 100.0, 1) if share_lots else 0.0
         )
+        futures_legs = sorted(
+            group.get("futures_legs") or [],
+            key=lambda leg: str(leg.get("expiration") or "99999999"),
+        )
+        if futures_legs:
+            long_contracts = sum(max(0.0, safe_float(leg.get("quantity"), 0.0) or 0.0) for leg in futures_legs)
+            short_contracts = sum(abs(min(0.0, safe_float(leg.get("quantity"), 0.0) or 0.0)) for leg in futures_legs)
+            expirations = sorted({str(leg.get("expiration") or "") for leg in futures_legs if leg.get("expiration")})
+            if long_contracts and short_contracts and len(expirations) > 1:
+                structure_type = "CALENDAR_SPREAD" if long_contracts == short_contracts else "RATIO_CALENDAR_SPREAD"
+            elif len(expirations) > 1:
+                structure_type = "MULTI_EXPIRY_DIRECTIONAL"
+            else:
+                structure_type = "OUTRIGHT_FUTURES"
+            group["futures_structure"] = {
+                "structure_version": "futures_structure_v1",
+                "structure_type": structure_type,
+                "primary_position_id": futures_legs[0].get("position_id"),
+                "linked_position_ids": [leg.get("position_id") for leg in futures_legs],
+                "legs": futures_legs,
+                "long_contracts": long_contracts,
+                "short_contracts": short_contracts,
+                "net_contracts": long_contracts - short_contracts,
+                "gross_contracts": long_contracts + short_contracts,
+                "expirations": expirations,
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }
     return groups
 
 
@@ -1958,6 +1997,35 @@ def build_active_position_management(snapshot: dict[str, Any], playbook: dict[st
                 report["management_action"] = "REFRESH_DATA"
                 report["manual_review_required"] = True
                 report["urgency_rank"] = ACTION_PRIORITY["REFRESH_DATA"]
+    # Futures with opposing expiries are one economic structure. Keep every
+    # broker leg for traceability, but expose a single review and recommendation.
+    for report in reports:
+        if safe_upper(report.get("sec_type")) not in {"FUT", "CONTFUT"}:
+            continue
+        group = groups.get(_position_group_key(report), {})
+        structure = group.get("futures_structure") if isinstance(group.get("futures_structure"), dict) else {}
+        if not structure:
+            continue
+        report["futures_structure"] = structure
+        primary = str(structure.get("primary_position_id") or "")
+        current = str(report.get("position_id") or "")
+        if len(structure.get("legs") or []) > 1 and current != primary:
+            report["exit_state"] = "LINKED_STRUCTURE_LEG"
+            report["management_action"] = "NO_ACTION_RECOMMENDED"
+            report["manual_review_required"] = False
+            report["blockers"] = []
+            report["reasons"] = ["Leg linked to the primary futures structure; manage both expiries together."]
+            report["urgency_rank"] = 0
+        elif len(structure.get("legs") or []) > 1:
+            label = "calendar spread" if structure.get("structure_type") == "CALENDAR_SPREAD" else "ratio calendar spread"
+            report["strategy"] = "FUTURES_{}".format(structure.get("structure_type"))
+            report["reasons"] = [
+                "Detected {} across {} expiries; review the combined net exposure, roll and exit plan, not each leg separately.".format(
+                    label, len(structure.get("expirations") or [])
+                )
+            ]
+            report["blockers"] = ["FUTURES_STRUCTURE_RISK_PLAN_REVIEW_REQUIRED"]
+        report["management_outcome_template"] = _management_outcome_template(report)
     reports = sorted(reports, key=lambda item: item.get("urgency_rank", 0), reverse=True)
     action_counts: dict[str, int] = {}
     state_counts: dict[str, int] = {}

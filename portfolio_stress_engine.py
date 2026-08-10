@@ -51,15 +51,29 @@ def load_policy(path: Path | None = None) -> dict[str, Any]:
 
 
 def _position_value(position: dict[str, Any]) -> tuple[float | None, str]:
+    security_type = str(position.get("security_type") or "").upper()
     market_value = _number(position.get("market_value"))
-    if market_value is not None:
+    if market_value is not None and (security_type not in {"FUT", "CONTFUT"} or market_value != 0):
         return market_value, "MARKET_VALUE"
     quantity = _number(position.get("quantity"))
     average_cost = _number(position.get("average_cost"))
-    if quantity is None or average_cost is None:
+    if quantity is None:
         return None, "UNAVAILABLE"
-    security_type = str(position.get("security_type") or "").upper()
     multiplier = _number(position.get("multiplier"))
+    if security_type in {"FUT", "CONTFUT"}:
+        reference = _number(position.get("market_price") or position.get("price"))
+        closes = position.get("historical_closes") if isinstance(position.get("historical_closes"), list) else []
+        if reference is None and closes:
+            reference = _number(closes[-1])
+        if reference is not None:
+            return round(quantity * reference * (multiplier or 1.0), 4), "FUTURES_REFERENCE_NOTIONAL"
+        # IBKR averageCost for futures is commonly already expressed as the
+        # contract value. Do not multiply it a second time.
+        if average_cost is not None:
+            return round(quantity * average_cost, 4), "FUTURES_AVERAGE_COST_NOTIONAL"
+        return None, "UNAVAILABLE"
+    if average_cost is None:
+        return None, "UNAVAILABLE"
     # IBKR averageCost for options may already include the multiplier. Avoid
     # silently multiplying it twice; mark the fallback as an estimate instead.
     factor = 1.0 if security_type in {"OPT", "FOP"} else (multiplier or 1.0)
@@ -124,11 +138,17 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any], *, r
         })
 
     valued_total = exact_value + estimated_value
-    coverage_ratio = round(exact_value / valued_total, 6) if valued_total > 0 else (1.0 if not unavailable_positions else 0.0)
+    # Estimated references still cover the position for scenario purposes;
+    # disclose their basis separately instead of calling the portfolio absent.
+    coverage_ratio = 1.0 if valued_total > 0 and not unavailable_positions else (
+        round(exact_value / valued_total, 6) if valued_total > 0 else (1.0 if not unavailable_positions else 0.0)
+    )
     if coverage_ratio < (_number(policy.get("minimum_valuation_coverage_ratio")) or 0.80):
         warnings.append("LOW_MARKET_VALUE_COVERAGE")
     if unavailable_positions:
         warnings.append("POSITIONS_WITHOUT_VALUATION")
+    if estimated_value:
+        warnings.append("ESTIMATED_POSITION_VALUATION")
 
     scenario_results = []
     thresholds = policy.get("loss_thresholds") if isinstance(policy.get("loss_thresholds"), dict) else {}
@@ -153,7 +173,11 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any], *, r
             })
         consolidated_pnl = round(consolidated_pnl, 2)
         loss_ratio = max(0.0, -consolidated_pnl / consolidated_nav) if consolidated_nav > 0 else 0.0
-        account_results.sort(key=lambda row: row["estimated_pnl"])
+        account_results.sort(key=lambda row: row["loss_nav_ratio"], reverse=True)
+        worst_account_loss = max((row["loss_nav_ratio"] for row in account_results), default=0.0)
+        consolidated_severity = _severity(loss_ratio, thresholds)
+        account_severity = _severity(worst_account_loss, thresholds)
+        severity_order = {"INFO": 0, "WATCH": 1, "HIGH": 2, "CRITICAL": 3}
         scenario_results.append({
             "scenario_id": str(scenario.get("id") or "scenario"),
             "name": str(scenario.get("name") or scenario.get("id") or "Escenario"),
@@ -161,11 +185,17 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any], *, r
             "estimated_pnl": consolidated_pnl,
             "loss_nav_ratio": round(loss_ratio, 6),
             "projected_nav": round(consolidated_nav + consolidated_pnl, 2),
-            "severity": _severity(loss_ratio, thresholds),
+            "severity": account_severity if severity_order[account_severity] > severity_order[consolidated_severity] else consolidated_severity,
+            "consolidated_severity": consolidated_severity,
+            "worst_account_loss_nav_ratio": round(worst_account_loss, 6),
+            "worst_account_severity": account_severity,
             "most_exposed_account": account_results[0]["account_alias"] if account_results else "",
             "accounts": account_results,
         })
-    scenario_results.sort(key=lambda row: row["estimated_pnl"])
+    scenario_results.sort(
+        key=lambda row: max(row.get("loss_nav_ratio") or 0.0, row.get("worst_account_loss_nav_ratio") or 0.0),
+        reverse=True,
+    )
     gross = sum(ticker_values.values())
     concentrations = [
         {"ticker": ticker, "gross_value": round(value, 2), "gross_share": round(value / gross, 6) if gross else 0.0}
@@ -187,7 +217,8 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any], *, r
         "unavailable_position_count": int(unavailable_positions),
         "worst_scenario_id": worst.get("scenario_id") or "",
         "worst_estimated_pnl": worst.get("estimated_pnl"),
-        "worst_loss_nav_ratio": worst.get("loss_nav_ratio"),
+        "worst_loss_nav_ratio": max(worst.get("loss_nav_ratio") or 0.0, worst.get("worst_account_loss_nav_ratio") or 0.0),
+        "worst_account_loss_nav_ratio": worst.get("worst_account_loss_nav_ratio"),
         "scenarios": scenario_results,
         "concentrations": concentrations,
         "warnings": sorted(set(warnings)),

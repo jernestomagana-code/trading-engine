@@ -33,7 +33,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("docs", installer.SERVICE_COPY_DIRS)
         self.assertIn("tools", installer.SERVICE_COPY_DIRS)
 
-    def test_opener_prefers_permanent_service_before_terminal_fallback(self):
+    def test_opener_prefers_permanent_service_before_repair_launcher(self):
         command = " ".join(installer.opener_plist_payload()["ProgramArguments"])
 
         self.assertIn("launchctl kickstart", command)
@@ -44,35 +44,122 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         source = CONSOLE_SOURCE.read_text()
 
         self.assertIn('class="operator-nav"', source)
-        self.assertIn('href="#hoy"', source)
-        self.assertIn('href="#pendientes">Pendientes</a>', source)
-        self.assertIn('href="#coberturas-rsp">RSP</a>', source)
-        self.assertIn('id="analisis" class="panel operator-workspace"', source)
+        for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion"):
+            self.assertIn(f'data-console-view-link="{view}"', source)
+            self.assertIn(f'data-console-view="{view}"', source)
+        self.assertIn('id="analisis" class="panel operator-workspace" open', source)
         self.assertIn('id="cartera" class="operator-subsection"', source)
-        self.assertIn('id="resultados" class="operator-subsection"', source)
-        self.assertIn('id="herramientas" class="panel operator-workspace"', source)
+        self.assertIn('id="resultados" class="operator-subsection" open', source)
+        self.assertIn('id="herramientas" class="panel operator-workspace" open', source)
         self.assertIn('href="/guide">Ayuda</a>', source)
         self.assertIn('class="panel command-center command-{level}"', source)
+        self.assertIn('Tus tres prioridades', source)
+        self.assertIn('id="position-search"', source)
+        self.assertIn('data-position-card', source)
         self.assertIn('"Ultima apertura"', source)
         self.assertIn('"RSP OK"', source)
         self.assertIn("Ver {len(secondary_alerts)} alertas adicionales", source)
+        self.assertIn('id="canslim-radar"', source)
+        self.assertIn("De preselección C/A/L/M a decisión final", source)
+        self.assertIn("Evaluados por el motor", source)
+        self.assertIn("{contract_evaluated} con contrato · {final_evaluated} en compuerta final", source)
+        self.assertIn("Actividad de futuros recibida hoy", source)
+        self.assertIn('<details id="alertas" class="panel operator-workspace secondary-workspace" open>', source)
         risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
         positions_index = source.index('<div id="posiciones">{active_positions}</div>')
-        rsp_index = source.index("          {coberturas}\n", positions_index)
-        tools_index = source.index('<details id="herramientas" class="panel operator-workspace">')
+        rsp_index = source.index("            {coberturas}\n", positions_index)
+        tools_index = source.index('<details id="herramientas" class="panel operator-workspace" open>')
         self.assertLess(risk_index, positions_index)
         self.assertLess(positions_index, rsp_index)
         self.assertNotIn("{coberturas}", source[tools_index:source.index("</details>", tools_index)])
 
+    def test_futures_history_explains_mobile_filter_and_quarantine(self):
+        operator = {
+            "ok": True,
+            "data": {
+                "intraday_futures": {
+                    "daily_summary": {
+                        "entry": 1,
+                        "watch": 0,
+                        "snapshot": 0,
+                        "received": 2,
+                        "accepted": 1,
+                        "quarantined": 1,
+                        "processed_total": 1,
+                        "latest_signal": {
+                            "event": "ENTRY",
+                            "ticker": "USTEC.F",
+                            "direction": "LONG",
+                            "entry_price": 28486.13,
+                            "stop_price": 28435.92,
+                            "tp1_price": 28536.34,
+                            "tp2_price": 28586.55,
+                            "signal_actionability": "WATCH_ONLY",
+                            "confirmation_gate_status": "INSUFFICIENT",
+                            "confirmation_reasons": ["MOMENTUM"],
+                            "confirmation_conflicts": ["COUNTERTREND", "MACD", "RSI"],
+                            "decision_explanation": "Confirmación insuficiente; mantener en vigilancia.",
+                        },
+                        "latest_quarantined": {
+                            "ticker": "MES1!",
+                            "event": "ENTRY",
+                            "price": 7569,
+                            "missing_fields": ["session_state", "premarket_high"],
+                        },
+                        "recent_events": [{
+                            "ticker": "MES1!",
+                            "event": "ENTRY",
+                            "price": 7569,
+                            "received_at": "2026-08-03T13:47:00+00:00",
+                            "accepted": False,
+                            "missing_fields": ["session_state", "premarket_high"],
+                        }],
+                    }
+                }
+            },
+        }
+
+        html = console.render_intraday_futures_alerts([], operator)
+
+        self.assertIn("Celular: no enviado; no alcanzó ENTRY_READY", html)
+        self.assertIn("Actividad de futuros recibida hoy (1)", html)
+        self.assertIn("Última señal en cuarentena", html)
+        self.assertIn("session_state", html)
+
+    def test_canslim_context_is_visible_in_final_alerts(self):
+        operator = {"ok": True, "data": {"active_alerts": [], "diagnostic_alerts": [{"ticker": "NVDA"}]}}
+        candidates = {"candidates": [{
+            "ticker": "NVDA",
+            "canslim_score": 91,
+            "canslim_rating": "LEADER",
+            "canslim_passes": True,
+        }]}
+
+        from unittest.mock import patch
+        with patch.object(console, "load_json_file", return_value=candidates):
+            merged = console.merge_local_canslim_context(operator)
+
+        alert = merged["data"]["diagnostic_alerts"][0]
+        self.assertEqual(alert["canslim_score"], 91)
+        self.assertTrue(alert["canslim_passes"])
+        self.assertEqual(alert["canslim_rating"], "LEADER")
+
     def test_position_recommendations_use_full_width_responsive_layout(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")
 
-        self.assertIn(".positions-panel > .alert-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
+        self.assertIn(".position-list {{ display:grid; gap:10px; }}", source)
+        self.assertIn(".position-card-summary {{ cursor:pointer; list-style:none; display:grid;", source)
         self.assertIn(".position-structure-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr));", source)
         self.assertIn("@media (max-width:620px)", source)
+        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", source)
         self.assertIn(".position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
         self.assertIn(".position-comparison-scroll {{ overflow-x:auto; max-width:100%;", source)
         self.assertEqual(console.friendly_operator_state("REVIEW_RISK"), "Revisar riesgo")
+        self.assertEqual(console.friendly_operator_state("STALE"), "Desactualizados")
+        self.assertEqual(
+            console.friendly_operator_state("MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_DATA"),
+            "Gestionar la posición actual y esperar datos para una nueva entrada",
+        )
 
     def test_operator_guide_is_canonical_and_covers_navigation(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")
@@ -98,8 +185,9 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         command = console.daily_open_command()
 
         self.assertIn("--rsp-bridge-timeout", command)
-        self.assertEqual(command[command.index("--bridge-timeout") + 1], "600")
-        self.assertEqual(command[command.index("--rsp-bridge-timeout") + 1], "120")
+        self.assertEqual(command[command.index("--bridge-timeout") + 1], "180")
+        self.assertEqual(command[command.index("--rsp-bridge-timeout") + 1], "90")
+        self.assertEqual(command[command.index("--control-tower-timeout") + 1], "90")
         self.assertEqual(command[command.index("--capacity-timeout") + 1], "20")
         self.assertEqual(command[command.index("--read-timeout") + 1], "30")
         self.assertGreaterEqual(console.CONSOLE_DAILY_OPEN_TIMEOUT_SECONDS, 600)

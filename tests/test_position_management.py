@@ -861,6 +861,28 @@ class PositionManagementTests(unittest.TestCase):
         self.assertTrue(position["manual_review_required"])
         self.assertFalse(position["execution_authorized"])
 
+    def test_calendar_futures_legs_create_one_economic_review(self):
+        payload = position_management.build_active_position_management(
+            self.snapshot(
+                [
+                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": "20260918", "position_size": -1, "market_price": 30000},
+                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": "20261218", "position_size": 1, "market_price": 30100},
+                ],
+                {"MNQ": {"ticker": "MNQ", "trend": "NEUTRAL", "price": 30000}},
+            ),
+            playbook=self.playbook,
+        )
+
+        primary = next(item for item in payload["positions"] if item["futures_structure"]["primary_position_id"] == item["position_id"])
+        linked = next(item for item in payload["positions"] if item is not primary)
+
+        self.assertEqual(primary["futures_structure"]["structure_type"], "CALENDAR_SPREAD")
+        self.assertEqual(primary["futures_structure"]["net_contracts"], 0)
+        self.assertTrue(primary["manual_review_required"])
+        self.assertEqual(linked["exit_state"], "LINKED_STRUCTURE_LEG")
+        self.assertFalse(linked["manual_review_required"])
+        self.assertEqual(payload["positions_requiring_review"], 1)
+
     def test_gamma_context_store_upserts_manual_gamma(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gamma.json"

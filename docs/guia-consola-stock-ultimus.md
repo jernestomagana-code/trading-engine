@@ -4,6 +4,24 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 **Documento oficial del proyecto:** la consola muestra directamente este archivo mediante el botón **Ayuda**. Toda modificación que agregue, quite o cambie una sección, estado, botón o flujo operativo debe actualizar también esta guía. Las validaciones automáticas comprueban que las secciones principales de navegación continúen documentadas.
 
+## Cambios operativos de agosto de 2026
+
+- **Actualizar pantalla** trabaja en segundo plano, consulta cada fuente de
+  forma gradual, muestra avance y recarga al terminar. Si alguna fuente usa
+  respaldo o falla, el resultado queda marcado como parcial en lugar de
+  aparentar una actualización completa.
+- Las piernas de futuros de una misma cuenta y activo se agrupan como spread
+  calendario, spread en proporción o exposición multivencimiento. Se conserva
+  el detalle del broker, pero la consola presenta una sola revisión económica.
+- El estrés usa referencias nocionales específicas de futuros y conserva el
+  peor daño por cuenta aunque otra cuenta lo compense en el consolidado.
+- La telemetría móvil de futuros queda guardada de forma durable, incluyendo
+  fuente temporal, edad al solicitar el push y confirmación del proveedor.
+- CANSLIM muestra la cobertura real de C/A/L/M. Un score calculado con
+  componentes faltantes se identifica como parcial y se llama preselección.
+- El reporte ejecutivo distingue claramente una lectura vigente de una
+  histórica y muestra junto a ella el estado de riesgo actual.
+
 ## Cambios operativos de julio de 2026
 
 - El snapshot V31 se conserva de forma durable durante 24 horas para consulta,
@@ -51,15 +69,15 @@ Fuentes de información
                          │
                          ▼
               Stock Ultimus Console
-  Inicio → Pendientes → Riesgo → Posiciones → RSP
-                 → Análisis → Administración → Ayuda
+  Hoy → Cartera → Oportunidades → Historial
+              → Configuración → Ayuda
                          │
                          ▼
                  Revisión humana
             decisión y operación manual en IBKR
 ```
 
-La consola vive en tu Mac y abre en `http://127.0.0.1:8765/console`. El servicio se inicia automáticamente al entrar a tu sesión de macOS y vuelve a levantarse si el proceso se interrumpe. El archivo **Stock Ultimus Console.command** sirve como acceso directo y también como recuperación si el servicio permanente no estuviera disponible.
+La consola vive en tu Mac y abre en `http://127.0.0.1:8765/console`. Existe un solo dueño permanente del puerto `8765`: el servicio de macOS `com.stockultimus.local-console`. Se inicia automáticamente al entrar a tu sesión y vuelve a levantarse si el proceso se interrumpe. El archivo **Stock Ultimus Console.command** sirve como acceso directo y como reparador del servicio; nunca deja una segunda instancia manual compitiendo por el mismo puerto.
 
 ## 3. Cómo abrirla
 
@@ -70,6 +88,8 @@ La consola vive en tu Mac y abre en `http://127.0.0.1:8765/console`. El servicio
 
 El navegador puede cerrarse sin apagar el servicio. Volver a abrir el acceso directo recupera la misma consola.
 
+Si el acceso directo detecta una instalación antigua, código desactualizado o una instancia manual reconocida, detiene únicamente esa consola de Stock Ultimus, reinstala la copia permanente y abre la versión actual. Nunca sustituye silenciosamente un programa desconocido que esté usando el puerto.
+
 ## 4. La ruta rápida de cada día
 
 Ésta es la rutina recomendada para no perderse entre las funciones avanzadas.
@@ -79,23 +99,24 @@ El navegador puede cerrarse sin apagar el servicio. Volver a abrir el acceso dir
 1. Abre TWS/IB Gateway y confirma que la sesión esté desbloqueada.
 2. Abre la consola.
 3. Mira primero el estado de conexión superior.
-4. Cuando tengas una nueva lectura de niveles/gamma, guárdala desde **RSP → Actualizar lectura de mercado RSP**.
-5. Presiona **Ejecutar apertura diaria**. El ciclo valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
+4. Cuando tengas una nueva lectura de niveles/gamma, guárdala desde **Oportunidades → RSP → Actualizar lectura de mercado RSP**.
+5. Presiona **Ejecutar apertura diaria**. El ciclo actualiza primero el Control Tower y las posiciones de todas las cuentas, valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
 6. Espera a que el proceso muestre `DONE`. No vuelvas a presionar el botón mientras esté trabajando.
-7. Lee **Inicio** y sus **Pendientes priorizados**.
-8. Sigue el orden propuesto por la consola: **Riesgo**, **Posiciones**, **RSP** y después oportunidades/alertas.
+7. Lee **Hoy**: presenta una sola acción principal y un máximo de tres prioridades visibles.
+8. Sigue el enlace **Revisar**. La consola abrirá automáticamente **Cartera** u **Oportunidades**, según corresponda.
 
-La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. El radar diario consulta como máximo 14 subyacentes, 2 contratos por símbolo y 28 contratos en total. Mientras la consola muestre que está trabajando, no inicies una segunda apertura. La publicación final admite sus tres reintentos completos; una respuesta lenta de Render no debe cortar prematuramente el proceso.
+La apertura puede tardar varios minutos porque el refresh principal y el refresh específico de RSP son procesos separados. Para evitar que una consulta profunda de opciones deje todo a medias, la lectura multicuenta se ejecuta primero y cada etapa tiene un tiempo máximo acotado: aproximadamente 90 segundos para Control Tower y RSP, y 180 segundos para el puente principal. El radar diario consulta como máximo 14 subyacentes, 2 contratos por símbolo y 28 contratos en total. Mientras la consola muestre que está trabajando, no inicies una segunda apertura. La publicación final admite sus tres reintentos completos; una respuesta lenta de Render no debe cortar prematuramente el proceso.
 
 Durante la apertura, el puente reúne primero precios, posiciones y contratos en el entorno local. La publicación se realiza después como un snapshot consolidado; así una respuesta lenta de producción no detiene cada contrato individual.
 
 ### Durante la sesión
 
 1. Usa **Actualizar** para releer producción y buscar alertas nuevas.
-2. Si las posiciones o la capacidad se ven viejas, usa **Refresh posiciones IBKR**.
-3. Revisa primero alertas `RISK`, luego `ACTION` y después `WATCH`.
-4. Registra lo que hiciste con los botones de cada alerta o posición.
-5. Ejecuta cualquier operación real exclusivamente de forma manual en TWS.
+2. Si las posiciones o la capacidad se ven viejas, usa **Actualizar cuentas y posiciones IBKR**. Este botón consulta las tres cuentas configuradas, no sólo la cuenta activa.
+3. En **Cartera**, busca el ticker y abre únicamente la posición que quieras gestionar.
+4. En **Oportunidades**, revisa RSP, futuros y nuevas señales.
+5. Registra lo que hiciste con los botones de cada alerta o posición.
+6. Ejecuta cualquier operación real exclusivamente de forma manual en TWS.
 
 ### Al cierre
 
@@ -135,33 +156,32 @@ Las acciones técnicas de conexión y publicación quedaron dentro de **Más opc
 
 | Botón | Para qué sirve | Qué no hace |
 |---|---|---|
-| Ejecutar apertura diaria | Ejecuta CANSLIM, evalúa dinámicamente hasta 14 subyacentes con opciones, refresca IBKR y RSP 7–14 DTE, publica, prepara contexto conservador de futuros, reconcilia señales y genera el reporte. | No autoriza órdenes ni da por validado el contexto macro. |
-| Actualizar | Relee producción, GPT y alertas. | No cambia cuenta y no consulta profundamente IBKR. |
-| Validar conexión IBKR | Dentro de **Más opciones**; prueba TWS/API, cuenta y capacidad. | No hace un escaneo profundo de opciones. |
+| Ejecutar apertura diaria | Ejecuta CANSLIM, actualiza primero las cuentas y posiciones del Control Tower, evalúa dinámicamente hasta 14 subyacentes con opciones, refresca IBKR y RSP 7–14 DTE, publica, prepara contexto conservador de futuros, reconcilia señales y genera el reporte. | No autoriza órdenes ni da por validado el contexto macro. |
+| Actualizar pantalla | Relee producción, GPT y alertas gradualmente en segundo plano; muestra progreso y recarga al terminar. | No cambia cuenta ni consulta IBKR. Una fuente lenta puede quedar identificada como respaldo/parcial. |
+| Validar cuenta activa | Dentro de **Más opciones**; prueba TWS/API y capacidad únicamente para la cuenta seleccionada. | No actualiza las demás cuentas ni reconcilia toda la cartera. |
+| Actualizar cuentas y posiciones IBKR | Dentro de **Cartera → Posiciones activas**; actualiza en modo read-only todas las cuentas, capacidad, posiciones, riesgo, estrés y factores. | No coloca órdenes ni hace el escaneo profundo de oportunidades de la apertura diaria. |
 | Alinear contexto publicado | Dentro de **Más opciones**; corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
 
 Cuando aparezca **La consola está trabajando**, espera. Lanzar varios refresh simultáneos sólo duplica carga y dificulta interpretar qué resultado es el más reciente.
 
 ## 6. Navegación principal
 
-La barra fija permite saltar directamente a:
+La barra fija cambia entre cinco espacios de trabajo. Sólo se muestra uno a la vez para evitar una página interminable:
 
-1. **Inicio**
-2. **Pendientes**
-3. **Riesgo**
-4. **Posiciones**
-5. **RSP**
-6. **Análisis**
-7. **Administración**
-8. **Ayuda**
+1. **Hoy:** acción principal, tres prioridades y estado de la apertura.
+2. **Cartera:** riesgo, capacidad y explorador de posiciones.
+3. **Oportunidades:** Radar CANSLIM, futuros, alertas de entrada y RSP.
+4. **Historial:** resultados, efectividad, reportes y aprendizaje.
+5. **Configuración:** cuentas, conexiones, mantenimiento y diagnóstico.
+6. **Ayuda:** esta guía.
 
-Los primeros cinco destinos forman el flujo diario. **Análisis** y **Administración** permanecen cerrados y se abren sólo cuando hacen falta. Las alertas técnicas completas continúan disponibles desde el panel secundario **Alertas y diagnósticos**.
+La consola recuerda la última vista elegida después de una actualización. Los enlaces **Revisar** cambian de vista y llevan al bloque exacto. Las funciones avanzadas no desaparecieron: están plegadas dentro de **Cartera**, **Historial** o **Configuración**.
 
-## 7. Inicio y Pendientes
+## 7. Hoy y sus prioridades
 
-**Inicio** combina en una sola verdad el estado de conexión, riesgo consolidado, posiciones, RSP, alertas y última apertura. Ya no usa únicamente el conteo de un motor aislado.
+**Hoy** combina en una sola verdad el estado de conexión, riesgo consolidado, posiciones, RSP, alertas y última apertura. El encabezado responde primero **qué debes hacer ahora**. Debajo sólo aparecen las tres prioridades más importantes; si existen más, quedan dentro de **Ver los otros pendientes**.
 
-**Pendientes priorizados** convierte esas fuentes en una cola única. Cada elemento indica área, motivo y enlace **Revisar**. El orden es:
+**Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;
 2. posiciones con asignación, defensa o revisión;
@@ -186,21 +206,22 @@ actualizar la pantalla y usar las demás secciones. La indicación **Procesando*
 y la espera hasta `DONE` quedan reservadas para refrescos o checklists que sí
 deben terminar antes de repetir la misma acción.
 
-Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Análisis.
+Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Historial.
 
 ## 8. Alertas y diagnósticos
 
 Este panel permanece cerrado cuando no hay una señal operable. La consola separa:
 
 - **Alertas Operables:** configuraciones con suficiente calidad para revisión humana.
-- **Futuros Intradía:** señales nativas de MNQ/MES y señales Chris IA de USTEC.F/US500F recibidas desde TradingView.
+- **Radar CANSLIM:** presenta el embudo completo del día: universo analizado, preselecciones con score disponible ≥70, cobertura de componentes C/A/L/M, cuántas fueron evaluadas por el motor, cuáles tuvieron contrato o llegaron a la compuerta final y cuáles —si existe alguna— quedaron realmente `ENTRY_READY`. Si faltan L o M, el score se rotula como parcial. El total evaluado usa la unión de ambas rutas para mantener un embudo coherente aunque una señal final venga de otra fuente operativa. Una preselección CANSLIM no equivale a una recomendación de compra.
+- **Futuros Intradía:** señales nativas de MNQ/MES y señales Chris IA de USTEC.F/US500F recibidas desde TradingView. El bloque conserva la actividad recibida durante el día, incluso si una señal venció, fue degradada a vigilancia o quedó en cuarentena. Allí verás precio de disparo, stop, targets, resultado final, si se envió o no al celular y el motivo.
 - **Diagnóstico oculto:** casos con datos insuficientes, espera, bloqueo o calidad baja.
 - **Ya revisadas/en seguimiento/cerradas:** historial operativo reciente.
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
 La configuración productiva de TradingView contiene **7 alertas consolidadas**:
-`MNQ1!` y `MES1!` en 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;
+`MNQ1!` y `MES1!` en 1 minuto con confirmación técnica cerrada de 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;
 y Chris IA para `USTEC.F` y `US500F` en 15 minutos. Todas usan
 `Any alert() function call` y publican en `/technical_snapshot`. Tus alertas
 personales pueden coexistir, pero no cuentan dentro de esas siete. El inventario
@@ -279,9 +300,9 @@ El `score` de TradingView mide cuánto coincide la lectura con las reglas intern
 
 En **IBKR aplicada**, escribe una nota, el precio real de fill y la cantidad. Un seguimiento `Paper` nunca debe registrarse como una ejecución real.
 
-## 9. Bloque Posiciones
+## 9. Cartera y explorador de posiciones
 
-Muestra primero las posiciones que requieren atención. Cada tarjeta enseña inicialmente sólo la acción recomendada, el motivo y el contrato. **Ver detalles y registrar gestión** abre datos, tesis y acciones secundarias.
+La vista **Cartera** muestra primero el riesgo y después un explorador compacto de posiciones. Escribe un ticker —por ejemplo `NFLX`— y, si existe una sola coincidencia, su tarjeta se abre automáticamente. Cada fila enseña ticker, estructura y recomendación principal; los escenarios, formularios y diagnósticos permanecen cerrados hasta seleccionar **Ver gestión**.
 
 Cada posición incluye además **Posibilidades de gestión**. No es una lista genérica de botones: cambia según el instrumento. Las acciones largas comparan mantener, covered call parcial o total, protective put, collar, reducciones parciales y salida; las puts vendidas y covered calls comparan mantener, recomprar, rolar, asignación y defensa; las opciones largas y cualquier riesgo descubierto reciben rutas específicas. Cada posibilidad indica si está **lista para revisión**, si **falta cadena**, **falta precio**, **faltan datos** o conviene **esperar liquidez**.
 
@@ -317,7 +338,7 @@ Los strikes, vencimiento, bid, ask, cantidad y ganador cambian con el precio, la
 
 La tarjeta destaca primero una sola **Recomendación del motor**, que también puede ser **Mantener y monitorear**. Explica por qué la priorizó, su confianza y el contrato preferido cuando aplica. Las demás rutas quedan dentro de **Ver otras posibilidades** para no confundir la acción principal con una lista de opciones equivalentes.
 
-Cuando termines de evaluar una posición que requiere decisión humana, presiona **Marcar revisión completada**. La consola guarda una huella de la posición, el estado y los contratos recomendados, y la elimina de **Pendientes priorizados**. Volverá a aparecer si cambia la posición, la acción principal, la cantidad, el strike, el vencimiento o alguna pata de la estructura. Una posición marcada **Actualizar datos** no puede ocultarse sólo como revisada: usa **Ir a actualizar datos** y ejecuta **Refresh posiciones IBKR**; desaparecerá cuando el motor reciba la información necesaria.
+Cuando termines de evaluar una posición que requiere decisión humana, presiona **Marcar revisión completada**. La consola guarda una huella de la posición, el estado y los contratos recomendados, y la elimina de la cola de prioridades. Volverá a aparecer si cambia la posición, la acción principal, la cantidad, el strike, el vencimiento o alguna pata de la estructura. Una posición marcada **Actualizar datos** no puede ocultarse sólo como revisada: usa **Ir a actualizar datos** y ejecuta **Actualizar cuentas y posiciones IBKR**; desaparecerá cuando el motor reciba la información necesaria.
 
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
 
@@ -339,9 +360,9 @@ Cuando una covered call tiene **7 DTE o menos**, la tarjeta incorpora **Decisió
 
 Si la call está cerca o dentro del dinero y no existe un roll seguro visible, la recomendación prioriza respetar la posible asignación sobre improvisar un débito o bajar el strike. El costo de cierre usa el mark cuando IBKR no entrega el ask de la posición abierta; el roll usa el bid de la nueva call. Son estimaciones antes de comisiones e impuestos y siempre requieren revisión manual.
 
-Las posiciones abiertas de futuros (`FUT`), por ejemplo MNQ, también se importan desde la Torre de Control aunque no estén presentes en el snapshot antiguo de posiciones. Aparecen como revisión explícita de riesgo direccional: dirección, cantidad, vencimiento y valor de mercado. La consola exige revisar el plan de riesgo; no inventa stop ni objetivo cuando esos datos no existen y nunca cierra la posición automáticamente.
+Las posiciones abiertas de futuros (`FUT`), por ejemplo MNQ, también se importan desde la Torre de Control aunque no estén presentes en el snapshot antiguo de posiciones. Cuando existen piernas opuestas en vencimientos distintos de la misma cuenta y activo, la consola las reconoce como una sola estructura calendario o en proporción, muestra cantidad neta/bruta y exige una sola revisión del plan combinado. Una posición outright continúa apareciendo como riesgo direccional. La consola no inventa stop ni objetivo cuando esos datos no existen y nunca cierra la posición automáticamente.
 
-En **Capacidad y administración operativa → Contexto técnico complementario** puedes seleccionar cualquier activo abierto y pegar el mismo JSON o texto usado para RSP. Spot, soportes, resistencias, expected move y gamma complementan la lectura automática; no sustituyen las velas ni convierten la recomendación en una orden.
+En **Configuración → Contexto técnico complementario** puedes seleccionar cualquier activo abierto y pegar el mismo JSON o texto usado para RSP. Spot, soportes, resistencias, expected move y gamma complementan la lectura automática; no sustituyen las velas ni convierten la recomendación en una orden.
 
 - estrategia, tipo de instrumento, cantidad, strike y DTE;
 - captura de prima, PnL y peso en cartera;
@@ -362,11 +383,11 @@ En **Capacidad y administración operativa → Contexto técnico complementario*
 - **Mantener sin cambios:** registra que se revisó y no se actuó.
 - **Revisé cierre / Revisé roll / Asignación / Riesgo:** deja evidencia de la revisión realizada; no ejecuta nada.
 - **Datos frescos:** registra que se actualizó la información.
-- **Refresh posiciones IBKR:** vuelve a leer broker, posiciones y opciones. Úsalo si aparece información vieja o incompleta.
+- **Actualizar cuentas y posiciones IBKR:** vuelve a leer broker, capacidad y posiciones de todas las cuentas. Úsalo si aparece información vieja o incompleta. Las alternativas profundas de opciones se completan durante la apertura diaria.
 
-## 10. Bloque principal Coberturas RSP
+## 10. Oportunidades y Coberturas RSP
 
-RSP forma parte del flujo principal, inmediatamente después de Posiciones. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.
+RSP forma parte de **Oportunidades**, junto con futuros y demás alertas de entrada. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.
 
 La estrategia RSP tiene una asignación de cuenta independiente: **RSP → retiro**. La cuenta activa general puede seguir siendo otra. Tanto **Apertura diaria** como **Actualizar sólo RSP** consultan posiciones, capacidad, cadena y margen de RSP usando `retiro`, sin cambiar la selección general del operador.
 
@@ -380,6 +401,10 @@ Al presionar **Guardar lectura RSP**, el JSON queda almacenado y se interpreta i
 Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue guardado; lo que falta es la respuesta completa de IBKR. El motor excluye de candidatos vigentes cualquier contrato que no provenga de la cadena RSP actual o quede fuera de 7–14 DTE. Los contratos históricos sólo pueden aparecer en diagnóstico técnico.
 
 La cadena semanal RSP se conserva en un archivo independiente: un refresco general ya no puede reemplazarla y, de forma recíproca, el refresh RSP tampoco reemplaza el radar general ni su Decision Desk. La apertura también actualiza la capacidad de la cuenta antes de comparar estrategias.
+
+La consola sólo usa posiciones remotas de RSP cuando el snapshot publicado es fresco. Una posición vencida o una copia remota vieja nunca puede reaparecer como si siguiera abierta si la lectura local actual de IBKR ya no la contiene. Si una actualización reciente falla para todas las cuentas, las posiciones históricas tampoco se presentan como abiertas ni generan falsos eventos de cierre: se muestra **Posiciones sin confirmar — iniciar sesión en TWS y refrescar IBKR**. Así la consola solicita confirmación del broker en vez de inventar una gestión sobre una posición fantasma.
+
+La capacidad RSP toma primero la lectura fresca de la cuenta `retiro` en Control Tower. Si el sidecar semanal de RSP es más antiguo, no puede conservar fondos disponibles de la jornada anterior. Para revisar un ciclo nuevo, tanto buying power como fondos disponibles deben soportar el capital de decisión estimado o confirmado; de lo contrario la salida es **WAIT_ACCOUNT_CAPACITY**, aunque una estrategia siga apareciendo como preferencia comparativa condicional.
 
 En capital, la consola diferencia:
 
@@ -402,6 +427,8 @@ Es la prioridad principal antes de aumentar exposición. Incluye:
 - evaluación por cuenta y consolidada.
 
 **Nivel de riesgo** resume severidad y cantidad de brechas. Un valor alto significa más riesgo; no es salud ni rendimiento esperado.
+
+Para opciones cortas, el motor reconcilia primero la estructura. Acciones largas cubren calls del mismo ticker y una opción larga equivalente empareja la pata corta de un spread definido. Los covered calls y spreads completamente emparejados no disparan por sí solos la alerta de opción corta sin cobertura; sólo los contratos residuales no confirmados pasan por los umbrales WATCH/HIGH/CRITICAL.
 
 ### Niveles
 
@@ -427,9 +454,13 @@ Se abre sólo para análisis de cartera o multicuenta.
 
 Consolida las cuentas configuradas sin mostrar sus identificadores reales. Enseña NAV, fondos disponibles, buying power, frescura y número de posiciones por alias.
 
+**Posiciones activas** usa la misma lectura consolidada: muestra operaciones de `remanente`, `retiro` y `marginal` en una sola lista, conservando el alias en cada estructura. Cambiar la cuenta activa ya no oculta una posición abierta en otra cuenta.
+
 Al publicar, la consola conserva de forma durable el contexto sanitizado de las cuentas —alias, alcance, capacidad y posiciones abiertas— para que un despliegue de Render no vuelva a `unknown` ni pierda la gestión de posiciones. Cada posición conserva su alias (`remanente`, `retiro` o `marginal`), por lo que dos contratos del mismo ticker en cuentas diferentes nunca se fusionan. El identificador real de IBKR no se publica ni se guarda en ese snapshot; permanece local en Keychain.
 
 `READY` significa que las cuentas esperadas tienen información utilizable. `WAIT_ACCOUNT_REFRESH` indica que alguna necesita actualización.
+
+La capacidad se considera confirmada únicamente cuando la lectura de cuenta existe **y** IBKR está conectado en el ciclo actual. Tener un valor guardado anteriormente no produce por sí solo el estado `Capacity OK`.
 
 ### Estrés y escenarios multicuenta
 
@@ -479,7 +510,7 @@ Resume diariamente y semanalmente cartera, riesgo, alertas, resultados y pendien
 
 Permite revisar desempeño y calidad por estrategia, fuente y régimen. El sistema no cambia parámetros por sí solo.
 
-## 14. Herramientas y administración
+## 14. Configuración y administración
 
 Es una zona de uso ocasional. Incluye:
 
@@ -496,7 +527,7 @@ Es una zona de uso ocasional. Incluye:
 
 ### Política de notificaciones móviles
 
-Pushover sólo envía condiciones `ENTRY`/`ENTRY_READY`. Ninguna opción de `force` puede convertir WATCH, RISK, validaciones, problemas de IBKR o resúmenes en una alerta móvil. Esos estados se consultan en **Inicio**, **Pendientes**, **Riesgo** y **Alertas y diagnósticos** dentro de la consola. La prueba manual del canal sigue disponible en Administración y sólo se ejecuta cuando el operador la solicita expresamente.
+Pushover sólo envía condiciones `ENTRY`/`ENTRY_READY`. Ninguna opción de `force` puede convertir WATCH, RISK, validaciones, problemas de IBKR o resúmenes en una alerta móvil. Esos estados se consultan en **Hoy**, **Cartera** y **Oportunidades** dentro de la consola. La prueba manual del canal sigue disponible en Configuración y sólo se ejecuta cuando el operador la solicita expresamente.
 
 En perfiles de cuenta:
 
@@ -542,7 +573,7 @@ Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos
 1. Abre o desbloquea TWS/IB Gateway.
 2. Confirma que el acceso API siga habilitado.
 3. Presiona **Validar IBKR**.
-4. Si valida, ejecuta **Refresh posiciones IBKR** o **Apertura diaria** según la necesidad.
+4. Si valida, ejecuta **Actualizar cuentas y posiciones IBKR** o **Apertura diaria** según la necesidad.
 
 ### Producción o contexto GPT no están alineados
 
@@ -554,6 +585,8 @@ Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos
 
 Ejecuta un refresh de IBKR y espera a que termine. No tomes decisiones de contrato, capacidad o riesgo usando un snapshot marcado como viejo.
 
+La navegación normal abre inmediatamente desde la última caché disponible, aunque esté marcada como antigua; no espera a producción y por eso cambiar de bloque no debe dejar la consola “pegada”. **Actualizar pantalla** renueva los endpoints productivos uno por uno en segundo plano, informa cuántas fuentes lleva y recarga sólo al terminar. Las escrituras de caché son atómicas: varios refresh simultáneos no deben truncar el archivo ni perder endpoints. El resumen de la actualización distingue fuentes vivas, de respaldo y fallidas. Un dato marcado como respaldo viejo nunca confirma posiciones ni capacidad: cuando las tres cuentas están `READY`, la lectura local multicuenta de IBKR es la fuente autoritativa.
+
 En días de mercado, el servicio programado repite apertura/publicación aproximadamente cada hora entre 07:35 y 13:35 hora local. Esto mantiene la cuenta, CANSLIM, cadenas y ranking dentro de la ventana de frescura. El botón manual sigue disponible si TWS estaba cerrado o una actualización programada falló.
 
 ### No aparecen oportunidades
@@ -563,6 +596,8 @@ Puede ser correcto. Revisa si el mercado está cerrado, si faltan eventos reales
 Para futuros, **Apertura diaria** también ejecuta la reconciliación de señales. Si TradingView recibió una señal pero la consola no pudo procesarla antes de un reinicio, la recupera desde el almacenamiento permanente, evita duplicarla y la incorpora a **Futuros Intradía** si todavía está vigente. Si esta comprobación falla, la apertura queda en `ACTION_REQUIRED` y no debe asumirse que “no hubo señales”.
 
 Los eventos productivos de MES/MNQ enviados con `is_validation:false` se consideran reales; solamente `is_validation:true` o una fuente expresamente sintética se excluye. El ciclo postcierre evalúa además `/intraday_futures/evaluate_pending`, de modo que los resultados de futuros no quedan fuera del aprendizaje diario cuando ya existe un precio posterior utilizable.
+
+**Foundation Health** puede reconstruir la evidencia de TradingView desde el ledger local o, si éste no existe en la instalación local, desde el snapshot productivo guardado en la caché remota. La cobertura operativa se calcula sobre decisiones que realmente requieren evidencia (`ENTRY_READY` o revisión manual); la cobertura histórica total se conserva como diagnóstico separado. Que Foundation quede en `WARN` por resultados pendientes significa que aún se está acumulando muestra, no que el motor esté roto.
 
 ### Una acción muestra error
 
@@ -586,7 +621,7 @@ Si sólo recuerdas una secuencia, usa ésta:
 
 ```text
 Abrir TWS → Abrir consola → Ejecutar apertura diaria → Esperar DONE
-→ Leer Inicio y Pendientes → Atender Riesgo
-→ Administrar Posiciones → Revisar RSP → Registrar lo realizado
+→ Leer Hoy → Seguir la prioridad principal → Revisar Cartera
+→ Revisar Oportunidades → Registrar lo realizado
 → Ejecutar manualmente en TWS sólo si tu revisión lo aprueba
 ```
