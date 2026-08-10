@@ -45,9 +45,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ibkr-host", default=os.getenv("IBKR_HOST", "127.0.0.1"))
     parser.add_argument("--ibkr-port", type=int, default=int(os.getenv("IBKR_PORT", "7496")))
     parser.add_argument("--read-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_READ_TIMEOUT", "30")))
-    parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "600")))
-    parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "120")))
+    parser.add_argument("--bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_BRIDGE_TIMEOUT", "180")))
+    parser.add_argument("--rsp-bridge-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_RSP_BRIDGE_TIMEOUT", "90")))
     parser.add_argument("--capacity-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_CAPACITY_TIMEOUT", "20")))
+    parser.add_argument("--control-tower-timeout", type=int, default=int(os.getenv("STOCK_ULTIMUS_CONTROL_TOWER_TIMEOUT", "90")))
     parser.add_argument("--rsp-account-alias", default=os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro"))
     parser.add_argument("--limit", type=int, default=int(os.getenv("STOCK_ULTIMUS_OPERATOR_ALERT_LIMIT", "10")))
     parser.add_argument("--json-out", default=os.getenv("STOCK_ULTIMUS_DAILY_OPEN_OUT", str(DEFAULT_OUT)))
@@ -362,6 +363,34 @@ def refresh_account_capacity(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def refresh_control_tower(args: argparse.Namespace) -> dict[str, Any]:
+    """Capture every account before the slower option-chain scan begins."""
+    per_request_timeout = max(
+        5,
+        min(15, int(os.getenv("STOCK_ULTIMUS_CONTROL_TOWER_ACCOUNT_TIMEOUT", "12"))),
+    )
+    command = [
+        sys.executable,
+        "scripts/refresh_multi_account_control_tower.py",
+        "--host",
+        args.ibkr_host,
+        "--port",
+        str(args.ibkr_port),
+        "--client-id",
+        os.getenv("STOCK_ULTIMUS_CONTROL_TOWER_CLIENT_ID", "84"),
+        "--timeout",
+        str(per_request_timeout),
+        "--json-out",
+        str(RUNTIME / "broker_control_tower_latest.json"),
+    ]
+    return run_command(
+        "refresh_multi_account_control_tower",
+        command,
+        timeout=max(args.control_tower_timeout, 45),
+        env=os.environ.copy(),
+    )
+
+
 def coberturas_rsp_summary() -> dict[str, Any]:
     try:
         payload = coberturas_engine.build_recommendation(RUNTIME)
@@ -545,6 +574,8 @@ def classify(report: dict[str, Any]) -> tuple[str, str]:
         if error in {"IBKR_PORT_CLOSED", "MISSING_INGEST_TOKEN"}:
             return "ACTION_REQUIRED", "Abrir/desbloquear TWS-IBKR o revisar el token de ingest antes de reintentar."
         return "ACTION_REQUIRED", "IBKR conecto, pero el escaneo principal no termino; revisar timeout/red de produccion y reintentar una sola vez."
+    if report.get("control_tower_refresh_step", {}).get("ok") is False:
+        return "ACTION_REQUIRED", "IBKR está abierto, pero no se pudieron confirmar las tres cuentas; revisar TWS y refrescar Control Tower."
     if report.get("capacity_refresh_step", {}).get("ok") is False:
         return "ACTION_REQUIRED", "IBKR conecto, pero no se pudo confirmar la capacidad actual de la cuenta para evaluar RSP."
     if report.get("rsp_refresh_step", {}).get("ok") is False:
@@ -633,6 +664,14 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.refresh:
         report["canslim_step"] = build_canslim_candidates(args)
+        if not ibkr_open:
+            report["control_tower_refresh_step"] = {
+                "name": "refresh_multi_account_control_tower",
+                "ok": False,
+                "error": "IBKR_PORT_CLOSED",
+            }
+        else:
+            report["control_tower_refresh_step"] = refresh_control_tower(args)
         if not ingest_token:
             report["refresh_step"] = {"name": "refresh_ibkr_bridge", "ok": False, "error": "MISSING_INGEST_TOKEN"}
         elif not ibkr_open:

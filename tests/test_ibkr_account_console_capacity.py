@@ -1,4 +1,5 @@
 import importlib.util
+import concurrent.futures
 import json
 import sys
 import tempfile
@@ -463,14 +464,15 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(payload["positions_found"], 1)
         self.assertEqual(payload["positions"][0]["management_action"], "REVIEW_CLOSE_OR_BUY_BACK")
         self.assertIn("Posiciones activas", html)
-        self.assertIn("Refresh posiciones IBKR", html)
+        self.assertIn("Actualizar cuentas y posiciones IBKR", html)
         self.assertIn("REVIEW_CLOSE_OR_BUY_BACK", html)
         self.assertIn("Revisé cierre", html)
         self.assertIn("Editar tesis y datos de entrada", html)
         self.assertIn('action="/position-context"', html)
         self.assertIn("Riesgo inmediato", html)
         self.assertIn("Seguimiento", html)
-        self.assertIn("Ver detalles y registrar gestión", html)
+        self.assertIn("Ver gestión", html)
+        self.assertIn("Ver datos, tesis y registrar gestión", html)
         self.assertIn("Recomendación del motor", html)
         self.assertIn("Ver otras", html)
         self.assertIn("Comprar para cerrar", html)
@@ -1086,6 +1088,128 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             finally:
                 account_console.REMOTE_CACHE_PATH = original_path
 
+    def test_remote_cache_concurrent_writes_remain_valid_and_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = account_console.REMOTE_CACHE_PATH
+            account_console.REMOTE_CACHE_PATH = Path(tmp) / "remote_cache.json"
+            try:
+                def write(index):
+                    account_console.write_remote_cache(
+                        f"/endpoint/{index}",
+                        {"ok": True, "token_present": True, "url": "https://example.test", "data": {"index": index}},
+                    )
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                    list(executor.map(write, range(24)))
+                payload = json.loads(account_console.REMOTE_CACHE_PATH.read_text())
+                self.assertEqual(len(payload["entries"]), 24)
+            finally:
+                account_console.REMOTE_CACHE_PATH = original_path
+
+    def test_cache_first_render_returns_stale_cache_without_network_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = account_console.REMOTE_CACHE_PATH
+            account_console.REMOTE_CACHE_PATH = Path(tmp) / "remote_cache.json"
+            account_console.REMOTE_CACHE_PATH.write_text(json.dumps({
+                "cache_version": "stock_ultimus_console_remote_cache_v2",
+                "cached_at": "2026-01-01T00:00:00+00:00",
+                "entries": {
+                    "/slow-endpoint": {
+                        "cached_at": "2026-01-01T00:00:00+00:00",
+                        "result": {
+                            "ok": True,
+                            "error": "",
+                            "token_present": True,
+                            "url": "https://example.test/slow-endpoint",
+                            "data": {"status": "CACHED"},
+                        },
+                    }
+                },
+            }))
+            try:
+                with patch.object(account_console.urllib.request, "urlopen", side_effect=AssertionError("network called")):
+                    result = account_console.fetch_remote_json("/slow-endpoint", prefer_cache=True)
+
+                self.assertEqual(result["data"]["status"], "CACHED")
+                self.assertTrue(result["stale_cache"])
+                self.assertEqual(result["live_error"], "CACHE_FIRST_CONSOLE_RENDER")
+            finally:
+                account_console.REMOTE_CACHE_PATH = original_path
+
+    def test_stale_remote_positions_do_not_resurrect_closed_local_position(self):
+        snapshot = {"available": True, "data": {"positions": []}}
+        remote = {
+            "active_positions": {
+                "ok": True,
+                "cached": True,
+                "stale_cache": True,
+                "data": {
+                    "position_management_version": "active_position_management_v7",
+                    "generated_at": "2026-08-03T14:57:46+00:00",
+                    "positions_found": 1,
+                    "positions": [{"ticker": "RSP", "position_id": "OLD-RSP-CALL"}],
+                },
+            }
+        }
+        with patch.object(account_console, "console_runtime_position_context", return_value={"positions": []}):
+            payload = account_console.console_active_position_management(snapshot, remote)
+
+        self.assertNotEqual(payload.get("source"), "remote_v31_active_position_management")
+        self.assertEqual(payload.get("stale_remote_position_count_ignored"), 1)
+        self.assertEqual(payload.get("position_data_warning"), "STALE_REMOTE_POSITIONS_IGNORED_REFRESH_IBKR")
+
+    def test_failed_current_broker_refresh_suppresses_historical_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tower_path = Path(tmp) / "broker_control_tower_latest.json"
+            alerts_path = Path(tmp) / "active_position_state_alerts.json"
+            tower_path.write_text(json.dumps({
+                "generated_at": account_console.now_iso(),
+                "status": "WAIT_ACCOUNT_REFRESH",
+                "accounts": [
+                    {"account_alias": "remanente", "refresh_status": "BROKER_REFRESH_FAILED"},
+                    {"account_alias": "retiro", "refresh_status": "BROKER_REFRESH_FAILED"},
+                    {"account_alias": "marginal", "refresh_status": "BROKER_REFRESH_FAILED"},
+                ],
+            }))
+            historical_context = {
+                "generated_at": "2026-08-07T18:00:00+00:00",
+                "positions": [{
+                    "ticker": "MNQ",
+                    "sec_type": "FUT",
+                    "position_size": 1,
+                    "account_alias": "remanente",
+                }],
+            }
+            snapshot = {
+                "available": True,
+                "path": str(Path(tmp) / "old_master_snapshot.json"),
+                "data": historical_context,
+            }
+            with (
+                patch.object(account_console, "CONTROL_TOWER_PATH", tower_path),
+                patch.object(account_console, "POSITION_STATE_ALERTS_PATH", alerts_path),
+                patch.object(account_console, "console_runtime_position_context", return_value=historical_context),
+            ):
+                payload = account_console.console_active_position_management(snapshot, {})
+
+        self.assertEqual(payload.get("status"), "WAIT_ACCOUNT_REFRESH")
+        self.assertEqual(payload.get("positions_found"), 0)
+        self.assertEqual(payload.get("positions"), [])
+        self.assertEqual(payload.get("historical_positions_suppressed"), 1)
+        self.assertEqual(payload.get("position_data_warning"), "BROKER_REFRESH_FAILED_POSITIONS_UNCONFIRMED")
+        self.assertTrue(payload.get("state_change_alerts", {}).get("update_skipped"))
+        self.assertEqual(payload.get("portfolio_risk", {}).get("status"), "UNCONFIRMED")
+        html = account_console.render_active_positions_panel(
+            snapshot,
+            {},
+            {"account_alias": "remanente"},
+            payload=payload,
+        )
+        self.assertIn("Posiciones sin confirmar", html)
+        self.assertIn("Historial de estados en pausa", html)
+        self.assertNotIn("Hay posiciones que requieren revisión manual", html)
+        self.assertNotIn("Cambios de estado detectados", html)
+
     def test_console_last_action_status_distinguishes_partial_bridge_refresh(self):
         result = {
             "returncode": 1,
@@ -1221,6 +1345,40 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(context["positions"], [])
         self.assertEqual(context["generated_at"], "2026-07-22T00:05:05+00:00")
         self.assertEqual(context["position_data_source"], "BROKER_CONTROL_TOWER")
+
+    def test_ready_control_tower_exposes_positions_from_every_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            active_path = runtime / "ibkr_account_active_profile.json"
+            active_path.write_text(json.dumps({"account_alias": "remanente", "account_scope": "remanente"}))
+            (runtime / "broker_control_tower_latest.json").write_text(json.dumps({
+                "status": "READY",
+                "generated_at": "2026-08-08T15:16:05+00:00",
+                "accounts": [
+                    {
+                        "account_alias": "remanente",
+                        "account_scope": "remanente",
+                        "refresh_status": "READY",
+                        "generated_at": "2026-08-08T15:15:59+00:00",
+                        "positions": [{"ticker": "MNQ", "security_type": "FUT", "quantity": -1}],
+                    },
+                    {
+                        "account_alias": "retiro",
+                        "account_scope": "retiro",
+                        "refresh_status": "READY",
+                        "generated_at": "2026-08-08T15:16:04+00:00",
+                        "positions": [{"ticker": "MES", "security_type": "FUT", "quantity": 1}],
+                    },
+                ],
+            }))
+            with patch.object(account_console, "RUNTIME", runtime), patch.object(
+                account_console, "ACTIVE_PATH", active_path
+            ):
+                context = account_console.console_runtime_position_context({"data": {"positions": []}})
+
+        self.assertEqual({row["ticker"] for row in context["positions"]}, {"MNQ", "MES"})
+        self.assertEqual({row["account_alias"] for row in context["positions"]}, {"remanente", "retiro"})
+        self.assertEqual(context["position_data_scope"], "ALL_READY_ACCOUNTS")
 
 
 if __name__ == "__main__":

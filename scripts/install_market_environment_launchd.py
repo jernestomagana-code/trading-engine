@@ -78,13 +78,13 @@ JOBS = {
     "environment-alerts": {
         "label": "com.stockultimus.environment-alerts",
         "program": "scripts/run_environment_alerts.py",
-        "args": ["--notify-watch", "--pushover"],
+        "args": ["--auto-repair", "--pushover"],
         "calendar": [
             {"Weekday": day, "Hour": hour, "Minute": minute}
             for day in range(1, 6)
             for hour, minute in [(8, 40), (9, 10), (9, 40)]
         ],
-        "description": "Sends environment Pushover alerts when monitor state needs attention.",
+        "description": "Repairs environment incidents silently and escalates only persistent ACTION failures.",
     },
     "security-audit": {
         "label": "com.stockultimus.security-audit",

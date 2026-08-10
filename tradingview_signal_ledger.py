@@ -384,10 +384,18 @@ def load_signal_events(path: str | Path | None = None, limit: int = 1000) -> lis
         limit = 1000
     target = Path(path) if path is not None else DEFAULT_LEDGER_PATH
     events = _read_events(target)
-    if events or target != DEFAULT_LEDGER_PATH:
+    if events:
         return events[-limit:]
+    if target.name != DEFAULT_LEDGER_PATH.name:
+        return []
     try:
-        cache = json.loads(DEFAULT_REMOTE_CACHE_PATH.read_text())
+        # Foundation Health passes an absolute runtime path while the default
+        # ledger constant is relative.  Resolve the cache next to the requested
+        # ledger so production evidence is not silently ignored.
+        remote_cache = target.parent / DEFAULT_REMOTE_CACHE_PATH.name
+        if not remote_cache.exists() and target == DEFAULT_LEDGER_PATH:
+            remote_cache = DEFAULT_REMOTE_CACHE_PATH
+        cache = json.loads(remote_cache.read_text())
         entry = (cache.get("entries") or {}).get("/v32_signal_events?limit=1000") or {}
         result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
         data = result.get("data") if isinstance(result.get("data"), dict) else {}

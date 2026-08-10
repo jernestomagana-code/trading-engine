@@ -15,9 +15,8 @@ on:
         description: "Pre-market context mode"
         required: true
         default: "base"
-  schedule:
-    # Weekday pre-market reminder before the US cash session.
-    - cron: "45 12 * * 1-5"
+  # Routine pre-market email delivery is intentionally disabled. The context
+  # remains available in the Stock Ultimus console and by manual dispatch.
 
 jobs:
   premarket-email:

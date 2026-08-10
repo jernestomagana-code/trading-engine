@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -175,6 +176,184 @@ class EnvironmentToolsTests(unittest.TestCase):
         self.assertEqual(report["classification"]["informational_count"], 1)
         self.assertIn("IBKR conectado", report["custom_message"])
         self.assertNotIn("FOUNDATION_BLOCKED", report["custom_message"])
+
+    def test_environment_incident_escalates_only_after_two_repairs_and_15_minutes(self):
+        monitor = {
+            "alert_level": "ACTION",
+            "status": "FOUNDATION_BLOCKED",
+            "findings": [{"code": "TV_COVERAGE_INVALID", "severity": "ACTION"}],
+        }
+        started = datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc)
+
+        first_state, first = run_environment_alerts.advance_incident_state(
+            monitor,
+            {},
+            repair_attempted=True,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            current_time=started,
+        )
+        second_state, second = run_environment_alerts.advance_incident_state(
+            monitor,
+            first_state,
+            repair_attempted=True,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            current_time=started + timedelta(minutes=20),
+        )
+
+        self.assertFalse(first["should_escalate"])
+        self.assertEqual(first["reason"], "AUTOREPAIR_ATTEMPTS_PENDING")
+        self.assertTrue(second["should_escalate"])
+        self.assertEqual(second["reason"], "PERSISTENT_AFTER_AUTOREPAIR")
+        self.assertEqual(second_state["active_incident"]["repair_attempts"], 2)
+
+    def test_environment_incident_recovery_is_logged_without_notification(self):
+        previous_state = {
+            "active_incident": {
+                "signature": "ACTION|FOUNDATION_BLOCKED|TV_COVERAGE_INVALID",
+                "first_seen_at": "2026-08-08T14:00:00+00:00",
+                "repair_attempts": 1,
+            }
+        }
+        monitor = {
+            "alert_level": "OK",
+            "status": "READY_FOR_MANUAL_REVIEW",
+            "findings": [],
+        }
+
+        state, incident = run_environment_alerts.advance_incident_state(
+            monitor,
+            previous_state,
+            repair_attempted=True,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            current_time=datetime(2026, 8, 8, 14, 5, tzinfo=timezone.utc),
+        )
+
+        self.assertFalse(incident["should_escalate"])
+        self.assertEqual(incident["reason"], "RECOVERED_SILENTLY")
+        self.assertIsNone(state["active_incident"])
+        self.assertFalse(state["last_recovery"]["notification_sent"])
+
+    def test_environment_incident_suppresses_repeat_for_24_hours(self):
+        monitor = {
+            "alert_level": "ACTION",
+            "status": "FOUNDATION_BLOCKED",
+            "findings": [{"code": "TV_COVERAGE_INVALID", "severity": "ACTION"}],
+        }
+        previous_state = {
+            "active_incident": {
+                "signature": run_environment_alerts.signature(monitor),
+                "first_seen_at": "2026-08-08T12:00:00+00:00",
+                "last_seen_at": "2026-08-08T13:00:00+00:00",
+                "repair_attempts": 2,
+                "notified_at": "2026-08-08T13:00:00+00:00",
+            }
+        }
+
+        _, incident = run_environment_alerts.advance_incident_state(
+            monitor,
+            previous_state,
+            repair_attempted=True,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            current_time=datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertFalse(incident["should_escalate"])
+        self.assertEqual(incident["reason"], "DUPLICATE_24H_SUPPRESSED")
+
+    def test_environment_incident_migrates_legacy_signature_by_action_code(self):
+        monitor = {
+            "alert_level": "ACTION",
+            "status": "WAITING_TV",
+            "findings": [
+                {"code": "TV_QUARANTINE_EVENTS", "severity": "ACTION"},
+                {"code": "IBKR_NOT_REVIEWABLE", "severity": "WATCH"},
+            ],
+        }
+        previous_state = {
+            "active_incident": {
+                "signature": "ACTION|WAITING_TV|IBKR_OPTION_COVERAGE_PENDING,TV_QUARANTINE_EVENTS",
+                "first_seen_at": "2026-08-08T13:00:00+00:00",
+                "repair_attempts": 1,
+                "finding_codes": ["IBKR_OPTION_COVERAGE_PENDING", "TV_QUARANTINE_EVENTS"],
+            }
+        }
+
+        state, incident = run_environment_alerts.advance_incident_state(
+            monitor,
+            previous_state,
+            repair_attempted=True,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            current_time=datetime(2026, 8, 8, 14, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertTrue(incident["should_escalate"])
+        self.assertEqual(incident["repair_attempts"], 2)
+        self.assertEqual(state["active_incident"]["finding_codes"], ["TV_QUARANTINE_EVENTS"])
+
+    def test_environment_auto_repair_rechecks_and_stays_silent_when_recovered(self):
+        action_monitor = {
+            "generated_at": "2026-08-08T14:00:00+00:00",
+            "alert_level": "ACTION",
+            "status": "FOUNDATION_BLOCKED",
+            "findings": [{"code": "TV_COVERAGE_INVALID", "severity": "ACTION"}],
+            "next_required_action": "Refresh data.",
+        }
+        recovered_monitor = {
+            "generated_at": "2026-08-08T14:05:00+00:00",
+            "alert_level": "OK",
+            "status": "READY_FOR_MANUAL_REVIEW",
+            "findings": [],
+            "next_required_action": "Review console.",
+        }
+        args = argparse.Namespace(
+            runtime_dir="runtime",
+            market_closed_ok=False,
+            state_file="runtime/test-environment-alert-state.json",
+            auto_repair=True,
+            repair_timeout=1,
+            min_repair_attempts=2,
+            min_persistent_minutes=15,
+            repeat_alert_minutes=1440,
+            force=False,
+            notify_watch=False,
+            no_send=True,
+            no_write=True,
+            macos_notify=False,
+            pushover=False,
+            webhook_url="",
+            email_summary=False,
+            base_url="https://example.test",
+            to_email="",
+            timeout=1,
+        )
+        with (
+            mock.patch.object(
+                run_environment_alerts.operator_readiness,
+                "build_post_open_monitor",
+                side_effect=[action_monitor, recovered_monitor],
+            ),
+            mock.patch.object(
+                run_environment_alerts,
+                "run_auto_repair",
+                return_value={"attempted": True, "status": "COMPLETED", "returncode": 0},
+            ),
+        ):
+            report = run_environment_alerts.build_report(args)
+
+        self.assertFalse(report["should_notify"])
+        self.assertEqual(report["incident"]["reason"], "NO_ACTION_INCIDENT")
+        self.assertEqual(report["remediation"]["status"], "COMPLETED")
+        self.assertEqual(report["monitor"]["alert_level"], "OK")
 
     def test_security_audit_redacts_secret_values_and_notifies_only_action(self):
         with tempfile.TemporaryDirectory() as tmp:

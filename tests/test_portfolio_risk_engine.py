@@ -80,7 +80,7 @@ class PortfolioRiskEngineTests(unittest.TestCase):
         self.assertEqual(evaluation["accounts"][0]["refresh_status"], "STALE")
         self.assertIn("ACCOUNT_DATA_NOT_READY", {item["rule"] for item in evaluation["alerts"]})
 
-    def test_short_options_are_flagged_without_calling_them_uncovered(self):
+    def test_unpaired_short_options_are_flagged(self):
         snapshot = self.account_snapshot(positions=[{
             "ticker": "SPY", "security_type": "OPT", "quantity": -1,
             "expiration": "20261218", "strike": 500, "right": "P",
@@ -90,8 +90,40 @@ class PortfolioRiskEngineTests(unittest.TestCase):
         alert = next(item for item in evaluation["alerts"] if item["rule"] == "SHORT_OPTION_EXPOSURE")
 
         self.assertEqual(alert["severity"], "WATCH")
-        self.assertIn("no presume", alert["message"])
-        self.assertNotIn("descubiert", alert["title"].lower())
+        self.assertEqual(alert["metric"], "unconfirmed_short_option_contracts")
+        self.assertEqual(alert["value"], 1.0)
+        self.assertIn("sin cobertura estructural", alert["title"].lower())
+
+    def test_fully_covered_calls_do_not_trigger_short_option_exposure(self):
+        snapshot = self.account_snapshot(positions=[
+            {"ticker": "NFLX", "security_type": "STK", "quantity": 1000},
+            {
+                "ticker": "NFLX", "security_type": "OPT", "quantity": -10,
+                "expiration": "20260821", "strike": 78, "right": "C", "multiplier": "100",
+            },
+        ])
+
+        evaluation = risk.evaluate(self.payload({"primary": snapshot}), reference=self.now)
+        rules = {item["rule"] for item in evaluation["alerts"]}
+        metrics = evaluation["accounts"][0]["metrics"]
+
+        self.assertNotIn("SHORT_OPTION_EXPOSURE", rules)
+        self.assertEqual(metrics["short_option_contracts"], 10.0)
+        self.assertEqual(metrics["covered_short_call_contracts"], 10.0)
+        self.assertEqual(metrics["unconfirmed_short_option_contracts"], 0.0)
+
+    def test_vertical_spread_pairs_short_option_risk(self):
+        snapshot = self.account_snapshot(positions=[
+            {"ticker": "SPY", "security_type": "OPT", "quantity": -2, "expiration": "20261218", "strike": 500, "right": "P"},
+            {"ticker": "SPY", "security_type": "OPT", "quantity": 2, "expiration": "20261218", "strike": 490, "right": "P"},
+        ])
+
+        evaluation = risk.evaluate(self.payload({"primary": snapshot}), reference=self.now)
+        metrics = evaluation["accounts"][0]["metrics"]
+
+        self.assertNotIn("SHORT_OPTION_EXPOSURE", {item["rule"] for item in evaluation["alerts"]})
+        self.assertEqual(metrics["defined_risk_short_option_contracts"], 2.0)
+        self.assertEqual(metrics["unconfirmed_short_option_contracts"], 0.0)
 
     def test_multi_account_nav_concentration_is_detected(self):
         large = self.account_snapshot("large", capacity={
@@ -203,7 +235,7 @@ class PortfolioRiskEngineTests(unittest.TestCase):
                 account_console.CONTROL_TOWER_PATH = original_tower_path
 
         self.assertIn("Riesgo de cartera", rendered)
-        self.assertIn("Opciones cortas presentes", rendered)
+        self.assertIn("Opciones cortas sin cobertura estructural confirmada", rendered)
         self.assertIn("Reevaluar riesgo", rendered)
         self.assertIn("no transmite ni ejecuta órdenes", rendered)
 

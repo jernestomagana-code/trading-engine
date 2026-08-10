@@ -427,7 +427,8 @@ class MonitorNotifyWorkflowTests(unittest.TestCase):
     def test_v31_monitor_workflow_uses_protected_notify_endpoint(self):
         source = MONITOR_NOTIFY_WORKFLOW.read_text()
 
-        self.assertIn("cron:", source)
+        self.assertIn("workflow_dispatch:", source)
+        self.assertNotIn("cron:", source)
         self.assertIn("/v31_monitor_notify", source)
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
         self.assertIn("X-Stock-Ultimus-Read-Token", source)
@@ -439,7 +440,7 @@ class CloudPushoverWorkflowTests(unittest.TestCase):
         source = V32_CLOUD_PUSHOVER_WORKFLOW.read_text()
 
         self.assertIn("workflow_dispatch:", source)
-        self.assertIn("cron:", source)
+        self.assertNotIn("cron:", source)
         self.assertIn("/v32_operator_pushover_notify", source)
         self.assertIn("timeout=90", source)
         self.assertIn("Timed out waiting for /v32_operator_pushover_notify after 90 seconds.", source)
@@ -459,7 +460,7 @@ class CloudPushoverWorkflowTests(unittest.TestCase):
         source = V32_OPERATOR_NUDGES_WORKFLOW.read_text()
 
         self.assertIn("workflow_dispatch:", source)
-        self.assertIn("cron:", source)
+        self.assertNotIn("cron:", source)
         self.assertIn("/v32_operator_nudge", source)
         self.assertIn("timeout=90", source)
         self.assertIn("Timed out waiting for /v32_operator_nudge after 90 seconds.", source)
@@ -477,8 +478,8 @@ class CloudPushoverWorkflowTests(unittest.TestCase):
         source = V32_ACTIONABLE_SIGNAL_WATCH_WORKFLOW.read_text()
 
         self.assertIn("workflow_dispatch:", source)
-        self.assertIn("cron:", source)
-        self.assertIn("*/5", source)
+        self.assertNotIn("cron:", source)
+        self.assertNotIn("*/5", source)
         self.assertIn("/v32_actionable_signal_watch", source)
         self.assertIn("timeout=90", source)
         self.assertIn("Timed out waiting for /v32_actionable_signal_watch after 90 seconds.", source)
@@ -514,7 +515,7 @@ class WeeklyLearningEmailWorkflowTests(unittest.TestCase):
         source = WEEKLY_LEARNING_EMAIL_WORKFLOW.read_text()
 
         self.assertIn("workflow_dispatch:", source)
-        self.assertIn("cron:", source)
+        self.assertNotIn("cron:", source)
         self.assertIn("/v31_manual_review_learning_notify", source)
         self.assertIn("/v31_manual_review_learning_notify/preview", source)
         self.assertIn("STOCK_ULTIMUS_READ_ACCESS_TOKEN", source)
@@ -839,13 +840,13 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
     def test_local_console_double_click_launcher_is_local_and_secret_free(self):
         source = LOCAL_CONSOLE_COMMAND.read_text()
 
-        self.assertIn("ibkr_account_profile.py", source)
-        self.assertIn("serve --host 127.0.0.1 --port 8765", source)
+        self.assertIn("install_stock_ultimus_console_launchd.py", source)
+        self.assertIn("--replace-listener", source)
         self.assertIn("http://127.0.0.1:8765", source)
         self.assertIn("/usr/sbin/lsof", source)
         self.assertIn("-iTCP:8765", source)
         self.assertIn('exit 0', source)
-        self.assertIn("/usr/bin/python3", source)
+        self.assertNotIn("ibkr_account_profile.py\" serve", source)
         self.assertNotIn("READ_ACCESS_TOKEN", source)
         self.assertNotIn("TRADING_ENGINE_INGEST_TOKEN", source)
         self.assertNotIn("SNAPSHOT_INGEST_TOKEN", source)

@@ -2,10 +2,8 @@ name: V31 Monitor Notify
 
 on:
   workflow_dispatch:
-  schedule:
-    # Broad US market-hours window in UTC. The app-level monitor decides
-    # whether an alert is actionable and dedupes repeated alerts.
-    - cron: "*/5 13-21 * * 1-5"
+  # Automatic delivery is intentionally disabled. Operational recovery runs
+  # locally; this workflow remains available only for an explicit smoke test.
 
 jobs:
   notify:

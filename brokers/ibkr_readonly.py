@@ -19,6 +19,15 @@ SUMMARY_FIELDS = {
     "GrossPositionValue": "gross_position_value",
 }
 
+INDEX_FUTURES_EXCHANGE = {
+    "MES": "CME",
+    "MNQ": "CME",
+    "ES": "CME",
+    "NQ": "CME",
+    "M2K": "CME",
+    "RTY": "CME",
+}
+
 
 class IBKRReadOnlyAdapter:
     broker = "IBKR"
@@ -110,22 +119,28 @@ class IBKRReadOnlyAdapter:
 
     @staticmethod
     def _position_key(position: dict[str, Any]) -> tuple[str, str, str, str, str]:
+        right = str(position.get("right") or "").upper()
+        if right in {"0", "NONE", "N/A"}:
+            right = ""
         return (
             str(position.get("ticker") or "UNKNOWN").upper(),
             str(position.get("security_type") or "UNKNOWN").upper(),
             str(position.get("expiration") or ""),
             str(control_tower.safe_float(position.get("strike")) or 0),
-            str(position.get("right") or "").upper(),
+            right,
         )
 
     @staticmethod
     def _contract_key(contract: Any) -> tuple[str, str, str, str, str]:
+        right = str(getattr(contract, "right", None) or "").upper()
+        if right in {"0", "NONE", "N/A"}:
+            right = ""
         return (
             str(getattr(contract, "symbol", None) or getattr(contract, "localSymbol", None) or "UNKNOWN").upper(),
             str(getattr(contract, "secType", None) or "UNKNOWN").upper(),
             str(getattr(contract, "lastTradeDateOrContractMonth", None) or ""),
             str(control_tower.safe_float(getattr(contract, "strike", None)) or 0),
-            str(getattr(contract, "right", None) or "").upper(),
+            right,
         )
 
     @staticmethod
@@ -202,7 +217,7 @@ class IBKRReadOnlyAdapter:
         ib: Any,
         clean: list[dict[str, Any]],
         contracts: dict[tuple[str, str, str, str, str], Any],
-        history_cache: dict[str, list[float]],
+        history_cache: dict[tuple[str, str, str], list[float]],
     ) -> list[dict[str, Any]]:
         try:
             from ib_insync import Stock
@@ -212,12 +227,26 @@ class IBKRReadOnlyAdapter:
             key = cls._position_key(position)
             contract = contracts.get(key)
             ticker = key[0]
-            if ticker not in history_cache:
+            security_type = key[1]
+            history_key = (
+                (ticker, "UNDERLYING", "")
+                if security_type in {"STK", "STOCK", "EQUITY", "OPT"}
+                else (ticker, security_type, key[2])
+            )
+            if history_key not in history_cache:
                 history_contract = contract
-                if Stock is not None:
+                if Stock is not None and security_type in {"STK", "STOCK", "EQUITY", "OPT"}:
                     history_contract = Stock(ticker, "SMART", str(position.get("currency") or "USD"))
-                history_cache[ticker] = cls._historical_closes(ib, history_contract) if history_contract is not None else []
-            position["historical_closes"] = list(history_cache.get(ticker) or [])
+                elif contract is not None and security_type in {"FUT", "FOP"}:
+                    history_contract = copy(contract)
+                    if not str(getattr(history_contract, "exchange", "") or "").strip():
+                        history_contract.exchange = str(
+                            getattr(history_contract, "primaryExchange", "")
+                            or INDEX_FUTURES_EXCHANGE.get(ticker)
+                            or ""
+                        ).strip()
+                history_cache[history_key] = cls._historical_closes(ib, history_contract) if history_contract is not None else []
+            position["historical_closes"] = list(history_cache.get(history_key) or [])
             if key[1] not in {"OPT", "FOP"} or contract is None:
                 continue
             try:
@@ -251,7 +280,7 @@ class IBKRReadOnlyAdapter:
             summary = list(ib.accountSummary() or [])
             positions = list(ib.positions() or [])
             output = {}
-            history_cache: dict[str, list[float]] = {}
+            history_cache: dict[tuple[str, str, str], list[float]] = {}
             for item in accounts:
                 alias = item["account_alias"]
                 account_id = item["account_id"]

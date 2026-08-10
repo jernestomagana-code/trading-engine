@@ -1,5 +1,5 @@
 //@version=6
-indicator("Stock Ultimus Intraday Futures Alerts v1", overlay=true, max_labels_count=200)
+indicator("Stock Ultimus Intraday Futures FAST v2", overlay=true, max_labels_count=200)
 
 // This script is technical evidence only. It does not authorize orders.
 
@@ -45,14 +45,14 @@ rvolValue = avgVolume > 0 ? volume / avgVolume : na
 jsonNumber(value) =>
     na(value) ? "0" : str.tostring(value, format.mintick)
 
-jsonStringPair(key, value) =>
-    "\"" + key + "\":\"" + value + "\""
+jsonStringPair(fieldName, fieldValue) =>
+    "\"" + fieldName + "\":\"" + fieldValue + "\""
 
-jsonNumberPair(key, value) =>
-    "\"" + key + "\":" + jsonNumber(value)
+jsonNumberPair(fieldName, fieldValue) =>
+    "\"" + fieldName + "\":" + jsonNumber(fieldValue)
 
-jsonBoolPair(key, value) =>
-    "\"" + key + "\":" + (value ? "true" : "false")
+jsonBoolPair(fieldName, fieldValue) =>
+    "\"" + fieldName + "\":" + (fieldValue ? "true" : "false")
 
 symbolCode = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
 timeframeCode = timeframe.period == "D" ? "D" : timeframe.period + "M"

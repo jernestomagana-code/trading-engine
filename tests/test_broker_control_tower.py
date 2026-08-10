@@ -146,6 +146,35 @@ class BrokerControlTowerTests(unittest.TestCase):
         self.assertNotIn("REAL_A", sanitized)
         self.assertIn("[ACCOUNT_ID_REDACTED]", sanitized)
 
+    def test_futures_history_uses_exact_contract_and_expiration(self):
+        future_contract = SimpleNamespace(
+            symbol="MES", localSymbol="MESU6", secType="FUT", currency="USD",
+            strike=0, lastTradeDateOrContractMonth="20260918", right="0",
+            multiplier="5", exchange="", primaryExchange="",
+        )
+        clean = [{
+            "ticker": "MES", "security_type": "FUT", "currency": "USD",
+            "quantity": -1, "expiration": "20260918", "strike": 0,
+            "right": "0", "multiplier": "5",
+        }]
+
+        class FakeIB:
+            def __init__(self):
+                self.requested_contracts = []
+
+            def reqHistoricalData(self, contract, **kwargs):
+                self.requested_contracts.append(contract)
+                return [SimpleNamespace(close=6000), SimpleNamespace(close=6010)]
+
+        ib = FakeIB()
+        contracts = {IBKRReadOnlyAdapter._contract_key(future_contract): future_contract}
+        enriched = IBKRReadOnlyAdapter._enrich_positions(ib, clean, contracts, {})
+
+        self.assertIsNot(ib.requested_contracts[0], future_contract)
+        self.assertEqual(ib.requested_contracts[0].exchange, "CME")
+        self.assertEqual(ib.requested_contracts[0].lastTradeDateOrContractMonth, "20260918")
+        self.assertEqual(enriched[0]["historical_closes"], [6000.0, 6010.0])
+
     def test_refresh_script_preserves_no_order_guardrails(self):
         source = (Path(__file__).resolve().parents[1] / "scripts" / "refresh_multi_account_control_tower.py").read_text()
         self.assertIn("IBKRReadOnlyAdapter", source)

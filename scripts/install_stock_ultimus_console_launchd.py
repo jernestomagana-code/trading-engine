@@ -13,8 +13,10 @@ import os
 import plistlib
 import shutil
 import shlex
+import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--open", action="store_true", help="Open the local console URL after install/status.")
+    parser.add_argument(
+        "--replace-listener",
+        action="store_true",
+        help="Stop only a recognized Stock Ultimus console already using the port before installing launchd.",
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     return parser
 
@@ -201,6 +208,65 @@ def launchctl(command: list[str]) -> dict[str, Any]:
     }
 
 
+def listener_processes(port: int) -> list[dict[str, Any]]:
+    proc = subprocess.run(
+        ["/usr/sbin/lsof", "-nP", "-t", f"-iTCP:{int(port)}", "-sTCP:LISTEN"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    rows = []
+    for value in (proc.stdout or "").splitlines():
+        try:
+            pid = int(value.strip())
+        except ValueError:
+            continue
+        command = subprocess.run(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        ).stdout.strip()
+        rows.append({
+            "pid": pid,
+            "command": command,
+            "recognized_stock_ultimus": bool(
+                "ibkr_account_profile.py" in command
+                and "serve" in command
+                and (str(ROOT) in command or str(SERVICE_ROOT) in command)
+            ),
+            "service_bundle": str(SERVICE_ROOT) in command,
+        })
+    return rows
+
+
+def stop_recognized_listeners(port: int) -> dict[str, Any]:
+    listeners = listener_processes(port)
+    refused = [row for row in listeners if not row.get("recognized_stock_ultimus")]
+    if refused:
+        return {"ok": False, "error": "UNRECOGNIZED_PORT_LISTENER", "listeners": refused}
+    stopped = []
+    for row in listeners:
+        pid = int(row["pid"])
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped.append(pid)
+        except ProcessLookupError:
+            continue
+    deadline = time.monotonic() + 6
+    while listener_processes(port) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    remaining = listener_processes(port)
+    return {
+        "ok": not remaining,
+        "stopped_pids": stopped,
+        "remaining": remaining,
+        "error": "LISTENER_DID_NOT_STOP" if remaining else "",
+    }
+
+
 def open_console(port: int) -> dict[str, Any]:
     proc = subprocess.run(["open", console_url(port)], capture_output=True, text=True, check=False, timeout=10)
     return {
@@ -212,7 +278,7 @@ def open_console(port: int) -> dict[str, Any]:
     }
 
 
-def install(port: int, dry_run: bool) -> dict[str, Any]:
+def install(port: int, dry_run: bool, replace_listener: bool = False) -> dict[str, Any]:
     path = plist_path()
     payload = plist_payload(port)
     result: dict[str, Any] = {
@@ -226,11 +292,27 @@ def install(port: int, dry_run: bool) -> dict[str, Any]:
         result["plist"] = payload
         result["service_bundle"] = prepare_service_bundle(dry_run=True)
         return result
+    # Stop the old LaunchAgent before checking the port.  This distinguishes a
+    # legacy/manual console from the service we are about to replace.
+    result["previous_bootout"] = launchctl(["launchctl", "bootout", user_domain(), str(path)])
+    listeners = listener_processes(port)
+    if listeners and replace_listener:
+        result["listener_replacement"] = stop_recognized_listeners(port)
+        if not result["listener_replacement"].get("ok"):
+            result["ok"] = False
+            return result
+    elif listeners:
+        result.update({
+            "ok": False,
+            "error": "PORT_ALREADY_USED_BY_EXISTING_CONSOLE",
+            "listeners": listeners,
+            "next_action": "Re-run with --replace-listener after confirming this is the Stock Ultimus console.",
+        })
+        return result
     result["service_bundle"] = prepare_service_bundle()
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as handle:
         plistlib.dump(payload, handle, sort_keys=True)
-    launchctl(["launchctl", "bootout", user_domain(), str(path)])
     result["bootstrap"] = launchctl(["launchctl", "bootstrap", user_domain(), str(path)])
     result["enable"] = launchctl(["launchctl", "enable", f"{user_domain()}/{LABEL}"])
     result["kickstart"] = launchctl(["launchctl", "kickstart", "-k", f"{user_domain()}/{LABEL}"])
@@ -291,7 +373,22 @@ def status(port: int) -> dict[str, Any]:
     listener = launchctl(
         ["/usr/sbin/lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN"]
     )
-    health = {"ok": listener["ok"], "port_listening": listener["ok"]}
+    listeners = listener_processes(port)
+    service_listener = any(row.get("service_bundle") for row in listeners)
+    bundle_script = SERVICE_ROOT / "scripts" / "ibkr_account_profile.py"
+    workspace_script = ROOT / "scripts" / "ibkr_account_profile.py"
+    bundle_matches_workspace = bool(
+        bundle_script.exists()
+        and workspace_script.exists()
+        and bundle_script.read_bytes() == workspace_script.read_bytes()
+    )
+    health = {
+        "ok": bool(listener["ok"] and service_listener and bundle_matches_workspace),
+        "port_listening": listener["ok"],
+        "service_listener": service_listener,
+        "bundle_matches_workspace": bundle_matches_workspace,
+        "listeners": listeners,
+    }
     return {
         "action": "status",
         "dry_run": False,
@@ -314,7 +411,7 @@ def status(port: int) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.install:
-        result = install(args.port, args.dry_run)
+        result = install(args.port, args.dry_run, replace_listener=args.replace_listener)
     elif args.install_opener_fallback:
         result = install_opener_fallback(args.dry_run)
     elif args.uninstall:

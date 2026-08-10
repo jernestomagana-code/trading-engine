@@ -11,10 +11,8 @@ on:
         description: "Also notify RISK alerts, not only ACTION/ENTRY_READY"
         required: false
         default: "false"
-  schedule:
-    # Polls around US market hours. The backend handles signal quality,
-    # dedupe, Pushover delivery, and no-order guardrails.
-    - cron: "*/5 13-21 * * 1-5"
+  # Automatic trading-state pushes are intentionally disabled. Action, risk,
+  # and watch states remain visible in the operator console.
 
 jobs:
   watch:

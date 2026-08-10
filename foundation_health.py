@@ -100,6 +100,14 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
     audit = alert_opportunity_audit.build_alert_opportunity_audit(runtime, generated_at=generated_at)
     decisions, outcomes, source_files = alert_opportunity_audit.load_runtime_inputs(runtime)
     tv_events = tradingview_signal_ledger.load_signal_events(runtime / "v32_signal_events.json", limit=20000)
+    tv_evidence_source = (
+        "LOCAL_LEDGER"
+        if (runtime / "v32_signal_events.json").exists()
+        else "PRODUCTION_REMOTE_CACHE"
+        if tv_events
+        else "NONE"
+    )
+    source_files["tradingview_remote_cache"] = tv_evidence_source == "PRODUCTION_REMOTE_CACHE"
     ibkr_payload = read_json(runtime / "v32_ibkr_chain_coverage.json", {})
     if not isinstance(ibkr_payload, dict):
         ibkr_payload = {}
@@ -122,7 +130,12 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
     closed_outcomes = int(data_quality.get("closed_outcome_count") or 0)
     complete_closed_outcomes = int(outcome_completeness.get("complete_closed_outcomes") or 0)
     incomplete_closed_outcomes = int(outcome_completeness.get("incomplete_closed_outcomes") or 0)
-    source_coverage = float(data_quality.get("source_attribution_coverage_pct") or 0.0)
+    operational_source_coverage = data_quality.get("entry_ready_source_attribution_coverage_pct")
+    source_coverage = float(
+        operational_source_coverage
+        if operational_source_coverage is not None
+        else data_quality.get("source_attribution_coverage_pct") or 0.0
+    )
     ibkr_gap = str(ibkr_payload.get("primary_gap") or ibkr_diagnostics.primary_gap([], []))
 
     checks = []
@@ -150,6 +163,8 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
             source_status,
             f"Source attribution coverage is {source_coverage}%.",
             source_attribution_coverage_pct=source_coverage,
+            historical_source_attribution_coverage_pct=data_quality.get("source_attribution_coverage_pct"),
+            evidence_required_decision_count=data_quality.get("evidence_required_decision_count"),
             unknown_source_decisions=data_quality.get("unknown_source_decisions"),
             missing_candidate_source_decisions=data_quality.get("missing_candidate_source_decisions"),
             missing_confirmation_source_decisions=data_quality.get("missing_confirmation_source_decisions"),
@@ -162,6 +177,7 @@ def build_foundation_health(runtime_dir: str | Path, generated_at: str | None = 
             "OK" if tv_events else ("WARN" if source_files.get("tradingview_signal_ledger") else "WAITING_FOR_DATA"),
             "TradingView signal ledger has events." if tv_events else "No TradingView ledger events available yet.",
             event_count=len(tv_events),
+            evidence_source=tv_evidence_source,
             latest_event_at=max([str(item.get("received_at")) for item in tv_events if item.get("received_at")], default=None),
         )
     )

@@ -153,17 +153,66 @@ def _account_policy(policy: dict[str, Any], alias: str) -> dict[str, Any]:
     return _deep_merge(clean, override)
 
 
+def _short_option_structure(account: dict[str, Any]) -> dict[str, float]:
+    """Classify short options before applying portfolio-risk thresholds.
+
+    Long shares cover short calls on the same ticker.  A long option with the
+    same ticker/right/expiration pairs a short leg into a defined-risk spread.
+    Anything left remains structurally unconfirmed and receives the normal
+    conservative risk threshold.
+    """
+
+    positions = [row for row in (account.get("positions") or []) if isinstance(row, dict)]
+    shares_available: dict[str, float] = {}
+    long_options: dict[tuple[str, str, str, str], float] = {}
+    short_options: list[dict[str, Any]] = []
+    for position in positions:
+        ticker = str(position.get("ticker") or "UNKNOWN").upper()
+        security_type = str(position.get("security_type") or "").upper()
+        quantity = _number(position.get("quantity")) or 0.0
+        if security_type in {"STK", "STOCK", "EQUITY"} and quantity > 0:
+            shares_available[ticker] = shares_available.get(ticker, 0.0) + quantity
+            continue
+        if security_type not in {"OPT", "FOP"} or quantity == 0:
+            continue
+        right = str(position.get("right") or "").upper()[:1]
+        key = (ticker, security_type, right, str(position.get("expiration") or ""))
+        if quantity > 0:
+            long_options[key] = long_options.get(key, 0.0) + quantity
+        else:
+            short_options.append({**position, "_ticker": ticker, "_type": security_type, "_right": right, "_quantity": abs(quantity), "_key": key})
+
+    total = covered = paired = unconfirmed = 0.0
+    for option in short_options:
+        quantity = float(option["_quantity"])
+        total += quantity
+        key = option["_key"]
+        paired_quantity = min(quantity, long_options.get(key, 0.0))
+        if paired_quantity:
+            long_options[key] = max(0.0, long_options.get(key, 0.0) - paired_quantity)
+            paired += paired_quantity
+            quantity -= paired_quantity
+        if quantity > 0 and option["_type"] == "OPT" and option["_right"] == "C":
+            multiplier = _number(option.get("multiplier")) or 100.0
+            available_shares = shares_available.get(option["_ticker"], 0.0)
+            covered_quantity = min(quantity, available_shares / multiplier)
+            if covered_quantity:
+                shares_available[option["_ticker"]] = max(0.0, available_shares - covered_quantity * multiplier)
+                covered += covered_quantity
+                quantity -= covered_quantity
+        unconfirmed += max(0.0, quantity)
+    return {
+        "short_option_contracts": round(total, 4),
+        "covered_short_call_contracts": round(covered, 4),
+        "defined_risk_short_option_contracts": round(paired, 4),
+        "unconfirmed_short_option_contracts": round(unconfirmed, 4),
+    }
+
+
 def _account_metrics(account: dict[str, Any]) -> dict[str, Any]:
     capacity = account.get("capacity") if isinstance(account.get("capacity"), dict) else {}
     nav = _number(capacity.get("net_liquidation"))
-    short_options = 0.0
-    for position in account.get("positions") or []:
-        if not isinstance(position, dict):
-            continue
-        if str(position.get("security_type") or "").upper() in {"OPT", "FOP"}:
-            quantity = _number(position.get("quantity"))
-            if quantity is not None and quantity < 0:
-                short_options += abs(quantity)
+    option_structure = _short_option_structure(account)
     return {
         "net_liquidation": nav,
         "available_funds": _number(capacity.get("available_funds")),
@@ -175,7 +224,7 @@ def _account_metrics(account: dict[str, Any]) -> dict[str, Any]:
         "available_funds_ratio": _ratio(capacity.get("available_funds"), nav),
         "maintenance_margin_ratio": _ratio(capacity.get("maintenance_margin_required"), nav),
         "leverage": _ratio(capacity.get("gross_position_value"), nav),
-        "short_option_contracts": round(short_options, 4),
+        **option_structure,
     }
 
 
@@ -362,12 +411,19 @@ def evaluate(control_tower_payload: dict[str, Any], policy: dict[str, Any] | Non
             alerts,
             account_alias=alias,
             rule="SHORT_OPTION_EXPOSURE",
-            metric="short_option_contracts",
-            value=metrics["short_option_contracts"],
-            breach=_severity_at(metrics["short_option_contracts"], thresholds.get("short_option_contracts") or {}),
-            title=f"Opciones cortas presentes en {alias}",
-            message="Hay contratos de opciones con cantidad negativa; esta señal no presume que estén descubiertos.",
-            recommended_action="Confirmar cobertura, vencimiento, asignación y capacidad de mantenimiento.",
+            metric="unconfirmed_short_option_contracts",
+            value=metrics["unconfirmed_short_option_contracts"],
+            breach=_severity_at(metrics["unconfirmed_short_option_contracts"], thresholds.get("short_option_contracts") or {}),
+            title=f"Opciones cortas sin cobertura estructural confirmada en {alias}",
+            message=(
+                "Quedan {unconfirmed:g} contrato(s) corto(s) sin acciones suficientes ni una pata larga equivalente. "
+                "La cuenta también tiene {covered:g} covered call(s) y {paired:g} contrato(s) en spreads definidos."
+            ).format(
+                unconfirmed=metrics["unconfirmed_short_option_contracts"],
+                covered=metrics["covered_short_call_contracts"],
+                paired=metrics["defined_risk_short_option_contracts"],
+            ),
+            recommended_action="Confirmar la estructura, vencimiento, asignación y capacidad de mantenimiento de las patas no emparejadas.",
         )
 
         cash = metrics["total_cash_value"]

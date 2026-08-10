@@ -33,7 +33,10 @@ def load_app_module():
         "_v31_blocker_cause_summary",
         "_v31_command_center_payload",
         "_v29_safe_float",
+        "_v29_safe_upper",
         "_v29_spread_metrics",
+        "_v29_volatility_value",
+        "_v29_sell_premium_volatility_context",
         "_v29_derived_option_score",
         "_v29_quality_gate",
     }
@@ -58,6 +61,11 @@ def main() -> int:
     app._V29_MIN_OPTION_SCORE = 70
     app._V29_MAX_SPREAD_PCT = 18.0
     app._V29_MAX_ABS_SPREAD = 0.35
+    app._V29_MIN_SELL_PREMIUM_IV = 0.18
+    app._V29_IDEAL_SELL_PREMIUM_IV = 0.28
+    app._V29_MIN_SELL_PREMIUM_IV_RANK = 35.0
+    app._V29_IDEAL_SELL_PREMIUM_IV_RANK = 55.0
+    app._V29_MIN_SELL_PREMIUM_IV_HV_SPREAD = 0.02
 
     derived_quality = app._v29_quality_gate({
         "ticker": "NVDA",

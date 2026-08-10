@@ -23,9 +23,8 @@ on:
         description: "Maximum reviews to summarize"
         required: true
         default: "500"
-  schedule:
-    # Monday morning UTC after prior week's learning checkpoints have run.
-    - cron: "30 13 * * 1"
+  # Routine learning email delivery is intentionally disabled. The report
+  # remains available in the console and by explicit manual dispatch.
 
 jobs:
   weekly-learning-email:

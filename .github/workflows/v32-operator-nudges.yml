@@ -11,10 +11,8 @@ on:
         description: "Force a nudge push for smoke testing"
         required: false
         default: "false"
-  schedule:
-    # Runs broadly around US trading hours. The backend gates by New York time,
-    # slot, and dedupe state so DST and repeated cron ticks stay harmless.
-    - cron: "*/10 11-22 * * 1-5"
+  # Scheduled nudges are intentionally disabled. Operator status remains in
+  # the console; this workflow is retained for explicit smoke tests only.
 
 jobs:
   nudge:

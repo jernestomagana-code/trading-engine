@@ -51,6 +51,16 @@ def timestamp_age_hours(value: Any) -> float | None:
         return None
 
 
+def timestamp_sort_value(value: Any) -> float:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).timestamp()
+    except Exception:
+        return 0.0
+
+
 def safe_float(value: Any, default: float | None = None) -> float | None:
     try:
         if value is None:
@@ -1620,6 +1630,7 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
         and row.get("decision_capital_required") is not None
         and row.get("decision_return_on_capital_pct") is not None
         and row.get("can_afford_by_buying_power") is not False
+        and row.get("can_afford_by_available_funds") is not False
     ]
     indicative_rows = [
         row for row in rows
@@ -1976,6 +1987,31 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         for key in ("available_funds", "available_capacity", "buying_power")
     ):
         account_capacity = extract_account_capacity(runtime_data)
+    # Control Tower is the canonical multi-account read.  Prefer its fresh RSP
+    # account capacity over an older RSP sidecar so a generic account refresh
+    # cannot leave the strategy comparing capital against yesterday's funds.
+    control_tower = load_json(runtime_dir / "broker_control_tower_latest.json")
+    rsp_tower_account = next((
+        row for row in (control_tower.get("accounts") or [])
+        if isinstance(row, dict)
+        and safe_upper(row.get("account_alias") or row.get("account_scope"), "") == safe_upper(RSP_ACCOUNT_ALIAS, "")
+        and safe_upper(row.get("refresh_status"), "") == "READY"
+    ), None)
+    if isinstance(rsp_tower_account, dict):
+        tower_capacity = rsp_tower_account.get("capacity") if isinstance(rsp_tower_account.get("capacity"), dict) else {}
+        tower_generated_at = rsp_tower_account.get("generated_at") or control_tower.get("generated_at")
+        current_generated_at = account_capacity.get("generated_at")
+        if tower_capacity and timestamp_sort_value(tower_generated_at) >= timestamp_sort_value(current_generated_at):
+            account_capacity = {
+                **account_capacity,
+                **tower_capacity,
+                "available": any(tower_capacity.get(key) is not None for key in ("available_funds", "available_capacity", "buying_power")),
+                "account_alias": rsp_tower_account.get("account_alias") or RSP_ACCOUNT_ALIAS,
+                "account_scope": rsp_tower_account.get("account_scope") or RSP_ACCOUNT_ALIAS,
+                "generated_at": tower_generated_at,
+                "source": "BROKER_CONTROL_TOWER_RSP_ACCOUNT",
+                "sensitive_identifiers_excluded": True,
+            }
     margin_preview = load_json(runtime_dir / "coberturas_rsp_margin_preview_latest.json")
     reconciliation = load_json(runtime_dir / RSP_RECONCILIATION_PATH)
     scenarios = apply_probability_and_gamma(
@@ -2107,6 +2143,8 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             "configured_account_alias": RSP_ACCOUNT_ALIAS,
             "available_funds": account_capacity.get("available_funds"),
             "buying_power": account_capacity.get("buying_power"),
+            "capacity_generated_at": account_capacity.get("generated_at"),
+            "capacity_source": account_capacity.get("source") or account_capacity.get("capacity_source"),
             "chain_has_rsp": chain_has_rsp,
             "chain_coverage_generated_at": chain_coverage.get("generated_at"),
             "chain_coverage_source": chain_source_file,

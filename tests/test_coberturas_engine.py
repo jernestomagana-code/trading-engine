@@ -107,6 +107,52 @@ class CoberturasEngineTests(unittest.TestCase):
         self.assertEqual(ce.RSP_ACCOUNT_ALIAS, "retiro")
         self.assertEqual(ce.RSP_CAPACITY_PATH, "coberturas_rsp_account_capacity_latest.json")
 
+    def test_fresh_control_tower_retirement_capacity_overrides_old_rsp_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtime"
+            runtime.mkdir()
+            original_context = ce.MANUAL_CONTEXT_PATH
+            ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
+            try:
+                ce.write_manual_context({"spot": "213", "position_mode": "AUTO"})
+                (runtime / ce.RSP_POSITIONS_PATH).write_text(json.dumps({
+                    "account_alias": "retiro", "positions": [],
+                }))
+                (runtime / ce.RSP_CAPACITY_PATH).write_text(json.dumps({
+                    "available": True,
+                    "account_alias": "retiro",
+                    "available_funds": 8000,
+                    "buying_power": 8000,
+                    "generated_at": "2026-08-07T18:00:00+00:00",
+                }))
+                (runtime / "broker_control_tower_latest.json").write_text(json.dumps({
+                    "status": "READY",
+                    "accounts": [{
+                        "account_alias": "retiro",
+                        "account_scope": "retiro",
+                        "refresh_status": "READY",
+                        "generated_at": "2026-08-08T15:16:04+00:00",
+                        "capacity": {"available_funds": 6000, "buying_power": 20000},
+                    }],
+                }))
+                (runtime / ce.RSP_CHAIN_PATH).write_text(json.dumps({
+                    "generated_at": ce.now_iso(),
+                    "chain_by_ticker": {"RSP": {}},
+                    "option_rows": [
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260821", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 0.9, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821", "dte": 11, "strike": 215, "delta": 0.3, "bid": 0.9, "ask": 1.1},
+                    ],
+                }))
+
+                payload = ce.build_recommendation(runtime)
+            finally:
+                ce.MANUAL_CONTEXT_PATH = original_context
+
+        self.assertEqual(payload["ibkr"]["available_funds"], 6000)
+        self.assertEqual(payload["ibkr"]["capacity_source"], "BROKER_CONTROL_TOWER_RSP_ACCOUNT")
+        self.assertFalse(payload["new_entry_lane"]["can_review_new_entry"])
+        self.assertEqual(payload["strategy_recommendation"]["status"], "WAIT_ACCOUNT_CAPACITY")
+
     def test_open_rsp_cycle_is_managed_while_another_entry_is_evaluated(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp) / "runtime"

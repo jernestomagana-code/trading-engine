@@ -7,10 +7,8 @@ on:
         description: "Force a smoke-test push"
         required: false
         default: "false"
-  schedule:
-    # Broad US market-hours window in UTC. The backend decides whether to send
-    # and dedupes repeated ACTION/RISK or operational data-refresh alerts.
-    - cron: "*/5 13-21 * * 1-5"
+  # Automatic cloud Pushover delivery is intentionally disabled. Persistent
+  # technical incidents are escalated by the local self-healing monitor.
 
 jobs:
   pushover:

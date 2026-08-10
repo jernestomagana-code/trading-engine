@@ -1,6 +1,6 @@
 # TradingView Production Active Alerts
 
-Last reviewed: 2026-07-26.
+Last reviewed: 2026-08-03.
 
 This is the single source of truth for the active TradingView alert set. The
 project intentionally uses seven consolidated TradingView alerts, not one alert
@@ -47,6 +47,20 @@ https://trading-engine-p097.onrender.com/technical_snapshot
 Leave the TradingView message field at the default value for alert-function
 alerts. The Pine scripts send the JSON payloads.
 
+Important: TradingView stores a snapshot of the Pine script when an alert is
+created. Saving a newer Pine version does not update an already-running alert.
+After changing either production Pine script, edit and save each affected
+project alert so TradingView rebuilds it from the current chart/script version;
+if the alert cannot be refreshed in place, pause the old alert and create its
+replacement before removing it. Never leave both versions active because they
+would send duplicate events.
+
+The current MES/MNQ futures payload must include `session_state`,
+`premarket_high`, `premarket_low`, `major_event_window`, and
+`risk_daily_status`. A real signal that lacks them is preserved in quarantine,
+shown in the console, and cannot become `ENTRY_READY` until the project alert
+has been refreshed to the current Pine version.
+
 Notification channels for all seven project alerts:
 
 - `Webhook URL`: enabled and pointed to the production endpoint above.
@@ -57,6 +71,10 @@ Notification channels for all seven project alerts:
 - Mobile delivery: handled centrally by Stock Ultimus/Pushover after event
   classification. `WATCH`, `REBOTE`, risk, health, and diagnostic events remain
   in the ledger and console without reaching the phone.
+- A TradingView event named `ENTRY` is still only evidence. If the backend
+  classifies it as `WATCH_ONLY` because confirmation, risk, portfolio, or
+  capacity fails, it appears in the daily futures history with its levels and
+  reason but correctly does not reach the phone.
 
 ## Logical Coverage
 

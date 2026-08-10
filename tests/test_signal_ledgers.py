@@ -17,6 +17,22 @@ import tradingview_signal_ledger
 
 
 class SignalLedgerTests(unittest.TestCase):
+    def test_absolute_runtime_ledger_uses_neighbor_remote_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp)
+            cache = runtime / "stock_ultimus_console_remote_cache.json"
+            cache.write_text(json.dumps({
+                "entries": {
+                    "/v32_signal_events?limit=1000": {
+                        "result": {"data": {"events": [{"event_id": "REMOTE-ABS", "ticker": "MES"}]}}
+                    }
+                }
+            }))
+
+            events = tradingview_signal_ledger.load_signal_events(runtime / "v32_signal_events.json")
+
+        self.assertEqual(events[0]["event_id"], "REMOTE-ABS")
+
     def test_default_ledger_falls_back_to_console_remote_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)

@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import source_attribution
+
 
 AUDIT_VERSION = "alert_opportunity_deep_audit_v1"
 UNKNOWN = "UNKNOWN"
@@ -163,9 +165,25 @@ def normalize_decision(item: dict[str, Any], origin: str) -> dict[str, Any]:
     contract = selected_contract(item)
     blockers = flatten_blockers(item)
     attribution = item.get("source_attribution") if isinstance(item.get("source_attribution"), dict) else {}
-    candidate_source = safe_upper(item.get("candidate_source") or attribution.get("candidate_source"), UNKNOWN)
-    confirmation_source = safe_upper(item.get("confirmation_source") or attribution.get("confirmation_source"), UNKNOWN)
+    inferred_attribution = source_attribution.build_source_attribution(
+        item,
+        item.get("source_decision") if isinstance(item.get("source_decision"), dict) else {},
+    )
+    candidate_source = safe_upper(
+        item.get("candidate_source")
+        or attribution.get("candidate_source")
+        or inferred_attribution.get("candidate_source"),
+        UNKNOWN,
+    )
+    confirmation_source = safe_upper(
+        item.get("confirmation_source")
+        or attribution.get("confirmation_source")
+        or inferred_attribution.get("confirmation_source"),
+        UNKNOWN,
+    )
     signal_source = infer_signal_source(item)
+    if is_missing_source(signal_source):
+        signal_source = safe_upper(inferred_attribution.get("signal_source"), UNKNOWN)
     return {
         "id": decision_key(item),
         "origin": origin,
@@ -328,6 +346,16 @@ def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str,
     unknown_source = sum(1 for item in decisions if is_missing_source(item.get("signal_source")))
     missing_candidate_source = sum(1 for item in decisions if is_missing_source(item.get("candidate_source")))
     missing_confirmation_source = sum(1 for item in decisions if is_missing_source(item.get("confirmation_source")))
+    evidence_required = [
+        item for item in decisions
+        if item.get("final_state") == "ENTRY_READY" or item.get("manual_review_ready") is True
+    ]
+    evidence_missing_candidate = sum(
+        1 for item in evidence_required if is_missing_source(item.get("candidate_source"))
+    )
+    evidence_missing_confirmation = sum(
+        1 for item in evidence_required if is_missing_source(item.get("confirmation_source"))
+    )
     closed_outcomes = sum(1 for item in outcomes if item["outcome"] in {"WIN", "LOSS", "BREAKEVEN", "EXPIRED", "CANCELLED"})
     return {
         "source_files_found": source_files,
@@ -342,6 +370,16 @@ def build_data_quality(decisions: list[dict[str, Any]], outcomes: list[dict[str,
             ((len(decisions) - max(missing_candidate_source, missing_confirmation_source)) / len(decisions)) * 100,
             2,
         ) if decisions else 0.0,
+        "evidence_required_decision_count": len(evidence_required),
+        "evidence_required_missing_candidate_source": evidence_missing_candidate,
+        "evidence_required_missing_confirmation_source": evidence_missing_confirmation,
+        "entry_ready_source_attribution_coverage_pct": round(
+            (
+                (len(evidence_required) - max(evidence_missing_candidate, evidence_missing_confirmation))
+                / len(evidence_required)
+            ) * 100,
+            2,
+        ) if evidence_required else None,
         "can_review_parameters": closed_outcomes >= 30,
         "primary_gap": primary_gap(decisions, outcomes),
     }

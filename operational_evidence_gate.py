@@ -154,7 +154,12 @@ def build_operational_evidence_gate(
     performance = health.get("performance_summary") if isinstance(health.get("performance_summary"), dict) else {}
     parameter_review = health.get("parameter_review_summary") if isinstance(health.get("parameter_review_summary"), dict) else {}
     outcome_completeness = health.get("outcome_completeness_summary") if isinstance(health.get("outcome_completeness_summary"), dict) else {}
-    source_coverage = _safe_float(data_quality.get("source_attribution_coverage_pct"))
+    operational_source_coverage = data_quality.get("entry_ready_source_attribution_coverage_pct")
+    source_coverage = _safe_float(
+        operational_source_coverage
+        if operational_source_coverage is not None
+        else data_quality.get("source_attribution_coverage_pct")
+    )
     decision_count = _safe_int(data_quality.get("decision_count"))
     tv_events = _safe_int(_metrics(checks, "tradingview_signal_ledger").get("event_count"))
     tv_health = tradingview_operational_health.build_alert_health(runtime)
