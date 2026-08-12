@@ -1,6 +1,6 @@
 # Stock Ultimus Operational Pending Work Register
 
-Last reviewed: 2026-07-26.
+Last reviewed: 2026-08-11.
 
 This register tracks the open work from the TradingView alert and strategy
 review. It is decision-support only and never authorizes order execution.
@@ -21,6 +21,10 @@ review. It is decision-support only and never authorizes order execution.
   consolidated alerts active. Each alert has the production webhook enabled and
   direct TradingView `Notify in app` disabled so mobile delivery remains under
   the Stock Ultimus `ENTRY`-only filter.
+- On 2026-08-11 the FAST v2 Pine was corrected and saved with the complete
+  futures payload contract plus an hourly silent heartbeat. The active `MNQ1!`
+  and `MES1!` alerts were edited and saved in TradingView to rebuild their Pine
+  snapshots; both remained active without the stale-version warning.
 - V32 nudge preflight reached production successfully.
 - V32 operator notify handles backend timeouts without traceback.
 - After the targeted IBKR refresh, production operator notify moved from

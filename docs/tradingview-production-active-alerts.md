@@ -1,6 +1,6 @@
 # TradingView Production Active Alerts
 
-Last reviewed: 2026-08-03.
+Last reviewed: 2026-08-11.
 
 This is the single source of truth for the active TradingView alert set. The
 project intentionally uses seven consolidated TradingView alerts, not one alert
@@ -176,5 +176,10 @@ The expected operating model is:
   readiness when no Chris IA entry has occurred yet.
 - The seven TradingView alerts were individually reviewed on 2026-07-26:
   webhook enabled and direct `Notify in app` disabled on every project alert.
+- On 2026-08-11 the current FAST v2 Pine was saved and verified in TradingView
+  with the required context fields and hourly heartbeat. The active `MNQ1!`
+  and `MES1!` 1-minute alerts were edited and saved again so TradingView rebuilt
+  their script snapshots; both remained active and their stale-version warning
+  disappeared.
 - `execution_authorized=false`.
 - `not_order_instruction=true`.
