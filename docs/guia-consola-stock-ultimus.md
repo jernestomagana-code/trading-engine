@@ -228,6 +228,12 @@ personales pueden coexistir, pero no cuentan dentro de esas siete. El inventario
 detallado y su procedimiento de validación están en
 `docs/tradingview-production-active-alerts.md`.
 
+Las dos alertas rápidas MNQ/MES incluyen los campos obligatorios de sesión,
+premercado y riesgo, y emiten un `SESSION_SNAPSHOT` silencioso cada hora de
+mercado regular cuando esa vela no contiene otra señal. El snapshot no llega al
+celular: sólo permite distinguir correctamente entre “no hubo oportunidad” y
+“la alerta de TradingView dejó de funcionar”.
+
 Las señales de futuros siguen una ruta protegida contra pérdidas: TradingView confirma la recepción rápidamente, el motor guarda y notifica en segundo plano y, si hubo un reinicio, la apertura diaria reconcilia el registro permanente con la bandeja operativa. Una señal pendiente reciente debe aparecer en **Futuros Intradía** aunque no forme parte del ranking normal de acciones u opciones.
 
 La apertura crea, sólo cuando no existe uno, un contexto premercado **automático conservador**. Este evita que una señal quede sin expediente de sesión. Los campos macro y volatilidad que todavía no tienen una fuente automática permanecen informativos, pero ya no bloquean por sí solos todas las señales. Una entrada sólo llega a `ENTRY_READY` si además supera confirmación técnica, stop/targets, tamaño por NLV, riesgo diario, cartera y calidad del evento. El motor toma automáticamente de la publicación vigente el valor neto y las posiciones abiertas de futuros; una posición MNQ/MES existente activa la revisión de duplicación. Un valor recibido directamente en la alerta siempre tiene prioridad.

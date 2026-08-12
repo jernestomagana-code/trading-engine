@@ -76,6 +76,8 @@ Para reducir la demora sin aceptar señales intrabar no confirmadas, usar
 `tradingview/stock_ultimus_intraday_futures_fast_v2.pine` sobre gráficos de
 1 minuto de `MNQ1!` y `MES1!`. La entrada confirma al cierre de 1 minuto,
 pero ADX, ATR, RVOL y VWAP proceden del contexto de 5 minutos ya cerrado.
+La misma alerta consolidada emite además un heartbeat silencioso cada hora de
+sesión regular. El heartbeat no es una entrada y nunca se envía al celular.
 
 Al activarla, reemplazar las dos alertas creadas con el script v1; no mantener
 v1 y FAST v2 simultáneamente. FAST v2 conserva los mismos `event_code`
@@ -83,16 +85,15 @@ lógicos para no romper el motor, añade `signal_layer`, las horas de
 apertura/cierre de vela y la hora real de emisión. El backend descarta del
 celular cualquier entrada que llegue con más de 90 segundos de antigüedad.
 
-## Optional Health Alerts
+## Health Events
 
-Keep these paused unless the plan has spare active alert capacity. They are
-heartbeat/context signals, not decision-making alerts, so operational health no
-longer requires them while TradingView active-alert capacity is limited:
+FAST v2 emits these heartbeat/context events from the same two consolidated
+alerts, so they do not consume extra active-alert capacity:
 
 | Alert name | Symbol | Condition hint | Role |
 | --- | --- | --- | --- |
-| `MNQ_SESSION_SNAPSHOT_5M` | `MNQ1!` | Session Snapshot | Heartbeat/snapshot |
-| `MES_SESSION_SNAPSHOT_5M` | `MES1!` | Session Snapshot | Heartbeat/snapshot |
+| `MNQ_SESSION_SNAPSHOT_5M` | `MNQ1!` | `Any alert() function call` | Hourly heartbeat/snapshot |
+| `MES_SESSION_SNAPSHOT_5M` | `MES1!` | `Any alert() function call` | Hourly heartbeat/snapshot |
 
 ## Required Pine Plot Names
 

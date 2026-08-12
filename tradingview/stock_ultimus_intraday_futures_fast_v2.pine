@@ -8,6 +8,7 @@ rthSession = input.session("0930-1600", "Regular session")
 minAdx = input.float(18.0, "Minimum 5m ADX", step=0.5)
 minRvol = input.float(1.10, "Minimum 5m RVOL", step=0.05)
 persistence = input.int(1, "Confirmed 1m closes", minval=1, maxval=2)
+heartbeatEveryBars = input.int(60, "Heartbeat every N 1m bars", minval=15)
 
 inPm = not na(time(timeframe.period, pmSession, tz))
 inOr = not na(time(timeframe.period, orSession, tz))
@@ -41,7 +42,8 @@ crossUp(x) => persistence == 1 ? ta.crossover(close, x) : close > x and close[1]
 crossDown(x) => persistence == 1 ? ta.crossunder(close, x) : close < x and close[1] < x and close[2] >= x
 
 code = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
-payload(ev, evCode, direction) => "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
+sessionState = inRth ? (inOr ? "OPENING_RANGE" : "REGULAR") : inPm ? "PREMARKET" : "CLOSED"
+payload(ev, evCode, direction) => "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + pair("session_state", sessionState) + "," + pair("major_event_window", "NONE") + "," + pair("risk_daily_status", "OK") + "," + pair("portfolio_status", "OK") + "," + numpair("premarket_high", pmHigh) + "," + numpair("premarket_low", pmLow) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
 
 quality = adx5 >= minAdx and rvol5 >= minRvol
 hasOr = not na(orHigh) and not na(orLow)
@@ -51,6 +53,7 @@ orbS = is1m and barstate.isconfirmed and afterOr and hasOr and crossDown(orLow) 
 vwapL = is1m and barstate.isconfirmed and inRth and not orbL and crossUp(vwap5) and quality
 vwapS = is1m and barstate.isconfirmed and inRth and not orbS and crossDown(vwap5) and quality
 risk = is1m and barstate.isconfirmed and inRth and ((side == 1 and ta.crossunder(close, vwap5)) or (side == -1 and ta.crossover(close, vwap5)))
+heartbeat = is1m and barstate.isconfirmed and inRth and bar_index % heartbeatEveryBars == 0 and not (orbL or orbS or vwapL or vwapS or risk)
 
 side := newDay ? 0 : (orbL or vwapL) ? 1 : (orbS or vwapS) ? -1 : risk ? 0 : side
 stop := newDay ? na : (orbL or vwapL) ? close - atr5 : (orbS or vwapS) ? close + atr5 : stop
@@ -66,3 +69,5 @@ if vwapS
     alert(payload("VWAP_REJECT", code + "_VWAP_REJECT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
 if risk
     alert(payload("RISK_INVALIDATION", code + "_RISK_INVALIDATION_5M", "NONE"), alert.freq_once_per_bar_close)
+if heartbeat
+    alert(payload("SESSION_SNAPSHOT", code + "_SESSION_SNAPSHOT_5M", "NONE"), alert.freq_once_per_bar_close)

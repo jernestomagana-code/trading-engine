@@ -30,8 +30,8 @@ slot pressure.
 
 | # | Symbol | Timeframe | Pine script | TradingView condition | Purpose |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `MNQ1!` | `5m` | `stock_ultimus_intraday_futures_alerts_v1.pine` | `Any alert() function call` | Intraday futures evidence |
-| 2 | `MES1!` | `5m` | `stock_ultimus_intraday_futures_alerts_v1.pine` | `Any alert() function call` | Intraday futures evidence |
+| 1 | `MNQ1!` | `1m` | `stock_ultimus_intraday_futures_fast_v2.pine` | `Any alert() function call` | Fast intraday evidence with closed 5m context |
+| 2 | `MES1!` | `1m` | `stock_ultimus_intraday_futures_fast_v2.pine` | `Any alert() function call` | Fast intraday evidence with closed 5m context |
 | 3 | `QQQ` | `15m` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Options-underlying evidence |
 | 4 | `SPY` | `15m` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Options-underlying evidence |
 | 5 | `VIX` | `1D` | `stock_ultimus_options_underlying_alerts_v1.pine` | `Any alert() function call` | Volatility-risk evidence |
@@ -60,6 +60,12 @@ The current MES/MNQ futures payload must include `session_state`,
 `risk_daily_status`. A real signal that lacks them is preserved in quarantine,
 shown in the console, and cannot become `ENTRY_READY` until the project alert
 has been refreshed to the current Pine version.
+
+The FAST v2 consolidated alerts also emit one `SESSION_SNAPSHOT` heartbeat per
+hour during the regular session when no actionable event fires on that bar.
+This health event never reaches the phone, consumes no additional alert slot,
+and lets the console distinguish a quiet market from a stopped TradingView
+alert.
 
 Notification channels for all seven project alerts:
 
