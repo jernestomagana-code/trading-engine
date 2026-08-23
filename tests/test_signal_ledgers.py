@@ -17,6 +17,19 @@ import tradingview_signal_ledger
 
 
 class SignalLedgerTests(unittest.TestCase):
+    def test_active_tradingview_alerts_expose_renewal_window(self):
+        coverage = tradingview_alert_coverage.load_coverage(
+            ROOT / "config" / "tradingview_alert_coverage_v1.json"
+        )
+
+        status = tradingview_alert_coverage.production_alert_expiry_status(
+            coverage, as_of="2026-10-01"
+        )
+
+        self.assertEqual(status["status"], "RENEW_SOON")
+        self.assertTrue(status["renewal_required"])
+        self.assertEqual(status["alerts"][0]["expires_on"], "2026-10-12")
+
     def test_absolute_runtime_ledger_uses_neighbor_remote_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
@@ -69,12 +82,12 @@ class SignalLedgerTests(unittest.TestCase):
 
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["production_active_alert_count"], 2)
-        self.assertEqual(validation["logical_event_count"], 12)
+        self.assertEqual(validation["logical_event_count"], 20)
         self.assertEqual(validation["required_logical_event_count"], 10)
         self.assertEqual(validation["required_alert_count"], 10)
         self.assertEqual(validation["health_alert_count"], 2)
         self.assertEqual(len(required_records), 10)
-        self.assertEqual(len(all_records), 12)
+        self.assertEqual(len(all_records), 20)
         self.assertEqual(message["event_code"], "MNQ_ORB_BREAKOUT_LONG_5M")
         self.assertTrue(payload_validation["valid"])
 

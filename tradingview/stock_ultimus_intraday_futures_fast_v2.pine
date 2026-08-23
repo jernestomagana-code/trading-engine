@@ -1,5 +1,7 @@
 //@version=6
-indicator("Stock Ultimus Intraday Futures FAST v2", overlay=true)
+indicator("Stock Ultimus Intraday Futures FAST v2.2", overlay=true, max_labels_count=200)
+
+// Decision support only. A chart trigger is evidence to evaluate, never an order.
 
 tz = input.string("America/New_York", "Session timezone")
 pmSession = input.session("0400-0929", "Premarket")
@@ -9,6 +11,12 @@ minAdx = input.float(18.0, "Minimum 5m ADX", step=0.5)
 minRvol = input.float(1.10, "Minimum 5m RVOL", step=0.05)
 persistence = input.int(1, "Confirmed 1m closes", minval=1, maxval=2)
 heartbeatEveryBars = input.int(60, "Heartbeat every N 1m bars", minval=15)
+armDistanceAtr = input.float(0.35, "Arm setup within ATR", minval=0.05, step=0.05)
+entryCooldownBars = input.int(10, "Entry cooldown (1m bars)", minval=0)
+enablePrepareAlerts = input.bool(true, "Alertar PREPARE/ARMED")
+prepareCooldownBars = input.int(20, "PREPARE cooldown (1m bars)", minval=1)
+showDecisionPanel = input.bool(true, "Show decision panel")
+showSignalLabels = input.bool(true, "Show entry/stop/targets labels")
 
 inPm = not na(time(timeframe.period, pmSession, tz))
 inOr = not na(time(timeframe.period, orSession, tz))
@@ -21,9 +29,16 @@ var float pmHigh = na
 var float pmLow = na
 var float orHigh = na
 var float orLow = na
+var float entryPrice = na
 var float stop = na
-var float target = na
+var float target1 = na
+var float target2 = na
 var int side = 0
+var int lastEntryBar = na
+var int lastPrepareLongBar = na
+var int lastPrepareShortBar = na
+var int longArmedSince = na
+var int shortArmedSince = na
 
 pmHigh := newDay ? na : inPm ? (na(pmHigh) ? high : math.max(pmHigh, high)) : pmHigh
 pmLow := newDay ? na : inPm ? (na(pmLow) ? low : math.min(pmLow, low)) : pmLow
@@ -43,31 +58,191 @@ crossDown(x) => persistence == 1 ? ta.crossunder(close, x) : close < x and close
 
 code = str.contains(syminfo.ticker, "MES") ? "MES" : "MNQ"
 sessionState = inRth ? (inOr ? "OPENING_RANGE" : "REGULAR") : inPm ? "PREMARKET" : "CLOSED"
-payload(ev, evCode, direction) => "{" + pair("source", "TRADINGVIEW") + "," + pair("action", "ALERT_ONLY") + "," + pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," + pair("ticker", syminfo.ticker) + "," + pair("timeframe", "1m") + "," + pair("context_timeframe", "5m") + "," + pair("event", ev) + "," + pair("event_code", evCode) + "," + pair("breakout_direction", direction) + "," + pair("session_state", sessionState) + "," + pair("major_event_window", "NONE") + "," + pair("risk_daily_status", "OK") + "," + pair("portfolio_status", "OK") + "," + numpair("premarket_high", pmHigh) + "," + numpair("premarket_low", pmLow) + "," + numpair("price", close) + "," + numpair("vwap", vwap5) + "," + numpair("adx", adx5) + "," + numpair("atr", atr5) + "," + numpair("volume_relative", rvol5) + "," + numpair("opening_range_high", orHigh) + "," + numpair("opening_range_low", orLow) + "," + numpair("logical_stop", stop) + "," + numpair("logical_target", target) + "," + numpair("signal_bar_open_time_ms", time) + "," + numpair("signal_bar_close_time_ms", time_close) + "," + numpair("alert_emitted_time_ms", timenow) + "," + pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") + ",\"execution_authorized\":false,\"not_order_instruction\":true}"
+payload(ev, evCode, direction, setupStage, setupType, priority, missing, qualityScore, distanceAtr, triggerPrice, barsArmed) =>
+    "{" +
+     pair("source", "TRADINGVIEW") + "," +
+     pair("action", "ALERT_ONLY") + "," +
+     pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," +
+     pair("strategy_version", "FAST_V2_2") + "," +
+     pair("ticker", syminfo.ticker) + "," +
+     pair("timeframe", "1m") + "," +
+     pair("context_timeframe", "5m") + "," +
+     pair("event", ev) + "," +
+     pair("event_code", evCode) + "," +
+     pair("direction", direction) + "," +
+     pair("breakout_direction", direction) + "," +
+     pair("setup_stage", setupStage) + "," +
+     pair("setup_type", setupType) + "," +
+     pair("alert_priority", priority) + "," +
+     pair("missing_confirmations", missing) + "," +
+     pair("session_state", sessionState) + "," +
+     pair("major_event_window", "NONE") + "," +
+     pair("risk_daily_status", "OK") + "," +
+     pair("portfolio_status", "OK") + "," +
+     numpair("premarket_high", pmHigh) + "," +
+     numpair("premarket_low", pmLow) + "," +
+     numpair("price", close) + "," +
+     numpair("entry_price", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : entryPrice) + "," +
+     numpair("trigger_price", triggerPrice) + "," +
+     numpair("bars_armed", barsArmed) + "," +
+     numpair("vwap", vwap5) + "," +
+     numpair("adx", adx5) + "," +
+     numpair("plus_di", plus5) + "," +
+     numpair("minus_di", minus5) + "," +
+     numpair("atr", atr5) + "," +
+     numpair("volume_relative", rvol5) + "," +
+     numpair("quality_score", qualityScore) + "," +
+     numpair("distance_to_trigger_atr", distanceAtr) + "," +
+     numpair("opening_range_high", orHigh) + "," +
+     numpair("opening_range_low", orLow) + "," +
+     numpair("logical_stop", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : stop) + "," +
+     numpair("logical_target", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : target2) + "," +
+     numpair("tp1_price", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : target1) + "," +
+     numpair("tp2_price", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : target2) + "," +
+     numpair("signal_bar_open_time_ms", time) + "," +
+     numpair("signal_bar_close_time_ms", time_close) + "," +
+     numpair("alert_emitted_time_ms", timenow) + "," +
+     pair("signal_layer", "FAST_1M_CONFIRMED_WITH_5M_CONTEXT") +
+     ",\"execution_authorized\":false,\"not_order_instruction\":true}"
 
-quality = adx5 >= minAdx and rvol5 >= minRvol
+adxOk = adx5 >= minAdx
+rvolOk = rvol5 >= minRvol
+quality = adxOk and rvolOk
 hasOr = not na(orHigh) and not na(orLow)
 afterOr = inRth and not inOr
-orbL = is1m and barstate.isconfirmed and afterOr and hasOr and crossUp(orHigh) and close > vwap5 and quality
-orbS = is1m and barstate.isconfirmed and afterOr and hasOr and crossDown(orLow) and close < vwap5 and quality
-vwapL = is1m and barstate.isconfirmed and inRth and not orbL and crossUp(vwap5) and quality
-vwapS = is1m and barstate.isconfirmed and inRth and not orbS and crossDown(vwap5) and quality
+cooldownReady = na(lastEntryBar) or bar_index - lastEntryBar >= entryCooldownBars
+orbLRaw = is1m and barstate.isconfirmed and afterOr and hasOr and crossUp(orHigh) and close > vwap5 and quality
+orbSRaw = is1m and barstate.isconfirmed and afterOr and hasOr and crossDown(orLow) and close < vwap5 and quality
+orbL = orbLRaw and cooldownReady
+orbS = orbSRaw and cooldownReady
+vwapL = is1m and barstate.isconfirmed and inRth and not orbLRaw and crossUp(vwap5) and quality and cooldownReady
+vwapS = is1m and barstate.isconfirmed and inRth and not orbSRaw and crossDown(vwap5) and quality and cooldownReady
 risk = is1m and barstate.isconfirmed and inRth and ((side == 1 and ta.crossunder(close, vwap5)) or (side == -1 and ta.crossover(close, vwap5)))
 heartbeat = is1m and barstate.isconfirmed and inRth and bar_index % heartbeatEveryBars == 0 and not (orbL or orbS or vwapL or vwapS or risk)
 
 side := newDay ? 0 : (orbL or vwapL) ? 1 : (orbS or vwapS) ? -1 : risk ? 0 : side
+lastEntryBar := newDay ? na : (orbL or orbS or vwapL or vwapS) ? bar_index : lastEntryBar
+entryPrice := newDay ? na : (orbL or vwapL or orbS or vwapS) ? close : entryPrice
 stop := newDay ? na : (orbL or vwapL) ? close - atr5 : (orbS or vwapS) ? close + atr5 : stop
-target := newDay ? na : (orbL or vwapL) ? close + atr5 * 2 : (orbS or vwapS) ? close - atr5 * 2 : target
+target1 := newDay ? na : (orbL or vwapL) ? close + atr5 : (orbS or vwapS) ? close - atr5 : target1
+target2 := newDay ? na : (orbL or vwapL) ? close + atr5 * 2 : (orbS or vwapS) ? close - atr5 * 2 : target2
+
+longDistanceAtr = hasOr and atr5 > 0 ? math.max(0.0, (orHigh - close) / atr5) : na
+shortDistanceAtr = hasOr and atr5 > 0 ? math.max(0.0, (close - orLow) / atr5) : na
+orbLongArmed = afterOr and hasOr and quality and close > vwap5 and close <= orHigh and longDistanceAtr <= armDistanceAtr
+orbShortArmed = afterOr and hasOr and quality and close < vwap5 and close >= orLow and shortDistanceAtr <= armDistanceAtr
+vwapLongArmed = afterOr and quality and close < vwap5 and atr5 > 0 and (vwap5 - close) / atr5 <= armDistanceAtr and plus5 > minus5
+vwapShortArmed = afterOr and quality and close > vwap5 and atr5 > 0 and (close - vwap5) / atr5 <= armDistanceAtr and minus5 > plus5
+longArmed = not (orbL or vwapL) and (orbLongArmed or vwapLongArmed)
+shortArmed = not (orbS or vwapS) and (orbShortArmed or vwapShortArmed)
+longJustArmed = barstate.isconfirmed and longArmed and not longArmed[1]
+shortJustArmed = barstate.isconfirmed and shortArmed and not shortArmed[1]
+longPrepareCooldownReady = na(lastPrepareLongBar) or bar_index - lastPrepareLongBar >= prepareCooldownBars
+shortPrepareCooldownReady = na(lastPrepareShortBar) or bar_index - lastPrepareShortBar >= prepareCooldownBars
+longPrepare = enablePrepareAlerts and longJustArmed and longPrepareCooldownReady
+shortPrepare = enablePrepareAlerts and shortJustArmed and shortPrepareCooldownReady
+longSetupInvalidated = enablePrepareAlerts and barstate.isconfirmed and longArmed[1] and not longArmed and not (orbL or vwapL)
+shortSetupInvalidated = enablePrepareAlerts and barstate.isconfirmed and shortArmed[1] and not shortArmed and not (orbS or vwapS)
+longArmedSince := newDay ? na : longJustArmed ? bar_index : longArmed ? longArmedSince : na
+shortArmedSince := newDay ? na : shortJustArmed ? bar_index : shortArmed ? shortArmedSince : na
+lastPrepareLongBar := newDay ? na : longPrepare ? bar_index : lastPrepareLongBar
+lastPrepareShortBar := newDay ? na : shortPrepare ? bar_index : lastPrepareShortBar
+longBarsArmed = longArmed and not na(longArmedSince) ? bar_index - longArmedSince + 1 : 0
+shortBarsArmed = shortArmed and not na(shortArmedSince) ? bar_index - shortArmedSince + 1 : 0
+longQualityScore = (adxOk ? 1 : 0) + (rvolOk ? 1 : 0) + (close > vwap5 ? 1 : 0) + (plus5 > minus5 ? 1 : 0)
+shortQualityScore = (adxOk ? 1 : 0) + (rvolOk ? 1 : 0) + (close < vwap5 ? 1 : 0) + (minus5 > plus5 ? 1 : 0)
+currentDistanceAtr = longArmed ? (orbLongArmed ? longDistanceAtr : math.abs(close - vwap5) / atr5) : shortArmed ? (orbShortArmed ? shortDistanceAtr : math.abs(close - vwap5) / atr5) : na
+longTriggerPrice = orbLongArmed ? orHigh : vwap5
+shortTriggerPrice = orbShortArmed ? orLow : vwap5
+activeTriggerPrice = longArmed ? longTriggerPrice : shortArmed ? shortTriggerPrice : na
+activeSetupType = longArmed ? (orbLongArmed ? "ORB" : "VWAP_RECLAIM") : shortArmed ? (orbShortArmed ? "ORB" : "VWAP_REJECT") : "NONE"
+longMissing = (adxOk ? "" : "ADX ") + (rvolOk ? "" : "RVOL ") + (close > vwap5 ? "" : "VWAP ") + (plus5 > minus5 ? "" : "DMI ")
+shortMissing = (adxOk ? "" : "ADX ") + (rvolOk ? "" : "RVOL ") + (close < vwap5 ? "" : "VWAP ") + (minus5 > plus5 ? "" : "DMI ")
+panelBias = close > vwap5 and plus5 > minus5 ? "LONG" : close < vwap5 and minus5 > plus5 ? "SHORT" : "MIXED"
+activeMissing = longArmed ? (longMissing == "" ? "NINGUNA" : longMissing) : shortArmed ? (shortMissing == "" ? "NINGUNA" : shortMissing) : panelBias == "LONG" ? (longMissing == "" ? "NINGUNA" : longMissing) : (shortMissing == "" ? "NINGUNA" : shortMissing)
+setupStage = (orbL or vwapL) ? "TRIGGERED_LONG" : (orbS or vwapS) ? "TRIGGERED_SHORT" : longArmed ? "ARMED_LONG" : shortArmed ? "ARMED_SHORT" : not quality ? "WAIT_QUALITY" : "MONITOR"
+panelScore = panelBias == "LONG" ? longQualityScore : panelBias == "SHORT" ? shortQualityScore : math.max(longQualityScore, shortQualityScore)
+entryLongNow = orbL or vwapL
+entryShortNow = orbS or vwapS
+invalidatedNow = longSetupInvalidated or shortSetupInvalidated or risk
+actionNow = entryLongNow ? "EVALUAR LONG AHORA" : entryShortNow ? "EVALUAR SHORT AHORA" : longArmed ? "PREPARAR LONG" : shortArmed ? "PREPARAR SHORT" : invalidatedNow ? "DESCARTAR SETUP" : not is1m ? "CAMBIAR GRAFICO A 1m" : not quality ? "ESPERAR CALIDAD 5m" : "SIN OPORTUNIDAD"
+actionReason = entryLongNow or entryShortNow ? "CIERRE 1m + CONTEXTO 5m CONFIRMADOS" : longArmed or shortArmed ? "CERCA DEL GATILLO; AUN NO ENTRAR" : invalidatedNow ? "PERDIO LA CONDICION TECNICA" : not quality ? "ADX O VOLUMEN 5m INSUFICIENTE" : "PRECIO LEJOS DE ORB/VWAP"
+intradayRead = is1m ? (longArmed ? "1m BUSCA CIERRE SOBRE GATILLO" : shortArmed ? "1m BUSCA CIERRE BAJO GATILLO" : "1m MONITOREANDO PRECIO") : "ESTE INDICADOR REQUIERE 1m"
+contextRead = not quality ? "5m NO CONFIRMA CALIDAD" : panelBias == "LONG" ? "5m FAVORECE LONG" : panelBias == "SHORT" ? "5m FAVORECE SHORT" : "5m SIN DIRECCION CLARA"
+planRead = side == 0 ? "SIN PLAN ACTIVO" : "E " + num(entryPrice) + " | S " + num(stop) + " | T1 " + num(target1) + " | T2 " + num(target2)
+actionBg = entryLongNow ? color.new(color.lime, 0) : entryShortNow ? color.new(color.red, 0) : longArmed or shortArmed ? color.new(color.orange, 10) : invalidatedNow ? color.new(color.red, 20) : color.new(color.gray, 55)
 
 if orbL
-    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
+    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_LONG_5M", "LONG", "TRIGGERED", "ORB", "HIGH", "NINGUNA", longQualityScore, 0, close, 0), alert.freq_once_per_bar_close)
 if orbS
-    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
+    alert(payload("ORB_BREAKOUT", code + "_ORB_BREAKOUT_SHORT_5M", "SHORT", "TRIGGERED", "ORB", "HIGH", "NINGUNA", shortQualityScore, 0, close, 0), alert.freq_once_per_bar_close)
 if vwapL
-    alert(payload("VWAP_RECLAIM", code + "_VWAP_RECLAIM_LONG_5M", "LONG"), alert.freq_once_per_bar_close)
+    alert(payload("VWAP_RECLAIM", code + "_VWAP_RECLAIM_LONG_5M", "LONG", "TRIGGERED", "VWAP_RECLAIM", "HIGH", "NINGUNA", longQualityScore, 0, close, 0), alert.freq_once_per_bar_close)
 if vwapS
-    alert(payload("VWAP_REJECT", code + "_VWAP_REJECT_SHORT_5M", "SHORT"), alert.freq_once_per_bar_close)
+    alert(payload("VWAP_REJECT", code + "_VWAP_REJECT_SHORT_5M", "SHORT", "TRIGGERED", "VWAP_REJECT", "HIGH", "NINGUNA", shortQualityScore, 0, close, 0), alert.freq_once_per_bar_close)
+if longPrepare
+    alert(payload("PREPARE", code + "_PREPARE_LONG_1M", "LONG", "ARMED", activeSetupType, "LOW", longMissing == "" ? "NINGUNA" : longMissing, longQualityScore, currentDistanceAtr, longTriggerPrice, longBarsArmed), alert.freq_once_per_bar_close)
+if shortPrepare
+    alert(payload("PREPARE", code + "_PREPARE_SHORT_1M", "SHORT", "ARMED", activeSetupType, "LOW", shortMissing == "" ? "NINGUNA" : shortMissing, shortQualityScore, currentDistanceAtr, shortTriggerPrice, shortBarsArmed), alert.freq_once_per_bar_close)
+if longSetupInvalidated
+    alert(payload("SETUP_INVALIDATED", code + "_SETUP_INVALIDATED_LONG_1M", "LONG", "INVALIDATED", "PREPARE", "LOW", "SETUP_PERDIDO", longQualityScore, 0, longTriggerPrice, 0), alert.freq_once_per_bar_close)
+if shortSetupInvalidated
+    alert(payload("SETUP_INVALIDATED", code + "_SETUP_INVALIDATED_SHORT_1M", "SHORT", "INVALIDATED", "PREPARE", "LOW", "SETUP_PERDIDO", shortQualityScore, 0, shortTriggerPrice, 0), alert.freq_once_per_bar_close)
 if risk
-    alert(payload("RISK_INVALIDATION", code + "_RISK_INVALIDATION_5M", "NONE"), alert.freq_once_per_bar_close)
+    alert(payload("RISK_INVALIDATION", code + "_RISK_INVALIDATION_5M", "NONE", "INVALIDATED", "ACTIVE_PLAN", "HIGH", "VWAP_INVALIDADO", 0, 0, vwap5, 0), alert.freq_once_per_bar_close)
 if heartbeat
-    alert(payload("SESSION_SNAPSHOT", code + "_SESSION_SNAPSHOT_5M", "NONE"), alert.freq_once_per_bar_close)
+    alert(payload("SESSION_SNAPSHOT", code + "_SESSION_SNAPSHOT_5M", "NONE", setupStage, activeSetupType, "SILENT", activeMissing, panelScore, currentDistanceAtr, activeTriggerPrice, math.max(longBarsArmed, shortBarsArmed)), alert.freq_once_per_bar_close)
+
+plot(vwap5, "VWAP", color=color.new(color.blue, 0), linewidth=2)
+plot(orHigh, "ORH", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(orLow, "ORL", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(pmHigh, "PMH", color=color.new(color.teal, 45), linewidth=1, style=plot.style_linebr)
+plot(pmLow, "PML", color=color.new(color.orange, 45), linewidth=1, style=plot.style_linebr)
+plot(entryPrice, "ENTRY", color=color.new(color.white, 15), linewidth=2, style=plot.style_linebr)
+plot(stop, "STOP", color=color.new(color.red, 20), linewidth=2, style=plot.style_linebr)
+plot(target1, "TARGET 1", color=color.new(color.lime, 35), linewidth=1, style=plot.style_linebr)
+plot(target2, "TARGET 2", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebr)
+plot(activeTriggerPrice, "NEXT TRIGGER", color=color.new(color.yellow, 5), linewidth=2, style=plot.style_linebr)
+plot(target2, "TARGET", display=display.data_window)
+plot(adx5, "ADX", display=display.data_window)
+plot(atr5, "ATR", display=display.data_window)
+plot(rvol5, "RVOL", display=display.data_window)
+
+bgcolor(longArmed ? color.new(color.green, 88) : shortArmed ? color.new(color.red, 88) : invalidatedNow ? color.new(color.red, 91) : not is1m ? color.new(color.orange, 82) : na)
+plotshape(series=longJustArmed, title="Setup armed long", style=shape.labelup, location=location.belowbar, color=color.new(color.orange, 5), size=size.tiny, text="PREPARAR LONG")
+plotshape(series=shortJustArmed, title="Setup armed short", style=shape.labeldown, location=location.abovebar, color=color.new(color.orange, 5), size=size.tiny, text="PREPARAR SHORT")
+plotshape(series=orbL, title="ORB long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="ORB L")
+plotshape(series=orbS, title="ORB short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, text="ORB S")
+plotshape(series=vwapL, title="VWAP long", style=shape.triangleup, location=location.belowbar, color=color.new(color.aqua, 0), size=size.small, text="VW L")
+plotshape(series=vwapS, title="VWAP short", style=shape.triangledown, location=location.abovebar, color=color.new(color.fuchsia, 0), size=size.small, text="VW S")
+plotshape(series=invalidatedNow, title="Invalidation", style=shape.xcross, location=location.abovebar, color=color.new(color.yellow, 0), size=size.small, text="DESCARTAR")
+
+if showSignalLabels and (orbL or vwapL)
+    label.new(bar_index, low, "EVALUAR LONG AHORA\nCierre 1m confirmado\nEntrada " + num(entryPrice) + " | Stop " + num(stop) + "\nT1 " + num(target1) + " | T2 " + num(target2), style=label.style_label_up, color=color.new(color.green, 5), textcolor=color.white)
+if showSignalLabels and (orbS or vwapS)
+    label.new(bar_index, high, "EVALUAR SHORT AHORA\nCierre 1m confirmado\nEntrada " + num(entryPrice) + " | Stop " + num(stop) + "\nT1 " + num(target1) + " | T2 " + num(target2), style=label.style_label_down, color=color.new(color.red, 5), textcolor=color.white)
+
+panelLabelBg = color.new(color.black, 12)
+panelValueBg = color.new(color.gray, 68)
+var table decisionPanel = table.new(position.middle_right, 2, 10, border_width=1, border_color=color.new(color.white, 55))
+if barstate.islast and showDecisionPanel
+    table.cell(decisionPanel, 0, 0, "ACCIÓN AHORA", text_color=color.white, bgcolor=actionBg)
+    table.cell(decisionPanel, 1, 0, actionNow, text_color=entryLongNow ? color.black : color.white, bgcolor=actionBg)
+    table.cell(decisionPanel, 0, 1, "POR QUÉ", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 1, actionReason, text_color=color.white, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 2, "PRECIO 1m", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 2, intradayRead, text_color=is1m ? color.white : color.orange, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 3, "CONTEXTO 5m", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 3, contextRead, text_color=quality ? color.white : color.orange, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 4, "PRÓXIMO GATILLO", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 4, na(activeTriggerPrice) ? "NINGUNO" : num(activeTriggerPrice), text_color=color.yellow, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 5, "FALTA", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 5, activeMissing, text_color=activeMissing == "NINGUNA" ? color.lime : color.orange, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 6, "PLAN SI CONFIRMA", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 6, planRead, text_color=side == 0 ? color.silver : color.white, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 7, "CALIDAD", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 7, str.tostring(panelScore) + "/4 | VWAP " + (close > vwap5 ? "ARRIBA" : "ABAJO") + " | DMI " + (plus5 > minus5 ? "LONG" : "SHORT"), text_color=panelScore >= 3 ? color.lime : color.orange, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 8, "BARRAS PREPARANDO", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 8, str.tostring(math.max(longBarsArmed, shortBarsArmed)), text_color=color.white, bgcolor=panelValueBg)
+    table.cell(decisionPanel, 0, 9, "REGLA", text_color=color.silver, bgcolor=panelLabelBg)
+    table.cell(decisionPanel, 1, 9, "ALERTA = EVIDENCIA; EVALUAR ANTES DE ENTRAR", text_color=color.aqua, bgcolor=panelValueBg)

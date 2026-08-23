@@ -35,6 +35,44 @@ def production_active_alerts(coverage: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def production_alert_expiry_status(coverage: dict[str, Any], *, as_of: str | None = None) -> dict[str, Any]:
+    try:
+        today = datetime.fromisoformat(as_of).date() if as_of else datetime.now(timezone.utc).date()
+    except Exception:
+        today = datetime.now(timezone.utc).date()
+    rows = []
+    for item in production_active_alerts(coverage):
+        expires_on = item.get("expires_on")
+        try:
+            expiry = datetime.fromisoformat(str(expires_on)).date()
+            days_remaining = (expiry - today).days
+        except Exception:
+            days_remaining = None
+        state = (
+            "EXPIRY_UNKNOWN" if days_remaining is None
+            else "EXPIRED" if days_remaining < 0
+            else "RENEW_NOW" if days_remaining <= 7
+            else "RENEW_SOON" if days_remaining <= 14
+            else "ACTIVE"
+        )
+        rows.append({
+            "symbol": item.get("symbol"),
+            "timeframe": item.get("timeframe"),
+            "expires_on": expires_on,
+            "renewal_review_on": item.get("renewal_review_on"),
+            "days_remaining": days_remaining,
+            "status": state,
+        })
+    ranked = {"EXPIRED": 4, "RENEW_NOW": 3, "RENEW_SOON": 2, "EXPIRY_UNKNOWN": 1, "ACTIVE": 0}
+    overall = max((row["status"] for row in rows), key=lambda value: ranked[value], default="NO_ACTIVE_ALERTS")
+    return {
+        "status": overall,
+        "as_of": today.isoformat(),
+        "alerts": rows,
+        "renewal_required": overall in {"EXPIRED", "RENEW_NOW", "RENEW_SOON"},
+    }
+
+
 def alert_by_code(coverage: dict[str, Any], event_code: str) -> dict[str, Any] | None:
     code = str(event_code or "").strip().upper()
     for item in alerts(coverage):
@@ -99,6 +137,7 @@ def validate_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
         "duplicate_alert_names": duplicate_alert_names,
         "missing_fields": missing_fields,
         "required_plot_names": coverage.get("required_plot_names") or [],
+        "production_alert_expiry": production_alert_expiry_status(coverage),
         "manual_review_required": True,
         "execution_authorized": False,
         "not_order_instruction": True,

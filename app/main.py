@@ -2595,6 +2595,18 @@ def build_intraday_futures_alert_event(payload):
         "confirmation_conflicts": payload.get("confirmation_conflicts") or [],
         "signal_trigger_explanation": payload.get("signal_trigger_explanation"),
         "signal_quality_explanation": payload.get("signal_quality_explanation"),
+        "setup_stage": payload.get("setup_stage"),
+        "alert_priority": payload.get("alert_priority"),
+        "trigger_price": payload.get("trigger_price"),
+        "missing_confirmations": payload.get("missing_confirmations") or [],
+        "bars_armed": payload.get("bars_armed"),
+        "consensus_grade": payload.get("consensus_grade"),
+        "consensus_status": payload.get("consensus_status"),
+        "consensus_sources": payload.get("consensus_sources") or [],
+        "consensus_window_minutes": payload.get("consensus_window_minutes"),
+        "consensus_aligned_event_ids": payload.get("consensus_aligned_event_ids") or [],
+        "consensus_conflict_event_ids": payload.get("consensus_conflict_event_ids") or [],
+        "consensus_explanation": payload.get("consensus_explanation"),
         "counter_trend": payload.get("counter_trend"),
         "source_counter_trend": payload.get("source_counter_trend"),
         "event_code": event_code,
@@ -2631,7 +2643,17 @@ def build_intraday_futures_alert_event(payload):
         "premarket_blockers": payload.get("premarket_blockers") or construction.get("premarket_blockers") or [],
         "premarket_context": payload.get("premarket_context") or construction.get("premarket_context") or {},
         "not_order_instruction": payload.get("not_order_instruction"),
-        "evaluation_status": "PENDING_OUTCOME",
+        "evaluation_status": (
+            "PENDING_OUTCOME"
+            if (
+                intraday_futures_is_entry_event(event_code, event)
+                or intraday_futures_is_rebound_event(event_code, event)
+                or intraday_futures_is_setup_wait_event(event_code, event)
+            ) and str(payload.get("direction") or construction.get("direction") or "").upper() in {"LONG", "SHORT"}
+            else "INVALIDATION_ONLY"
+            if intraday_futures_is_risk_invalidation_event(event_code, event)
+            else "CONTEXT_ONLY"
+        ),
         "paper_outcome": True,
         "raw_payload_preview": payload.get("raw_payload_preview"),
     }
@@ -2754,11 +2776,12 @@ def calculate_intraday_futures_window_outcome(event, points, window_minutes):
         return None
 
     window_points.sort(key=lambda item: item[0])
-    prices = [
-        coerce_float_or_none(point.get("price"))
-        for _, point in window_points
+    priced_points = [
+        (point_dt, point, coerce_float_or_none(point.get("price")))
+        for point_dt, point in window_points
+        if coerce_float_or_none(point.get("price")) is not None
     ]
-    prices = [price for price in prices if price is not None]
+    prices = [price for _, _, price in priced_points]
     if not prices:
         return None
 
@@ -2780,6 +2803,52 @@ def calculate_intraday_futures_window_outcome(event, points, window_minutes):
     stop_points = coerce_float_or_none(event.get("stop_points"))
     mfe_r = round(mfe_points / stop_points, 4) if mfe_points is not None and stop_points else None
     mae_r = round(mae_points / stop_points, 4) if mae_points is not None and stop_points else None
+    stop_price = coerce_float_or_none(event.get("stop_price"))
+    target_1 = coerce_float_or_none(event.get("tp1_price"))
+    target_2 = coerce_float_or_none(event.get("tp2_price"))
+    first_touch = None
+    first_touch_at = None
+    for point_dt, _point, observed_price in priced_points:
+        touches = []
+        if direction == "LONG":
+            if stop_price is not None and observed_price <= stop_price:
+                touches.append("STOP")
+            if target_2 is not None and observed_price >= target_2:
+                touches.append("TARGET_2")
+            elif target_1 is not None and observed_price >= target_1:
+                touches.append("TARGET_1")
+        elif direction == "SHORT":
+            if stop_price is not None and observed_price >= stop_price:
+                touches.append("STOP")
+            if target_2 is not None and observed_price <= target_2:
+                touches.append("TARGET_2")
+            elif target_1 is not None and observed_price <= target_1:
+                touches.append("TARGET_1")
+        if touches:
+            first_touch = touches[0]
+            first_touch_at = point_dt
+            break
+
+    directional_change = (
+        close_price - alert_price if direction == "LONG"
+        else alert_price - close_price if direction == "SHORT"
+        else None
+    )
+    if first_touch == "TARGET_2":
+        hypothetical_result_r = 2.0
+        classification = "GOOD_SIGNAL"
+    elif first_touch == "TARGET_1":
+        hypothetical_result_r = 1.0
+        classification = "GOOD_SIGNAL"
+    elif first_touch == "STOP":
+        hypothetical_result_r = -1.0
+        classification = "FALSE_POSITIVE"
+    elif directional_change is not None and stop_points:
+        hypothetical_result_r = round(directional_change / stop_points, 4)
+        classification = "OPEN_FAVORABLE" if hypothetical_result_r > 0 else "OPEN_ADVERSE"
+    else:
+        hypothetical_result_r = None
+        classification = "UNRESOLVED"
 
     return {
         "window_minutes": window_minutes,
@@ -2795,6 +2864,14 @@ def calculate_intraday_futures_window_outcome(event, points, window_minutes):
         "mae_points": round(mae_points, 4) if mae_points is not None else None,
         "mfe_r": mfe_r,
         "mae_r": mae_r,
+        "first_touch": first_touch,
+        "first_touch_at": first_touch_at.isoformat() if first_touch_at is not None else None,
+        "minutes_to_first_touch": (
+            round((first_touch_at - alert_dt).total_seconds() / 60.0, 2)
+            if first_touch_at is not None else None
+        ),
+        "hypothetical_result_r": hypothetical_result_r,
+        "classification": classification,
     }
 
 
@@ -2833,15 +2910,28 @@ def evaluate_intraday_futures_pending_events():
 
         evaluation_status = "AUTO_EVALUATED" if "60m" in window_results else "PARTIALLY_AUTO_EVALUATED"
         updated_event = dict(event)
+        selected_window = (
+            window_results.get("60m") or window_results.get("30m")
+            or window_results.get("15m") or window_results.get("5m") or {}
+        )
         updated_event["evaluation_status"] = evaluation_status
         updated_event["auto_outcome"] = {
             "evaluated_at": now_utc().isoformat(),
-            "outcome_engine_version": "outcome_engine_v1_phase_3",
+            "outcome_engine_version": "outcome_engine_v2_first_touch",
             "paper_outcome": True,
             "windows": window_results,
+            "classification": selected_window.get("classification"),
+            "mfe_points": selected_window.get("mfe_points"),
+            "mae_points": selected_window.get("mae_points"),
+            "mfe_r": selected_window.get("mfe_r"),
+            "mae_r": selected_window.get("mae_r"),
+            "hypothetical_result_r": selected_window.get("hypothetical_result_r"),
+            "first_touch": selected_window.get("first_touch"),
+            "minutes_to_first_touch": selected_window.get("minutes_to_first_touch"),
         }
+        updated_event["classification"] = selected_window.get("classification")
         updated_event["evaluated_at"] = updated_event["auto_outcome"]["evaluated_at"]
-        updated_event["outcome_engine_version"] = "outcome_engine_v1_phase_3"
+        updated_event["outcome_engine_version"] = "outcome_engine_v2_first_touch"
         events[idx] = updated_event
         supabase_event_result = supabase_persist_intraday_alert_event(updated_event)
         supabase_outcome_result = supabase_persist_intraday_outcome(
@@ -9469,6 +9559,15 @@ def normalize_technical_snapshot_payload(payload):
     if not strategy_context and strategy:
         payload["strategy_context"] = strategy
 
+    normalized_context = str(payload.get("strategy_context") or "").upper().strip()
+    if normalized_context in {"INTRADAY_INDEX_FUTURES", "CHRIS_IA_REVERSAL_PRO"}:
+        direction = str(payload.get("direction") or "").upper().strip()
+        breakout_direction = str(payload.get("breakout_direction") or "").upper().strip()
+        if direction not in {"LONG", "SHORT"} and breakout_direction in {"LONG", "SHORT"}:
+            payload["direction"] = breakout_direction
+        elif not direction and breakout_direction == "NONE":
+            payload["direction"] = "NONE"
+
     source = str(payload.get("source") or payload.get("original_source") or "").upper().strip()
     action = str(payload.get("action") or "").upper().strip()
     if source == "TRADINGVIEW" and action == "ALERT_ONLY":
@@ -9705,7 +9804,7 @@ def intraday_futures_target_instrument(payload, construction=None):
         )
         or ""
     ).upper().strip()
-    if ticker in ["SPY", "SPX", "US500", "US500F", "MES", "ES"]:
+    if ticker in ["SPY", "SPX", "US500", "US500F", "MES", "MES1!", "ES", "ES1!"]:
         return "MES"
     return "MNQ"
 
@@ -9741,7 +9840,13 @@ def intraday_futures_is_setup_wait_event(event_code, event=None):
     name = intraday_futures_event_text(event)
     if event_code in [101, 102]:
         return True
-    return "SETUP" in code or name.endswith("_SETUP")
+    return (
+        "SETUP" in code
+        or "PREPARE" in code
+        or "_WATCH_" in code
+        or name.endswith("_SETUP")
+        or name in {"PREPARE", "WATCH", "ARMED", "SETUP_WATCH"}
+    )
 
 
 def intraday_futures_is_rebound_event(event_code, event=None):
@@ -9753,13 +9858,117 @@ def intraday_futures_is_rebound_event(event_code, event=None):
 def intraday_futures_is_risk_invalidation_event(event_code, event=None):
     code = intraday_futures_event_text(event_code)
     name = intraday_futures_event_text(event)
-    return event_code in [701, 801, 802, 901] or "RISK_INVALIDATION" in code or name in {
+    return event_code in [701, 801, 802, 901] or any(token in code for token in {
+        "RISK_INVALIDATION", "SETUP_INVALIDATED", "WATCH_CANCELED",
+    }) or name in {
         "RISK_INVALIDATION",
+        "SETUP_INVALIDATED",
+        "WATCH_CANCELED",
         "MACRO_LOCKOUT",
         "VOLATILITY_EXTREME",
         "RANGE_70_USED",
         "RANGE_90_USED",
     }
+
+
+def intraday_futures_strategy_source(payload):
+    context = intraday_futures_event_text(
+        (payload or {}).get("strategy_context") or (payload or {}).get("strategy")
+    )
+    return "CHRIS" if context == "CHRIS_IA_REVERSAL_PRO" else "FAST"
+
+
+def apply_intraday_futures_strategy_consensus(payload, recent_events=None, window_minutes=30):
+    """Grade recent FAST/Chris agreement without promoting a WATCH to ENTRY."""
+    payload = dict(payload or {})
+    if not is_intraday_futures_signal(payload):
+        return payload
+
+    direction = intraday_futures_event_text(
+        payload.get("direction") or payload.get("breakout_direction")
+    )
+    source = intraday_futures_strategy_source(payload)
+    ticker = str(payload.get("ticker") or payload.get("symbol") or "").upper().strip()
+    family = intraday_futures_instrument_family_from_value(ticker)
+    if direction not in {"LONG", "SHORT"} or not family:
+        payload.update({
+            "consensus_grade": "C",
+            "consensus_status": "SINGLE_SOURCE",
+            "consensus_sources": [source],
+            "consensus_window_minutes": window_minutes,
+        })
+        return payload
+
+    if recent_events is None:
+        try:
+            recent_events = shared_tradingview_signal_ledger.load_signal_events(limit=250)
+        except Exception:
+            recent_events = []
+
+    current_at = parse_iso_datetime(
+        payload.get("received_at") or payload.get("saved_at") or now_utc().isoformat()
+    ) or now_utc()
+    aligned = []
+    opposed = []
+    for item in recent_events or []:
+        if not isinstance(item, dict):
+            continue
+        item_source = intraday_futures_strategy_source(item)
+        if item_source == source:
+            continue
+        item_ticker = str(item.get("ticker") or item.get("symbol") or "").upper().strip()
+        if intraday_futures_instrument_family_from_value(item_ticker) != family:
+            continue
+        item_at = parse_iso_datetime(item.get("received_at") or item.get("saved_at"))
+        if item_at is None or abs((current_at - item_at).total_seconds()) > window_minutes * 60:
+            continue
+        item_direction = intraday_futures_event_text(
+            item.get("direction") or item.get("breakout_direction")
+        )
+        if item_direction == direction:
+            aligned.append(item)
+        elif item_direction in {"LONG", "SHORT"}:
+            opposed.append(item)
+
+    current_entry = intraday_futures_is_entry_event(payload.get("event_code"), payload.get("event"))
+    aligned_entry = any(
+        intraday_futures_is_entry_event(item.get("event_code"), item.get("event"))
+        for item in aligned
+    )
+    if aligned:
+        grade = "A" if current_entry and aligned_entry else "B"
+        status = "CONFIRMED_BY_FAST_AND_CHRIS" if grade == "A" else "EARLY_CONFLUENCE"
+    elif opposed:
+        grade = "C"
+        status = "CROSS_STRATEGY_CONFLICT"
+    else:
+        grade = "C"
+        status = "SINGLE_SOURCE"
+
+    payload.update({
+        "consensus_grade": grade,
+        "consensus_status": status,
+        "consensus_sources": sorted({source} | ({"CHRIS" if source == "FAST" else "FAST"} if aligned else set())),
+        "consensus_window_minutes": window_minutes,
+        "consensus_aligned_event_ids": [
+            item.get("event_id") or item.get("id") for item in aligned[-3:]
+            if item.get("event_id") or item.get("id")
+        ],
+        "consensus_conflict_event_ids": [
+            item.get("event_id") or item.get("id") for item in opposed[-3:]
+            if item.get("event_id") or item.get("id")
+        ],
+        "consensus_explanation": (
+            "FAST y Chris confirman dirección y entrada dentro de la ventana."
+            if grade == "A"
+            else "FAST y Chris comparten dirección; falta confirmar la entrada en ambas capas."
+            if grade == "B"
+            else "La otra estrategia mantiene una señal reciente en dirección opuesta."
+            if opposed
+            else "Señal de una sola estrategia; esperar confluencia o mayor calidad propia."
+        ),
+    })
+    return payload
 
 
 def intraday_futures_is_session_snapshot_event(event_code, event=None):
@@ -9844,6 +10053,128 @@ def apply_intraday_futures_reference_levels(payload):
     return payload
 
 
+def apply_core_intraday_futures_signal_quality_gate(payload):
+    """Explain the MES/MNQ gate with the same four checks shown in Pine."""
+    payload = dict(payload or {})
+    direction = intraday_futures_event_text(
+        payload.get("direction") or payload.get("breakout_direction")
+    )
+    if direction not in {"LONG", "SHORT"}:
+        return payload
+
+    adx = first_present_float(payload.get("adx"))
+    rvol = first_present_float(payload.get("volume_relative"), payload.get("rvol"))
+    price = first_present_float(payload.get("entry_price"), payload.get("price"))
+    vwap = first_present_float(payload.get("vwap"))
+    plus_di = first_present_float(payload.get("plus_di"))
+    minus_di = first_present_float(payload.get("minus_di"))
+    confirmations = []
+    conflicts = []
+
+    if adx is not None and adx >= 18.0:
+        confirmations.append("ADX_OK")
+    else:
+        conflicts.append("ADX_BAJO_O_NO_DISPONIBLE")
+    if rvol is not None and rvol >= 1.10:
+        confirmations.append("RVOL_OK")
+    else:
+        conflicts.append("RVOL_BAJO_O_NO_DISPONIBLE")
+    vwap_aligned = (
+        price is not None
+        and vwap is not None
+        and ((direction == "LONG" and price > vwap) or (direction == "SHORT" and price < vwap))
+    )
+    if vwap_aligned:
+        confirmations.append("VWAP_ALINEADO")
+    else:
+        conflicts.append("VWAP_NO_ALINEADO")
+
+    dmi_available = plus_di is not None and minus_di is not None
+    dmi_aligned = dmi_available and (
+        (direction == "LONG" and plus_di > minus_di)
+        or (direction == "SHORT" and minus_di > plus_di)
+    )
+    if dmi_available:
+        if dmi_aligned:
+            confirmations.append("DMI_ALINEADO")
+        else:
+            conflicts.append("DMI_CONTRARIO")
+
+    baseline_conflicts = {
+        "ADX_BAJO_O_NO_DISPONIBLE",
+        "RVOL_BAJO_O_NO_DISPONIBLE",
+        "VWAP_NO_ALINEADO",
+    }
+    insufficient = bool(baseline_conflicts.intersection(conflicts))
+    check_count = len(confirmations) + len(conflicts)
+    quality_score = round(100 * len(confirmations) / check_count) if check_count else 0
+    payload.update({
+        "source_counter_trend": payload.get("counter_trend"),
+        "counter_trend": bool(dmi_available and not dmi_aligned),
+        "signal_actionability": "WATCH_ONLY" if insufficient else "ACTIONABLE_CANDIDATE",
+        "confirmation_gate_status": "INSUFFICIENT" if insufficient else "PASSED",
+        "confirmation_quality_score": quality_score,
+        "confirmation_required": 3,
+        "confirmation_reasons": confirmations,
+        "confirmation_conflicts": conflicts,
+        "signal_trigger_explanation": (
+            "Disparo ORB/VWAP confirmado al cierre de 1 minuto con contexto técnico de 5 minutos."
+        ),
+        "signal_quality_explanation": "Confirmaciones: {}. Conflictos: {}.".format(
+            ", ".join(confirmations) or "ninguna",
+            ", ".join(conflicts) or "ninguno",
+        ),
+    })
+    if not insufficient:
+        return payload
+
+    blocker = "CORE_TECHNICAL_CONFIRMATION_INSUFFICIENT"
+    blockers = normalize_warning_list(payload.get("blockers"))
+    warnings = normalize_warning_list(payload.get("warnings"))
+    if blocker not in blockers:
+        blockers.insert(0, blocker)
+    if blocker not in warnings:
+        warnings.insert(0, blocker)
+    explanation = (
+        "Mantener en WATCH: el disparo no conserva la base ADX/RVOL/VWAP; "
+        "confirmaciones: {}; conflictos: {}."
+    ).format(", ".join(confirmations) or "ninguna", ", ".join(conflicts) or "ninguno")
+    payload.update({
+        "final_state": "MANUAL_REVIEW",
+        "decision_max_state": "MANUAL_REVIEW",
+        "construction_status": "NEEDS_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "warnings": warnings,
+        "decision_explanation": explanation,
+    })
+    construction = payload.get("construction") if isinstance(payload.get("construction"), dict) else {}
+    construction.update({
+        "final_state": "MANUAL_REVIEW",
+        "decision_max_state": "MANUAL_REVIEW",
+        "construction_status": "NEEDS_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "warnings": warnings,
+        "decision_explanation": explanation,
+        "signal_actionability": "WATCH_ONLY",
+        "confirmation_gate_status": "INSUFFICIENT",
+        "confirmation_quality_score": quality_score,
+        "confirmation_reasons": confirmations,
+        "confirmation_conflicts": conflicts,
+    })
+    payload["construction"] = construction
+    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+    decision.update({
+        "final_state": "MANUAL_REVIEW",
+        "main_blocker": blocker,
+        "blockers": blockers,
+        "explanation": explanation,
+    })
+    payload["decision"] = decision
+    return payload
+
+
 def apply_intraday_futures_signal_quality_gate(payload):
     """Downgrade weak counter-trend entries before they reach the operator.
 
@@ -9866,6 +10197,12 @@ def apply_intraday_futures_signal_quality_gate(payload):
     )
     if direction not in {"LONG", "SHORT"}:
         return payload
+
+    strategy_context = intraday_futures_event_text(
+        payload.get("strategy_context") or payload.get("strategy")
+    )
+    if strategy_context == "INTRADAY_INDEX_FUTURES":
+        return apply_core_intraday_futures_signal_quality_gate(payload)
 
     trend = intraday_futures_event_text(payload.get("trend_state") or payload.get("trend"))
     bullish_trend = any(token in trend for token in ("ALCISTA", "BULL", "UPTREND"))
@@ -10318,9 +10655,9 @@ def normalize_intraday_futures_positions(value):
 
 def intraday_futures_instrument_family_from_value(value):
     value = str(value or "").upper().strip()
-    if value in ["MNQ", "NQ", "QQQ", "NASDAQ"]:
+    if value in ["MNQ", "MNQ1!", "NQ", "NQ1!", "QQQ", "NASDAQ", "USTEC.F", "USTECF", "NAS100"]:
         return "Nasdaq"
-    if value in ["MES", "ES", "SPY", "SPX", "US500", "US500F", "S&P 500", "SP500"]:
+    if value in ["MES", "MES1!", "ES", "ES1!", "SPY", "SPX", "US500", "US500F", "S&P 500", "SP500"]:
         return "S&P 500"
     return None
 
@@ -10778,7 +11115,13 @@ def build_intraday_futures_construction(payload):
 
     event_code = payload.get("event_code")
     event = payload.get("event")
-    direction = payload.get("direction") or "NONE"
+    direction = str(payload.get("direction") or "").upper().strip()
+    breakout_direction = str(payload.get("breakout_direction") or "").upper().strip()
+    if direction not in {"LONG", "SHORT"} and breakout_direction in {"LONG", "SHORT"}:
+        direction = breakout_direction
+    if direction not in {"LONG", "SHORT", "NONE"}:
+        direction = "NONE"
+    payload["direction"] = direction
     warnings = normalize_warning_list(payload.get("warnings"))
     missing_fields = []
     risk_notes = []
@@ -10798,7 +11141,7 @@ def build_intraday_futures_construction(payload):
         or payload.get("asset")
         or ""
     ).upper().strip()
-    instrument_family = "S&P 500" if ticker in ["SPY", "SPX", "US500", "US500F"] else "Nasdaq"
+    instrument_family = intraday_futures_instrument_family_from_value(ticker) or "Nasdaq"
     target_instrument = "MES_OR_ES" if instrument_family == "S&P 500" else "MNQ_OR_NQ"
 
     construction_status = payload.get("construction_status") or "NEEDS_REVIEW"
@@ -10821,6 +11164,8 @@ def build_intraday_futures_construction(payload):
     elif intraday_futures_is_setup_wait_event(event_code, event):
         construction_status = "NEEDS_REVIEW"
         decision_max_state = "NEEDS_REVIEW"
+        payload["signal_actionability"] = "WATCH_ONLY"
+        payload["alert_priority"] = payload.get("alert_priority") or "LOW"
         missing_fields.extend([
             "trigger_confirmation",
             "stop_price",
@@ -10875,6 +11220,11 @@ def build_intraday_futures_construction(payload):
         "event_code": event_code,
         "event": event,
         "setup_type": payload.get("setup_type"),
+        "setup_stage": payload.get("setup_stage"),
+        "alert_priority": payload.get("alert_priority"),
+        "trigger_price": payload.get("trigger_price"),
+        "missing_confirmations": payload.get("missing_confirmations") or [],
+        "bars_armed": payload.get("bars_armed"),
         "direction": direction,
         "severity": payload.get("severity"),
         "construction_status": construction_status,
@@ -10921,7 +11271,8 @@ def enrich_stock_ultimus_technical_payload(payload):
     payload = apply_intraday_futures_reference_levels(payload)
     constructed = build_intraday_futures_construction(payload)
     enriched = constructed if constructed is not None else payload
-    return apply_intraday_futures_signal_quality_gate(enriched)
+    enriched = apply_intraday_futures_signal_quality_gate(enriched)
+    return apply_intraday_futures_strategy_consensus(enriched)
 
 
 # Preserve existing V13/V15 technical_snapshot endpoint logic
@@ -11133,7 +11484,10 @@ _STRATEGY_SIGNAL_SAFE_FIELDS = {
     "rebound", "source_counter_trend", "signal_actionability",
     "confirmation_gate_status", "confirmation_quality_score", "confirmation_required",
     "confirmation_reasons", "confirmation_conflicts", "signal_trigger_explanation",
-    "signal_quality_explanation",
+    "signal_quality_explanation", "setup_stage", "alert_priority", "trigger_price",
+    "missing_confirmations", "bars_armed", "consensus_grade", "consensus_status",
+    "consensus_sources", "consensus_window_minutes", "consensus_aligned_event_ids",
+    "consensus_conflict_event_ids", "consensus_explanation",
 }
 
 
@@ -25497,6 +25851,8 @@ def _v32_intraday_futures_immediate_notify_payload(payload, force=False, dry_run
         reason = "VALIDATION_EVENT_SUPPRESSED"
     elif intraday_futures_is_session_snapshot_event(event_code, event):
         reason = "SESSION_SNAPSHOT_SUPPRESSED"
+    elif intraday_futures_is_setup_wait_event(event_code, event):
+        reason = "PREPARE_RECORDED_LOW_PRIORITY_NO_MOBILE_PUSH"
     elif intraday_futures_event_text(payload.get("signal_actionability")) == "WATCH_ONLY":
         reason = "WATCH_ONLY_SUPPRESSED_BY_MOBILE_ENTRY_POLICY"
     elif signal_timestamp_status == "SOURCE_TIMESTAMP_PRESENT" and stale_seconds is not None and stale_seconds > max_signal_age_seconds and not force:

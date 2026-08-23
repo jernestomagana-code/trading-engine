@@ -3,6 +3,23 @@
 This runbook is for evidence collection and manual review only. It never
 authorizes automated execution or strategy-parameter changes.
 
+## Current TradingView cockpit (verified 2026-08-22)
+
+Use the four saved layouts in TradingView Desktop:
+
+| Layout | Symbol | Timeframe | Main script |
+| --- | --- | --- | --- |
+| `01 MNQ Entrada 1m` | `MNQ1!` | `1m` | `Stock Ultimus Intraday Futures FAST v2.2` |
+| `02 USTEC Confirmacion 15m` | `USTEC.F` | `15m` | `Chris IA Decision Panel v4.4` |
+| `03 QQQ Opciones 15m` | `QQQ` | `15m` | `Stock Ultimus Options Underlying Alerts v1` |
+| `04 VIX Riesgo Diario` | `VIX` | `1D` | `Stock Ultimus Options Underlying Alerts v1` |
+
+The current active alert set is nine alerts: one Chris v4.4 USTEC prepare
+alert, one VIX risk alert, one QQQ confirmation alert, and the six explicit
+FAST v2.2 MNQ alerts (long/short prepare, entry, and invalidation). Duplicate,
+legacy, RSI, MES, SPY, and generic alerts remain paused. TradingView alerts
+are evidence for manual review and never authorize an order.
+
 ## Pre-open block
 
 Run the readiness report:
@@ -43,16 +60,9 @@ Render remains the production backend/API and ChatGPT remains a conversational
 interface, but the operator should not need to jump between separate consoles
 for normal review.
 
-1. Confirm TradingView alert panel shows the expected alert set.
-   - 7 active consolidated alerts total.
-   - Futures: `MNQ1!` `5m` and `MES1!` `5m`, both using
-     `Stock Ultimus Intraday Futures Alerts v1` / `Any alert() function call`.
-   - Options-underlying: `QQQ` `15m`, `SPY` `15m`, and `VIX` `1D`, all using
-     `Stock Ultimus Options Underlying Alerts v1` / `Any alert() function call`.
-   - Chris IA: `USTEC.F` `15m` and `US500F` `15m`, both using
-     `Chris IA REV PRO` / `Any alert() function call`.
-   - Old per-condition, RSI, crossing-price, duplicate, or generic alerts stay
-     paused and are not part of the production active set.
+1. Confirm TradingView alert panel shows the current nine-alert set described
+   above. Old per-condition, RSI, crossing-price, duplicate, MES, SPY, and
+   generic alerts stay paused and are not part of the active cockpit.
    - NQ/ES remain out of scope because MNQ/MES already cover the same signal
      semantics.
    - More single-name alerts are not required for CANSLIM or large-cap scans;

@@ -2293,6 +2293,7 @@ def render_console_health(
     reports: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     health = console_health(active, snapshot, operator_payload)
+    operational = console_header_operational_state(active)
     reports = reports if isinstance(reports, dict) else {}
     today = console_today_summary(active, snapshot, operator_payload, reports)
     active_alias = active.get("account_alias") or ""
@@ -2317,6 +2318,24 @@ def render_console_health(
         if health.get("snapshot_available")
         else "falta generar/publicar datos frescos"
     )
+    display_level = health.get("level")
+    display_label = health.get("label")
+    friendly_detail = (
+        "Datos locales listos. La producción se muestra desde la última actualización guardada; pulsa Actualizar para releerla."
+        if health.get("stale_cache") and health.get("local_core_ready")
+        else "Conexiones y datos principales disponibles para revisión manual."
+        if health.get("level") == "green"
+        else health.get("detail")
+    )
+    if display_level == "green" and operational.get("available"):
+        if operational.get("data_current") is False:
+            display_level = "amber"
+            display_label = "Actualizar datos"
+            friendly_detail = "IBKR está conectado, pero la evaluación de riesgo pide refrescar los datos de la cuenta activa."
+        elif operational.get("risk_review"):
+            display_level = "amber"
+            display_label = "Revisar riesgo"
+            friendly_detail = "Datos vigentes; existe una alerta alta de riesgo que requiere revisión manual."
     return """
     <header class="app-header health-{level}">
       <div class="app-health">
@@ -2328,6 +2347,7 @@ def render_console_health(
         <span class="health-chip {ibkr_class}">IBKR {ibkr}</span>
         <span class="health-chip {snapshot_class}">Datos {snapshot}</span>
         <span class="health-chip {capacity_class}">Capacidad {capacity}</span>
+        <span class="health-chip {risk_class}">Riesgo {risk}</span>
       </div>
       <div class="header-actions">
         <form method="post" action="/daily-open" data-busy="Corriendo apertura diaria" data-busy-detail="Actualiza cuentas, posiciones, riesgo y RSP. No autoriza órdenes.">
@@ -2355,23 +2375,19 @@ def render_console_health(
       </div>
     </header>
     """.format(
-        level=html_escape(health.get("level")),
-        label=html_escape(health.get("label")),
-        friendly_detail=html_escape(
-            "Datos locales listos. La producción se muestra desde la última actualización guardada; pulsa Actualizar para releerla."
-            if health.get("stale_cache") and health.get("local_core_ready")
-            else "Conexiones y datos principales disponibles para revisión manual."
-            if health.get("level") == "green"
-            else health.get("detail")
-        ),
+        level=html_escape(display_level),
+        label=html_escape(display_label),
+        friendly_detail=html_escape(friendly_detail),
         production="guardada" if health.get("stale_cache") else "OK" if health.get("remote_ok") else "pendiente",
         production_class="warn" if health.get("stale_cache") else "ok" if health.get("remote_ok") else "warn",
-        ibkr="OK" if health.get("ibkr_connected") else "pendiente",
+        ibkr="conectado" if health.get("ibkr_connected") else "pendiente",
         ibkr_class="ok" if health.get("ibkr_connected") else "warn",
-        snapshot="listos" if health.get("snapshot_available") else "pendientes",
-        snapshot_class="ok" if health.get("snapshot_available") else "warn",
-        capacity="OK" if health.get("capacity_available") else "pendiente",
+        snapshot=operational.get("data_label") if operational.get("available") else "disponibles" if health.get("snapshot_available") else "pendientes",
+        snapshot_class=operational.get("data_class") if operational.get("available") else "ok" if health.get("snapshot_available") else "warn",
+        capacity="disponible" if health.get("capacity_available") else "pendiente",
         capacity_class="ok" if health.get("capacity_available") else "warn",
+        risk=operational.get("risk_label") if operational.get("available") else "pendiente",
+        risk_class=operational.get("risk_class") if operational.get("available") else "warn",
         running_text=html_escape(running_text),
         detail_text=html_escape(detail_text),
         active_alias=html_escape(active_alias),
@@ -2547,6 +2563,7 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
 FRIENDLY_OPERATOR_STATES = {
     "WAIT_MARKET": "Esperando nuevas señales",
     "WAIT_DATA": "Faltan datos",
+    "WAIT_NO_ELIGIBLE_STRUCTURE": "Esperar: ninguna estructura cumple",
     "WAIT_ACCOUNT_CAPACITY": "Capacidad de cuenta insuficiente",
     "WAIT_MARGIN_PREVIEW": "Margen IBKR pendiente",
     "WAIT_CAPITAL_DATA": "Datos de capital pendientes",
@@ -3571,23 +3588,72 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
     scenarios = payload.get("strategy_scenarios") if isinstance(payload.get("strategy_scenarios"), dict) else {}
     sell_put = scenarios.get("sell_put") if isinstance(scenarios.get("sell_put"), dict) else {}
     buy_write = scenarios.get("buy_100_sell_call") if isinstance(scenarios.get("buy_100_sell_call"), dict) else {}
+    profit_filter = payload.get("minimum_profit_filter") if isinstance(payload.get("minimum_profit_filter"), dict) else {}
 
-    def card(title: str, scenario: dict[str, Any], max_key: str, capital_key: str) -> str:
+    def rejected_card(title: str, strategy: str, scenario: dict[str, Any]) -> str:
+        rejected_key = "rejected_put_candidate_count" if strategy == "SELL_PUT" else "rejected_call_candidate_count"
+        rejected_count = int(profit_filter.get(rejected_key) or 0)
+        reasons_by_strategy = profit_filter.get("rejection_reasons_by_strategy") if isinstance(profit_filter.get("rejection_reasons_by_strategy"), dict) else {}
+        reason_counts = reasons_by_strategy.get(strategy) if isinstance(reasons_by_strategy.get(strategy), dict) else {}
+        labels = {
+            "EXECUTION_QUALITY_FAILED": "liquidez/spread insuficiente",
+            "MARKET_CONTEXT_SAYS_WAIT": "la lectura de mercado indica esperar",
+            "EXECUTABLE_PREMIUM_BELOW_MINIMUM": "prima ejecutable inferior a $100",
+            "MAX_PROFIT_BELOW_MINIMUM": "ganancia máxima inferior a $100",
+            "STRIKE_NOT_ALIGNED_WITH_LEVELS": "strike fuera de los niveles técnicos/gamma",
+            "TECHNICAL_LEVELS_MISSING": "faltan niveles técnicos",
+        }
+        reasons = [
+            "{} ({})".format(labels.get(reason, friendly_operator_state(reason)), count)
+            for reason, count in reason_counts.items()
+            if count
+        ]
+        if rejected_count:
+            detail = "Se evaluaron {} contratos. Ninguno es operable hoy: {}.".format(
+                rejected_count, "; ".join(reasons) or "no superaron las compuertas"
+            )
+            badge = "Evaluado · no elegible"
+        else:
+            detail = scenario.get("reason") or "La cadena todavía no contiene un contrato utilizable para esta estructura."
+            badge = "Sin contrato utilizable"
+        return """
+        <div class="scenario-card">
+          <div class="scenario-head"><b>{title}</b>{badge}</div>
+          <p class="muted">{detail}</p>
+          <div class="scenario-lines">
+            <span>Resultado <strong>Esperar</strong></span>
+            <span>Datos de mercado <strong>{data_state}</strong></span>
+          </div>
+        </div>
+        """.format(
+            title=html_escape(title),
+            badge=coberturas_badge(badge),
+            detail=html_escape(detail),
+            data_state=html_escape("evaluados" if rejected_count else "no disponibles"),
+        )
+
+    def card(title: str, strategy: str, scenario: dict[str, Any], max_key: str, capital_key: str) -> str:
+        if not scenario.get("available"):
+            return rejected_card(title, strategy, scenario)
         probability = scenario.get("probability") if isinstance(scenario.get("probability"), dict) else {}
-        available = "Datos suficientes para comparar" if scenario.get("available") else "Datos incompletos"
+        available = "Elegible para comparar" if scenario.get("available") else "Sin estructura elegible"
         return """
         <div class="scenario-card">
           <div class="scenario-head"><b>{title}</b>{badge}</div>
           <div class="scenario-lines">
             <span>Strike <strong>{strike}</strong></span>
             <span>Exp <strong>{exp}</strong></span>
-            <span>Prima <strong>{premium}</strong></span>
+            <span>Prima ejecutable (bid) <strong>{premium}</strong></span>
+            <span>Prima media teórica <strong>{mid_premium}</strong></span>
             <span>{capital_label} <strong>{capital}</strong></span>
             <span>Margen IBKR <strong>{margin}</strong></span>
             <span>Capital decision <strong>{decision_capital}</strong></span>
             <span>Fuente capital <strong>{capital_source}</strong></span>
             <span>Retorno capital <strong>{return_margin}</strong></span>
             <span>Max ganancia <strong>{max_profit}</strong></span>
+            <span>Apreciación acciones <strong>{stock_appreciation}</strong></span>
+            <span>Aporte de la call <strong>{call_income}</strong></span>
+            <span>Call / ganancia total <strong>{call_share}</strong></span>
             <span>Breakeven <strong>{breakeven}</strong></span>
           </div>
           <p class="muted">{probability} · Gamma: {gamma_status}</p>
@@ -3598,6 +3664,7 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
             strike=html_escape(coberturas_plain(scenario.get("strike"))),
             exp=html_escape(coberturas_plain(scenario.get("expiration"))),
             premium=html_escape(coberturas_money(scenario.get("premium"))),
+            mid_premium=html_escape(coberturas_money(scenario.get("theoretical_mid_premium"))),
             capital_label=html_escape("Capital" if capital_key == "cash_secured_notional" else "Debito neto"),
             capital=html_escape(coberturas_money(scenario.get(capital_key))),
             margin=html_escape(coberturas_money(scenario.get("ibkr_initial_margin_required"))),
@@ -3605,29 +3672,60 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
             capital_source=html_escape(coberturas_capital_source(scenario.get("decision_capital_source"))),
             return_margin=html_escape((str(scenario.get("decision_return_on_capital_pct")) + "%") if scenario.get("decision_return_on_capital_pct") is not None else "pendiente"),
             max_profit=html_escape(coberturas_money(scenario.get(max_key))),
+            stock_appreciation=html_escape(coberturas_money(scenario.get("stock_appreciation_to_strike"))),
+            call_income=html_escape(coberturas_money(scenario.get("call_income_contribution"))),
+            call_share=html_escape(
+                (str(scenario.get("call_income_share_of_max_profit_pct")) + "%")
+                if scenario.get("call_income_share_of_max_profit_pct") is not None else "no aplica"
+            ),
             breakeven=html_escape(coberturas_plain(scenario.get("breakeven"))),
             probability=html_escape(coberturas_prob_label(probability)),
             gamma_status=html_escape(coberturas_plain((scenario.get("gamma_alignment") or {}).get("status"))),
         )
 
     recommendation = payload.get("strategy_recommendation") if isinstance(payload.get("strategy_recommendation"), dict) else {}
-    rec_html = ""
+    minimum_profit = profit_filter.get("minimum_max_profit")
+    rec_html = (
+        '<div class="notice"><b>Compuertas RSP:</b> primero liquidez y spread, después resistencia/soporte y gamma, '
+        'luego prima ejecutable mínima de {premium_minimum} y ganancia máxima mínima de {minimum}. '
+        'La prima usa el bid conservador; el punto medio es sólo referencia. Descartadas: {rejected}.</div>'
+        .format(
+            minimum=html_escape(coberturas_money(minimum_profit)),
+            premium_minimum=html_escape(coberturas_money(profit_filter.get("minimum_executable_premium"))),
+            rejected=html_escape(coberturas_plain(profit_filter.get("rejected_candidate_count"), "0")),
+        )
+        if minimum_profit is not None else ""
+    )
     if recommendation:
         sensitivity = recommendation.get("margin_decision_sensitivity") if isinstance(recommendation.get("margin_decision_sensitivity"), dict) else {}
-        rec_html = '<div class="notice"><b>Recomendacion:</b> {status}<br>{reason}<br><b>Margen:</b> {margin_note}</div>'.format(
+        margin_note = sensitivity.get("note") or (
+            "No aplica hasta que exista al menos una estructura que supere las compuertas previas."
+            if recommendation.get("status") == "WAIT_NO_ELIGIBLE_STRUCTURE"
+            else "Sensibilidad de margen pendiente."
+        )
+        rec_html += '<div class="notice"><b>Recomendacion:</b> {status}<br>{reason}<br><b>Margen:</b> {margin_note}</div>'.format(
             status=html_escape(recommendation.get("status") or "pendiente"),
             reason=html_escape(recommendation.get("reason") or ""),
-            margin_note=html_escape(sensitivity.get("note") or "Sensibilidad de margen pendiente."),
+            margin_note=html_escape(margin_note),
         )
-    html_block = card("Sell put", sell_put, "max_profit", "cash_secured_notional") + card(
+    html_block = card("Sell put", "SELL_PUT", sell_put, "max_profit", "cash_secured_notional") + card(
         "Comprar 100 + sell call",
+        "BUY_100_SELL_CALL",
         buy_write,
         "max_profit_if_called",
         "net_debit",
     )
+    stock_baseline = scenarios.get("buy_100_shares_baseline") if isinstance(scenarios.get("buy_100_shares_baseline"), dict) else {}
+    wait_scenario = scenarios.get("wait") if isinstance(scenarios.get("wait"), dict) else {}
+    baseline_html = """
+      <div class="notice"><b>Comparadores:</b> Comprar 100 acciones sin call conserva todo el upside, cuesta {stock_cost} y sólo debe considerarse con tesis alcista confirmada. <b>Esperar</b> es la decisión correcta cuando ninguna call o put cumple todas las compuertas. {wait_note}</div>
+    """.format(
+        stock_cost=html_escape(coberturas_money(stock_baseline.get("stock_cost"))),
+        wait_note=html_escape(coberturas_plain(wait_scenario.get("purpose"), "")),
+    )
     if compact:
-        return rec_html + '<div class="scenario-grid compact">{}</div>'.format(html_block)
-    return rec_html + '<div class="scenario-grid">{}</div>'.format(html_block)
+        return rec_html + '<div class="scenario-grid compact">{}</div>'.format(html_block) + baseline_html
+    return rec_html + '<div class="scenario-grid">{}</div>'.format(html_block) + baseline_html
 
 
 def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = False) -> str:
@@ -3716,7 +3814,7 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
             bid=html_escape(item.get("bid")),
             ask=html_escape(item.get("ask")),
             mid=html_escape(item.get("mid")),
-            premium=html_escape(item.get("premium_100")),
+            premium=html_escape(item.get("executable_premium_estimate")),
             score=html_escape(item.get("coberturas_score")),
             why=html_escape("; ".join(item.get("coberturas_reasons") or item.get("coberturas_blockers") or [])),
         ))
@@ -3875,7 +3973,11 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
         mode_reason=html_escape(payload.get("mode_reason")),
         next_action=html_escape(payload.get("next_action")),
         blockers=blocker_items,
-        rows="".join(rows) or '<tr><td colspan="11">Sin candidatos RSP todavia. Guarda gamma y corre Refresh RSP semanal IBKR.</td></tr>',
+        rows="".join(rows) or '<tr><td colspan="11">{}</td></tr>'.format(html_escape(
+            "La cadena fue evaluada, pero ningún contrato superó todas las compuertas; corresponde esperar."
+            if "RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES" in (payload.get("blockers") or [])
+            else "Sin candidatos RSP todavía. Guarda gamma y corre Refresh RSP semanal IBKR."
+        )),
         payload_json=html_escape(json.dumps(payload, indent=2, sort_keys=True, default=str)),
     )
     return body.encode("utf-8")
@@ -3901,17 +4003,39 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
                 dte=html_escape(item.get("dte")),
                 strike=html_escape(item.get("strike")),
                 delta=html_escape(item.get("delta")),
-                premium=html_escape(item.get("premium_100")),
+                premium=html_escape(item.get("executable_premium_estimate")),
                 moneyness=html_escape(cc_eval.get("moneyness") or "-"),
                 method_score=html_escape(cc_eval.get("selected_score") if cc_eval else "-"),
                 score=html_escape(item.get("coberturas_score")),
             )
         )
+    near_candidates = payload.get("near_candidates") if isinstance(payload.get("near_candidates"), list) else []
+    near_rows = []
+    near_failure_labels = {
+        "STRIKE_NOT_ALIGNED_WITH_LEVELS": "strike aún no alineado con resistencia/soporte y gamma",
+        "EXECUTABLE_PREMIUM_BELOW_MINIMUM": "prima ejecutable todavía inferior a $100",
+        "MAX_PROFIT_BELOW_MINIMUM": "ganancia máxima todavía inferior a $100",
+    }
+    for item in near_candidates[:5]:
+        failure = next(iter(item.get("eligibility_gate_failures") or []), "REVISIÓN")
+        near_rows.append("""
+          <tr>
+            <td>{side}</td><td>{exp}</td><td>{strike}</td><td>{premium}</td><td>{max_profit}</td><td>{failure}</td>
+          </tr>
+        """.format(
+            side=html_escape(item.get("side")),
+            exp=html_escape(item.get("expiration")),
+            strike=html_escape(item.get("strike")),
+            premium=html_escape(coberturas_money(item.get("executable_premium_estimate"))),
+            max_profit=html_escape(coberturas_money(item.get("max_profit_estimate"))),
+            failure=html_escape(near_failure_labels.get(failure, friendly_operator_state(failure))),
+        ))
     blockers = payload.get("blockers") if isinstance(payload.get("blockers"), list) else []
     blocker_messages = {
         "RSP_OPTION_CHAIN_MISSING": "No hay una cadena de opciones RSP disponible.",
         "RSP_FRESH_CHAIN_MISSING": "Falta una cadena IBKR RSP fresca.",
         "RSP_7_14_DTE_CANDIDATES_MISSING": "No hay candidatos válidos entre 7 y 14 DTE.",
+        "RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES": "Los contratos actuales no cumplen simultáneamente liquidez, niveles técnicos/gamma, prima mínima y ganancia total mínima; corresponde esperar.",
         "MANUAL_GAMMA_CONTEXT_MISSING": "Falta la lectura diaria de niveles y gamma.",
         "RSP_SPOT_MISSING": "Falta el precio actual de RSP.",
         "POSITION_STATE_UNKNOWN": "No se confirmó la posición actual en RSP.",
@@ -3923,11 +4047,12 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     new_entry = payload.get("new_entry_lane") if isinstance(payload.get("new_entry_lane"), dict) else {}
     cycle_capacity = new_entry.get("cycle_capacity") if isinstance(new_entry.get("cycle_capacity"), dict) else {}
     new_entry_status = str(new_entry.get("status") or "WAIT_DATA")
-    scenarios_html = (
-        render_coberturas_scenarios(payload, compact=True)
-        if payload.get("candidate_count")
-        else '<div class="empty-state"><strong>Sin comparación operable</strong><span>Primero se necesita una cadena RSP fresca con candidatos de 7 a 14 DTE.</span></div>'
+    entry_strategy_label = new_entry.get("display_strategy") or (
+        "Ninguna — esperar"
+        if payload.get("decision") == "WAIT_NO_ELIGIBLE_STRUCTURE"
+        else "Pendiente"
     )
+    scenarios_html = render_coberturas_scenarios(payload, compact=True)
     parallel_lanes_html = """
       <div class="scenario-grid compact">
         <div class="scenario-card">
@@ -3957,7 +4082,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         entry_badge=coberturas_badge(new_entry_status),
         entry_action=html_escape(new_entry.get("primary_action") or "Evaluación pendiente."),
         entry_strategy=html_escape(
-            (new_entry.get("display_strategy") or "Pendiente")
+            entry_strategy_label
             + (" · condicionada" if new_entry.get("strategy_role") == "CONDITIONAL_PREFERENCE" and new_entry.get("display_strategy") else "")
         ),
         remaining_slots=html_escape(cycle_capacity.get("remaining_risk_slots", 0)),
@@ -3973,6 +4098,8 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         "UPSIDE_RETENTION": "Conservar upside",
     }
     methodology_winners = methodology.get("profile_winners") if isinstance(methodology.get("profile_winners"), dict) else {}
+    profit_filter = payload.get("minimum_profit_filter") if isinstance(payload.get("minimum_profit_filter"), dict) else {}
+    gate_history = payload.get("gate_observation_history") if isinstance(payload.get("gate_observation_history"), dict) else {}
     methodology_cards = "".join(
         '<div><span>{label}</span><strong>{strike} · {moneyness}</strong><small>score {score} · spread {spread}% · {quality}</small></div>'.format(
             label=html_escape(methodology_labels.get(profile, profile)),
@@ -4006,6 +4133,9 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     elif recommendation_status == "WAIT_ACCOUNT_CAPACITY":
         status_title = "RSP actualizado; falta capacidad en la cuenta seleccionada"
         status_badge = "Capacidad pendiente"
+    elif recommendation_status == "WAIT_NO_ELIGIBLE_STRUCTURE":
+        status_title = "RSP actualizado; hoy corresponde esperar"
+        status_badge = "Sin estructura válida"
     elif data_ready and not ready:
         status_title = "RSP actualizado; falta confirmar capital o margen"
         status_badge = "Capital pendiente"
@@ -4016,6 +4146,11 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         status_title = "RSP requiere información antes de decidir"
         status_badge = "Revisión pendiente"
     status_detail = payload.get("next_action") or blocker_text
+    no_candidate_message = (
+        "La cadena sí fue evaluada, pero ningún contrato cumplió todas las compuertas; corresponde esperar."
+        if "RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES" in blockers
+        else "No hay candidatos vigentes de 7 a 14 DTE. No uses contratos históricos."
+    )
     return """
     <section id="coberturas-rsp" class="panel coberturas-panel">
       <div class="section-head">
@@ -4033,12 +4168,15 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         <div><span>Lectura de niveles</span><strong>{context_status}</strong><small>{context_age}</small></div>
         <div><span>Cadena 7–14 DTE</span><strong>{chain_status}</strong><small>{chain_age}</small></div>
         <div><span>Seguimiento IBKR</span><strong>{sync_status}</strong><small>{sync_detail}</small></div>
+        <div><span>Fondos / poder de compra</span><strong>{available_funds} / {buying_power}</strong><small>cuenta retiro actualizada</small></div>
+        <div><span>Cadena evaluada</span><strong>{rows_received} contratos</strong><small>{raw_quotes} cotizaciones ejecutables · {qualified} estructuras elegibles</small></div>
+        <div><span>Historial de compuertas</span><strong>{observed_sessions} sesiones observadas</strong><small>{qualified_sessions} con entrada · {near_sessions} con candidato cercano</small></div>
       </div>
       <p class="review-line">{blockers}</p>
       {parallel_lanes}
       <details class="operator-subsection">
         <summary>Cómo evalúa strikes ITM, ATM y OTM</summary>
-        <p class="muted">Perfil utilizado: <strong>{methodology_profile}</strong>. ITM está permitido; cada strike se compara por prima, protección bajista, ganancia total si es asignado, probabilidad, spread y upside conservado. Un ganador comparativo no queda apto para revisión operativa hasta que su prima y spread sean utilizables.</p>
+        <p class="muted">Perfil utilizado: <strong>{methodology_profile}</strong>. ITM está permitido, pero primero se exige liquidez, alineación con resistencia/soporte y gamma, prima ejecutable mínima y ganancia total mínima. La prima usa el bid; el punto medio es sólo referencia. Si ninguna estructura aprueba, la decisión es esperar.</p>
         <div class="position-overview rsp-overview">{methodology_cards}</div>
       </details>
       <div class="rsp-decision-body">
@@ -4050,6 +4188,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
             <tbody>{rows}</tbody>
           </table></div>
         </details>
+        {near_candidates}
         <details class="operator-subsection">
           <summary>Actualizar lectura de mercado RSP</summary>
           <form method="post" action="/coberturas/rsp/manual_context" data-busy="Guardando lectura RSP">
@@ -4084,6 +4223,14 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         chain_age=html_escape(chain_age),
         sync_status=html_escape("Automático" if (payload.get("broker_reconciliation") or {}).get("ok") else "Pendiente"),
         sync_detail=html_escape(friendly_operator_state((payload.get("broker_reconciliation") or {}).get("position_state") or "esperando refresco")),
+        available_funds=html_escape(coberturas_money(ibkr.get("available_funds"))),
+        buying_power=html_escape(coberturas_money(ibkr.get("buying_power"))),
+        rows_received=html_escape(payload.get("all_rsp_option_rows_found") or 0),
+        raw_quotes=html_escape(ibkr.get("raw_executable_quote_count") or 0),
+        qualified=html_escape(profit_filter.get("qualified_candidate_count") or 0),
+        observed_sessions=html_escape(gate_history.get("observed_sessions") or 0),
+        qualified_sessions=html_escape(gate_history.get("sessions_with_qualified_entry") or 0),
+        near_sessions=html_escape(gate_history.get("sessions_with_near_candidate") or 0),
         readiness="ready" if ready else "review",
         status_title=html_escape(status_title),
         status_badge=html_escape(status_badge),
@@ -4093,10 +4240,15 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         blockers=html_escape(blocker_text),
         parallel_lanes=parallel_lanes_html,
         methodology_profile=html_escape(methodology_labels.get(str(methodology.get("selected_profile") or ""), methodology.get("selected_profile") or "Retorno total flexible")),
-        methodology_cards=methodology_cards or '<div><span>Comparación</span><strong>Pendiente</strong><small>Se completará con la próxima cadena ampliada.</small></div>',
+        methodology_cards=methodology_cards or '<div><span>Resultado de calls</span><strong>Sin ganador elegible</strong><small>{} calls evaluadas; ninguna superó todas las compuertas.</small></div>'.format(html_escape(profit_filter.get("rejected_call_candidate_count") or 0)),
         candidate_count=html_escape(payload.get("candidate_count") or 0),
         candidate_open=" open" if payload.get("candidate_count") else "",
-        rows="".join(rows) or '<tr><td colspan="9">No hay candidatos vigentes de 7 a 14 DTE. No uses contratos históricos.</td></tr>',
+        rows="".join(rows) or '<tr><td colspan="9">{}</td></tr>'.format(html_escape(no_candidate_message)),
+        near_candidates=(
+            '<details class="operator-subsection" open><summary>Candidatos cercanos — no son entrada ({})</summary>'
+            '<p class="muted">Cumplen casi todas las compuertas, pero fallan una condición. Sirven para monitorear; no sustituyen una entrada aprobada.</p>'
+            '<div class="table-scroll"><table><thead><tr><th>Lado</th><th>Vencimiento</th><th>Strike</th><th>Prima bid</th><th>Ganancia máx.</th><th>Qué falta</th></tr></thead><tbody>{}</tbody></table></div></details>'
+        ).format(len(near_rows), "".join(near_rows)) if near_rows else "",
     )
 
 
@@ -4397,6 +4549,53 @@ def console_local_core_status(active: dict[str, Any], snapshot: dict[str, Any], 
         "bridge_published": bool(bridge.get("published")),
         "bridge_status": bridge.get("status") or "",
         "bridge_generated_at": bridge.get("generated_at") or "",
+    }
+
+
+def console_header_operational_state(active: dict[str, Any]) -> dict[str, Any]:
+    """Separate account connectivity from data freshness and risk state."""
+
+    payload = load_json_file(PORTFOLIO_RISK_PATH)
+    accounts = payload.get("accounts") if isinstance(payload.get("accounts"), list) else []
+    active_alias = str(active.get("account_alias") or active.get("account_scope") or "").strip()
+    relevant = [
+        row for row in accounts
+        if isinstance(row, dict)
+        and active_alias
+        and str(row.get("account_alias") or "").strip() == active_alias
+    ]
+    if not relevant:
+        return {
+            "available": False,
+            "data_current": None,
+            "data_label": "disponibles",
+            "data_class": "ok",
+            "risk_review": False,
+            "risk_label": "pendiente",
+            "risk_class": "warn",
+            "account_alias": active_alias,
+        }
+
+    refresh_statuses = {str(row.get("refresh_status") or "UNKNOWN").upper() for row in relevant}
+    data_current = refresh_statuses <= {"READY", "FRESH", "OK"}
+    alerts = payload.get("alerts") if isinstance(payload.get("alerts"), list) else []
+    relevant_alerts = [
+        row for row in alerts
+        if isinstance(row, dict)
+        and str(row.get("account_alias") or "").strip() == active_alias
+    ]
+    review_severities = {"CRITICAL", "HIGH", "RISK", "ACTION"}
+    risk_review = any(str(row.get("severity") or "").upper() in review_severities for row in relevant_alerts)
+    return {
+        "available": True,
+        "data_current": data_current,
+        "data_label": "vigentes" if data_current else "por actualizar",
+        "data_class": "ok" if data_current else "warn",
+        "risk_review": risk_review,
+        "risk_label": "revisar" if risk_review else "sin alerta alta",
+        "risk_class": "warn" if risk_review else "ok",
+        "account_alias": active_alias,
+        "refresh_statuses": sorted(refresh_statuses),
     }
 
 

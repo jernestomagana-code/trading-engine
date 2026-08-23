@@ -1011,7 +1011,7 @@ SEND_OPTIONS_WITHOUT_GREEKS = True
 
 # Control de liquidez / spread
 # spread_pct is published as a percentage (e.g. 11.76), not a fraction.
-MAX_ACCEPTABLE_SPREAD_PCT_FOR_OPERAR = OPTION_SPREAD_PCT_READY_MAX
+MAX_ACCEPTABLE_SPREAD_PCT_FOR_OPERAR = 25.0 if COBERTURAS_RSP_WEEKLY else OPTION_SPREAD_PCT_READY_MAX
 MAX_ACCEPTABLE_SPREAD_PCT_FOR_RADAR = OPTION_SPREAD_PCT_RADAR_MAX
 
 # Prima mínima para considerar una opción razonable

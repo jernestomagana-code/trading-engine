@@ -20,6 +20,8 @@ MANUAL_CONTEXT_PATH = RUNTIME / "coberturas_rsp_manual_context.json"
 JOURNAL_PATH = RUNTIME / "coberturas_rsp_journal.json"
 TICKER = "RSP"
 TARGET_WEEKLY_PREMIUM = 100.0
+MINIMUM_EXECUTABLE_PREMIUM = 100.0
+MAX_EXECUTION_SPREAD_PCT = 25.0
 MAX_CONTRACTS = 1
 MAX_CONCURRENT_CYCLES = max(1, int(os.getenv("STOCK_ULTIMUS_RSP_MAX_CONCURRENT_CYCLES", "3")))
 SHARES_PER_LOT = 100
@@ -27,6 +29,7 @@ RSP_CHAIN_PATH = "coberturas_rsp_chain_coverage_latest.json"
 RSP_CAPACITY_PATH = "coberturas_rsp_account_capacity_latest.json"
 RSP_POSITIONS_PATH = "coberturas_rsp_positions_latest.json"
 RSP_RECONCILIATION_PATH = "coberturas_rsp_reconciliation_latest.json"
+RSP_GATE_HISTORY_PATH = "coberturas_rsp_gate_history.json"
 RSP_ACCOUNT_ALIAS = os.getenv("STOCK_ULTIMUS_RSP_ACCOUNT_ALIAS", "retiro").strip().lower()
 RSP_COVERED_CALL_PROFILE = os.getenv("STOCK_ULTIMUS_RSP_COVERED_CALL_PROFILE", "FLEXIBLE_TOTAL_RETURN").strip().upper()
 RSP_CHAIN_MAX_AGE_HOURS = 24.0
@@ -73,6 +76,15 @@ def safe_float(value: Any, default: float | None = None) -> float | None:
         return number
     except Exception:
         return default
+
+
+_configured_minimum_max_profit = safe_float(
+    os.getenv("STOCK_ULTIMUS_RSP_MINIMUM_MAX_PROFIT", "100"), 100.0
+)
+MINIMUM_MAX_PROFIT = max(
+    0.0,
+    _configured_minimum_max_profit if _configured_minimum_max_profit is not None else 100.0,
+)
 
 
 def safe_int(value: Any, default: int = 0) -> int:
@@ -201,6 +213,62 @@ def parse_gamma_json_blob(text: str) -> dict[str, Any]:
         "gamma_bias": safe_upper(gamma.get("bias"), "UNKNOWN"),
     }
     return {key: value for key, value in parsed.items() if value not in [None, [], "", "UNKNOWN"]}
+
+
+def context_for_expiration(manual_context: dict[str, Any], expiration: Any) -> dict[str, Any]:
+    """Resolve technical/gamma levels for the candidate's exact expiration."""
+    resolved = dict(manual_context or {})
+    text = str(resolved.get("gamma_blob") or "").strip()
+    try:
+        data = json.loads(text) if text else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        return resolved
+    raw_expiration = re.sub(r"[^0-9]", "", str(expiration or ""))
+    expiry_key = (
+        f"{raw_expiration[:4]}-{raw_expiration[4:6]}-{raw_expiration[6:8]}"
+        if len(raw_expiration) >= 8 else str(expiration or "")
+    )
+    technical = data.get("technical_levels") if isinstance(data.get("technical_levels"), dict) else {}
+    gamma = data.get("gamma_context") if isinstance(data.get("gamma_context"), dict) else {}
+    expected = data.get("expected_move") if isinstance(data.get("expected_move"), dict) else {}
+    expected_for_expiry = expected.get(expiry_key) if isinstance(expected.get(expiry_key), dict) else {}
+
+    def expiry_value(value: Any) -> float | None:
+        if isinstance(value, dict):
+            return safe_float(value.get(expiry_key), None)
+        return safe_float(value, None)
+
+    if technical.get("supports"):
+        resolved["support_levels"] = parse_levels(technical.get("supports"))
+    if technical.get("resistances"):
+        resolved["resistance_levels"] = parse_levels(technical.get("resistances"))
+    resolved["technical_trend"] = safe_upper(technical.get("trend"), "UNKNOWN")
+    resolved["possible_mode"] = safe_upper(data.get("possible_mode"), "UNKNOWN")
+    risk_warnings = data.get("risk_warnings") if isinstance(data.get("risk_warnings"), list) else []
+    normalized_risks = [safe_upper(item, "") for item in risk_warnings if str(item or "").strip()]
+    hard_risk_terms = {
+        "EVENT_RISK", "RIESGO DE EVENTO", "EARNINGS", "RESULTADOS",
+        "NO OPERAR", "DO NOT TRADE", "VOLATILIDAD EXTREMA", "HALT",
+        "RUPTURA BAJISTA CONFIRMADA",
+    }
+    resolved["risk_warnings"] = risk_warnings
+    resolved["explicit_entry_risk"] = any(
+        any(term in warning for term in hard_risk_terms)
+        for warning in normalized_risks
+    )
+    resolved["expected_move_low"] = safe_float(
+        expected_for_expiry.get("low"), safe_float(resolved.get("expected_move_low"), None)
+    )
+    resolved["expected_move_high"] = safe_float(
+        expected_for_expiry.get("high"), safe_float(resolved.get("expected_move_high"), None)
+    )
+    resolved["call_wall"] = expiry_value(gamma.get("call_wall")) or safe_float(resolved.get("call_wall"), None)
+    resolved["put_wall"] = expiry_value(gamma.get("put_wall")) or safe_float(resolved.get("put_wall"), None)
+    resolved["gamma_bias"] = safe_upper(gamma.get("bias") or resolved.get("gamma_bias"), "UNKNOWN")
+    resolved["context_expiration"] = expiry_key
+    return resolved
 
 def parse_gamma_blob(raw: Any) -> dict[str, Any]:
     text = str(raw or "").strip()
@@ -779,11 +847,214 @@ def option_premium(row: dict[str, Any]) -> float | None:
     return None
 
 
+def option_executable_credit(row: dict[str, Any]) -> float | None:
+    """Conservative credit for a sale: current bid, expressed per contract."""
+    bid = safe_float(row.get("bid"), None)
+    if bid is None or bid <= 0:
+        return None
+    return round(bid * SHARES_PER_LOT, 2)
+
+
+def candidate_max_profit(row: dict[str, Any], strategy: str, spot: float | None) -> float | None:
+    """Return the comparable maximum dollar profit for one RSP contract."""
+    premium = option_executable_credit(row) or option_premium(row)
+    if premium is None:
+        return None
+    if safe_upper(strategy, "") == "SELL_PUT":
+        return round(premium, 2)
+    strike = safe_float(row.get("strike"), None)
+    if strike is None or spot is None or spot <= 0:
+        return None
+    return round((strike - spot) * SHARES_PER_LOT + premium, 2)
+
+
+def annotate_profit_eligibility(
+    rows: list[dict[str, Any]], strategy: str, spot: float | None,
+    manual_context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply execution, technical, premium and total-profit gates in order."""
+    qualified: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        context = context_for_expiration(manual_context or {}, row.get("expiration"))
+        strike = safe_float(row.get("strike"), None)
+        spread_pct = safe_float(row.get("spread_pct"), None)
+        executable_credit = option_executable_credit(row)
+        theoretical_premium = option_premium(row)
+        supports = parse_levels(context.get("support_levels"))
+        resistances = parse_levels(context.get("resistance_levels"))
+        expected_low = safe_float(context.get("expected_move_low"), None)
+        expected_high = safe_float(context.get("expected_move_high"), None)
+        call_wall = safe_float(context.get("call_wall"), None)
+        put_wall = safe_float(context.get("put_wall"), None)
+        possible_mode = safe_upper(context.get("possible_mode"), "UNKNOWN")
+        gate_failures: list[str] = []
+        soft_cautions: list[str] = []
+
+        if (
+            row.get("discarded_for_manual_review") is True
+            or spread_pct is None
+            or spread_pct > MAX_EXECUTION_SPREAD_PCT
+            or executable_credit is None
+        ):
+            gate_failures.append("EXECUTION_QUALITY_FAILED")
+        if context.get("explicit_entry_risk") is True:
+            gate_failures.append("MARKET_RISK_HARD_BLOCK")
+        elif possible_mode in {"ESPERAR", "WAIT", "WAIT_DATA"}:
+            soft_cautions.append("MARKET_CONTEXT_CAUTION")
+
+        technical_references: list[float] = []
+        technical_aligned = False
+        normalized_strategy = safe_upper(strategy, "")
+        if normalized_strategy == "SELL_PUT":
+            technical_references = supports + [v for v in [expected_low, put_wall] if v is not None]
+            technical_aligned = bool(
+                strike is not None
+                and (
+                    any(strike <= level for level in supports)
+                    or (expected_low is not None and strike <= expected_low)
+                    or (put_wall is not None and strike <= put_wall)
+                )
+            )
+        else:
+            technical_references = resistances + [v for v in [expected_high, call_wall] if v is not None]
+            technical_aligned = bool(
+                strike is not None
+                and (
+                    any(strike >= level for level in resistances)
+                    or (expected_high is not None and strike >= expected_high)
+                    or (call_wall is not None and strike >= call_wall)
+                )
+            )
+        if not technical_references:
+            gate_failures.append("TECHNICAL_LEVELS_MISSING")
+        elif not technical_aligned:
+            gate_failures.append("STRIKE_NOT_ALIGNED_WITH_LEVELS")
+        if executable_credit is None or executable_credit < MINIMUM_EXECUTABLE_PREMIUM:
+            gate_failures.append("EXECUTABLE_PREMIUM_BELOW_MINIMUM")
+
+        max_profit = candidate_max_profit(row, strategy, spot)
+        row["theoretical_mid_premium"] = theoretical_premium
+        row["executable_premium_estimate"] = executable_credit
+        row["minimum_executable_premium_required"] = MINIMUM_EXECUTABLE_PREMIUM
+        row["max_profit_estimate"] = max_profit
+        row["minimum_max_profit_required"] = MINIMUM_MAX_PROFIT
+        row["meets_minimum_max_profit"] = bool(max_profit is not None and max_profit >= MINIMUM_MAX_PROFIT)
+        row["technical_alignment"] = {
+            "aligned": technical_aligned,
+            "references": sorted(set(technical_references)),
+            "gamma_bias": context.get("gamma_bias"),
+            "technical_trend": context.get("technical_trend"),
+            "possible_mode": context.get("possible_mode"),
+            "context_expiration": context.get("context_expiration"),
+        }
+        if not row["meets_minimum_max_profit"]:
+            gate_failures.append("MAX_PROFIT_BELOW_MINIMUM")
+        row["eligibility_gate_failures"] = sorted(set(gate_failures))
+        row["eligibility_soft_cautions"] = sorted(set(soft_cautions))
+        if soft_cautions:
+            row["coberturas_score"] = round(
+                max(0.0, (safe_float(row.get("coberturas_score"), 0) or 0) - 8.0), 2
+            )
+            reasons = list(row.get("coberturas_reasons") or [])
+            reasons.append("contexto sugiere cautela; penaliza el ranking sin vetar por si solo")
+            row["coberturas_reasons"] = reasons
+        non_near_failures = {
+            "EXECUTION_QUALITY_FAILED", "MARKET_RISK_HARD_BLOCK", "TECHNICAL_LEVELS_MISSING"
+        }
+        row["near_candidate"] = bool(
+            len(row["eligibility_gate_failures"]) == 1
+            and not non_near_failures.intersection(row["eligibility_gate_failures"])
+        )
+        row["recommendation_eligible"] = not row["eligibility_gate_failures"]
+        if row["recommendation_eligible"]:
+            qualified.append(row)
+        else:
+            blockers = list(row.get("coberturas_blockers") or [])
+            for blocker in row["eligibility_gate_failures"]:
+                if blocker not in blockers:
+                    blockers.append(blocker)
+            row["coberturas_blockers"] = blockers
+            rejected.append(row)
+    return qualified, rejected
+
+
+def record_gate_observation(
+    runtime_dir: Path,
+    chain_generated_at: Any,
+    context_updated_at: Any,
+    evaluated: list[dict[str, Any]],
+    qualified: list[dict[str, Any]],
+    near_candidates: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Persist one deduplicated observation per chain/context combination."""
+    path = runtime_dir / RSP_GATE_HISTORY_PATH
+    payload = load_json(path)
+    observations = payload.get("observations") if isinstance(payload.get("observations"), list) else []
+    fingerprint = "{}|{}".format(chain_generated_at or "NO_CHAIN_TIME", context_updated_at or "NO_CONTEXT_TIME")
+    reasons = {
+        reason: sum(1 for row in rejected if reason in (row.get("eligibility_gate_failures") or []))
+        for reason in sorted({
+            reason for row in rejected for reason in (row.get("eligibility_gate_failures") or [])
+        })
+    }
+    observation = {
+        "fingerprint": fingerprint,
+        "observed_at": now_iso(),
+        "chain_generated_at": chain_generated_at,
+        "context_updated_at": context_updated_at,
+        "evaluated_candidate_count": len(evaluated),
+        "qualified_candidate_count": len(qualified),
+        "near_candidate_count": len(near_candidates),
+        "rejected_candidate_count": len(rejected),
+        "rejection_reasons": reasons,
+        "thresholds": {
+            "maximum_execution_spread_pct": MAX_EXECUTION_SPREAD_PCT,
+            "minimum_executable_premium": MINIMUM_EXECUTABLE_PREMIUM,
+            "minimum_max_profit": MINIMUM_MAX_PROFIT,
+        },
+    }
+    persistence_status = "UNCHANGED_EXISTING_OBSERVATION"
+    if not any(str(item.get("fingerprint") or "") == fingerprint for item in observations if isinstance(item, dict)):
+        observations.append(observation)
+        observations = observations[-60:]
+        try:
+            path.write_text(json.dumps({
+                "history_version": "coberturas_rsp_gate_history_v1",
+                "updated_at": now_iso(),
+                "observations": observations,
+                "execution_authorized": False,
+                "not_order_instruction": True,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            persistence_status = "RECORDED"
+        except OSError:
+            persistence_status = "WRITE_UNAVAILABLE"
+    sessions = len(observations)
+    qualified_sessions = sum(1 for item in observations if safe_int(item.get("qualified_candidate_count"), 0) > 0)
+    near_sessions = sum(1 for item in observations if safe_int(item.get("near_candidate_count"), 0) > 0)
+    return {
+        "history_available": sessions > 0,
+        "observed_sessions": sessions,
+        "sessions_with_qualified_entry": qualified_sessions,
+        "sessions_with_near_candidate": near_sessions,
+        "qualified_session_rate_pct": round(qualified_sessions / sessions * 100, 2) if sessions else None,
+        "near_candidate_session_rate_pct": round(near_sessions / sessions * 100, 2) if sessions else None,
+        "latest": observations[-1] if observations else observation,
+        "history_path": RSP_GATE_HISTORY_PATH,
+        "persistence_status": persistence_status,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def build_sell_put_scenario(row: dict[str, Any] | None, spot: float | None) -> dict[str, Any]:
     if not row:
         return {"available": False, "strategy": "SELL_PUT", "reason": "No hay put RSP candidata."}
     strike = safe_float(row.get("strike"), None)
-    premium = option_premium(row)
+    premium = option_executable_credit(row) or option_premium(row)
+    theoretical_premium = option_premium(row)
     scenario = {
         "available": bool(strike and premium is not None),
         "strategy": "SELL_PUT",
@@ -791,6 +1062,8 @@ def build_sell_put_scenario(row: dict[str, Any] | None, spot: float | None) -> d
         "dte": row.get("dte"),
         "strike": strike,
         "premium": premium,
+        "premium_basis": "IBKR_BID_CONSERVATIVE",
+        "theoretical_mid_premium": theoretical_premium,
         "premium_yield_on_cash_pct": round(premium / (strike * SHARES_PER_LOT) * 100, 2) if strike and premium is not None else None,
         "cash_secured_notional": round(strike * SHARES_PER_LOT, 2) if strike else None,
         "max_profit": premium,
@@ -808,7 +1081,8 @@ def build_buy_write_scenario(row: dict[str, Any] | None, spot: float | None) -> 
     if not row:
         return {"available": False, "strategy": "BUY_100_SELL_CALL", "reason": "No hay call RSP candidata."}
     strike = safe_float(row.get("strike"), None)
-    premium = option_premium(row)
+    premium = option_executable_credit(row) or option_premium(row)
+    theoretical_premium = option_premium(row)
     stock_cost = round(spot * SHARES_PER_LOT, 2) if spot else None
     net_debit = round(stock_cost - premium, 2) if stock_cost is not None and premium is not None else None
     # For ITM covered calls the stock is called below entry, so the intrinsic
@@ -823,9 +1097,14 @@ def build_buy_write_scenario(row: dict[str, Any] | None, spot: float | None) -> 
         "shares": SHARES_PER_LOT,
         "strike": strike,
         "premium": premium,
+        "premium_basis": "IBKR_BID_CONSERVATIVE",
+        "theoretical_mid_premium": theoretical_premium,
         "stock_cost": stock_cost,
         "net_debit": net_debit,
         "max_profit_if_called": max_profit,
+        "stock_appreciation_to_strike": round((strike - spot) * SHARES_PER_LOT, 2) if strike and spot else None,
+        "call_income_contribution": premium,
+        "call_income_share_of_max_profit_pct": round(premium / max_profit * 100, 2) if premium is not None and max_profit and max_profit > 0 else None,
         "max_profit_pct_on_net_debit": round(max_profit / net_debit * 100, 2) if max_profit is not None and net_debit else None,
         "breakeven": round(spot - premium / SHARES_PER_LOT, 2) if spot and premium is not None else None,
         "called_away_price": strike,
@@ -993,6 +1272,7 @@ def strategy_success_probability(scenario: dict[str, Any]) -> dict[str, Any]:
 
 
 def gamma_alignment_for_scenario(scenario: dict[str, Any], manual_context: dict[str, Any]) -> dict[str, Any]:
+    manual_context = context_for_expiration(manual_context, scenario.get("expiration"))
     strike = safe_float(scenario.get("strike"), None)
     strategy = safe_upper(scenario.get("strategy"), "")
     supports = parse_levels(manual_context.get("support_levels"))
@@ -1504,6 +1784,25 @@ def scenario_summary(put_rows: list[dict[str, Any]], call_rows: list[dict[str, A
     return {
         "sell_put": build_sell_put_scenario(best_put, spot),
         "buy_100_sell_call": build_buy_write_scenario(best_call, spot),
+        "buy_100_shares_baseline": {
+            "available": spot is not None and spot > 0,
+            "strategy": "BUY_100_SHARES_BASELINE",
+            "stock_entry": spot,
+            "shares": SHARES_PER_LOT,
+            "stock_cost": round(spot * SHARES_PER_LOT, 2) if spot else None,
+            "purpose": "Comparador sin call: conserva todo el upside y no genera ingreso por prima.",
+            "recommendation_eligible": False,
+            "recommendation_note": "Solo considerar con tesis direccional alcista confirmada; el motor de coberturas no la presume.",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
+        "wait": {
+            "available": True,
+            "strategy": "WAIT",
+            "purpose": "No forzar prima, strike o liquidez cuando ninguna estructura cumple todas las compuertas.",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        },
     }
 
 
@@ -1647,12 +1946,17 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
         reverse=True,
     )[0] if indicative_rows else None
     if blockers:
+        no_eligible = "RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES" in blockers
         return {
-            "status": "WAIT_DATA",
+            "status": "WAIT_NO_ELIGIBLE_STRUCTURE" if no_eligible else "WAIT_DATA",
             "recommended_strategy": None,
-            "reason": "Hay bloqueadores previos antes de comparar estrategia.",
+            "reason": (
+                "Esperar: ninguna estructura cumple simultaneamente calidad ejecutable, alineacion con niveles/gamma, prima minima y ganancia total minima."
+                if no_eligible else "Hay bloqueadores previos antes de comparar estrategia."
+            ),
             "blockers": blockers,
             "comparison": rows,
+            "alternative_paths": ["WAIT", "BUY_100_SHARES_ONLY_IF_DIRECTIONAL_THESIS_CONFIRMED"],
             "margin_decision_sensitivity": margin_decision_sensitivity(rows),
             "execution_authorized": False,
             "not_order_instruction": True,
@@ -1745,6 +2049,7 @@ def build_strategy_recommendation(scenarios: dict[str, Any], blockers: list[str]
 
 
 def score_candidate(row: dict[str, Any], mode: str, spot: float | None, manual_context: dict[str, Any]) -> dict[str, Any]:
+    manual_context = context_for_expiration(manual_context, row.get("expiration"))
     side = candidate_side(row)
     score = 50.0
     reasons: list[str] = []
@@ -1949,15 +2254,40 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         key=lambda row: safe_float(row.get("coberturas_score"), 0),
         reverse=True,
     )
-    put_candidates = sorted(
+    current_put_candidates = sorted(
         [row for row in scored_put_candidates if eligible_current_candidate(row)],
         key=lambda row: safe_float(row.get("coberturas_score"), 0),
         reverse=True,
     )
-    call_candidates = sorted(
+    current_call_candidates = sorted(
         [row for row in scored_call_candidates if eligible_current_candidate(row)],
         key=lambda row: safe_float(row.get("coberturas_score"), 0),
         reverse=True,
+    )
+    put_candidates, rejected_put_candidates = annotate_profit_eligibility(
+        current_put_candidates, "SELL_PUT", spot, effective_context
+    )
+    call_candidates, rejected_call_candidates = annotate_profit_eligibility(
+        current_call_candidates, "BUY_100_SELL_CALL", spot, effective_context
+    )
+    near_put_candidates = sorted(
+        [row for row in rejected_put_candidates if row.get("near_candidate")],
+        key=lambda row: safe_float(row.get("coberturas_score"), 0) or 0,
+        reverse=True,
+    )
+    near_call_candidates = sorted(
+        [row for row in rejected_call_candidates if row.get("near_candidate")],
+        key=lambda row: safe_float(row.get("coberturas_score"), 0) or 0,
+        reverse=True,
+    )
+    gate_history = record_gate_observation(
+        runtime_dir,
+        chain_coverage.get("generated_at"),
+        manual_context.get("updated_at"),
+        current_put_candidates + current_call_candidates,
+        put_candidates + call_candidates,
+        near_put_candidates + near_call_candidates,
+        rejected_put_candidates + rejected_call_candidates,
     )
     call_candidates, covered_call_methodology = rank_covered_call_candidates(call_candidates, spot)
 
@@ -2035,7 +2365,10 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
     elif entry_evaluation_enabled and not chain_has_rsp:
         blockers.append("RSP_FRESH_CHAIN_MISSING")
     elif entry_evaluation_enabled and not (put_candidates or call_candidates):
-        blockers.append("RSP_7_14_DTE_CANDIDATES_MISSING")
+        if current_put_candidates or current_call_candidates:
+            blockers.append("RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES")
+        else:
+            blockers.append("RSP_7_14_DTE_CANDIDATES_MISSING")
     if entry_evaluation_enabled and not manual_context.get("available"):
         blockers.append("MANUAL_GAMMA_CONTEXT_MISSING")
 
@@ -2081,8 +2414,15 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             + str(new_entry_lane.get("primary_action") or "evaluación pendiente.")
         )
     else:
-        decision = "WAIT_DATA"
-        next_action = "Actualizar la lectura RSP y obtener una cadena IBKR fresca de 7 a 14 DTE."
+        if "RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES" in blockers:
+            decision = "WAIT_NO_ELIGIBLE_STRUCTURE"
+            next_action = (
+                "Esperar otra cotizacion o vencimiento: ninguna alternativa actual cumple simultaneamente "
+                "liquidez, niveles tecnicos/gamma, prima ejecutable minima de ${:,.2f} y ganancia maxima minima de ${:,.2f}."
+            ).format(MINIMUM_EXECUTABLE_PREMIUM, MINIMUM_MAX_PROFIT)
+        else:
+            decision = "WAIT_DATA"
+            next_action = "Actualizar la lectura RSP y obtener una cadena IBKR fresca de 7 a 14 DTE."
 
     if blockers:
         decision = "WAIT_DATA" if decision.startswith("REVIEW") else decision
@@ -2112,6 +2452,11 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "call_candidate_count": len(call_candidates),
         "top_put_candidates": put_candidates[:5],
         "top_call_candidates": call_candidates[:5],
+        "near_candidate_count": len(near_put_candidates) + len(near_call_candidates),
+        "near_candidates": (near_put_candidates + near_call_candidates)[:5],
+        "near_put_candidate_count": len(near_put_candidates),
+        "near_call_candidate_count": len(near_call_candidates),
+        "gate_observation_history": gate_history,
         "covered_call_methodology": covered_call_methodology,
         "strategy_scenarios": scenarios,
         "strategy_recommendation": strategy_recommendation,
@@ -2125,6 +2470,46 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
         "all_rsp_option_rows_found": len(option_rows),
         "diagnostic_candidate_count": len(diagnostic_candidates),
         "diagnostic_candidates": diagnostic_candidates[:10],
+        "minimum_profit_filter": {
+            "minimum_max_profit": MINIMUM_MAX_PROFIT,
+            "minimum_executable_premium": MINIMUM_EXECUTABLE_PREMIUM,
+            "maximum_execution_spread_pct": MAX_EXECUTION_SPREAD_PCT,
+            "premium_basis": "IBKR_BID_CONSERVATIVE",
+            "qualified_candidate_count": len(put_candidates) + len(call_candidates),
+            "rejected_candidate_count": len(rejected_put_candidates) + len(rejected_call_candidates),
+            "rejected_put_candidate_count": len(rejected_put_candidates),
+            "rejected_call_candidate_count": len(rejected_call_candidates),
+            "rejection_reasons_by_strategy": {
+                strategy: {
+                    reason: sum(
+                        1 for row in rejected_rows
+                        if reason in (row.get("eligibility_gate_failures") or [])
+                    )
+                    for reason in sorted({
+                        reason
+                        for row in rejected_rows
+                        for reason in (row.get("eligibility_gate_failures") or [])
+                    })
+                }
+                for strategy, rejected_rows in {
+                    "SELL_PUT": rejected_put_candidates,
+                    "BUY_100_SELL_CALL": rejected_call_candidates,
+                }.items()
+            },
+            "rejection_reasons": {
+                reason: sum(
+                    1
+                    for row in rejected_put_candidates + rejected_call_candidates
+                    if reason in (row.get("eligibility_gate_failures") or [])
+                )
+                for reason in sorted({
+                    reason
+                    for row in rejected_put_candidates + rejected_call_candidates
+                    for reason in (row.get("eligibility_gate_failures") or [])
+                })
+            },
+            "rule": "Execution quality, technical/gamma alignment, executable premium and total maximum profit must all pass before recommendation.",
+        },
         "blockers": blockers,
         "next_action": next_action,
         "risk_limits": {
@@ -2132,6 +2517,9 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
             "max_contracts_per_new_entry": MAX_CONTRACTS,
             "max_concurrent_cycles": MAX_CONCURRENT_CYCLES,
             "target_weekly_premium": TARGET_WEEKLY_PREMIUM,
+            "minimum_max_profit": MINIMUM_MAX_PROFIT,
+            "minimum_executable_premium": MINIMUM_EXECUTABLE_PREMIUM,
+            "maximum_execution_spread_pct": MAX_EXECUTION_SPREAD_PCT,
             "buy_write_supported": True,
             "sell_put_supported": True,
             "underlying_only": TICKER,
@@ -2157,6 +2545,16 @@ def build_recommendation(runtime_dir: Path = RUNTIME) -> dict[str, Any]:
                 and safe_float(row.get("ask"), None) is not None
                 and safe_float(row.get("spread_pct"), None) is not None
             ),
+            "raw_executable_quote_count": sum(
+                1
+                for row in current_put_candidates + current_call_candidates
+                if safe_float(row.get("bid"), None) is not None
+                and safe_float(row.get("ask"), None) is not None
+                and safe_float(row.get("spread_pct"), None) is not None
+                and safe_float(row.get("spread_pct"), 999) <= MAX_EXECUTION_SPREAD_PCT
+                and row.get("discarded_for_manual_review") is not True
+            ),
+            "qualified_executable_quote_count": len(put_candidates) + len(call_candidates),
         },
         "manual_review_required": True,
         "execution_authorized": False,

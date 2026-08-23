@@ -1,5 +1,5 @@
 //@version=6
-indicator("Chris IA Reversal Engine PRO", shorttitle="Chris IA REV PRO", overlay=false, format=format.price, precision=2, max_labels_count=500)
+indicator("Chris IA Reversal Engine PRO v4.1", shorttitle="Chris IA REV PRO", overlay=false, format=format.price, precision=2, max_labels_count=500)
 
 // ==========================================
 // Inputs
@@ -62,7 +62,9 @@ tablePos = input.string("middle_right", "Posicion panel", options=["top_right", 
 
 grp_alerts = "Alertas"
 useDynamicAlerts = input.bool(true, "Alertas dinamicas alert()", group=grp_alerts)
-alertEntry = input.bool(true, "Alertar solo ENTRY confirmado", group=grp_alerts)
+alertEntry = input.bool(true, "Alertar ENTRY confirmado", group=grp_alerts)
+alertWatch = input.bool(true, "Alertar PREPARE/WATCH", group=grp_alerts)
+alertWatchCanceled = input.bool(true, "Alertar WATCH cancelado", group=grp_alerts)
 
 // ==========================================
 // Helpers
@@ -234,19 +236,42 @@ shortRebound = shortEntry and counterTrendShort
 longConfirmed = longEntry and not counterTrendLong
 shortConfirmed = shortEntry and not counterTrendShort
 
+var int activeWatchSide = 0
+var int activeWatchStartBar = na
+longWatchCanceled = barstate.isconfirmed and activeWatchSide == 1 and not watchLongRaw and not longEntry
+shortWatchCanceled = barstate.isconfirmed and activeWatchSide == -1 and not watchShortRaw and not shortEntry
+
 if longWatch
     lastLongWatchBar := bar_index
+    activeWatchSide := 1
+    activeWatchStartBar := bar_index
 
 if shortWatch
     lastShortWatchBar := bar_index
+    activeWatchSide := -1
+    activeWatchStartBar := bar_index
 
 if longEntry
     lastLongEntryBar := bar_index
     longCycleReady := false
+    activeWatchSide := 0
+    activeWatchStartBar := na
 
 if shortEntry
     lastShortEntryBar := bar_index
     shortCycleReady := false
+    activeWatchSide := 0
+    activeWatchStartBar := na
+
+if longWatchCanceled or shortWatchCanceled
+    activeWatchSide := 0
+    activeWatchStartBar := na
+
+watchBars = activeWatchSide != 0 and not na(activeWatchStartBar) ? bar_index - activeWatchStartBar + 1 : 0
+longTriggerPrice = high[1]
+shortTriggerPrice = low[1]
+longMissing = (scoreLong >= entryLongScoreNeeded ? "" : "SCORE ") + (macdLowRelaxed ? "" : "MACD-Z ") + (stochLowRecent ? "" : "STOCH ") + (bullC or stochBullC ? "" : "CRUCE ") + (priceLongConfirm ? "" : "PRECIO ") + (mtfLongPass ? "" : "MTF ") + (atrPass ? "" : "ATR ")
+shortMissing = (scoreShort >= entryShortScoreNeeded ? "" : "SCORE ") + (macdHighRelaxed ? "" : "MACD-Z ") + (stochHighRecent ? "" : "STOCH ") + (bearC or stochBearC ? "" : "CRUCE ") + (priceShortConfirm ? "" : "PRECIO ") + (mtfShortPass ? "" : "MTF ") + (atrPass ? "" : "ATR ")
 
 // ==========================================
 // Plots
@@ -270,17 +295,17 @@ plot(scoreShort, "Score SHORT", color=color.new(color.red, 0), linewidth=1, disp
 
 plotshape(showSignals and longWatch, title="LONG WATCH", text="WATCH L", style=shape.triangleup, location=location.bottom, color=color.new(color.lime, 35), textcolor=color.white, size=size.tiny)
 plotshape(showSignals and longConfirmed, title="LONG ENTRY", text="LONG", style=shape.labelup, location=location.bottom, color=color.new(color.lime, 0), textcolor=color.black, size=size.small)
-plotshape(showSignals and showRebounds and longRebound, title="LONG REBOTE", text="REB L", style=shape.labelup, location=location.bottom, color=color.new(color.green, 20), textcolor=color.white, size=size.small)
+plotshape(showSignals and showRebounds and longRebound, title="LONG CONTRATENDENCIA BLOQUEADA", text="CT BLOQ L", style=shape.labelup, location=location.bottom, color=color.new(color.orange, 5), textcolor=color.black, size=size.small)
 plotshape(showSignals and shortWatch, title="SHORT WATCH", text="WATCH S", style=shape.triangledown, location=location.top, color=color.new(color.red, 35), textcolor=color.white, size=size.tiny)
 plotshape(showSignals and shortConfirmed, title="SHORT ENTRY", text="SHORT", style=shape.labeldown, location=location.top, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
-plotshape(showSignals and showRebounds and shortRebound, title="SHORT REBOTE", text="REB S", style=shape.labeldown, location=location.top, color=color.new(color.maroon, 20), textcolor=color.white, size=size.small)
+plotshape(showSignals and showRebounds and shortRebound, title="SHORT CONTRATENDENCIA BLOQUEADA", text="CT BLOQ S", style=shape.labeldown, location=location.top, color=color.new(color.orange, 5), textcolor=color.black, size=size.small)
 
-bgcolor(longEntry ? color.new(color.lime, 88) : shortEntry ? color.new(color.red, 88) : longWatch ? color.new(color.lime, 94) : shortWatch ? color.new(color.red, 94) : na)
+bgcolor(longConfirmed ? color.new(color.lime, 88) : shortConfirmed ? color.new(color.red, 88) : longRebound or shortRebound ? color.new(color.orange, 86) : longWatch ? color.new(color.lime, 94) : shortWatch ? color.new(color.red, 94) : na)
 
 // ==========================================
 // Panel
 // ==========================================
-var table proPanel = table.new(f_pos(tablePos), 5, 6, border_width=1, border_color=color.new(color.gray, 60))
+var table proPanel = table.new(f_pos(tablePos), 3, 9, border_width=1, border_color=color.new(color.gray, 60))
 
 f_bias_txt(int d) =>
     d >= 2 ? "ALCISTA+" :
@@ -306,15 +331,21 @@ f_symbol_code() =>
 f_event_code(string side, string eventName) =>
     "CHRIS_IA_" + f_symbol_code() + "_" + side + "_" + eventName + "_" + str.upper(timeframe.period)
 
-f_chris_payload(string side, string eventName, float scoreValue, int mtfVotesValue, bool isCounterTrend, bool isRebound, string setupQuality) =>
+f_chris_payload(string side, string eventName, float scoreValue, int mtfVotesValue, bool isCounterTrend, bool isRebound, string setupQuality, string alertPriority, float triggerPrice, string missingConfirmations, int barsWatching) =>
     "{" +
      "\"action\":\"ALERT_ONLY\"," +
      "\"source\":\"TRADINGVIEW\"," +
      "\"strategy_context\":\"CHRIS_IA_REVERSAL_PRO\"," +
+     "\"strategy_version\":\"CHRIS_IA_V4_1\"," +
      "\"event\":\"" + eventName + "\"," +
      "\"event_code\":\"" + f_event_code(side, eventName) + "\"," +
      "\"ticker\":\"" + syminfo.ticker + "\"," +
      "\"timeframe\":\"" + timeframe.period + "\"," +
+     "\"setup_stage\":\"" + (eventName == "ENTRY" ? "TRIGGERED" : eventName == "WATCH" ? "PREPARE" : "INVALIDATED") + "\"," +
+     "\"alert_priority\":\"" + alertPriority + "\"," +
+     "\"trigger_price\":" + f_json_num(triggerPrice) + "," +
+     "\"missing_confirmations\":\"" + missingConfirmations + "\"," +
+     "\"bars_armed\":" + str.tostring(barsWatching) + "," +
      "\"price\":" + f_json_num(close) + "," +
      "\"breakout_direction\":\"" + side + "\"," +
      "\"score\":" + f_json_num(scoreValue) + "," +
@@ -334,41 +365,60 @@ f_chris_payload(string side, string eventName, float scoreValue, int mtfVotesVal
      "\"rebound\":" + f_json_bool(isRebound) +
      "}"
 
-f_row(int row, string label, float macdZ, float k, float rsi, int dir) =>
+f_context_row(int row, string label, string purpose, int dir) =>
     table.cell(proPanel, 0, row, label, bgcolor=color.new(color.gray, 55), text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 1, row, str.tostring(macdZ, "#.##"), bgcolor=macdZ <= macdLowZ ? color.new(color.green, 15) : macdZ >= macdHighZ ? color.new(color.red, 15) : color.new(color.gray, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 2, row, str.tostring(k, "#.0"), bgcolor=k <= stochOversold ? color.new(color.green, 15) : k >= stochOverbought ? color.new(color.red, 15) : color.new(color.gray, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 3, row, str.tostring(rsi, "#.0"), bgcolor=rsi <= rsiOversold ? color.new(color.green, 20) : rsi >= rsiOverbought ? color.new(color.red, 20) : color.new(color.gray, 70), text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 4, row, f_bias_txt(dir), bgcolor=f_bias_bg(dir), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, row, f_bias_txt(dir), bgcolor=f_bias_bg(dir), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 2, row, purpose, bgcolor=color.new(color.gray, 72), text_color=color.silver, text_size=size.tiny)
 
 if showTable
-    table.cell(proPanel, 0, 0, "TF", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 1, 0, "MACD-Z", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 2, 0, "STO", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 3, 0, "RSI", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 4, 0, "BIAS", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    f_row(1, "ACTUAL", macdZC, stochKC, rsiC, dirC)
-    f_row(2, tfFast, macdZF, stochKF, rsiF, dirF)
-    f_row(3, tfConfirm, macdZM, stochKM, rsiM, dirM)
-    f_row(4, tfTrend, macdZT, stochKT, rsiT, dirT)
-    scoreTxt = "L " + str.tostring(scoreLong, "#") + " / S " + str.tostring(scoreShort, "#") + " | MTF " + str.tostring(mtfLongVotes) + "-" + str.tostring(mtfShortVotes)
+    scoreTxt = "LONG " + str.tostring(scoreLong, "#") + " | SHORT " + str.tostring(scoreShort, "#")
     scoreBg = scoreLong >= entryScoreInput ? color.new(color.lime, 0) : scoreShort >= entryScoreInput ? color.new(color.red, 0) : scoreLong >= watchScoreInput ? color.new(color.green, 45) : scoreShort >= watchScoreInput ? color.new(color.red, 45) : color.new(color.gray, 60)
-    table.cell(proPanel, 0, 5, "SCORE", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 1, 5, scoreTxt, bgcolor=scoreBg, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 2, 5, atrPass ? "ATR OK" : "ATR NO", bgcolor=atrPass ? color.new(color.green, 35) : color.new(color.red, 10), text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 3, 5, longConfirmed ? "LONG" : shortConfirmed ? "SHORT" : longRebound ? "REBOTE L" : shortRebound ? "REBOTE S" : longWatch ? "WATCH L" : shortWatch ? "WATCH S" : "ESPERAR", bgcolor=scoreBg, text_color=color.white, text_size=size.tiny)
-    table.cell(proPanel, 4, 5, "ATR " + str.tostring(atrPctC, "#.##") + "%", bgcolor=color.new(color.gray, 65), text_color=color.white, text_size=size.tiny)
+    decisionTxt = longConfirmed ? "EVALUAR LONG AHORA" : shortConfirmed ? "EVALUAR SHORT AHORA" : longRebound ? "LONG BLOQUEADO" : shortRebound ? "SHORT BLOQUEADO" : longWatch ? "PREPARAR LONG" : shortWatch ? "PREPARAR SHORT" : "SIN OPORTUNIDAD"
+    decisionBg = longConfirmed ? color.new(color.lime, 0) : shortConfirmed ? color.new(color.red, 0) : longRebound or shortRebound ? color.new(color.orange, 5) : scoreBg
+    activeSide = longConfirmed or longWatch or activeWatchSide == 1 ? "LONG" : shortConfirmed or shortWatch or activeWatchSide == -1 ? "SHORT" : scoreLong >= scoreShort ? "LONG" : "SHORT"
+    activeTrigger = activeSide == "LONG" ? longTriggerPrice : shortTriggerPrice
+    activeMissing = activeSide == "LONG" ? longMissing : shortMissing
+    nextStep = longConfirmed or shortConfirmed ? "REVISAR RIESGO Y PLAN" : activeWatchSide != 0 ? "ESPERAR CIERRE EN GATILLO" : "ESPERAR PREPARACION"
+    table.cell(proPanel, 0, 0, "ACCIÓN AHORA", bgcolor=decisionBg, text_color=longConfirmed ? color.black : color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, 0, decisionTxt, bgcolor=decisionBg, text_color=longConfirmed ? color.black : color.white, text_size=size.tiny)
+    table.cell(proPanel, 2, 0, scoreTxt, bgcolor=scoreBg, text_color=color.white, text_size=size.tiny)
+    f_context_row(1, "GRÁFICO " + timeframe.period, "MOVIMIENTO INMEDIATO", dirC)
+    f_context_row(2, "SEÑAL " + tfFast + "m", "DETECTA PREPARACIÓN", dirF)
+    f_context_row(3, "CONFIRMA " + tfConfirm + "m", "VALIDA LA ENTRADA", dirM)
+    f_context_row(4, "TENDENCIA " + tfTrend + "m", "EVITA CONTRATENDENCIA", dirT)
+    table.cell(proPanel, 0, 5, "PRÓXIMO GATILLO", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, 5, activeSide + " " + str.tostring(activeTrigger, format.mintick), bgcolor=color.new(color.yellow, 55), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 2, 5, "NO ENTRAR ANTES", bgcolor=color.new(color.yellow, 70), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 0, 6, "FALTA", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, 6, activeMissing == "" ? "NADA" : activeMissing, bgcolor=activeMissing == "" ? color.new(color.green, 35) : color.new(color.orange, 30), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 2, 6, "PREPARANDO " + str.tostring(watchBars) + " VELAS", bgcolor=color.new(color.gray, 65), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 0, 7, "SIGUIENTE PASO", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, 7, nextStep, bgcolor=activeWatchSide != 0 ? color.new(color.orange, 25) : color.new(color.gray, 60), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 2, 7, atrPass ? "VOLATILIDAD OK" : "VOLATILIDAD NO", bgcolor=atrPass ? color.new(color.green, 35) : color.new(color.red, 10), text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 0, 8, "REGLA", bgcolor=color.black, text_color=color.white, text_size=size.tiny)
+    table.cell(proPanel, 1, 8, "ALERTA = EVIDENCIA", bgcolor=color.new(color.navy, 35), text_color=color.aqua, text_size=size.tiny)
+    table.cell(proPanel, 2, 8, "EVALUAR ANTES DE ENTRAR", bgcolor=color.new(color.navy, 35), text_color=color.aqua, text_size=size.tiny)
 else
-    table.clear(proPanel, 0, 0, 4, 5)
+    table.clear(proPanel, 0, 0, 2, 8)
 
 // ==========================================
 // Alerts
 // ==========================================
 alertcondition(longConfirmed, "Chris IA PRO LONG ENTRY", "LONG ENTRY: cruce confirmado con score PRO y confirmacion MTF.")
 alertcondition(shortConfirmed, "Chris IA PRO SHORT ENTRY", "SHORT ENTRY: cruce confirmado con score PRO y confirmacion MTF.")
+alertcondition(longWatch, "Chris IA PRO LONG PREPARE", "LONG PREPARE: setup en zona; esperar gatillo de precio.")
+alertcondition(shortWatch, "Chris IA PRO SHORT PREPARE", "SHORT PREPARE: setup en zona; esperar gatillo de precio.")
 
 if useDynamicAlerts and barstate.isconfirmed
     if alertEntry and longConfirmed
-        alert(f_chris_payload("LONG", "ENTRY", scoreLong, mtfLongVotes, false, false, "CONFIRMED_ENTRY"), alert.freq_once_per_bar_close)
+        alert(f_chris_payload("LONG", "ENTRY", scoreLong, mtfLongVotes, false, false, "CONFIRMED_ENTRY", "HIGH", close, "NINGUNA", 0), alert.freq_once_per_bar_close)
     if alertEntry and shortConfirmed
-        alert(f_chris_payload("SHORT", "ENTRY", scoreShort, mtfShortVotes, false, false, "CONFIRMED_ENTRY"), alert.freq_once_per_bar_close)
+        alert(f_chris_payload("SHORT", "ENTRY", scoreShort, mtfShortVotes, false, false, "CONFIRMED_ENTRY", "HIGH", close, "NINGUNA", 0), alert.freq_once_per_bar_close)
+    if alertWatch and longWatch
+        alert(f_chris_payload("LONG", "WATCH", scoreLong, mtfLongVotes, counterTrendLong, false, "PREPARE", "LOW", longTriggerPrice, longMissing == "" ? "PRECIO" : longMissing, watchBars), alert.freq_once_per_bar_close)
+    if alertWatch and shortWatch
+        alert(f_chris_payload("SHORT", "WATCH", scoreShort, mtfShortVotes, counterTrendShort, false, "PREPARE", "LOW", shortTriggerPrice, shortMissing == "" ? "PRECIO" : shortMissing, watchBars), alert.freq_once_per_bar_close)
+    if alertWatchCanceled and longWatchCanceled
+        alert(f_chris_payload("LONG", "WATCH_CANCELED", scoreLong, mtfLongVotes, counterTrendLong, false, "INVALIDATED", "LOW", longTriggerPrice, "SETUP_PERDIDO", 0), alert.freq_once_per_bar_close)
+    if alertWatchCanceled and shortWatchCanceled
+        alert(f_chris_payload("SHORT", "WATCH_CANCELED", scoreShort, mtfShortVotes, counterTrendShort, false, "INVALIDATED", "LOW", shortTriggerPrice, "SETUP_PERDIDO", 0), alert.freq_once_per_bar_close)

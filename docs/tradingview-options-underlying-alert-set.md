@@ -5,30 +5,30 @@ IBKR remains the candidate source for option chains; TradingView confirms the
 underlying technical context for SPY, QQQ, and VIX. These alerts are evidence
 only and never authorize orders.
 
-The three active alerts here are enough for the current options-underlying
+The six active conditions here are enough for the current options-underlying
 TradingView layer. Single-name large-cap, CANSLIM, best strike, best delta, and
 best DTE decisions must come from the backend universe, IBKR chain evidence, and
 strategy-regime rules, not from recreating one TradingView alert per ticker.
 
 ## Production Active Alerts
 
-Keep only these three options-underlying alerts active in TradingView:
+Keep these six options-underlying conditions active in TradingView:
 
 | Active alert | Symbol | Timeframe | TradingView condition | Role |
 | --- | --- | --- | --- | --- |
-| `Stock Ultimus Options Underlying Alerts v1` | `QQQ` | `15m` | `Any alert() function call` | Consolidated QQQ options evidence |
-| `Stock Ultimus Options Underlying Alerts v1` | `SPY` | `15m` | `Any alert() function call` | Consolidated SPY options evidence |
-| `Stock Ultimus Options Underlying Alerts v1` | `VIX` | `1D` | `Any alert() function call` | Consolidated volatility-risk evidence |
+| `Stock Ultimus Underlying Tech Confirm Long/Short` | `QQQ` | `15m` | Two explicit conditions | QQQ options evidence |
+| `Stock Ultimus Underlying Tech Confirm Long/Short` | `SPY` | `15m` | Two explicit conditions | SPY options evidence |
+| `Stock Ultimus VIX Risk Elevated/Normalized` | `VIX` | `1D` | Two explicit conditions | Volatility-risk evidence |
 
 Use webhook `https://trading-engine-p097.onrender.com/technical_snapshot`.
-Leave the TradingView message field at the default value for alert-function
-alerts. The Pine script sends the JSON payload itself.
+The live conditions use the production webhook and the script's alertcondition
+messages. They are evidence only and never order instructions.
 
 ## Logical Event Coverage
 
-The three active alerts above dynamically emit these six decision-making event
-codes. Do not create these as separate active alerts unless the consolidated
-alert-function setup is unavailable:
+The six active conditions cover these six decision-making event codes. This is
+the verified fallback because the saved TradingView Pine snapshot does not
+expose `Any alert() function call`:
 
 | Event code | Symbol | Timeframe | Role |
 | --- | --- | --- | --- |
@@ -56,21 +56,17 @@ tradingview/stock_ultimus_options_underlying_alerts_v1.pine
 
 ## Recommended TradingView Setup
 
-Prefer alert-function alerts instead of manually pasted JSON per condition:
+Current verified setup:
 
 - Add the Pine script to `QQQ` on the `15m` chart.
-- Create one alert with condition `Stock Ultimus Options Underlying Alerts v1`
-  / `Any alert() function call`.
+- Create `Underlying Tech Confirm Long` and `Underlying Tech Confirm Short`.
 - Use webhook `https://trading-engine-p097.onrender.com/technical_snapshot`.
-- Leave the alert message as TradingView's default for alert-function alerts;
-  the script sends the JSON payload itself.
-- Repeat for `SPY` on `15m`.
-- Repeat for `VIX` on `1D`.
+- Repeat LONG/SHORT for `SPY` on `15m`.
+- On `VIX` `1D`, create `VIX Risk Elevated` and `VIX Risk Normalized`.
 
-The generated setup-message commands below remain useful as a fallback when a
-plan requires individual alert conditions or for validating expected payload
-shape. The fallback consumes six active-alert slots instead of three, so it is
-not the preferred production setup.
+This consumes six active-alert slots. Replace it with three consolidated alerts
+only after a saved Pine snapshot exposes and successfully creates a verified
+`Any alert() function call` condition.
 
 ## Required Pine Plot Names
 

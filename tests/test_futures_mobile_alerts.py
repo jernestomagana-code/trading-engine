@@ -145,6 +145,22 @@ class FuturesMobileAlertTests(unittest.TestCase):
         self.assertEqual(result["reason"], "RISK_SUPPRESSED_BY_MOBILE_ENTRY_POLICY")
         send.assert_not_called()
 
+    def test_prepare_is_recorded_as_low_priority_without_entry_push(self):
+        payload = {
+            **self.chris_entry(),
+            "event": "WATCH",
+            "event_code": "CHRIS_IA_US500F_SHORT_WATCH_15",
+            "alert_priority": "LOW",
+            "signal_actionability": "WATCH_ONLY",
+        }
+        with patch.object(main, "send_pushover_message") as send:
+            result = main._v32_intraday_futures_immediate_notify_payload(payload)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "PREPARE_RECORDED_LOW_PRIORITY_NO_MOBILE_PUSH")
+        self.assertFalse(result["would_notify"])
+        send.assert_not_called()
+
     def test_central_pushover_gate_rejects_non_entry_kind(self):
         with patch.object(main.requests, "post") as post:
             result = main.send_pushover_message("Riesgo", "Revisar", notification_kind="RISK")
@@ -153,21 +169,32 @@ class FuturesMobileAlertTests(unittest.TestCase):
         self.assertEqual(result["reason"], "MOBILE_ENTRY_ONLY_POLICY")
         post.assert_not_called()
 
-    def test_chris_ia_pine_exposes_only_confirmed_entry_alerts(self):
+    def test_chris_ia_pine_exposes_prepare_then_confirmed_entry_alerts(self):
         pine = (Path(__file__).resolve().parents[1] / "pine" / "chris_ia_reversal_engine_pro.pine").read_text()
 
-        self.assertIn('input.bool(true, "Alertar solo ENTRY confirmado"', pine)
+        self.assertIn('input.bool(true, "Alertar ENTRY confirmado"', pine)
+        self.assertIn('input.bool(true, "Alertar PREPARE/WATCH"', pine)
         self.assertIn('alertcondition(longConfirmed, "Chris IA PRO LONG ENTRY"', pine)
         self.assertIn('alertcondition(shortConfirmed, "Chris IA PRO SHORT ENTRY"', pine)
-        self.assertNotIn("Alertar WATCH", pine)
-        self.assertNotIn('alertcondition(longWatch, "Chris IA PRO LONG WATCH"', pine)
-        self.assertNotIn('alertcondition(shortWatch, "Chris IA PRO SHORT WATCH"', pine)
+        self.assertIn('alertcondition(longWatch, "Chris IA PRO LONG PREPARE"', pine)
+        self.assertIn('alertcondition(shortWatch, "Chris IA PRO SHORT PREPARE"', pine)
         self.assertNotIn('alertcondition(longRebound, "Chris IA PRO LONG REBOTE"', pine)
         self.assertNotIn('alertcondition(shortRebound, "Chris IA PRO SHORT REBOTE"', pine)
-        self.assertNotIn('alert(f_chris_payload("LONG", "WATCH"', pine)
-        self.assertNotIn('alert(f_chris_payload("SHORT", "WATCH"', pine)
+        self.assertIn('alert(f_chris_payload("LONG", "WATCH"', pine)
+        self.assertIn('alert(f_chris_payload("SHORT", "WATCH"', pine)
+        self.assertIn('alert(f_chris_payload("LONG", "WATCH_CANCELED"', pine)
+        self.assertIn("alert_priority", pine)
+        self.assertIn("trigger_price", pine)
+        self.assertIn("missing_confirmations", pine)
         self.assertNotIn('alert(f_chris_payload("LONG", "REBOTE"', pine)
         self.assertNotIn('alert(f_chris_payload("SHORT", "REBOTE"', pine)
+        self.assertNotIn('f_row(1, "ACTUAL"', pine)
+        for phrase in (
+            "ACCIÓN AHORA", "GRÁFICO ", "SEÑAL ", "CONFIRMA ",
+            "TENDENCIA ", "PRÓXIMO GATILLO", "SIGUIENTE PASO",
+            "ALERTA = EVIDENCIA",
+        ):
+            self.assertIn(f'"{phrase}', pine)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Stock Ultimus Project Dashboard
 
-Ultima actualizacion: 2026-07-16
+Ultima actualizacion: 2026-08-22
 
 Este tablero resume como vamos, que esta validado y que falta para considerar
 Stock Ultimus operativo al 100% para uso personal controlado. El sistema sigue
@@ -17,6 +17,22 @@ Rutas protegidas en produccion:
 - `/v32_project_command_center_static`
 
 ## Estado Ejecutivo
+
+Auditoría integral del 22 de agosto de 2026:
+
+- Núcleo validado con 591 pruebas, compilación limpia y auditoría de seguridad
+  `OK`; producción respondió `200` con autorización y `401` sin ella.
+- Consola permanente, navegación y vista móvil verificadas sin errores ni
+  desbordamiento horizontal.
+- Apertura más reciente `READY`; Control Tower con tres cuentas y CANSLIM con
+  47 candidatos, 19 preseleccionados, 12 evaluados y 0 entradas finales.
+- Proceso `com.stockultimus.v32-pushover-postclose` restaurado. La evaluación
+  de resultados volvió a sincronizar 49 decisiones y 26 outcomes, aunque aún
+  existen 0 resultados cerrados y la muestra sigue siendo insuficiente.
+- La cabecera separa conexión IBKR, frescura de datos y estado de riesgo para
+  no presentar un `OK` genérico cuando la cuenta requiere actualización.
+- Validación real TradingView y nueva cadena RSP quedan subordinadas a la
+  siguiente sesión de mercado; no se consideran fallas en mercado cerrado.
 
 Estado actual separado por frente:
 
@@ -155,9 +171,9 @@ review se use como compuerta humana y outcomes se evalúen despues del cierre.
 | 1. Preflight operacional completo | OK con warnings | `scripts/stock_ultimus_operational_100_check.py --no-write` devuelve `PASS_WITH_WARNINGS`: 6 gates, 0 fallas, 2 warnings. | Warnings: `foundation_health` y outcome real post-cierre no ejecutado. |
 | 2. GPT Action Builder | OK | GPT Builder actualizado y `monitor_gpt_action_health.py` confirma endpoints protegidos. | Mantener secreto vigente. |
 | 3. IBKR/TWS real fresco | OK productivo | Snapshot fresco en produccion, `rows_found=123`, freshness menor a 10 minutos al check. | Mantener refresh en ventana util. |
-| 4. TradingView real | OK productivo / ledger pendiente | Produccion reporta `technical_count=32`; el ledger local sigue sin eventos. | Confirmar alertas y replay/ingest al ledger tecnico. |
+| 4. TradingView real | Configurado / validación viva pendiente | El caché remoto conserva 128 intentos y 113 aceptados; el último evento real disponible es del 13 de agosto. | Confirmar el próximo evento real, su aceptación, latencia y entrega móvil `ENTRY_ONLY`. |
 | 5. Manual review funcionando | OK | Inbox, historial, learning y performance dashboard abren con read-auth; acciones conservan no-order guardrails. | Usarlo cuando haya `ENTRY_READY` o setups revisables. |
-| 6. Outcomes / learning | OK tecnico, muestra insuficiente | Operating day evalua outcomes/manual reviews; `closed_outcomes=1`, `complete_closed_outcomes=0`. | Backfill/re-journal y acumular minimo 30 outcomes completos por estrategia activa. |
+| 6. Outcomes / learning | Automatización restaurada, muestra insuficiente | La evaluación del 22 de agosto sincronizó 49 decisiones y 26 outcomes; `closed_outcomes=0`. | Cerrar resultados con MFE/MAE/PnL R y acumular mínimo 30 completos por estrategia activa. |
 | 7. Produccion protegida | OK | `READ_ACCESS_TOKEN`, ingest, read-auth y endpoints sensibles verificados en Render. | Mantener tokens en Keychain deduplicados. |
 | 8. Terceros/comercial readiness | Bloqueado | Guia de instalacion y customer package existen. | Faltan legal/compliance, aislamiento, tokens por cliente, audit durable, disclosures, paper onboarding y soporte. |
 
@@ -175,11 +191,11 @@ gobernanza y aislamiento.
 | Manual Review | Validado | `check_manual_review_console.py` valida rutas, cookie auth, email link y no-order guardrails. | Abrir inbox productivo cuando haya setups revisables. |
 | GPT/backend Action | OK | GPT Builder actualizado; health autorizado 200, no-order guardrails OK y no autorizado 401. | Mantener secreto vigente. |
 | IBKR Bridge | OK productivo | Produccion tiene snapshot fresco y `rows_found=123`. | Mantener refresh en ventana operativa. |
-| TradingView | OK productivo / ledger pendiente | Produccion reporta `technical_count=32`; ledger local todavia `WAITING_FOR_DATA`. | Mantener alertas reales hacia `/technical_snapshot` y alimentar ledger. |
+| TradingView | Configurado / validación viva pendiente | El ledger remoto conserva 128 intentos y 113 aceptados; aún falta observar la siguiente señal con el contrato actual. | Verificar recepción, descarte, latencia y Pushover únicamente para `ENTRY`. |
 | Outcomes/Learning | OK | Operating day evaluo outcomes/manual reviews; dry-run tambien pasa. | Seguir post-cierre con snapshot fresco. |
 | Operational Edge | Nuevo | Integra confirmacion real, calibracion de score, ranking institucional, optimizador de contratos, CANSLIM dinamico, panel y post-mortem. | Acumular outcomes completos y confirmar eventos reales de mercado. |
 | Foundation/Evidencia | WARN | 52 decisiones, 5 `ENTRY_READY` locales, 4 option rows diagnosticas, 80.77% source attribution coverage. | Completar fuentes, ledger TradingView, datos de opciones y outcomes cerrados. |
-| P0 Tests | FAIL | `test_p0_operational_guards.py`: 39 corridas, 2 fallas por expectativa de `readonly=True` en `ibkr_bridge.py`. | Revisar guard read-only del bridge antes de cerrar 100%. |
+| Pruebas automáticas | OK | Auditoría integral: 591 pruebas correctas, compilación limpia y `git diff --check` correcto. | Repetir después de cada cambio operativo material. |
 | Seguridad | Alineado localmente | Preflight no imprime secretos, no toca IBKR en skip-cloud, no autoriza ejecucion. | Verificar read-auth y secrets en Render. |
 | Terceros / Comercial | Bloqueado por diseño | Docs exigen aislamiento/compliance antes de terceros. | No vender/operar para terceros hasta cerrar gates comerciales. |
 

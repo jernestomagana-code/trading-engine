@@ -7,6 +7,135 @@ import coberturas_engine as ce
 
 
 class CoberturasEngineTests(unittest.TestCase):
+    def test_generic_wait_context_penalizes_but_does_not_veto_valid_entry(self):
+        row = {
+            "ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821",
+            "strike": 225, "bid": 1.0, "ask": 1.1, "spread_pct": 9.52,
+            "coberturas_score": 80,
+        }
+        context = {"gamma_blob": json.dumps({
+            "possible_mode": "esperar",
+            "technical_levels": {"resistances": [225]},
+            "gamma_context": {"bias": "positivo"},
+        })}
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            [row], "BUY_100_SELL_CALL", 220, context
+        )
+
+        self.assertEqual(len(qualified), 1)
+        self.assertEqual(rejected, [])
+        self.assertIn("MARKET_CONTEXT_CAUTION", qualified[0]["eligibility_soft_cautions"])
+        self.assertEqual(qualified[0]["coberturas_score"], 72)
+
+    def test_explicit_market_risk_remains_a_hard_veto(self):
+        row = {
+            "ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821",
+            "strike": 225, "bid": 1.0, "ask": 1.1, "spread_pct": 9.52,
+        }
+        context = {"gamma_blob": json.dumps({
+            "possible_mode": "esperar",
+            "risk_warnings": ["RIESGO DE EVENTO activo: no operar"],
+            "technical_levels": {"resistances": [225]},
+        })}
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            [row], "BUY_100_SELL_CALL", 220, context
+        )
+
+        self.assertEqual(qualified, [])
+        self.assertIn("MARKET_RISK_HARD_BLOCK", rejected[0]["eligibility_gate_failures"])
+
+    def test_one_noncritical_failure_creates_near_candidate(self):
+        row = {
+            "ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821",
+            "strike": 220, "bid": 2.1, "ask": 2.3, "spread_pct": 9.09,
+        }
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            [row], "BUY_100_SELL_CALL", 221.06, {"resistance_levels": [222.5]}
+        )
+
+        self.assertEqual(qualified, [])
+        self.assertTrue(rejected[0]["near_candidate"])
+        self.assertEqual(rejected[0]["eligibility_gate_failures"], ["STRIKE_NOT_ALIGNED_WITH_LEVELS"])
+
+    def test_wide_spread_call_cannot_become_recommendation_from_stock_appreciation(self):
+        rows = [{
+            "ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821",
+            "strike": 225, "bid": 0.05, "ask": 0.30, "spread_pct": 142.86,
+            "discarded_for_manual_review": True,
+        }]
+        context = {
+            "resistance_levels": [222.5, 225], "gamma_bias": "POSITIVO",
+            "expected_move_high": 222.03, "call_wall": 222.5,
+        }
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            rows, "BUY_100_SELL_CALL", 220.72, context
+        )
+
+        self.assertEqual(qualified, [])
+        self.assertEqual(rejected[0]["executable_premium_estimate"], 5.0)
+        self.assertEqual(rejected[0]["theoretical_mid_premium"], 17.5)
+        self.assertEqual(rejected[0]["max_profit_estimate"], 433.0)
+        self.assertIn("EXECUTION_QUALITY_FAILED", rejected[0]["eligibility_gate_failures"])
+        self.assertIn("EXECUTABLE_PREMIUM_BELOW_MINIMUM", rejected[0]["eligibility_gate_failures"])
+
+    def test_expiration_specific_gamma_levels_are_resolved(self):
+        context = {
+            "gamma_blob": json.dumps({
+                "technical_levels": {"trend": "alcista", "supports": [220], "resistances": [222.5, 225]},
+                "gamma_context": {
+                    "bias": "positivo",
+                    "call_wall": {"2026-08-14": 220, "2026-08-21": 222.5},
+                    "put_wall": {"2026-08-14": 207.5, "2026-08-21": 210},
+                },
+                "expected_move": {
+                    "2026-08-21": {"low": 219.57, "high": 222.03},
+                },
+            })
+        }
+
+        resolved = ce.context_for_expiration(context, "20260821")
+
+        self.assertEqual(resolved["call_wall"], 222.5)
+        self.assertEqual(resolved["put_wall"], 210)
+        self.assertEqual(resolved["expected_move_high"], 222.03)
+        self.assertEqual(resolved["technical_trend"], "ALCISTA")
+
+    def test_minimum_profit_filter_rejects_low_profit_options(self):
+        rows = [
+            {"strike": 210, "expiration": "20260821", "bid": 0.75, "ask": 0.85, "spread_pct": 12.5},
+            {"strike": 207.5, "expiration": "20260821", "bid": 1.10, "ask": 1.20, "spread_pct": 8.7},
+        ]
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            rows, "SELL_PUT", 212, {"support_levels": [210]}
+        )
+
+        self.assertEqual(len(qualified), 1)
+        self.assertEqual(qualified[0]["max_profit_estimate"], 110)
+        self.assertTrue(qualified[0]["meets_minimum_max_profit"])
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["max_profit_estimate"], 75)
+        self.assertIn("MAX_PROFIT_BELOW_MINIMUM", rejected[0]["coberturas_blockers"])
+
+    def test_minimum_profit_filter_uses_total_buy_write_profit(self):
+        rows = [
+            {"strike": 210, "expiration": "20260821", "bid": 2.50, "ask": 2.70, "spread_pct": 7.7},
+            {"strike": 213, "expiration": "20260821", "bid": 1.00, "ask": 1.10, "spread_pct": 9.5},
+        ]
+
+        qualified, rejected = ce.annotate_profit_eligibility(
+            rows, "BUY_100_SELL_CALL", 212, {"resistance_levels": [210]}
+        )
+
+        self.assertEqual(len(qualified), 1)
+        self.assertEqual(qualified[0]["max_profit_estimate"], 200)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["max_profit_estimate"], 50)
+
     def test_itm_buy_write_includes_stock_loss_below_entry_in_max_profit(self):
         scenario = ce.build_buy_write_scenario(
             {"strike": 210, "expiration": "20260731", "dte": 11, "premium_100": 400, "delta": 0.7},
@@ -114,7 +243,7 @@ class CoberturasEngineTests(unittest.TestCase):
             original_context = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "213", "position_mode": "AUTO"})
+                ce.write_manual_context({"spot": "213", "position_mode": "AUTO", "support_levels": "207.5", "resistance_levels": "215"})
                 (runtime / ce.RSP_POSITIONS_PATH).write_text(json.dumps({
                     "account_alias": "retiro", "positions": [],
                 }))
@@ -139,8 +268,8 @@ class CoberturasEngineTests(unittest.TestCase):
                     "generated_at": ce.now_iso(),
                     "chain_by_ticker": {"RSP": {}},
                     "option_rows": [
-                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260821", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 0.9, "ask": 1.1},
-                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821", "dte": 11, "strike": 215, "delta": 0.3, "bid": 0.9, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260821", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 1.0, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260821", "dte": 11, "strike": 215, "delta": 0.3, "bid": 1.0, "ask": 1.1},
                     ],
                 }))
 
@@ -160,7 +289,7 @@ class CoberturasEngineTests(unittest.TestCase):
             original_context = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "213", "position_mode": "AUTO"})
+                ce.write_manual_context({"spot": "213", "position_mode": "AUTO", "support_levels": "207.5", "resistance_levels": "215"})
                 (runtime / ce.RSP_POSITIONS_PATH).write_text(json.dumps({
                     "account_alias": "retiro",
                     "positions": [
@@ -178,8 +307,8 @@ class CoberturasEngineTests(unittest.TestCase):
                     "generated_at": ce.now_iso(),
                     "chain_by_ticker": {"RSP": {}},
                     "option_rows": [
-                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 0.9, "ask": 1.1},
-                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260731", "dte": 11, "strike": 215, "delta": 0.3, "bid": 0.9, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 207.5, "delta": -0.2, "bid": 1.0, "ask": 1.1},
+                        {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260731", "dte": 11, "strike": 215, "delta": 0.3, "bid": 1.0, "ask": 1.1},
                     ],
                 }), encoding="utf-8")
 
@@ -312,7 +441,7 @@ class CoberturasEngineTests(unittest.TestCase):
                     }
                 )
                 (runtime / "v32_ibkr_chain_coverage.json").write_text(
-                    '{"option_rows":[{"ticker":"RSP","strategy":"NAKED_PUT","expiration":"20260724","dte":9,"strike":210,"delta":-0.18,"bid":0.95,"ask":1.05,"open_interest":500}],"chain_by_ticker":{"RSP":{}},"not_order_instruction":true}',
+                    '{"option_rows":[{"ticker":"RSP","strategy":"NAKED_PUT","expiration":"20260724","dte":9,"strike":210,"delta":-0.18,"bid":1.00,"ask":1.05,"open_interest":500}],"chain_by_ticker":{"RSP":{}},"not_order_instruction":true}',
                     encoding="utf-8",
                 )
                 payload = ce.build_recommendation(runtime)
@@ -320,7 +449,7 @@ class CoberturasEngineTests(unittest.TestCase):
                 ce.MANUAL_CONTEXT_PATH = original
             self.assertEqual(payload["decision"], "REVIEW_SELL_PUT_CANDIDATES")
             self.assertEqual(payload["candidate_count"], 1)
-            self.assertEqual(payload["top_candidates"][0]["premium_100"], 100.0)
+            self.assertEqual(payload["top_candidates"][0]["executable_premium_estimate"], 100.0)
             self.assertFalse(payload["top_candidates"][0]["execution_authorized"])
 
     def test_recommendation_never_presents_out_of_window_row_as_current_candidate(self):
@@ -330,7 +459,7 @@ class CoberturasEngineTests(unittest.TestCase):
             original = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES"})
+                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES", "support_levels": "210"})
                 (runtime / "v32_ibkr_chain_coverage.json").write_text(
                     json.dumps({
                         "option_rows": [
@@ -357,11 +486,11 @@ class CoberturasEngineTests(unittest.TestCase):
             original = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES"})
+                ce.write_manual_context({"spot": "213", "position_mode": "NO_SHARES", "support_levels": "210"})
                 (runtime / ce.RSP_CHAIN_PATH).write_text(json.dumps({
                     "generated_at": ce.now_iso(),
                     "option_rows": [
-                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 210, "delta": -0.18, "bid": 0.95, "ask": 1.05},
+                        {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260731", "dte": 11, "strike": 210, "delta": -0.18, "bid": 1.0, "ask": 1.05},
                     ],
                     "chain_by_ticker": {"RSP": {}},
                 }), encoding="utf-8")
@@ -384,12 +513,12 @@ class CoberturasEngineTests(unittest.TestCase):
             original = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "214", "position_mode": "NO_SHARES", "call_wall": "220"})
+                ce.write_manual_context({"spot": "214", "position_mode": "NO_SHARES", "support_levels": "205", "call_wall": "220"})
                 (runtime / "v32_ibkr_chain_coverage.json").write_text(
                     json.dumps({
                         "option_rows": [
-                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 0.9, "ask": 1.1},
-                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 0.8, "ask": 1.0},
+                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 1.0, "ask": 1.1},
+                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 1.0, "ask": 1.1},
                         ],
                         "chain_by_ticker": {"RSP": {}},
                         "not_order_instruction": True,
@@ -415,7 +544,7 @@ class CoberturasEngineTests(unittest.TestCase):
             original = ce.MANUAL_CONTEXT_PATH
             ce.MANUAL_CONTEXT_PATH = runtime / "coberturas_rsp_manual_context.json"
             try:
-                ce.write_manual_context({"spot": "214", "position_mode": "NO_SHARES"})
+                ce.write_manual_context({"spot": "214", "position_mode": "NO_SHARES", "support_levels": "205", "resistance_levels": "220"})
                 (runtime / "ibkr_account_capacity_latest.json").write_text(
                     json.dumps({"available_funds": 25000, "available": True}),
                     encoding="utf-8",
@@ -423,8 +552,8 @@ class CoberturasEngineTests(unittest.TestCase):
                 (runtime / "v32_ibkr_chain_coverage.json").write_text(
                     json.dumps({
                         "option_rows": [
-                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 0.9, "ask": 1.1},
-                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 0.8, "ask": 1.0},
+                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 1.0, "ask": 1.1},
+                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 1.0, "ask": 1.1},
                         ],
                         "chain_by_ticker": {"RSP": {}},
                         "not_order_instruction": True,
@@ -482,8 +611,8 @@ class CoberturasEngineTests(unittest.TestCase):
                 (runtime / "v32_ibkr_chain_coverage.json").write_text(
                     json.dumps({
                         "option_rows": [
-                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 0.9, "ask": 1.1},
-                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 0.8, "ask": 1.0},
+                            {"ticker": "RSP", "strategy": "NAKED_PUT", "expiration": "20260724", "dte": 8, "strike": 205, "delta": -0.2, "bid": 1.0, "ask": 1.1},
+                            {"ticker": "RSP", "strategy": "COVERED_CALL", "expiration": "20260724", "dte": 8, "strike": 220, "delta": 0.22, "bid": 1.0, "ask": 1.1},
                         ],
                         "chain_by_ticker": {"RSP": {}},
                         "not_order_instruction": True,

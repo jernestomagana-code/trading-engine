@@ -92,6 +92,16 @@ OPTIONAL_FIELDS = [
     "mtf_short_votes",
     "atr_pct",
     "setup_quality",
+    "setup_stage",
+    "alert_priority",
+    "trigger_price",
+    "missing_confirmations",
+    "bars_armed",
+    "consensus_grade",
+    "consensus_status",
+    "consensus_sources",
+    "consensus_window_minutes",
+    "consensus_explanation",
     "counter_trend",
     "rebound",
     "source",
@@ -122,6 +132,9 @@ NUMERIC_FIELDS = [
     "mtf_long_votes",
     "mtf_short_votes",
     "atr_pct",
+    "trigger_price",
+    "bars_armed",
+    "consensus_window_minutes",
 ]
 ALLOWED_DIRECTIONS = {"LONG", "SHORT", "NONE", "RANGE", "BULLISH", "BEARISH", "NEUTRAL"}
 ALLOWED_SESSION_STATES = {

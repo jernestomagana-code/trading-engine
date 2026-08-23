@@ -6,6 +6,13 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 ## Cambios operativos de agosto de 2026
 
+- La cabecera separa ahora conexión, frescura y riesgo: **IBKR conectado** no
+  implica que la evaluación siga vigente. Si riesgo marca la cuenta como
+  vencida, la misma cabecera cambia a **Actualizar datos**, muestra **Datos por
+  actualizar** y conserva la alerta **Riesgo revisar** cuando corresponda.
+- El proceso local postcierre vuelve a ejecutarse cada 15 minutos dentro de su
+  ventana, una sola vez por fecha de mercado. Actualiza resultados y futuros
+  pendientes sin enviar resúmenes al celular ni autorizar órdenes.
 - **Actualizar pantalla** trabaja en segundo plano, consulta cada fuente de
   forma gradual, muestra avance y recarga al terminar. Si alguna fuente usa
   respaldo o falla, el resultado queda marcado como parcial en lugar de
@@ -141,14 +148,15 @@ Este es el primer bloque que debe leerse.
 
 El color no es una señal de compra o venta. Indica la salud operativa de la consola.
 
-### Los cuatro indicadores visibles
+### Los cinco indicadores visibles
 
 | Indicador | Qué significa | Si aparece `NO` o pendiente |
 |---|---|---|
 | Producción | La consola puede leer el estado protegido del motor publicado. | Usa **Actualizar estado**; si persiste, revisa conexión o acceso. |
-| IBKR | Hay evidencia de conexión local con TWS/IB Gateway. | Abre/desbloquea TWS y usa **Validar IBKR**. |
-| Datos | Existe un paquete local de datos para evaluar. | Ejecuta **Ejecutar apertura diaria** o un refresh de IBKR. |
+| IBKR | Hay evidencia de conexión local con TWS/IB Gateway. No garantiza por sí solo que riesgo esté vigente. | Abre/desbloquea TWS y usa **Validar IBKR**. |
+| Datos | La evaluación de la cuenta activa considera vigente el último snapshot. | Ejecuta **Ejecutar apertura diaria** o un refresh de IBKR. |
 | Capacidad | Hay datos de capital, margen y disponibilidad de la cuenta. | Actualiza IBKR antes de evaluar tamaño o viabilidad. |
+| Riesgo | Indica si existe una alerta alta que requiere revisión manual. | Abre **Hoy** o **Cartera** y atiende la prioridad; no significa que IBKR esté desconectado. |
 
 Las acciones técnicas de conexión y publicación quedaron dentro de **Más opciones** para no competir con la apertura diaria.
 
@@ -419,6 +427,12 @@ En capital, la consola diferencia:
 - **Margen estimado configurado:** si IBKR no devuelve margen, se usa una referencia operativa de $7,000 (`STOCK_ULTIMUS_RSP_MARGIN_ESTIMATE`). La consola la identifica como estimación y nunca como confirmación del broker.
 
 Para covered calls, los strikes **ITM, ATM y OTM están permitidos**. La cadena ampliada compara hasta 12 contratos y presenta tres lecturas: **Ingreso y defensa**, **Retorno total flexible** y **Conservar upside**. El perfil operativo predeterminado es **Retorno total flexible**; pondera prima, protección bajista, ganancia total si hay asignación, probabilidad aproximada, spread y participación alcista. La ganancia máxima de una call ITM descuenta correctamente la diferencia entre el precio pagado por las acciones y un strike inferior. El ganador de cada perfil es comparativo: si falta prima utilizable o el spread es demasiado amplio, la consola indica **esperar mejor liquidez** y no lo presenta como listo para revisión operativa.
+
+Antes de puntuar o recomendar, el motor aplica cuatro compuertas obligatorias: **calidad ejecutable** (bid/ask y spread máximo de 25%), **alineación del strike con soporte/resistencia, expected move y gamma del vencimiento**, **prima ejecutable mínima de USD 100** y **ganancia máxima mínima de USD 100**. La prima de una venta usa el bid conservador; el punto medio se muestra sólo como referencia. En comprar 100 acciones + sell call, la consola separa la apreciación de las acciones del ingreso aportado por la call y muestra qué porcentaje de la ganancia total procede realmente de la prima. Un contrato descartado por liquidez nunca puede volver a aparecer como “datos suficientes”.
+
+La comparación incluye comprar 100 acciones sin call —que conserva todo el upside pero sólo se considera con tesis alcista confirmada— y esperar. Si ninguna estructura supera todas las compuertas o la lectura contiene un riesgo explícito de no operar, el motor recomienda **esperar otra cotización o vencimiento**, no elegir automáticamente la alternativa menos mala.
+
+Los contratos que fallen exactamente una condición no crítica aparecen aparte como **Candidatos cercanos — no son entrada**. Permiten vigilar una prima que se acerca al mínimo o un strike que todavía no coincide con resistencia/gamma, sin confundirlos con `Entry ready`. La palabra `esperar` dentro de una lectura funciona como cautela y resta puntuación; sólo una advertencia explícita de evento, resultados, no operar o volatilidad extrema veta por sí sola. El panel también acumula sesiones observadas, sesiones con entrada aprobada y sesiones con candidato cercano para detectar objetivamente si las reglas se vuelven demasiado restrictivas.
 
 Una posición RSP abierta no detiene la búsqueda de oportunidades. La consola trabaja en dos carriles simultáneos: **Gestión actual**, para vigilar cierres, rollos y asignación de los contratos existentes; y **Nueva posición**, para comparar otro sell put contra otro bloque de 100 acciones + covered call. Cada entrada nueva se limita a un contrato. El máximo predeterminado es de tres ciclos RSP simultáneos (`STOCK_ULTIMUS_RSP_MAX_CONCURRENT_CYCLES`) y siempre queda subordinado a los fondos disponibles, poder de compra, margen estimado o confirmado por IBKR, calidad de la cadena y revisión humana. Que exista espacio dentro del límite no significa que exista capital suficiente.
 

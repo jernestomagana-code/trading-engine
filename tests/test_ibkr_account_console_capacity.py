@@ -381,8 +381,30 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertNotIn("GPT_CONTEXT_REFRESH_REQUIRED", health["warnings"])
         self.assertNotIn("REMOTE_CACHE_STALE", health["warnings"])
         self.assertIn("REMOTE_CACHE_STALE_LOCAL_CORE_READY", health["info"])
-        self.assertIn("IBKR OK", rendered)
+        self.assertIn("IBKR conectado", rendered)
         self.assertIn("Producción guardada", rendered)
+
+    def test_console_header_separates_connected_from_stale_risk_data(self):
+        active = {"account_scope": "retiro", "account_alias": "retiro"}
+        with tempfile.TemporaryDirectory() as tmp:
+            risk_path = Path(tmp) / "portfolio_risk_latest.json"
+            risk_path.write_text(json.dumps({
+                "status": "ACTION_REQUIRED",
+                "accounts": [{"account_alias": "retiro", "refresh_status": "STALE"}],
+                "alerts": [{
+                    "account_alias": "retiro",
+                    "severity": "HIGH",
+                    "title": "Revisar cuenta retiro",
+                }],
+            }))
+            with patch.object(account_console, "PORTFOLIO_RISK_PATH", risk_path):
+                state = account_console.console_header_operational_state(active)
+
+        self.assertTrue(state["available"])
+        self.assertFalse(state["data_current"])
+        self.assertEqual(state["data_label"], "por actualizar")
+        self.assertTrue(state["risk_review"])
+        self.assertEqual(state["risk_label"], "revisar")
 
     def test_selected_vs_published_infers_local_account_when_remote_omits_account_fields(self):
         active = {"account_scope": "remanente", "account_alias": "remanente"}

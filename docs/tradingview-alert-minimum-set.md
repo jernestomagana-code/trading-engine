@@ -3,6 +3,12 @@
 This is the production futures confirmation layer for Stock Ultimus. These
 alerts provide technical evidence only; they do not authorize orders.
 
+> **Operator note (2026-08-22):** The current four-window TradingView cockpit
+> is documented in `docs/tradingview-production-active-alerts.md`. Its active
+> set is nine alerts: six FAST v2.2 alerts on `MNQ1!` 1m, one Chris v4.4
+> prepare alert on `USTEC.F` 15m, one QQQ confirmation alert, and one VIX risk
+> alert. Older MES, SPY, RSI, duplicate, and generic alerts remain paused.
+
 ## Real-Time Delivery Model
 
 The futures alerts are event-driven, not batch-driven:
@@ -33,14 +39,18 @@ Operational interpretation:
 - `ENTRY_READY` is reserved for a clean technical trigger plus clear risk,
   portfolio, premarket context, and explicit no-order guardrails.
 
-## Production Active Alerts
+## Futures implementation and fallback coverage
 
-Keep only these two futures alerts active in TradingView:
+The table below documents the backend's logical futures coverage and fallback
+path. It is not the current four-window TradingView active list: the MES row is
+paused in the current operator cockpit.
+
+Current verified futures coverage in TradingView:
 
 | Active alert | Symbol | Timeframe | TradingView condition | Role |
 | --- | --- | --- | --- | --- |
-| `Stock Ultimus Intraday Futures Alerts v1` | `MNQ1!` | `5m` | `Any alert() function call` | Consolidated MNQ futures evidence |
-| `Stock Ultimus Intraday Futures Alerts v1` | `MES1!` | `5m` | `Any alert() function call` | Consolidated MES futures evidence |
+| `FAST_V2_2 LONG/SHORT ENTRY, PREPARE, INVALIDATED` | `MNQ1!` | `1m` | Six explicit conditions | Verified FAST v2.2 coverage |
+| `Stock Ultimus Intraday Futures FAST v2.1` | `MES1!` | `1m` | `Any alert() function call` | Paused fallback; retain only for a future MES coverage reactivation |
 
 Use the deployed webhook URL:
 
@@ -78,6 +88,20 @@ Para reducir la demora sin aceptar señales intrabar no confirmadas, usar
 pero ADX, ATR, RVOL y VWAP proceden del contexto de 5 minutos ya cerrado.
 La misma alerta consolidada emite además un heartbeat silencioso cada hora de
 sesión regular. El heartbeat no es una entrada y nunca se envía al celular.
+
+FAST v2.2 añade una lectura visual previa a la alerta sin relajar ADX/RVOL:
+`WAIT_QUALITY`, `ARMED_LONG/SHORT`, `TRIGGERED_LONG/SHORT` e invalidación. El
+panel muestra sesgo, confirmaciones 0–4, distancia al OR en ATR y niveles
+Entrada/Stop/T1/T2. Los estados armados son únicamente visuales; no consumen
+slots, no llaman al webhook y no llegan al teléfono. Un cooldown de 10 velas
+evita que varios recrosses del mismo movimiento parezcan oportunidades nuevas.
+
+FAST v2.2 está compilado y visible en MNQ/MES. Convierte `ARMED` en evidencia
+`PREPARE` de prioridad baja e incluye gatillo exacto, confirmaciones faltantes,
+barras armado y cancelación explícita. En MNQ estas señales usan seis condiciones
+explícitas verificadas; en MES se mantiene la alerta consolidada v2.1 hasta que
+TradingView exponga una condición consolidada v2.2 verificable. El backend
+conserva `PREPARE` como `WATCH_ONLY` y no lo envía al canal móvil de `ENTRY`.
 
 Al activarla, reemplazar las dos alertas creadas con el script v1; no mantener
 v1 y FAST v2 simultáneamente. FAST v2 conserva los mismos `event_code`

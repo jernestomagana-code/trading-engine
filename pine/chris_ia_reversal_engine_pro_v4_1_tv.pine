@@ -1,0 +1,112 @@
+//@version=6
+indicator("Chris IA Reversal Engine PRO v4.1",shorttitle="Chris IA REV PRO",overlay=false,max_labels_count=200)
+
+fastLen=input.int(9,"EMA fast",minval=2)
+midLen=input.int(21,"EMA mid",minval=3)
+trendLen=input.int(100,"EMA trend",minval=20)
+rsiLen=input.int(14,"RSI",minval=2)
+stochLen=input.int(14,"Stoch",minval=2)
+watchBars=input.int(8,"WATCH bars",minval=1)
+watchMin=input.int(2,"WATCH score",minval=1,maxval=4)
+entryMin=input.int(3,"ENTRY score",minval=1,maxval=4)
+
+emaFast=ta.ema(close,fastLen)
+emaMid=ta.ema(close,midLen)
+emaTrend=ta.ema(close,trendLen)
+rsi=ta.rsi(close,rsiLen)
+sto=ta.stoch(close,high,low,stochLen)
+stoSignal=ta.sma(sto,3)
+emaFast5=request.security(syminfo.tickerid,"5",ta.ema(close,fastLen),lookahead=barmerge.lookahead_off)
+emaMid5=request.security(syminfo.tickerid,"5",ta.ema(close,midLen),lookahead=barmerge.lookahead_off)
+emaFast15=request.security(syminfo.tickerid,"15",ta.ema(close,fastLen),lookahead=barmerge.lookahead_off)
+emaMid15=request.security(syminfo.tickerid,"15",ta.ema(close,midLen),lookahead=barmerge.lookahead_off)
+emaFast60=request.security(syminfo.tickerid,"60",ta.ema(close,fastLen),lookahead=barmerge.lookahead_off)
+emaMid60=request.security(syminfo.tickerid,"60",ta.ema(close,midLen),lookahead=barmerge.lookahead_off)
+
+longScore=(close>emaFast?1:0)+(emaFast>emaMid?1:0)+(rsi>50?1:0)+(emaFast5>emaMid5?1:0)
+shortScore=(close<emaFast?1:0)+(emaFast<emaMid?1:0)+(rsi<50?1:0)+(emaFast5<emaMid5?1:0)
+
+longWatchRaw=ta.crossover(sto,stoSignal) and sto<45 and longScore>=watchMin
+shortWatchRaw=ta.crossunder(sto,stoSignal) and sto>55 and shortScore>=watchMin
+
+var int watchSide=0
+var int watchStart=na
+watchSide:=longWatchRaw?1:shortWatchRaw?-1:watchSide
+watchStart:=longWatchRaw or shortWatchRaw?bar_index:watchStart
+watchAge=na(watchStart)?0:bar_index-watchStart
+watchExpired=watchSide!=0 and watchAge>watchBars
+
+longEntry=watchSide==1 and close>emaFast and longScore>=entryMin and barstate.isconfirmed
+shortEntry=watchSide==-1 and close<emaFast and shortScore>=entryMin and barstate.isconfirmed
+longCanceled=watchSide==1 and (watchExpired or close<emaTrend)
+shortCanceled=watchSide==-1 and (watchExpired or close>emaTrend)
+
+if longEntry or shortEntry or longCanceled or shortCanceled
+    watchSide:=0
+    watchStart:=na
+
+stage=longEntry?"EVALUAR LONG AHORA":shortEntry?"EVALUAR SHORT AHORA":watchSide==1?"PREPARAR LONG":watchSide==-1?"PREPARAR SHORT":longCanceled or shortCanceled?"DESCARTAR SETUP":"SIN OPORTUNIDAD"
+missing=watchSide==1 and longScore<entryMin?"PRECIO O SCORE":watchSide==-1 and shortScore<entryMin?"PRECIO O SCORE":"NADA"
+activeSide=watchSide==1 or longEntry?"LONG":watchSide==-1 or shortEntry?"SHORT":longScore>=shortScore?"LONG":"SHORT"
+trigger=activeSide=="LONG"?high[1]:low[1]
+nextStep=longEntry or shortEntry?"REVISAR RIESGO Y PLAN":watchSide!=0?"ESPERAR CIERRE EN GATILLO":"ESPERAR PREPARACION"
+dir5=emaFast5>emaMid5?"ALCISTA":emaFast5<emaMid5?"BAJISTA":"NEUTRO"
+dir15=emaFast15>emaMid15?"ALCISTA":emaFast15<emaMid15?"BAJISTA":"NEUTRO"
+dir60=emaFast60>emaMid60?"ALCISTA":emaFast60<emaMid60?"BAJISTA":"NEUTRO"
+stageBg=longEntry?color.lime:shortEntry?color.red:watchSide!=0?color.orange:longCanceled or shortCanceled?color.red:color.new(color.gray,55)
+n(x)=>str.tostring(na(x)?0.0:x,"#.######")
+payload(side,event,score,triggerPrice,missingText,bars)=>"{\"action\":\"ALERT_ONLY\",\"source\":\"TRADINGVIEW\",\"strategy_context\":\"CHRIS_IA_REVERSAL_PRO\",\"strategy_version\":\"CHRIS_IA_V4_1\",\"event\":\""+event+"\",\"event_code\":\"CHRIS_IA_"+str.upper(str.replace_all(str.replace_all(syminfo.ticker,".",""),"!",""))+"_"+side+"_"+event+"_"+str.upper(timeframe.period)+"\",\"ticker\":\""+syminfo.ticker+"\",\"timeframe\":\""+timeframe.period+"\",\"setup_stage\":\""+(event=="ENTRY"?"TRIGGERED":event=="WATCH"?"PREPARE":"INVALIDATED")+"\",\"alert_priority\":\""+(event=="ENTRY"?"HIGH":"LOW")+"\",\"trigger_price\":"+n(triggerPrice)+",\"missing_confirmations\":\""+missingText+"\",\"bars_armed\":"+str.tostring(bars)+",\"price\":"+n(close)+",\"breakout_direction\":\""+side+"\",\"score\":"+str.tostring(score)+",\"execution_authorized\":false,\"not_order_instruction\":true}"
+
+plot(sto,"STO",color=color.aqua,linewidth=2)
+plot(stoSignal,"SIGNAL",color=color.orange,linewidth=2)
+plot(rsi,"RSI",color=color.purple)
+hline(80,"HIGH",color=color.new(color.red,40))
+hline(50,"MID",color=color.new(color.gray,60))
+hline(20,"LOW",color=color.new(color.green,40))
+plotshape(longWatchRaw,title="LONG PREPARE",text="PREPARAR L",style=shape.labelup,location=location.bottom,color=color.new(color.orange,5),textcolor=color.white,size=size.tiny)
+plotshape(shortWatchRaw,title="SHORT PREPARE",text="PREPARAR S",style=shape.labeldown,location=location.top,color=color.new(color.orange,5),textcolor=color.white,size=size.tiny)
+plotshape(longEntry,title="LONG ENTRY",text="EVALUAR L",style=shape.labelup,location=location.bottom,color=color.green,textcolor=color.white,size=size.small)
+plotshape(shortEntry,title="SHORT ENTRY",text="EVALUAR S",style=shape.labeldown,location=location.top,color=color.red,textcolor=color.white,size=size.small)
+plotshape(longCanceled or shortCanceled,title="INVALIDATED",text="DESCARTAR",style=shape.xcross,location=location.top,color=color.yellow,size=size.small)
+
+var table panel=table.new(position.top_right,2,9,border_width=1)
+if barstate.islast
+    table.cell(panel,0,0,"ACCION AHORA",text_color=color.white,bgcolor=stageBg)
+    table.cell(panel,1,0,stage,text_color=longEntry?color.black:color.white,bgcolor=stageBg)
+    table.cell(panel,0,1,"GRAFICO "+timeframe.period,text_color=color.silver)
+    table.cell(panel,1,1,close>emaFast?"ALCISTA":close<emaFast?"BAJISTA":"NEUTRO",text_color=color.white)
+    table.cell(panel,0,2,"SENAL 5m",text_color=color.silver)
+    table.cell(panel,1,2,dir5+" - detecta preparacion",text_color=color.white)
+    table.cell(panel,0,3,"CONFIRMA 15m",text_color=color.silver)
+    table.cell(panel,1,3,dir15+" - valida entrada",text_color=color.white)
+    table.cell(panel,0,4,"TENDENCIA 60m",text_color=color.silver)
+    table.cell(panel,1,4,dir60+" - evita contratendencia",text_color=color.white)
+    table.cell(panel,0,5,"PROXIMO GATILLO",text_color=color.silver)
+    table.cell(panel,1,5,activeSide+" "+str.tostring(trigger,format.mintick),text_color=color.yellow)
+    table.cell(panel,0,6,"FALTA",text_color=color.silver)
+    table.cell(panel,1,6,missing,text_color=missing=="NADA"?color.lime:color.orange)
+    table.cell(panel,0,7,"SIGUIENTE PASO",text_color=color.silver)
+    table.cell(panel,1,7,nextStep,text_color=color.white)
+    table.cell(panel,0,8,"REGLA",text_color=color.silver)
+    table.cell(panel,1,8,"ALERTA = EVIDENCIA; EVALUAR",text_color=color.aqua)
+
+alertcondition(longEntry,"Chris v4.1 LONG ENTRY","CHRIS_V4_1 LONG ENTRY")
+alertcondition(shortEntry,"Chris v4.1 SHORT ENTRY","CHRIS_V4_1 SHORT ENTRY")
+alertcondition(longWatchRaw,"Chris v4.1 LONG PREPARE","CHRIS_V4_1 LONG PREPARE")
+alertcondition(shortWatchRaw,"Chris v4.1 SHORT PREPARE","CHRIS_V4_1 SHORT PREPARE")
+alertcondition(longCanceled,"Chris v4.1 LONG INVALIDATED","CHRIS_V4_1 LONG INVALIDATED")
+alertcondition(shortCanceled,"Chris v4.1 SHORT INVALIDATED","CHRIS_V4_1 SHORT INVALIDATED")
+
+if barstate.isconfirmed
+    if longEntry
+        alert(payload("LONG","ENTRY",longScore,close,"NINGUNA",0),alert.freq_once_per_bar_close)
+    if shortEntry
+        alert(payload("SHORT","ENTRY",shortScore,close,"NINGUNA",0),alert.freq_once_per_bar_close)
+    if longWatchRaw
+        alert(payload("LONG","WATCH",longScore,high[1],missing,watchAge),alert.freq_once_per_bar_close)
+    if shortWatchRaw
+        alert(payload("SHORT","WATCH",shortScore,low[1],missing,watchAge),alert.freq_once_per_bar_close)
+    if longCanceled
+        alert(payload("LONG","WATCH_CANCELED",longScore,high[1],"SETUP_PERDIDO",0),alert.freq_once_per_bar_close)
+    if shortCanceled
+        alert(payload("SHORT","WATCH_CANCELED",shortScore,low[1],"SETUP_PERDIDO",0),alert.freq_once_per_bar_close)

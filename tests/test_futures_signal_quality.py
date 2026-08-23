@@ -37,6 +37,9 @@ class FuturesSignalQualityTests(unittest.TestCase):
         self.assertIn("shortRebound = shortEntry and counterTrendShort", pine)
         self.assertNotIn('alert(f_chris_payload("SHORT", "REBOTE"', pine)
         self.assertIn('f_chris_payload("SHORT", "ENTRY"', pine)
+        self.assertIn('text="CT BLOQ L"', pine)
+        self.assertIn('text="CT BLOQ S"', pine)
+        self.assertIn('longRebound or shortRebound ? color.new(color.orange', pine)
 
     def test_today_short_is_reclassified_as_weak_countertrend_watch(self):
         result = main.apply_intraday_futures_signal_quality_gate(
@@ -73,6 +76,154 @@ class FuturesSignalQualityTests(unittest.TestCase):
         self.assertEqual(result["confirmation_gate_status"], "PASSED")
         self.assertEqual(result["confirmation_quality_score"], 100)
         self.assertEqual(result["confirmation_conflicts"], [])
+
+    def test_core_continuous_contract_keeps_direction_and_instrument_family(self):
+        payload = main.normalize_technical_snapshot_payload({
+            "source": "TRADINGVIEW",
+            "action": "ALERT_ONLY",
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "timeframe": "1m",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MES_ORB_BREAKOUT_LONG_5M",
+            "direction": "NONE",
+            "breakout_direction": "LONG",
+            "price": 7800.0,
+            "logical_stop": 7795.0,
+            "logical_target": 7810.0,
+            "nlv": 50000.0,
+            "portfolio_status": "CLEAR",
+            "portfolio_engine_result": "CLEAR",
+        })
+
+        self.assertEqual(payload["direction"], "LONG")
+        with patch.object(main, "get_intraday_futures_premarket_context", return_value={
+            "found": True,
+            "context": {
+                "decision_max_state": "ENTRY_READY",
+                "macro_status": "CLEAR",
+                "volatility_status": "NORMAL",
+                "risk_daily_status": "CLEAR",
+                "portfolio_status": "CLEAR",
+                "reference_alignment": "ALIGNED",
+            },
+        }):
+            result = main.build_intraday_futures_construction(payload)
+
+        self.assertEqual(result["direction"], "LONG")
+        self.assertEqual(result["construction"]["direction"], "LONG")
+        self.assertEqual(result["construction"]["instrument_family"], "S&P 500")
+        self.assertEqual(result["target_instrument"], "MES")
+
+    def test_core_signal_quality_matches_the_four_checks_shown_in_pine(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MES_ORB_BREAKOUT_LONG_5M",
+            "breakout_direction": "LONG",
+            "price": 7801.0,
+            "vwap": 7799.0,
+            "adx": 24.0,
+            "volume_relative": 1.35,
+            "plus_di": 28.0,
+            "minus_di": 17.0,
+        }
+
+        result = main.apply_intraday_futures_signal_quality_gate(payload)
+
+        self.assertEqual(result["signal_actionability"], "ACTIONABLE_CANDIDATE")
+        self.assertEqual(result["confirmation_gate_status"], "PASSED")
+        self.assertEqual(result["confirmation_quality_score"], 100)
+        self.assertEqual(
+            result["confirmation_reasons"],
+            ["ADX_OK", "RVOL_OK", "VWAP_ALINEADO", "DMI_ALINEADO"],
+        )
+        self.assertEqual(result["confirmation_conflicts"], [])
+
+    def test_core_dmi_conflict_lowers_quality_without_relaxing_baseline_gate(self):
+        result = main.apply_intraday_futures_signal_quality_gate({
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MNQ1!",
+            "event": "VWAP_RECLAIM",
+            "event_code": "MNQ_VWAP_RECLAIM_LONG_5M",
+            "breakout_direction": "LONG",
+            "price": 30010.0,
+            "vwap": 30000.0,
+            "adx": 21.0,
+            "volume_relative": 1.2,
+            "plus_di": 14.0,
+            "minus_di": 22.0,
+        })
+
+        self.assertEqual(result["signal_actionability"], "ACTIONABLE_CANDIDATE")
+        self.assertEqual(result["confirmation_quality_score"], 75)
+        self.assertEqual(result["confirmation_conflicts"], ["DMI_CONTRARIO"])
+
+    def test_core_baseline_failure_stays_watch_only(self):
+        result = main.apply_intraday_futures_signal_quality_gate({
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MES_ORB_BREAKOUT_SHORT_5M",
+            "breakout_direction": "SHORT",
+            "price": 7790.0,
+            "vwap": 7795.0,
+            "adx": 16.0,
+            "volume_relative": 1.3,
+            "plus_di": 15.0,
+            "minus_di": 25.0,
+        })
+
+        self.assertEqual(result["signal_actionability"], "WATCH_ONLY")
+        self.assertEqual(result["main_blocker"], "CORE_TECHNICAL_CONFIRMATION_INSUFFICIENT")
+        self.assertIn("ADX_BAJO_O_NO_DISPONIBLE", result["confirmation_conflicts"])
+
+    def test_prepare_is_watch_only_and_never_promoted_to_entry(self):
+        payload = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event": "PREPARE",
+            "event_code": "MES_PREPARE_LONG_1M",
+            "breakout_direction": "LONG",
+            "price": 7800.0,
+            "trigger_price": 7801.0,
+            "alert_priority": "LOW",
+            "not_order_instruction": True,
+        }
+        result = main.build_intraday_futures_construction(payload)
+        event = main.build_intraday_futures_alert_event(result)
+
+        self.assertTrue(main.intraday_futures_is_setup_wait_event(result["event_code"], result["event"]))
+        self.assertEqual(result["signal_actionability"], "WATCH_ONLY")
+        self.assertNotEqual(result["final_state"], "ENTRY_READY")
+        self.assertEqual(event["evaluation_status"], "PENDING_OUTCOME")
+        self.assertEqual(event["trigger_price"], 7801.0)
+
+    def test_fast_and_chris_same_direction_receive_consensus_a(self):
+        chris = {
+            "event_id": "TV-CHRIS-1",
+            "strategy_context": "CHRIS_IA_REVERSAL_PRO",
+            "ticker": "US500F",
+            "event": "ENTRY",
+            "event_code": "CHRIS_IA_US500F_LONG_ENTRY_15",
+            "breakout_direction": "LONG",
+            "received_at": "2026-08-13T14:35:00+00:00",
+        }
+        fast = {
+            "strategy_context": "INTRADAY_INDEX_FUTURES",
+            "ticker": "MES1!",
+            "event": "ORB_BREAKOUT",
+            "event_code": "MES_ORB_BREAKOUT_LONG_5M",
+            "breakout_direction": "LONG",
+            "received_at": "2026-08-13T14:40:00+00:00",
+        }
+
+        result = main.apply_intraday_futures_strategy_consensus(fast, [chris])
+
+        self.assertEqual(result["consensus_grade"], "A")
+        self.assertEqual(result["consensus_status"], "CONFIRMED_BY_FAST_AND_CHRIS")
+        self.assertEqual(result["consensus_sources"], ["CHRIS", "FAST"])
 
     def test_watch_only_entry_is_suppressed_from_mobile(self):
         payload = main.apply_intraday_futures_signal_quality_gate(

@@ -1,15 +1,16 @@
 # Stock Ultimus Operational Pending Work Register
 
-Last reviewed: 2026-08-11.
+Last reviewed: 2026-08-20.
 
 This register tracks the open work from the TradingView alert and strategy
 review. It is decision-support only and never authorizes order execution.
 
 ## Closed In This Review
 
-- TradingView active alert model uses 7 consolidated production alerts: the 5
-  core futures/options-underlying alerts plus 2 Chris IA alerts.
-- Old per-condition TradingView alerts are no longer part of the active set.
+- TradingView now uses eight logical source rows across sixteen managed active
+  slots. MNQ temporarily uses six explicit FAST v2.2 conditions; MES retains
+  one legacy consolidated FAST v2.1 alert; options context uses six explicit
+  alerts; Chris IA v4.1 uses three consolidated alerts.
 - Local validators and operator reports now separate active alerts from logical
   event coverage:
   - Combined bundle: `total_production_active_alert_count=7` and
@@ -25,6 +26,25 @@ review. It is decision-support only and never authorizes order execution.
   futures payload contract plus an hourly silent heartbeat. The active `MNQ1!`
   and `MES1!` alerts were edited and saved in TradingView to rebuild their Pine
   snapshots; both remained active without the stale-version warning.
+- On 2026-08-12 the historical ledger review found seven core ORB events (six
+  `MES1!`, one `MNQ1!`) whose technical thresholds passed but whose old alert
+  snapshots failed the payload contract. It also exposed a backend mapping gap:
+  core payloads supplied `breakout_direction` while construction read only
+  `direction`, and continuous `MES1!` was not recognized as the S&P 500/MES
+  family. FAST v2.1 and the backend mapping now correct those fields and add a
+  staged visual decision panel. Live closure requires rebuilding both active
+  futures alerts from the new Pine snapshot and observing the next real event.
+- Chris IA v4.1 compiled and was installed on USTEC.F and US500F on 2026-08-20.
+  Its panel explains the 5m signal, 15m confirmation, 60m trend, next trigger,
+  missing checks, and next step. One consolidated webhook alert is active on
+  each symbol; the two prior Chris alerts are paused.
+- FAST v2.2 compiled and is visible on MNQ/MES. The broken v3 chart instance
+  was removed. MNQ has six explicit v2.2 alerts and its prior consolidated
+  v2.1 alert is paused. MES keeps the legacy v2.1 consolidated alert until the
+  TradingView dialog exposes a verified v2.2 `Any alert() function call`.
+- QQQ LONG/SHORT and SPY LONG/SHORT are active at 15m; VIX Elevated/Normalized
+  are active at 1D. The stable saved Pine v1 was used. A defective draft made
+  during verification was permanently deleted before it was applied.
 - V32 nudge preflight reached production successfully.
 - V32 operator notify handles backend timeouts without traceback.
 - After the targeted IBKR refresh, production operator notify moved from
@@ -55,7 +75,15 @@ review. It is decision-support only and never authorizes order execution.
   "why/why not" explanations, complete diagnostic button, and market-open mode
   focused on intraday futures/TradingView/notify timing.
 
-## Waiting For Market Data
+## Waiting For Market Data Or External Approval
+
+- MES FAST v2.2 alert consolidation remains blocked by the TradingView UI. Do
+  not pause its legacy consolidated alert until a v2.2 replacement can be
+  created and verified.
+- IBKR/TWS connectivity, live market prices, option chains, and the active
+  `remanente` account capacity were verified in readonly mode on 2026-08-20.
+  Publishing that sanitized financial context to the backend still requires
+  explicit operator authorization; no order was sent or authorized.
 
 These cannot be fully closed on a closed-market day:
 
@@ -67,7 +95,8 @@ These cannot be fully closed on a closed-market day:
      IA directional entry codes have also occurred naturally.
 
 2. Confirm intraday futures alerts fire in real time.
-   - Active alerts: `MNQ1!` `5m` and `MES1!` `5m`.
+   - Active coverage: six FAST v2.2 conditions on `MNQ1!` `1m` and one legacy
+     consolidated FAST v2.1 alert on `MES1!` `1m`.
    - Target: accepted futures events in the TradingView ledger, no quarantine,
      and immediate notify status of `sent`, `deduped`, or provider-level
      `not_sent` without ingest failure.
@@ -139,10 +168,9 @@ Next implementation target:
 
 ## Optional Cleanup
 
-TradingView chart layout still may contain duplicate script instances or an old
-compiled-error study. This is visual clutter only if the 7 active alerts remain
-correct. Remove chart studies only after confirming that alert delivery is
-stable or during an explicit chart-cleanup session.
+Completed on 2026-08-20: the duplicate/compiled-error FAST instance and the old
+Chris chart instance were removed. Replaced alerts were paused, not deleted, so
+rollback remains possible.
 
 ## Verification Commands
 
@@ -157,7 +185,8 @@ python3 scripts/run_operational_edge_report.py --top 5 --preview 5
 
 Expected closed-market interpretation:
 
-- `active_alerts=7`
+- eight logical source rows / sixteen managed technical-alert slots; four
+  unrelated user alerts bring the TradingView account to its 20-alert limit
 - combined `logical_received=0/20` until real alerts fire; the readiness-gating
   core remains `0/16`
 - `WAITING_TV` is acceptable

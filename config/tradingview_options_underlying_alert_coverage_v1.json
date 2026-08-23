@@ -1,7 +1,7 @@
 {
   "coverage_version": "tradingview_alert_coverage_v1",
   "payload_contract_version": "tradingview_signal_payload_v2",
-  "status": "READY_FOR_MANUAL_SETUP",
+  "status": "ACTIVE_MANUAL_SETUP",
   "endpoint": "/technical_snapshot",
   "webhook_url_template": "https://trading-engine-p097.onrender.com/technical_snapshot",
   "timeframes": ["15", "D"],
@@ -11,22 +11,28 @@
       "symbol": "QQQ",
       "timeframe": "15",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
-      "active_alert_slots": 1
+      "tradingview_condition": "Underlying Tech Confirm Long + Underlying Tech Confirm Short",
+      "expires_on": "2026-10-19",
+      "renewal_review_on": "2026-10-12",
+      "active_alert_slots": 2
     },
     {
       "symbol": "SPY",
       "timeframe": "15",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
-      "active_alert_slots": 1
+      "tradingview_condition": "Underlying Tech Confirm Long + Underlying Tech Confirm Short",
+      "expires_on": "2026-10-19",
+      "renewal_review_on": "2026-10-12",
+      "active_alert_slots": 2
     },
     {
       "symbol": "VIX",
       "timeframe": "D",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "Stock Ultimus Options Underlying Alerts v1 / Any alert() function call",
-      "active_alert_slots": 1
+      "tradingview_condition": "VIX Risk Elevated + VIX Risk Normalized",
+      "expires_on": "2026-10-19",
+      "renewal_review_on": "2026-10-12",
+      "active_alert_slots": 2
     }
   ],
   "global_policy": {
