@@ -21,10 +21,10 @@
       "symbol": "MES1!",
       "timeframe": "1",
       "pine_script": "tradingview/stock_ultimus_intraday_futures_fast_v2.pine",
-      "tradingview_condition": "Stock Ultimus Intraday Futures FAST v2.1 / Any alert() function call",
-      "pending_upgrade": "FAST v2.2 is live on chart; replace this legacy alert only after TradingView exposes a verified consolidated alert() condition",
-      "expires_on": "2026-10-12",
-      "renewal_review_on": "2026-10-05",
+      "tradingview_condition": "FAST v2.2 v23.0 / Any alert() function call",
+      "pending_upgrade": "NONE: consolidated alert verified active in TradingView on 2026-08-24",
+      "expires_on": "2026-10-23",
+      "renewal_review_on": "2026-10-16",
       "active_alert_slots": 1
     }
   ],

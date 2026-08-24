@@ -23,7 +23,7 @@ class SignalLedgerTests(unittest.TestCase):
         )
 
         status = tradingview_alert_coverage.production_alert_expiry_status(
-            coverage, as_of="2026-10-01"
+            coverage, as_of="2026-10-12"
         )
 
         self.assertEqual(status["status"], "RENEW_SOON")

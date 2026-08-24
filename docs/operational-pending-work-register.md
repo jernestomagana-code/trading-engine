@@ -8,8 +8,9 @@ review. It is decision-support only and never authorizes order execution.
 ## Closed In This Review
 
 - TradingView now uses one verified consolidated FAST v2.2 v23.0 alert for
-  MNQ instead of six explicit alert slots. MES and the superseded futures
-  alerts are paused; the current three-alert operator set is documented in
+  MNQ instead of six explicit alert slots. MES now has the equivalent verified
+  consolidated alert; the superseded futures alerts remain paused. The current
+  four-alert operator set is documented in
   `docs/tradingview-production-active-alerts.md`.
 - Local validators and operator reports now separate active alerts from logical
   event coverage:
@@ -40,8 +41,8 @@ review. It is decision-support only and never authorizes order execution.
   each symbol; the two prior Chris alerts are paused.
 - FAST v2.2 v23.0 is compiled and updated on the MNQ chart. TradingView now
   exposes `Any alert() function call`; `FAST_V2_2 MNQ CONSOLIDATED` is active
-  with the production webhook and the six explicit alerts are paused. MES
-  remains paused pending a separately verified reactivation decision.
+  with the production webhook and the six explicit alerts are paused. The
+  equivalent `FAST_V2_2 MES CONSOLIDATED` alert is also active.
 - QQQ LONG/SHORT and SPY LONG/SHORT are active at 15m; VIX Elevated/Normalized
   are active at 1D. The stable saved Pine v1 was used. A defective draft made
   during verification was permanently deleted before it was applied.
@@ -77,9 +78,6 @@ review. It is decision-support only and never authorizes order execution.
 
 ## Waiting For Market Data Or External Approval
 
-- MES FAST v2.2 alert consolidation remains blocked by the TradingView UI. Do
-  not pause its legacy consolidated alert until a v2.2 replacement can be
-  created and verified.
 - IBKR/TWS connectivity, live market prices, option chains, and the active
   `remanente` account capacity were verified in readonly mode on 2026-08-20.
   Publishing that sanitized financial context to the backend still requires
@@ -95,8 +93,8 @@ These cannot be fully closed on a closed-market day:
      IA directional entry codes have also occurred naturally.
 
 2. Confirm intraday futures alerts fire in real time.
-   - Active coverage: one FAST v2.2 v23.0 consolidated condition on `MNQ1!`
-     `1m`; MES is paused.
+   - Active coverage: one FAST v2.2 v23.0 consolidated condition on each of
+     `MNQ1!` and `MES1!` at `1m`.
    - Target: accepted futures events in the TradingView ledger, no quarantine,
      and immediate notify status of `sent`, `deduped`, or provider-level
      `not_sent` without ingest failure.

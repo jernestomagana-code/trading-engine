@@ -3,7 +3,7 @@
 Last reviewed: 2026-08-24.
 
 > **Current operator configuration (verified 2026-08-24).** The live TradingView
-> cockpit uses four saved layouts and three Stock Ultimus managed alerts. This
+> cockpit uses four saved layouts and four Stock Ultimus managed alerts. This
 > section is the
 > source of truth for the current manual setup; the historical implementation
 > notes below are retained for compatibility and audit context.
@@ -13,11 +13,12 @@ Last reviewed: 2026-08-24.
 | # | Alert | Symbol | Timeframe | Role |
 | --- | --- | --- | --- | --- |
 | 1 | `FAST_V2_2 MNQ CONSOLIDATED` | `MNQ1!` | `1m` | Dynamic entry, prepare, invalidation, levels, and heartbeat payloads |
-| 2 | `Stock Ultimus VIX Risk Elevated` | `VIX` | `1D` | Volatility-risk filter |
-| 3 | `Stock Ultimus Underlying Tech Confirm Long` | `QQQ` | `15m` | Technology confirmation |
+| 2 | `FAST_V2_2 MES CONSOLIDATED` | `MES1!` | `1m` | Dynamic entry, prepare, invalidation, levels, and heartbeat payloads |
+| 3 | `Stock Ultimus VIX Risk Elevated` | `VIX` | `1D` | Volatility-risk filter |
+| 4 | `Stock Ultimus Underlying Tech Confirm Long` | `QQQ` | `15m` | Technology confirmation |
 
 Paused by design: the six former FAST v2.2 explicit MNQ alerts, the accidental
-unnamed consolidated duplicate, MES, SPY, and generic legacy alerts. The three
+unnamed consolidated duplicate, SPY, and generic legacy alerts. The three
 RSI alerts visible in the account are unrelated operator alerts and were not modified.
 
 ## Saved layouts
@@ -31,12 +32,12 @@ RSI alerts visible in the account are unrelated operator alerts and were not mod
 
 This is the single source of truth for the Stock Ultimus alerts managed in
 TradingView. The live set uses consolidated alerts where TradingView exposes
-`Any alert() function call`. MNQ now uses one verified FAST v2.2 v23.0
-consolidated alert with the production webhook and a 24/7 schedule.
+`Any alert() function call`. MNQ and MES now each use one verified FAST v2.2
+v23.0 consolidated alert with the production webhook and a 24/7 schedule.
 
 ## Historical implementation notes (not the current operator set)
 
-The current production TradingView layer is covered as follows:
+The production TradingView layer recorded on 2026-08-20 was covered as follows:
 
 - Six explicit FAST v2.2 alerts cover MNQ entry, prepare, and invalidation in
   both directions.
@@ -121,6 +122,10 @@ legacy consolidated alert because TradingView does not currently expose
 `Any alert() function call` for FAST v2.2. Chris IA v4.1 is compiled, visible,
 and active through one consolidated alert on each of USTEC.F and US500F; the
 two previous Chris alerts are paused.
+
+As of 2026-08-24 this historical arrangement has been superseded: MNQ and MES
+each have one active FAST v2.2 v23.0 consolidated alert using `Any alert()
+function call` and the production webhook.
 
 Webhook:
 
@@ -279,5 +284,8 @@ The expected operating model is:
   instance. MNQ uses six verified explicit v2.2 alerts and its old consolidated
   v2.1 alert is paused. MES keeps the legacy consolidated alert until the TV
   alert dialog exposes `Any alert() function call` for FAST v2.2.
+- On 2026-08-24 TradingView exposed the consolidated condition on both futures.
+  `FAST_V2_2 MNQ CONSOLIDATED` and `FAST_V2_2 MES CONSOLIDATED` are active; the
+  superseded explicit and legacy alerts are paused.
 - `execution_authorized=false`.
 - `not_order_instruction=true`.
