@@ -3,11 +3,11 @@
 This is the production futures confirmation layer for Stock Ultimus. These
 alerts provide technical evidence only; they do not authorize orders.
 
-> **Operator note (2026-08-22):** The current four-window TradingView cockpit
+> **Operator note (2026-08-24):** The current four-window TradingView cockpit
 > is documented in `docs/tradingview-production-active-alerts.md`. Its active
-> set is nine alerts: six FAST v2.2 alerts on `MNQ1!` 1m, one Chris v4.4
-> prepare alert on `USTEC.F` 15m, one QQQ confirmation alert, and one VIX risk
-> alert. Older MES, SPY, RSI, duplicate, and generic alerts remain paused.
+> uses one FAST v2.2 v23.0 consolidated alert on `MNQ1!` 1m, one QQQ
+> confirmation alert, and one VIX risk alert. The six former explicit MNQ
+> alerts and the unnamed consolidated duplicate are paused.
 
 ## Real-Time Delivery Model
 
@@ -49,7 +49,7 @@ Current verified futures coverage in TradingView:
 
 | Active alert | Symbol | Timeframe | TradingView condition | Role |
 | --- | --- | --- | --- | --- |
-| `FAST_V2_2 LONG/SHORT ENTRY, PREPARE, INVALIDATED` | `MNQ1!` | `1m` | Six explicit conditions | Verified FAST v2.2 coverage |
+| `FAST_V2_2 MNQ CONSOLIDATED` | `MNQ1!` | `1m` | `Any alert() function call` | Verified FAST v2.2 v23.0 dynamic coverage |
 | `Stock Ultimus Intraday Futures FAST v2.1` | `MES1!` | `1m` | `Any alert() function call` | Paused fallback; retain only for a future MES coverage reactivation |
 
 Use the deployed webhook URL:
@@ -98,9 +98,9 @@ evita que varios recrosses del mismo movimiento parezcan oportunidades nuevas.
 
 FAST v2.2 está compilado y visible en MNQ/MES. Convierte `ARMED` en evidencia
 `PREPARE` de prioridad baja e incluye gatillo exacto, confirmaciones faltantes,
-barras armado y cancelación explícita. En MNQ estas señales usan seis condiciones
-explícitas verificadas; en MES se mantiene la alerta consolidada v2.1 hasta que
-TradingView exponga una condición consolidada v2.2 verificable. El backend
+barras armado y cancelación explícita. En MNQ estas señales usan una alerta
+consolidada v23.0 verificada; MES está pausado y su alerta v2.1 se conserva sólo
+como referencia para una reactivación futura verificada. El backend
 conserva `PREPARE` como `WATCH_ONLY` y no lo envía al canal móvil de `ENTRY`.
 
 Al activarla, reemplazar las dos alertas creadas con el script v1; no mantener

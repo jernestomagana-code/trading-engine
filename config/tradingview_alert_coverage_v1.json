@@ -11,11 +11,11 @@
       "symbol": "MNQ1!",
       "timeframe": "1",
       "pine_script": "tradingview/stock_ultimus_intraday_futures_fast_v2.pine",
-      "tradingview_condition": "FAST v2.2 / six explicit ENTRY, PREPARE, and INVALIDATED alertconditions",
-      "pending_upgrade": "CONSOLIDATION_BLOCKED_IN_TRADINGVIEW_UI: Any alert() function call is not exposed for FAST v2.2",
-      "expires_on": "2026-10-12",
-      "renewal_review_on": "2026-10-05",
-      "active_alert_slots": 6
+      "tradingview_condition": "FAST v2.2 v23.0 / Any alert() function call",
+      "pending_upgrade": "NONE: consolidated alert verified active in TradingView on 2026-08-24",
+      "expires_on": "2026-10-23",
+      "renewal_review_on": "2026-10-16",
+      "active_alert_slots": 1
     },
     {
       "symbol": "MES1!",

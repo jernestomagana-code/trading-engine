@@ -1,9 +1,10 @@
 # TradingView Production Active Alerts
 
-Last reviewed: 2026-08-22.
+Last reviewed: 2026-08-24.
 
-> **Current operator configuration (verified 2026-08-22).** The live TradingView
-> cockpit uses four saved layouts and nine active alerts. This section is the
+> **Current operator configuration (verified 2026-08-24).** The live TradingView
+> cockpit uses four saved layouts and three Stock Ultimus managed alerts. This
+> section is the
 > source of truth for the current manual setup; the historical implementation
 > notes below are retained for compatibility and audit context.
 
@@ -11,18 +12,13 @@ Last reviewed: 2026-08-22.
 
 | # | Alert | Symbol | Timeframe | Role |
 | --- | --- | --- | --- | --- |
-| 1 | `CHRIS_V4_4 LONG PREPARE` | `USTEC.F` | `15m` | Higher-timeframe context |
+| 1 | `FAST_V2_2 MNQ CONSOLIDATED` | `MNQ1!` | `1m` | Dynamic entry, prepare, invalidation, levels, and heartbeat payloads |
 | 2 | `Stock Ultimus VIX Risk Elevated` | `VIX` | `1D` | Volatility-risk filter |
 | 3 | `Stock Ultimus Underlying Tech Confirm Long` | `QQQ` | `15m` | Technology confirmation |
-| 4 | `FAST_V2_2 LONG PREPARE` | `MNQ1!` | `1m` | Long setup forming |
-| 5 | `FAST_V2_2 SHORT PREPARE` | `MNQ1!` | `1m` | Short setup forming |
-| 6 | `FAST_V2_2 LONG ENTRY` | `MNQ1!` | `1m` | Long trigger to evaluate |
-| 7 | `FAST_V2_2 SHORT ENTRY` | `MNQ1!` | `1m` | Short trigger to evaluate |
-| 8 | `FAST_V2_2 LONG INVALIDATED` | `MNQ1!` | `1m` | Cancel long setup |
-| 9 | `FAST_V2_2 SHORT INVALIDATED` | `MNQ1!` | `1m` | Cancel short setup |
 
-Paused by design: duplicate Chris v4.4 alerts, old Chris IA REV PRO alerts,
-RSI/crossing-price alerts, MES, SPY, SPY/QQQ Gap, and generic legacy alerts.
+Paused by design: the six former FAST v2.2 explicit MNQ alerts, the accidental
+unnamed consolidated duplicate, MES, SPY, and generic legacy alerts. The three
+RSI alerts visible in the account are unrelated operator alerts and were not modified.
 
 ## Saved layouts
 
@@ -35,8 +31,8 @@ RSI/crossing-price alerts, MES, SPY, SPY/QQQ Gap, and generic legacy alerts.
 
 This is the single source of truth for the Stock Ultimus alerts managed in
 TradingView. The live set uses consolidated alerts where TradingView exposes
-`Any alert() function call`; MNQ temporarily keeps six explicit FAST v2.2
-conditions because that consolidated option is not exposed for the script.
+`Any alert() function call`. MNQ now uses one verified FAST v2.2 v23.0
+consolidated alert with the production webhook and a 24/7 schedule.
 
 ## Historical implementation notes (not the current operator set)
 

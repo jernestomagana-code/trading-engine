@@ -1,16 +1,16 @@
 # Stock Ultimus Operational Pending Work Register
 
-Last reviewed: 2026-08-20.
+Last reviewed: 2026-08-24.
 
 This register tracks the open work from the TradingView alert and strategy
 review. It is decision-support only and never authorizes order execution.
 
 ## Closed In This Review
 
-- TradingView now uses eight logical source rows across sixteen managed active
-  slots. MNQ temporarily uses six explicit FAST v2.2 conditions; MES retains
-  one legacy consolidated FAST v2.1 alert; options context uses six explicit
-  alerts; Chris IA v4.1 uses three consolidated alerts.
+- TradingView now uses one verified consolidated FAST v2.2 v23.0 alert for
+  MNQ instead of six explicit alert slots. MES and the superseded futures
+  alerts are paused; the current three-alert operator set is documented in
+  `docs/tradingview-production-active-alerts.md`.
 - Local validators and operator reports now separate active alerts from logical
   event coverage:
   - Combined bundle: `total_production_active_alert_count=7` and
@@ -38,10 +38,10 @@ review. It is decision-support only and never authorizes order execution.
   Its panel explains the 5m signal, 15m confirmation, 60m trend, next trigger,
   missing checks, and next step. One consolidated webhook alert is active on
   each symbol; the two prior Chris alerts are paused.
-- FAST v2.2 compiled and is visible on MNQ/MES. The broken v3 chart instance
-  was removed. MNQ has six explicit v2.2 alerts and its prior consolidated
-  v2.1 alert is paused. MES keeps the legacy v2.1 consolidated alert until the
-  TradingView dialog exposes a verified v2.2 `Any alert() function call`.
+- FAST v2.2 v23.0 is compiled and updated on the MNQ chart. TradingView now
+  exposes `Any alert() function call`; `FAST_V2_2 MNQ CONSOLIDATED` is active
+  with the production webhook and the six explicit alerts are paused. MES
+  remains paused pending a separately verified reactivation decision.
 - QQQ LONG/SHORT and SPY LONG/SHORT are active at 15m; VIX Elevated/Normalized
   are active at 1D. The stable saved Pine v1 was used. A defective draft made
   during verification was permanently deleted before it was applied.
@@ -95,8 +95,8 @@ These cannot be fully closed on a closed-market day:
      IA directional entry codes have also occurred naturally.
 
 2. Confirm intraday futures alerts fire in real time.
-   - Active coverage: six FAST v2.2 conditions on `MNQ1!` `1m` and one legacy
-     consolidated FAST v2.1 alert on `MES1!` `1m`.
+   - Active coverage: one FAST v2.2 v23.0 consolidated condition on `MNQ1!`
+     `1m`; MES is paused.
    - Target: accepted futures events in the TradingView ledger, no quarantine,
      and immediate notify status of `sent`, `deduped`, or provider-level
      `not_sent` without ingest failure.

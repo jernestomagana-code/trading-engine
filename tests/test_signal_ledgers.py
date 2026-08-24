@@ -28,7 +28,7 @@ class SignalLedgerTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "RENEW_SOON")
         self.assertTrue(status["renewal_required"])
-        self.assertEqual(status["alerts"][0]["expires_on"], "2026-10-12")
+        self.assertEqual(status["alerts"][0]["expires_on"], "2026-10-23")
 
     def test_absolute_runtime_ledger_uses_neighbor_remote_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
