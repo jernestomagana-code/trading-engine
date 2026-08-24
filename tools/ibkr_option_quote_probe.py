@@ -14,6 +14,7 @@ bid/ask/greeks for a specific option contract.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 from datetime import datetime, timezone
@@ -377,6 +378,10 @@ def main() -> int:
 
     try:
         ib.connect(args.host, args.port, clientId=args.client_id, readonly=True, timeout=args.timeout)
+        # The connect timeout only bounds the socket handshake. Bound all
+        # subsequent IB requests too, otherwise a stalled TWS contract service
+        # can leave this recovery probe waiting indefinitely.
+        ib.RequestTimeout = max(1.0, float(args.timeout))
         contract, selection = resolve_option_contract(ib, args)
         qualified = ib.qualifyContracts(contract)
         if qualified:
@@ -415,6 +420,26 @@ def main() -> int:
             output.write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0 if best and best.get("data_quality") != "ERROR" else 1
+    except (TimeoutError, asyncio.TimeoutError):
+        result = {
+            "engine": "IBKR_OPTION_QUOTE_PROBE",
+            "generated_at": now_iso(),
+            "readonly": True,
+            "status": "TIMEOUT",
+            "blocker": "IBKR_CONTRACT_SERVICE_TIMEOUT",
+            "message": "TWS accepted the API session but did not resolve the contract within the configured timeout.",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+            "selection": selection,
+            "attempts": attempts,
+            "errors": errors[-20:],
+        }
+        if args.json_out:
+            output = Path(args.json_out).expanduser()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return 2
     finally:
         if ib.isConnected():
             ib.disconnect()

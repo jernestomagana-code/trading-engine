@@ -46,6 +46,8 @@ class IbkrOptionQuoteProbeTests(unittest.TestCase):
         }
 
         self.assertIn("readonly=True", source)
+        self.assertIn("ib.RequestTimeout = max(1.0, float(args.timeout))", source)
+        self.assertIn("IBKR_CONTRACT_SERVICE_TIMEOUT", source)
         self.assertIn("execution_authorized", source)
         self.assertIn("not_order_instruction", source)
         self.assertIn("--json-out", source)
