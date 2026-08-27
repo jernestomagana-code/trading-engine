@@ -1,9 +1,9 @@
 # TradingView Production Active Alerts
 
-Last reviewed: 2026-08-24.
+Last reviewed: 2026-08-27.
 
 > **Current operator configuration (verified 2026-08-24).** The live TradingView
-> cockpit uses four saved layouts and four Stock Ultimus managed alerts. This
+> cockpit uses four saved layouts and five Stock Ultimus managed alerts. This
 > section is the
 > source of truth for the current manual setup; the historical implementation
 > notes below are retained for compatibility and audit context.
@@ -14,12 +14,16 @@ Last reviewed: 2026-08-24.
 | --- | --- | --- | --- | --- |
 | 1 | `FAST_V2_2 MNQ CONSOLIDATED` | `MNQ1!` | `1m` | Dynamic entry, prepare, invalidation, levels, and heartbeat payloads |
 | 2 | `FAST_V2_2 MES CONSOLIDATED` | `MES1!` | `1m` | Dynamic entry, prepare, invalidation, levels, and heartbeat payloads |
-| 3 | `Stock Ultimus VIX Risk Elevated` | `VIX` | `1D` | Volatility-risk filter |
-| 4 | `Stock Ultimus Underlying Tech Confirm Long` | `QQQ` | `15m` | Technology confirmation |
+| 3 | `OPTIONS QQQ CONSOLIDATED` | `QQQ` | `15m` | Dynamic long/short context and heartbeat |
+| 4 | `OPTIONS SPY CONSOLIDATED` | `SPY` | `15m` | Dynamic long/short context and heartbeat |
+| 5 | `OPTIONS VIX CONSOLIDATED` | `VIX` | `1D` | Dynamic elevated/normalized volatility context |
 
 Paused by design: the six former FAST v2.2 explicit MNQ alerts, the accidental
-unnamed consolidated duplicate, SPY, and generic legacy alerts. The three
+unnamed consolidated duplicate, the explicit QQQ/VIX alerts, Chris IA, and generic legacy alerts. The three
 RSI alerts visible in the account are unrelated operator alerts and were not modified.
+
+Chris IA is retired as a supplemental setup layer. Its historical payloads remain
+available for audit, but its absence or quarantine no longer blocks readiness.
 
 ## Saved layouts
 

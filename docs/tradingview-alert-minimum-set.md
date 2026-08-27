@@ -3,10 +3,10 @@
 This is the production futures confirmation layer for Stock Ultimus. These
 alerts provide technical evidence only; they do not authorize orders.
 
-> **Operator note (2026-08-24):** The current four-window TradingView cockpit
+> **Operator note (2026-08-27):** The current four-window TradingView cockpit
 > is documented in `docs/tradingview-production-active-alerts.md`. Its active
 > uses one FAST v2.2 v23.0 consolidated alert on both `MNQ1!` and `MES1!` 1m,
-> one QQQ confirmation alert, and one VIX risk alert. The six former explicit MNQ
+> one consolidated alert each for QQQ, SPY, and VIX. The six former explicit MNQ
 > alerts and the unnamed consolidated duplicate are paused.
 
 ## Real-Time Delivery Model

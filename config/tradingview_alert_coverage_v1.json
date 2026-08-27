@@ -38,6 +38,7 @@
     "minimum_health_alert_count": 0,
     "core_freshness_minutes": 2,
     "snapshot_freshness_minutes": 10,
+    "quarantine_lookback_minutes": 180,
     "missing_core_alert_behavior": "WAIT_TECHNICAL",
     "missing_snapshot_behavior": "TV_COVERAGE_DEGRADED",
     "approved_symbols": ["MNQ1!", "MES1!"],

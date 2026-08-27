@@ -204,8 +204,8 @@ def build_market_open_checklist(
     steps = [
         {
             "name": "tradingview_alerts_visible",
-            "command": "Open TradingView alerts panel and confirm 7 consolidated production alerts are active.",
-            "expected": "2 MNQ/MES futures alerts, 3 QQQ/SPY/VIX options-underlying alerts, and 2 USTEC.F/US500F Chris IA alerts; old per-condition alerts remain paused.",
+            "command": "Open TradingView alerts panel and confirm 5 consolidated production alerts are active.",
+            "expected": "2 MNQ/MES futures alerts and 3 QQQ/SPY/VIX options-underlying alerts; old per-condition and Chris IA alerts remain paused.",
             "status": "PASS" if readiness["tradingview_bundle"]["coverage_valid"] else "OPEN",
         },
         {

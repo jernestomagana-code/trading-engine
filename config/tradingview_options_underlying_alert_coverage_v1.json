@@ -11,28 +11,28 @@
       "symbol": "QQQ",
       "timeframe": "15",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "Underlying Tech Confirm Long + Underlying Tech Confirm Short",
-      "expires_on": "2026-10-19",
-      "renewal_review_on": "2026-10-12",
-      "active_alert_slots": 2
+      "tradingview_condition": "Any alert() function call",
+      "expires_on": "2026-10-25",
+      "renewal_review_on": "2026-10-18",
+      "active_alert_slots": 1
     },
     {
       "symbol": "SPY",
       "timeframe": "15",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "Underlying Tech Confirm Long + Underlying Tech Confirm Short",
-      "expires_on": "2026-10-19",
-      "renewal_review_on": "2026-10-12",
-      "active_alert_slots": 2
+      "tradingview_condition": "Any alert() function call",
+      "expires_on": "2026-10-25",
+      "renewal_review_on": "2026-10-18",
+      "active_alert_slots": 1
     },
     {
       "symbol": "VIX",
       "timeframe": "D",
       "pine_script": "tradingview/stock_ultimus_options_underlying_alerts_v1.pine",
-      "tradingview_condition": "VIX Risk Elevated + VIX Risk Normalized",
-      "expires_on": "2026-10-19",
-      "renewal_review_on": "2026-10-12",
-      "active_alert_slots": 2
+      "tradingview_condition": "Any alert() function call",
+      "expires_on": "2026-10-25",
+      "renewal_review_on": "2026-10-18",
+      "active_alert_slots": 1
     }
   ],
   "global_policy": {
@@ -44,6 +44,7 @@
     "minimum_health_alert_count": 0,
     "core_freshness_minutes": 15,
     "snapshot_freshness_minutes": 45,
+    "quarantine_lookback_minutes": 180,
     "missing_core_alert_behavior": "WAIT_UNDERLYING_CONFIRMATION",
     "missing_snapshot_behavior": "OPTIONS_UNDERLYING_COVERAGE_DEGRADED",
     "approved_symbols": ["QQQ", "SPY", "VIX"],

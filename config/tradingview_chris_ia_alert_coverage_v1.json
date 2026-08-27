@@ -1,33 +1,12 @@
 {
   "coverage_version": "tradingview_alert_coverage_v1",
   "payload_contract_version": "tradingview_signal_payload_v2",
-  "status": "ACTIVE_MANUAL_SETUP",
+  "status": "RETIRED_SUPPLEMENTAL_SETUP",
   "endpoint": "/technical_snapshot",
   "webhook_url_template": "https://trading-engine-p097.onrender.com/technical_snapshot",
   "timeframes": ["15"],
   "symbols": ["USTEC.F", "US500F"],
-  "production_active_alerts": [
-    {
-      "symbol": "USTEC.F",
-      "timeframe": "15",
-      "pine_script": "pine/chris_ia_reversal_engine_pro_v4_1_tv.pine",
-      "tradingview_condition": "Chris IA REV PRO v4.1 / Any alert() function call",
-      "pending_upgrade": "NONE",
-      "expires_on": "2026-10-19",
-      "renewal_review_on": "2026-10-12",
-      "active_alert_slots": 1
-    },
-    {
-      "symbol": "US500F",
-      "timeframe": "15",
-      "pine_script": "pine/chris_ia_reversal_engine_pro_v4_1_tv.pine",
-      "tradingview_condition": "Chris IA REV PRO v4.1 / Any alert() function call",
-      "pending_upgrade": "NONE",
-      "expires_on": "2026-10-19",
-      "renewal_review_on": "2026-10-12",
-      "active_alert_slots": 1
-    }
-  ],
+  "production_active_alerts": [],
   "global_policy": {
     "manual_review_required": true,
     "execution_authorized": false,
@@ -37,6 +16,7 @@
     "minimum_health_alert_count": 0,
     "core_freshness_minutes": 15,
     "snapshot_freshness_minutes": 45,
+    "quarantine_lookback_minutes": 180,
     "missing_core_alert_behavior": "WAIT_CHRIS_IA_ENTRY_CONFIRMATION",
     "missing_snapshot_behavior": "CHRIS_IA_COVERAGE_DEGRADED",
     "approved_symbols": ["USTEC.F", "US500F"],

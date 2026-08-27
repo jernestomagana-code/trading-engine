@@ -222,17 +222,17 @@ Este panel permanece cerrado cuando no hay una señal operable. La consola separ
 
 - **Alertas Operables:** configuraciones con suficiente calidad para revisión humana.
 - **Radar CANSLIM:** presenta el embudo completo del día: universo analizado, preselecciones con score disponible ≥70, cobertura de componentes C/A/L/M, cuántas fueron evaluadas por el motor, cuáles tuvieron contrato o llegaron a la compuerta final y cuáles —si existe alguna— quedaron realmente `ENTRY_READY`. Si faltan L o M, el score se rotula como parcial. El total evaluado usa la unión de ambas rutas para mantener un embudo coherente aunque una señal final venga de otra fuente operativa. Una preselección CANSLIM no equivale a una recomendación de compra.
-- **Futuros Intradía:** señales nativas de MNQ/MES y señales Chris IA de USTEC.F/US500F recibidas desde TradingView. El bloque conserva la actividad recibida durante el día, incluso si una señal venció, fue degradada a vigilancia o quedó en cuarentena. Allí verás precio de disparo, stop, targets, resultado final, si se envió o no al celular y el motivo.
+- **Futuros Intradía:** señales nativas de MNQ/MES recibidas desde TradingView. El bloque conserva la actividad recibida durante el día, incluso si una señal venció, fue degradada a vigilancia o quedó en cuarentena. Allí verás precio de disparo, stop, targets, resultado final, si se envió o no al celular y el motivo. Chris IA queda como evidencia histórica y ya no condiciona la disponibilidad operativa.
 - **Diagnóstico oculto:** casos con datos insuficientes, espera, bloqueo o calidad baja.
 - **Ya revisadas/en seguimiento/cerradas:** historial operativo reciente.
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
-La configuración productiva de TradingView contiene **7 alertas consolidadas**:
+La configuración productiva de TradingView contiene **5 alertas consolidadas**:
 `MNQ1!` y `MES1!` en 1 minuto con confirmación técnica cerrada de 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;
-y Chris IA para `USTEC.F` y `US500F` en 15 minutos. Todas usan
+Todas usan
 `Any alert() function call` y publican en `/technical_snapshot`. Tus alertas
-personales pueden coexistir, pero no cuentan dentro de esas siete. El inventario
+personales pueden coexistir, pero no cuentan dentro de esas cinco. El inventario
 detallado y su procedimiento de validación están en
 `docs/tradingview-production-active-alerts.md`.
 

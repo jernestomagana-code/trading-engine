@@ -3,7 +3,7 @@
 This runbook is for evidence collection and manual review only. It never
 authorizes automated execution or strategy-parameter changes.
 
-## Current TradingView cockpit (verified 2026-08-22)
+## Current TradingView cockpit (verified 2026-08-27)
 
 Use the four saved layouts in TradingView Desktop:
 
@@ -14,10 +14,10 @@ Use the four saved layouts in TradingView Desktop:
 | `03 QQQ Opciones 15m` | `QQQ` | `15m` | `Stock Ultimus Options Underlying Alerts v1` |
 | `04 VIX Riesgo Diario` | `VIX` | `1D` | `Stock Ultimus Options Underlying Alerts v1` |
 
-The current active alert set is nine alerts: one Chris v4.4 USTEC prepare
-alert, one VIX risk alert, one QQQ confirmation alert, and the six explicit
-FAST v2.2 MNQ alerts (long/short prepare, entry, and invalidation). Duplicate,
-legacy, RSI, MES, SPY, and generic alerts remain paused. TradingView alerts
+The current managed set is five consolidated alerts: FAST v2.2 for `MNQ1!` and
+`MES1!`, plus Options Underlying for `QQQ`, `SPY`, and `VIX`. Duplicate,
+explicit legacy, and Chris IA alerts remain paused. The operator's RSI alerts
+are unrelated and remain untouched. TradingView alerts
 are evidence for manual review and never authorize an order.
 
 ## Pre-open block

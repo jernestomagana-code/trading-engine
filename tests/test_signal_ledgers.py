@@ -167,7 +167,7 @@ class SignalLedgerTests(unittest.TestCase):
             events = tradingview_signal_ledger.load_signal_events(path)
 
         self.assertTrue(validation["valid"])
-        self.assertEqual(validation["production_active_alert_count"], 2)
+        self.assertEqual(validation["production_active_alert_count"], 0)
         self.assertEqual(validation["required_logical_event_count"], 4)
         self.assertTrue(payload_validation["valid"])
         self.assertEqual(payload_validation["base_required_fields"], ["ticker", "timeframe", "strategy_context", "price"])
@@ -336,6 +336,37 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertIn("NO_REAL_TRADINGVIEW_EVENT", health["blockers"])
         self.assertEqual(health["visible_health"]["tv"], "TV_MISSING")
 
+    def test_historical_quarantine_does_not_degrade_current_health_forever(self):
+        old_payload = tradingview_operational_health.concrete_payload_for_event_code(
+            "MNQ_SESSION_SNAPSHOT_5M"
+        )
+        old_payload["event_code"] = "RETIRED_UNKNOWN_EVENT"
+        old_event = tradingview_signal_ledger.normalize_signal_event(
+            old_payload,
+            raw_text=json.dumps(old_payload),
+            endpoint="/technical_snapshot",
+            received_at="2026-07-05T10:00:00+00:00",
+        )
+        current_events = []
+        for code in ("MNQ_SESSION_SNAPSHOT_5M", "MES_SESSION_SNAPSHOT_5M"):
+            payload = tradingview_operational_health.concrete_payload_for_event_code(code)
+            current_events.append(tradingview_signal_ledger.normalize_signal_event(
+                payload,
+                raw_text=json.dumps(payload),
+                endpoint="/technical_snapshot",
+                received_at="2026-07-05T14:00:00+00:00",
+            ))
+
+        health = tradingview_operational_health.build_alert_health(
+            Path("runtime"),
+            generated_at="2026-07-05T14:00:00+00:00",
+            events_override=[old_event, *current_events],
+        )
+
+        self.assertEqual(health["quarantine_event_count"], 0)
+        self.assertEqual(health["historical_quarantine_event_count"], 1)
+        self.assertNotIn("UNKNOWN_OR_QUARANTINED_TRADINGVIEW_PAYLOADS", health["blockers"])
+
     def test_options_underlying_e2e_local_replay_uses_options_coverage_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             coverage_path = ROOT / "config" / "tradingview_options_underlying_alert_coverage_v1.json"
@@ -406,7 +437,7 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(bundle["readiness_coverage_count"], 2)
         self.assertEqual(bundle["supplemental_coverage_count"], 1)
         self.assertTrue(bundle["supplemental_real_e2e_confirmed"])
-        self.assertEqual(bundle["total_production_active_alert_count"], 7)
+        self.assertEqual(bundle["total_production_active_alert_count"], 5)
         self.assertEqual(bundle["total_required_logical_event_count"], 20)
         self.assertEqual(bundle["total_expected_alert_count"], 24)
         self.assertEqual(bundle["total_required_alert_count"], 20)

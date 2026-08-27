@@ -314,7 +314,14 @@ def build_alert_health(
             and _symbol_key(event.get("ticker")) not in allowed_symbols
         }
     )
-    unknown_or_quarantined = _unknown_or_quarantined_events(events, coverage)
+    all_unknown_or_quarantined = _unknown_or_quarantined_events(events, coverage)
+    policy = coverage.get("global_policy") if isinstance(coverage.get("global_policy"), dict) else {}
+    quarantine_lookback_minutes = max(1, int(policy.get("quarantine_lookback_minutes") or 180))
+    unknown_or_quarantined = [
+        event for event in all_unknown_or_quarantined
+        if (_age_minutes(event.get("received_at"), generated_at=generated_dt) is None)
+        or (_age_minutes(event.get("received_at"), generated_at=generated_dt) <= quarantine_lookback_minutes)
+    ]
     blocker_rows = rows if require_required_real_events else health_rows
     blockers = sorted({row["blocker"] for row in blocker_rows if row.get("blocker")})
     if not events:
@@ -348,6 +355,8 @@ def build_alert_health(
         "received_health_event_count": sum(1 for row in health_rows if row["latest_event_id"]),
         "status_counts": dict(sorted(status_counts.items())),
         "quarantine_event_count": len(unknown_or_quarantined),
+        "historical_quarantine_event_count": len(all_unknown_or_quarantined),
+        "quarantine_lookback_minutes": quarantine_lookback_minutes,
         "unknown_event_code_count": sum(
             1 for row in unknown_or_quarantined if "UNKNOWN_EVENT_CODE" in row.get("quarantine_reasons", [])
         ),
@@ -706,13 +715,16 @@ def build_alert_bundle_health(
         if item.get("missing_health_event_codes")
     }
     quarantine_count = sum(int(item.get("quarantine_event_count") or 0) for item in reports)
+    readiness_quarantine_count = sum(
+        int(item.get("quarantine_event_count") or 0) for item in readiness_reports
+    )
     blockers = []
     for item in reports:
         blockers.extend(
             "{name}:{blocker}".format(name=item["name"], blocker=blocker)
             for blocker in item.get("blockers") or []
         )
-    status = "REAL_E2E_CONFIRMED" if all_valid and real_e2e_confirmed and quarantine_count == 0 else "WAITING_FOR_REAL_TRADINGVIEW_EVENTS"
+    status = "REAL_E2E_CONFIRMED" if all_valid and real_e2e_confirmed and readiness_quarantine_count == 0 else "WAITING_FOR_REAL_TRADINGVIEW_EVENTS"
     return {
         "bundle_health_version": ALERT_BUNDLE_HEALTH_VERSION,
         "generated_at": generated_at,
@@ -733,6 +745,7 @@ def build_alert_bundle_health(
         "total_received_required_event_count": sum(int(item.get("received_required_event_count") or 0) for item in reports),
         "total_received_health_event_count": sum(int(item.get("received_health_event_count") or 0) for item in reports),
         "total_quarantine_event_count": quarantine_count,
+        "readiness_quarantine_event_count": readiness_quarantine_count,
         "missing_required_event_codes_by_coverage": missing_required,
         "missing_health_event_codes_by_coverage": missing_health,
         "blockers": sorted(set(blockers)),

@@ -14,6 +14,30 @@ OPERATOR_GUIDE = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 
 
 class ConsoleServiceAndUxTests(unittest.TestCase):
+    def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
+        rsp = {
+            "blockers": ["RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES"],
+            "candidate_count": 0,
+            "ibkr": {"chain_has_rsp": True, "chain_is_fresh": True},
+            "strategy_recommendation": {"status": "WAIT_NO_ELIGIBLE_STRUCTURE"},
+        }
+
+        self.assertTrue(console.rsp_current_wait_without_opportunity(rsp))
+        pending = console.build_unified_pending_items({}, {"positions": []}, {"alerts": []}, rsp)
+        self.assertFalse(any(item.get("area") == "RSP" for item in pending))
+
+    def test_rsp_missing_fresh_chain_remains_a_pending_item(self):
+        rsp = {
+            "blockers": ["RSP_FRESH_CHAIN_MISSING"],
+            "candidate_count": 0,
+            "ibkr": {"chain_has_rsp": False, "chain_is_fresh": False},
+            "strategy_recommendation": {"status": "WAIT_DATA"},
+        }
+
+        self.assertFalse(console.rsp_current_wait_without_opportunity(rsp))
+        pending = console.build_unified_pending_items({}, {"positions": []}, {"alerts": []}, rsp)
+        self.assertTrue(any(item.get("title") == "Coberturas RSP necesita actualización" for item in pending))
+
     def test_launch_agent_runs_from_application_support(self):
         payload = installer.plist_payload(8765)
         command = " ".join(payload["ProgramArguments"])

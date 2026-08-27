@@ -2641,6 +2641,24 @@ def friendly_age(value: Any) -> str:
     return label
 
 
+def rsp_current_wait_without_opportunity(rsp_payload: dict[str, Any]) -> bool:
+    """A fresh, evaluated RSP chain with no eligible trade is healthy, not stale."""
+    ibkr = rsp_payload.get("ibkr") if isinstance(rsp_payload.get("ibkr"), dict) else {}
+    recommendation = (
+        rsp_payload.get("strategy_recommendation")
+        if isinstance(rsp_payload.get("strategy_recommendation"), dict)
+        else {}
+    )
+    blockers = set(rsp_payload.get("blockers") or [])
+    non_stale_wait_blockers = {"RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES"}
+    return bool(
+        ibkr.get("chain_has_rsp")
+        and ibkr.get("chain_is_fresh") is not False
+        and str(recommendation.get("status") or "").upper() == "WAIT_NO_ELIGIBLE_STRUCTURE"
+        and blockers.issubset(non_stale_wait_blockers)
+    )
+
+
 def build_unified_pending_items(
     operator_payload: dict[str, Any],
     position_payload: dict[str, Any],
@@ -2692,7 +2710,8 @@ def build_unified_pending_items(
 
     rsp_ibkr = rsp_payload.get("ibkr") if isinstance(rsp_payload.get("ibkr"), dict) else {}
     rsp_blockers = rsp_payload.get("blockers") if isinstance(rsp_payload.get("blockers"), list) else []
-    if rsp_blockers or not rsp_ibkr.get("chain_has_rsp"):
+    rsp_evaluated_wait = rsp_current_wait_without_opportunity(rsp_payload)
+    if (rsp_blockers or not rsp_ibkr.get("chain_has_rsp")) and not rsp_evaluated_wait:
         rsp_title = "Coberturas RSP necesita actualización"
         if "OPEN_RSP_OPTION_REQUIRES_MANAGEMENT" in rsp_blockers:
             rsp_title = "Gestionar covered call RSP abierto"
@@ -2827,7 +2846,13 @@ def render_command_center(
         watch=html_escape(risk_counts.get("watch") or 0),
         positions=html_escape(position_payload.get("positions_found") or 0),
         reviews=html_escape(position_payload.get("positions_requiring_review") or 0),
-        rsp_status=html_escape("Listo" if not rsp_payload.get("blockers") and (rsp_payload.get("ibkr") or {}).get("chain_has_rsp") else "Revisar"),
+        rsp_status=html_escape(
+            "Evaluado: esperar"
+            if rsp_current_wait_without_opportunity(rsp_payload)
+            else "Listo"
+            if not rsp_payload.get("blockers") and (rsp_payload.get("ibkr") or {}).get("chain_has_rsp")
+            else "Revisar"
+        ),
         rsp_candidates=html_escape(rsp_payload.get("candidate_count") or 0),
         market=html_escape("Abierto" if is_us_market_session_now() else "Cerrado"),
         operator_state=html_escape(friendly_operator_state((operator_payload.get("data") or {}).get("status"))),
