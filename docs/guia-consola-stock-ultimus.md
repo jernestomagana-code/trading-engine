@@ -401,6 +401,21 @@ En **Configuración → Contexto técnico complementario** puedes seleccionar cu
 
 ## 10. Oportunidades y Coberturas RSP
 
+La vista comienza con el **Centro de oportunidades**, una cola común para
+CANSLIM, futuros y RSP. No sustituye los paneles detallados: los resume y los
+ordena por posibilidad real de acción. Las tarjetas utilizan cuatro estados:
+
+- **Entrada lista:** la oportunidad llegó a la compuerta final y merece revisión inmediata de precio y riesgo.
+- **Preparándose:** existe una preselección o señal, pero todavía falta confirmación, contrato o cierre.
+- **Esperar:** el motor evaluó la información y concluyó que no corresponde entrar ahora.
+- **Bloqueada:** faltan datos esenciales, capacidad o existe una restricción de riesgo.
+
+Los filtros **Todas**, **CANSLIM**, **Futuros** y **RSP** sólo cambian lo que se
+muestra; no modifican el motor ni las alertas. Cada tarjeta presenta la misma
+secuencia: activo, estado, calidad, recomendación principal, gatillo, bloqueo,
+vigencia y enlace al detalle. Una tarjeta verde significa **revisar ahora**, no
+ejecutar una orden.
+
 RSP forma parte de **Oportunidades**, junto con futuros y demás alertas de entrada. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.
 
 La estrategia RSP tiene una asignación de cuenta independiente: **RSP → retiro**. La cuenta activa general puede seguir siendo otra. Tanto **Apertura diaria** como **Actualizar sólo RSP** consultan posiciones, capacidad, cadena y margen de RSP usando `retiro`, sin cambiar la selección general del operador.

@@ -14,6 +14,63 @@ OPERATOR_GUIDE = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 
 
 class ConsoleServiceAndUxTests(unittest.TestCase):
+    def test_unified_opportunity_center_prioritizes_ready_before_forming_and_waiting(self):
+        operator = {
+            "ok": True,
+            "data": {
+                "active_alerts": [
+                    {
+                        "ticker": "MNQ1!",
+                        "strategy": "INTRADAY_INDEX_FUTURES",
+                        "state": "ENTRY_READY",
+                        "severity": "ACTION",
+                        "entry_price": 20100,
+                        "confirmation_quality_score": 88,
+                    },
+                    {
+                        "ticker": "NVDA",
+                        "state": "WAIT_TECHNICAL",
+                        "severity": "WATCH",
+                        "main_blocker": "WAIT_TECHNICAL",
+                    },
+                ]
+            },
+        }
+        candidates = {
+            "generated_at": "2026-08-29T12:00:00+00:00",
+            "candidates": [
+                {"ticker": "NVDA", "canslim_passes": True, "canslim_score": 86},
+                {"ticker": "MSFT", "canslim_passes": False, "canslim_score": 40},
+            ],
+        }
+        rsp = {
+            "strategy_recommendation": {"status": "WAIT_NO_ELIGIBLE_STRUCTURE"},
+            "blockers": ["RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES"],
+            "ibkr": {"chain_has_rsp": True, "chain_is_fresh": True},
+        }
+
+        items = console.build_unified_opportunity_items(operator, rsp, candidates)
+
+        self.assertEqual(items[0]["type"], "futures")
+        self.assertEqual(items[0]["state"], "ready")
+        self.assertEqual({item["type"] for item in items}, {"futures", "canslim", "rsp"})
+        self.assertEqual(next(item for item in items if item["type"] == "rsp")["state"], "waiting")
+
+    def test_unified_opportunity_center_exposes_filters_and_common_decision_fields(self):
+        operator = {"ok": True, "data": {"active_alerts": []}}
+        rsp = {"strategy_recommendation": {"status": "WAIT_DATA"}, "blockers": ["RSP_FRESH_CHAIN_MISSING"]}
+
+        html = console.render_unified_opportunity_center(operator, rsp)
+
+        self.assertIn('id="opportunity-center"', html)
+        self.assertIn('data-opportunity-filter="all"', html)
+        self.assertIn('data-opportunity-filter="canslim"', html)
+        self.assertIn('data-opportunity-filter="futures"', html)
+        self.assertIn('data-opportunity-filter="rsp"', html)
+        self.assertIn("Entradas listas", html)
+        self.assertIn("Preparándose", html)
+        self.assertIn("Falta / bloqueo", html)
+
     def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
         rsp = {
             "blockers": ["RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES"],
