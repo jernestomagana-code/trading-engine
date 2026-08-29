@@ -243,6 +243,20 @@ La apertura diaria hace dos pasadas: primero identifica los candidatos por C/A; 
 
 Que una alerta aparezca como operable significa **“revisar ahora”**, no “ejecutar ahora”.
 
+### Embudo operativo de futuros
+
+La sección de futuros ordena MNQ y MES como **Detectada → Aceptada → Confirmada → Entrada lista**. Las señales que no avanzan quedan separadas como **Vigilancia**, **Tardía**, **Bloqueada** o **Descartada por datos**. Los gatillos nativos `ORB_BREAKOUT`, `VWAP_RECLAIM` y `VWAP_REJECT` cuentan como entradas detectadas aunque el texto técnico no diga literalmente `ENTRY`.
+
+La recomendación prioritaria muestra:
+
+- precio de disparo y entrada máxima cuando la estrategia la proporciona;
+- stop, target 1, target 2 y relación riesgo/beneficio;
+- confirmaciones a favor, conflictos y bloqueo dominante;
+- demora TradingView→servidor y señal→celular cuando existen timestamps confiables;
+- estado del envío móvil.
+
+Si **Entrada máxima** dice **No calculada; no perseguir precio**, la señal sólo debe revisarse cerca del disparo original. No se inventa una tolerancia. Una confirmación técnica aprobada todavía debe superar riesgo, cartera y vigencia antes de aparecer como **Entrada lista**.
+
 La configuración productiva de TradingView contiene **5 alertas consolidadas**:
 `MNQ1!` y `MES1!` en 1 minuto con confirmación técnica cerrada de 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;
 Todas usan

@@ -145,7 +145,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("1 · Universo", source)
         self.assertIn("5 · Entrada lista", source)
         self.assertIn("la lista se ordena por cercanía a una decisión", source)
-        self.assertIn("Actividad de futuros recibida hoy", source)
+        self.assertIn("Historial operativo de futuros", source)
         self.assertIn('<details id="alertas" class="panel operator-workspace secondary-workspace" open>', source)
         risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
         positions_index = source.index('<div id="posiciones">{active_positions}</div>')
@@ -203,10 +203,44 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
 
         html = console.render_intraday_futures_alerts([], operator)
 
-        self.assertIn("Celular: no enviado; no alcanzó ENTRY_READY", html)
-        self.assertIn("Actividad de futuros recibida hoy (1)", html)
+        self.assertIn("Entrada máxima", html)
+        self.assertIn("No calculada; no perseguir precio", html)
+        self.assertIn("Historial operativo de futuros", html)
         self.assertIn("Última señal en cuarentena", html)
         self.assertIn("session_state", html)
+
+    def test_futures_funnel_prioritizes_ready_and_explains_latency(self):
+        daily = {"recent_events": [
+            {"ticker": "MES1!", "event": "ENTRY", "accepted": True, "signal_actionability": "WATCH_ONLY", "confirmation_gate_status": "INSUFFICIENT", "price": 5000},
+            {
+                "ticker": "MNQ1!", "event": "ENTRY", "accepted": True, "final_state": "ENTRY_READY",
+                "entry_price": 20000, "stop_price": 19980, "tp1_price": 20020, "tp2_price": 20040,
+                "confirmation_quality_score": 80,
+                "mobile_notification": {"pushover_sent": True, "signal_to_provider_ack_ms": 1250},
+            },
+        ]}
+
+        rows = console.build_futures_operational_rows([], daily)
+
+        self.assertEqual(rows[0]["ticker"], "MNQ1!")
+        self.assertEqual(rows[0]["stage"], "Entrada lista")
+        self.assertEqual(rows[0]["latency"]["label"], "1.2 s señal→celular")
+        self.assertAlmostEqual(rows[0]["rr"], 1.0)
+        self.assertEqual(rows[1]["stage"], "Vigilancia")
+
+    def test_futures_latency_marks_stale_mobile_signal(self):
+        event = {"mobile_notification": {"reason": "STALE_INTRADAY_ENTRY_SUPPRESSED", "signal_age_seconds_at_push": 130}}
+
+        latency = console.futures_latency_summary(event)
+        stage = console.futures_operational_stage({"event": "ENTRY", **event})
+
+        self.assertTrue(latency["late"])
+        self.assertEqual(stage[1], "Señal tardía")
+
+    def test_native_fast_triggers_count_as_futures_entries(self):
+        for event in ("ORB_BREAKOUT", "VWAP_RECLAIM", "VWAP_REJECT"):
+            self.assertEqual(console.remote_futures_event_kind({"event": event}), "ENTRY")
+        self.assertEqual(console.remote_futures_event_kind({"event_code": "MNQ_ORB_BREAKOUT_SHORT_5M"}), "ENTRY")
 
     def test_canslim_context_is_visible_in_final_alerts(self):
         operator = {"ok": True, "data": {"active_alerts": [], "diagnostic_alerts": [{"ticker": "NVDA"}]}}
@@ -270,7 +304,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn(".position-structure-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr));", source)
         self.assertIn("@media (max-width:620px)", source)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", source)
-        self.assertIn(".position-structure-grid,.position-profile-grid,.canslim-facts {{ grid-template-columns:minmax(0,1fr); }}", source)
+        self.assertIn(".position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
         self.assertIn(".position-comparison-scroll {{ overflow-x:auto; max-width:100%;", source)
         self.assertEqual(console.friendly_operator_state("REVIEW_RISK"), "Revisar riesgo")
         self.assertEqual(console.friendly_operator_state("STALE"), "Desactualizados")

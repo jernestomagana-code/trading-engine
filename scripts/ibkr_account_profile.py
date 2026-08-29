@@ -1886,7 +1886,9 @@ def is_remote_futures_signal(event: dict[str, Any]) -> bool:
 def remote_futures_event_kind(event: dict[str, Any]) -> str:
     event_name = str(event.get("event") or "").upper()
     event_code = str(event.get("event_code") or "").upper()
-    if event_name == "ENTRY" or "_ENTRY_" in event_code:
+    entry_names = {"ENTRY", "ORB_BREAKOUT", "VWAP_RECLAIM", "VWAP_REJECT", "BREAK_BOUNCE_LONG", "BREAK_BOUNCE_SHORT"}
+    entry_code_markers = ("_ENTRY_", "ORB_BREAKOUT_LONG", "ORB_BREAKOUT_SHORT", "VWAP_RECLAIM_LONG", "VWAP_REJECT_SHORT")
+    if event_name in entry_names or any(marker in event_code for marker in entry_code_markers):
         return "ENTRY"
     if event_name in {"RISK", "EXIT", "INVALIDATION"} or any(marker in event_code for marker in ["_RISK_", "_EXIT_", "INVALID"]):
         return "RISK"
@@ -1977,13 +1979,15 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         score = event.get("score") if event.get("score") is not None else raw.get("score")
         signal_actionability = processed.get("signal_actionability") or event.get("signal_actionability") or raw.get("signal_actionability")
         watch_only = str(signal_actionability or "").upper() == "WATCH_ONLY"
+        processed_final_state = str(processed.get("final_state") or processed.get("state") or "").upper()
         current_alerts.append({
             "alert_id": event_id,
             "event_id": event_id,
             "ticker": event.get("ticker") or raw.get("ticker") or "FUTURES",
             "strategy": strategy,
             "severity": "RISK" if kind == "RISK" else "WATCH" if watch_only else "ACTION",
-            "state": "RISK_BLOCKED" if kind == "RISK" else "MANUAL_REVIEW",
+            "state": "RISK_BLOCKED" if kind == "RISK" else "ENTRY_READY" if processed_final_state == "ENTRY_READY" else "MANUAL_REVIEW",
+            "final_state": processed_final_state or None,
             "main_blocker": "FUTURES_RISK_EVENT" if kind == "RISK" else processed.get("main_blocker") or raw.get("main_blocker") or "RISK_CONTEXT_PENDING",
             "setup_validity_pct": score,
             "event": kind,
@@ -2005,6 +2009,10 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "confirmation_conflicts": processed.get("confirmation_conflicts") or event.get("confirmation_conflicts") or raw.get("confirmation_conflicts") or [],
             "signal_trigger_explanation": processed.get("signal_trigger_explanation") or event.get("signal_trigger_explanation") or raw.get("signal_trigger_explanation"),
             "signal_quality_explanation": processed.get("signal_quality_explanation") or event.get("signal_quality_explanation") or raw.get("signal_quality_explanation"),
+            "server_receive_latency_ms": event.get("server_receive_latency_ms"),
+            "signal_bar_close_time_ms": event.get("signal_bar_close_time_ms") or raw.get("signal_bar_close_time_ms"),
+            "alert_emitted_time_ms": event.get("alert_emitted_time_ms") or raw.get("alert_emitted_time_ms"),
+            "mobile_notification": processed.get("mobile_notification") if isinstance(processed.get("mobile_notification"), dict) else event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {},
             "not_order_instruction": True,
         })
         known_ids.add(event_id)
@@ -2016,6 +2024,22 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
     ), None)
     mismatch = bool(today_events and processed_total == 0)
     latest_at = max((remote_signal_received_at(event) for event in today_events if remote_signal_received_at(event)), default=None)
+    processed_confirmation_passed = sum(
+        1 for event in daily_events
+        if isinstance(event, dict) and str(event.get("confirmation_gate_status") or "").upper() == "PASSED"
+    )
+    processed_watch_only = sum(
+        1 for event in daily_events
+        if isinstance(event, dict) and str(event.get("signal_actionability") or "").upper() == "WATCH_ONLY"
+    )
+    processed_entry_ready = sum(
+        1 for event in daily_events
+        if isinstance(event, dict) and str(event.get("final_state") or event.get("state") or "").upper() == "ENTRY_READY"
+    )
+    processed_risk_blocked = sum(
+        1 for event in daily_events
+        if isinstance(event, dict) and str(event.get("final_state") or event.get("state") or "").upper() == "RISK_BLOCKED"
+    )
     summary = {
         "session_date": session_date,
         "received": len(today_received_events),
@@ -2029,6 +2053,10 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
         "native": native_count,
         "chris_ia": chris_count,
         "processed_total": processed_total,
+        "confirmation_passed": processed_confirmation_passed,
+        "watch_only": processed_watch_only,
+        "entry_ready": processed_entry_ready,
+        "risk_blocked": processed_risk_blocked,
         "pipeline_mismatch": mismatch,
         "latest_at": latest_at.isoformat() if latest_at else "",
         "recent_events": [
@@ -2041,6 +2069,22 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
                 "accepted": event.get("accepted_for_engine") is not False,
                 "quarantine_reasons": event.get("quarantine_reasons") or [],
                 "missing_fields": event.get("missing_context_fields") or [],
+                "direction": event.get("direction") or event.get("breakout_direction"),
+                "confirmation_gate_status": event.get("confirmation_gate_status"),
+                "signal_actionability": event.get("signal_actionability"),
+                "confirmation_quality_score": event.get("confirmation_quality_score"),
+                "confirmation_reasons": event.get("confirmation_reasons") or [],
+                "confirmation_conflicts": event.get("confirmation_conflicts") or [],
+                "main_blocker": event.get("main_blocker"),
+                "entry_price": event.get("entry_price") if event.get("entry_price") is not None else event.get("price"),
+                "stop_price": event.get("stop_price") or event.get("logical_stop"),
+                "tp1_price": event.get("tp1_price") or event.get("logical_target"),
+                "tp2_price": event.get("tp2_price"),
+                "rr_ratio": event.get("rr_ratio"),
+                "server_receive_latency_ms": event.get("server_receive_latency_ms"),
+                "signal_bar_close_time_ms": event.get("signal_bar_close_time_ms"),
+                "alert_emitted_time_ms": event.get("alert_emitted_time_ms"),
+                "mobile_notification": event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {},
             }
             for event in sorted(
                 today_received_events,
@@ -2082,6 +2126,12 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "main_blocker": latest_entry.get("main_blocker"),
             "decision_explanation": latest_entry.get("decision_explanation") or ((latest_entry.get("decision") or {}).get("explanation") if isinstance(latest_entry.get("decision"), dict) else None),
             "received_at": latest_entry.get("received_at") or latest_entry.get("saved_at"),
+            "server_receive_latency_ms": latest_entry.get("server_receive_latency_ms"),
+            "signal_bar_close_time_ms": latest_entry.get("signal_bar_close_time_ms"),
+            "alert_emitted_time_ms": latest_entry.get("alert_emitted_time_ms"),
+            "mobile_notification": latest_entry.get("mobile_notification") if isinstance(latest_entry.get("mobile_notification"), dict) else {},
+            "final_state": latest_entry.get("final_state") or latest_entry.get("state"),
+            "rr_ratio": latest_entry.get("rr_ratio"),
         }
     intraday = dict(data.get("intraday_futures")) if isinstance(data.get("intraday_futures"), dict) else {}
     intraday["daily_summary"] = summary
@@ -5217,87 +5267,161 @@ def render_diagnostic_alert_list(alerts: list[dict[str, Any]]) -> str:
     """.format(count=html_escape(len(alerts)), rows=rows)
 
 
+def futures_latency_summary(event: dict[str, Any]) -> dict[str, Any]:
+    mobile = event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {}
+    receive_ms = console_float_or_none(event.get("server_receive_latency_ms"))
+    provider_ms = console_float_or_none(mobile.get("provider_latency_ms"))
+    total_ms = console_float_or_none(mobile.get("signal_to_provider_ack_ms"))
+    age_seconds = console_float_or_none(mobile.get("signal_age_seconds_at_push"))
+    if total_ms is None and age_seconds is not None and provider_ms is not None:
+        total_ms = age_seconds * 1000.0 + provider_ms
+    if total_ms is not None:
+        label = "{:.1f} s señal→celular".format(total_ms / 1000.0)
+    elif receive_ms is not None:
+        label = "{:.2f} s TradingView→servidor".format(receive_ms / 1000.0)
+    else:
+        label = "Latencia no medible; falta timestamp de origen"
+    return {
+        "label": label,
+        "receive_ms": receive_ms,
+        "provider_ms": provider_ms,
+        "total_ms": total_ms,
+        "late": str(mobile.get("reason") or "").upper() == "STALE_INTRADAY_ENTRY_SUPPRESSED" or (age_seconds is not None and age_seconds > 90),
+        "mobile_status": "Enviada" if mobile.get("pushover_sent") is True else friendly_operator_state(mobile.get("reason") or mobile.get("status"), "Sin envío móvil"),
+    }
+
+
+def futures_operational_stage(event: dict[str, Any]) -> tuple[str, str, int]:
+    accepted = event.get("accepted") if "accepted" in event else event.get("accepted_for_engine")
+    final_state = str(event.get("final_state") or event.get("state") or "").upper()
+    actionability = str(event.get("signal_actionability") or "").upper()
+    gate = str(event.get("confirmation_gate_status") or "").upper()
+    kind = str(event.get("event") or event.get("event_code") or "").upper()
+    latency = futures_latency_summary(event)
+    if accepted is False:
+        return "discarded", "Descartada por datos", 6
+    if latency["late"]:
+        return "late", "Señal tardía", 5
+    if final_state == "ENTRY_READY":
+        return "ready", "Entrada lista", 0
+    if final_state == "RISK_BLOCKED" or kind in {"RISK", "EXIT", "INVALIDATION"}:
+        return "blocked", "Bloqueada / riesgo", 4
+    if actionability == "WATCH_ONLY" or gate == "INSUFFICIENT":
+        return "watch", "Vigilancia", 3
+    if gate == "PASSED" or actionability == "ACTIONABLE_CANDIDATE":
+        return "confirmed", "Confirmación aprobada", 1
+    if "ENTRY" in kind:
+        return "detected", "Señal detectada", 2
+    return "observed", "Evidencia recibida", 4
+
+
+def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: dict[str, Any]) -> list[dict[str, Any]]:
+    latest = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
+    # Rich processed records go first so compact ledger rows cannot overwrite
+    # their levels, gate, latency or final state during deduplication.
+    raw_rows = ([latest] if latest else []) + [item for item in futures_alerts if isinstance(item, dict)]
+    raw_rows.extend(item for item in (daily.get("recent_events") or []) if isinstance(item, dict))
+    rows = []
+    seen = set()
+    for event in raw_rows:
+        ticker = str(event.get("ticker") or event.get("symbol") or "FUTUROS").upper()
+        kind = str(event.get("event") or event.get("event_code") or "SEÑAL").upper()
+        received_at = event.get("received_at") or event.get("generated_at") or ""
+        key = str(event.get("event_id") or event.get("alert_id") or "{}|{}|{}".format(ticker, kind, received_at))
+        if key in seen:
+            continue
+        seen.add(key)
+        stage_key, stage, rank = futures_operational_stage(event)
+        entry = console_float_or_none(event.get("entry_price") if event.get("entry_price") is not None else event.get("price"))
+        stop = console_float_or_none(event.get("stop_price") if event.get("stop_price") is not None else event.get("logical_stop"))
+        tp1 = console_float_or_none(event.get("tp1_price") if event.get("tp1_price") is not None else event.get("logical_target"))
+        tp2 = console_float_or_none(event.get("tp2_price"))
+        rr = console_float_or_none(event.get("rr_ratio"))
+        if rr is None and entry is not None and stop is not None and tp1 is not None and abs(entry - stop) > 0:
+            rr = abs(tp1 - entry) / abs(entry - stop)
+        direction = str(event.get("direction") or event.get("breakout_direction") or "N/D").upper()
+        max_entry = event.get("max_entry_price") or event.get("entry_max_price") or event.get("entry_limit_price")
+        confirmations = [str(item) for item in (event.get("confirmation_reasons") or [])]
+        conflicts = [str(item) for item in (event.get("confirmation_conflicts") or [])]
+        blocker = event.get("main_blocker") or ""
+        if stage_key == "ready":
+            recommendation = "Revisar ahora niveles, contratos, margen y ticket en TWS; la consola no coloca la orden."
+        elif stage_key == "confirmed":
+            recommendation = "La técnica pasó; falta la compuerta final de riesgo/cartera antes de considerarla entrada."
+        elif stage_key == "watch":
+            recommendation = "Esperar nuevas confirmaciones; no perseguir el movimiento ni anticipar la entrada."
+        elif stage_key == "late":
+            recommendation = "No entrar por esta señal: llegó fuera de la ventana útil. Esperar un gatillo nuevo."
+        elif stage_key in {"blocked", "discarded"}:
+            recommendation = "No entrar; resolver el bloqueo o esperar una señal nueva con datos completos."
+        else:
+            recommendation = "Mantener en observación hasta completar confirmación, niveles y riesgo."
+        why = event.get("decision_explanation") or event.get("signal_quality_explanation")
+        if not why:
+            why = "{} confirmación(es) a favor y {} conflicto(s).".format(len(confirmations), len(conflicts))
+        rows.append({
+            "ticker": ticker, "event": kind, "direction": direction, "stage_key": stage_key, "stage": stage, "rank": rank,
+            "entry": entry, "max_entry": max_entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
+            "quality": console_float_or_none(event.get("confirmation_quality_score") or event.get("score") or event.get("setup_validity_pct")),
+            "confirmations": confirmations, "conflicts": conflicts, "why": str(why), "blocker": friendly_operator_state(blocker, "Sin bloqueo explícito"),
+            "recommendation": recommendation, "latency": futures_latency_summary(event), "received_at": received_at,
+            "mobile": event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {},
+            "reference_levels_provisional": event.get("reference_levels_provisional") is True,
+        })
+    return sorted(rows, key=lambda row: (row["rank"], -(row["quality"] or 0.0), str(row["received_at"])), reverse=False)
+
+
 def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]] | None = None) -> str:
     reports = reports if isinstance(reports, dict) else {}
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
     daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
-    latest_signal = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
     latest_quarantined = daily.get("latest_quarantined") if isinstance(daily.get("latest_quarantined"), dict) else {}
     tradingview = reports.get("tradingview") or {}
-    if futures_alerts:
-        cards = "".join(render_alert_card(alert, account_capacity=console_account_capacity(operator_payload, {})) for alert in futures_alerts[:4])
-        body = '<div class="alert-grid">{}</div>'.format(cards)
-        status = "Hay futuros intradia para revisar ahora."
-    else:
-        latest_signal_tile = ""
-        if latest_signal:
-            latest_signal_tile = (
-                '<div class="tile">Última {event}: {ticker} {direction}'
-                '<span>Disparo {entry} · Stop {stop} · T1 {tp1} · T2 {tp2}{estimate}</span>'
-                '<span>Calidad: {quality} · {confirmations} a favor / {conflicts} en contra</span>'
-                '<span>Resultado: {actionability}. Celular: {mobile}</span>'
-                '<span>{explanation}</span></div>'
-            ).format(
-                event=html_escape(latest_signal.get("event") or "señal"),
-                ticker=html_escape(latest_signal.get("ticker") or "N/D"),
-                direction=html_escape(latest_signal.get("direction") or "N/D"),
-                entry=html_escape(compact_contract_value(latest_signal.get("entry_price"))),
-                stop=html_escape(compact_contract_value(latest_signal.get("stop_price"))),
-                tp1=html_escape(compact_contract_value(latest_signal.get("tp1_price"))),
-                tp2=html_escape(compact_contract_value(latest_signal.get("tp2_price"))),
-                estimate=" · ATR estimados" if latest_signal.get("reference_levels_provisional") else "",
-                quality=html_escape(latest_signal.get("confirmation_gate_status") or "sin evaluar"),
-                confirmations=html_escape(len(latest_signal.get("confirmation_reasons") or [])),
-                conflicts=html_escape(len(latest_signal.get("confirmation_conflicts") or [])),
-                actionability=html_escape(friendly_operator_state(latest_signal.get("signal_actionability") or "Revisión final pendiente")),
-                mobile=html_escape("enviado" if str(latest_signal.get("signal_actionability") or "").upper() == "ENTRY_READY" else "no enviado; no alcanzó ENTRY_READY"),
-                explanation=html_escape(latest_signal.get("decision_explanation") or friendly_operator_state(latest_signal.get("main_blocker"), "Sin explicación adicional.")),
-            )
-        body = """
-        <div class="tiles">
-          <div class="tile">Sin señal vigente<span>No hay una ENTRY/RISK de futuros todavía activa.</span></div>
-          {latest_signal_tile}
-          <div class="tile">Entradas hoy: {entries}<span>WATCH: {watch} · snapshots: {snapshots}</span></div>
-          <div class="tile">Aceptados hoy: {accepted}<span>Recibidos: {today} · cuarentena: {quarantined}</span></div>
-          <div class="tile">Motor diario: {processed}<span>Chris IA: {chris} · entradas: {entries}</span></div>
-          <div class="tile">TradingView<span>{received}/{required} eventos aceptados/intentos.</span></div>
-          <div class="tile">Estado<span>{status}</span></div>
-        </div>
+    rows = build_futures_operational_rows(futures_alerts, daily)
+    primary = rows[0] if rows else None
+    funnel = {
+        "detected": int(daily.get("received") or 0), "accepted": int(daily.get("accepted") or 0),
+        "confirmed": int(daily.get("confirmation_passed") or 0), "ready": int(daily.get("entry_ready") or 0),
+        "watch": int(daily.get("watch_only") or daily.get("watch") or 0),
+        "discarded": int(daily.get("quarantined") or 0) + int(daily.get("risk_blocked") or 0),
+    }
+    primary_html = '<div class="empty-state"><strong>Sin señal de futuros vigente</strong><span>El radar continúa monitoreando MNQ y MES.</span></div>'
+    if primary:
+        rr_label = "N/D" if primary["rr"] is None else "{:.2f}R".format(primary["rr"])
+        primary_html = """
+        <article class="futures-primary futures-{stage_key}">
+          <div class="futures-primary-head"><div><p class="eyebrow">Recomendación prioritaria</p><h3>{ticker} · {direction}</h3></div><b>{stage}</b></div>
+          <p class="futures-recommendation">{recommendation}</p>
+          <div class="futures-levels">
+            <span>Disparo<strong>{entry}</strong></span><span>Entrada máxima<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
+            <span>Target 1<strong>{tp1}</strong></span><span>Target 2<strong>{tp2}</strong></span><span>Riesgo/beneficio<strong>{rr}</strong></span>
+          </div>
+          <div class="futures-decision-grid"><span>Por qué<strong>{why}</strong></span><span>Bloqueo<strong>{blocker}</strong></span><span>Latencia<strong>{latency}</strong></span><span>Celular<strong>{mobile}</strong></span></div>{estimate}
+        </article>
         """.format(
-            received=html_escape(tradingview.get("total_received_required_event_count", 0)),
-            required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))),
-            entries=html_escape(daily.get("entry", 0)),
-            watch=html_escape(daily.get("watch", 0)),
-            snapshots=html_escape(daily.get("snapshot", 0)),
-            today=html_escape(daily.get("received", 0)),
-            accepted=html_escape(daily.get("accepted", daily.get("received", 0))),
-            quarantined=html_escape(daily.get("quarantined", 0)),
-            processed=html_escape(daily.get("processed_total", 0)),
-            chris=html_escape(daily.get("chris_ia", 0)),
-            status=html_escape(intraday.get("status") or tradingview.get("status") or "sin reporte"),
-            latest_signal_tile=latest_signal_tile,
+            stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
+            recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
+            max_entry=html_escape(compact_contract_value(primary["max_entry"]) if primary["max_entry"] is not None else "No calculada; no perseguir precio"),
+            stop=html_escape(compact_contract_value(primary["stop"])), tp1=html_escape(compact_contract_value(primary["tp1"])), tp2=html_escape(compact_contract_value(primary["tp2"])), rr=html_escape(rr_label),
+            why=html_escape(primary["why"]), blocker=html_escape(primary["blocker"]), latency=html_escape(primary["latency"]["label"]), mobile=html_escape(primary["latency"]["mobile_status"]),
+            estimate='<p class="futures-health-line">Stop y targets estimados por ATR; confirmar precio y riesgo antes de decidir.</p>' if primary["reference_levels_provisional"] else "",
         )
-        status = intraday.get("message") or "Sin alertas intradia de futuros en este momento."
+    body = """
+      <div class="futures-funnel">
+        <div><span>1 · Detectadas</span><strong>{detected}</strong></div><div><span>2 · Aceptadas</span><strong>{accepted}</strong></div>
+        <div><span>3 · Confirmadas</span><strong>{confirmed}</strong></div><div><span>4 · Entrada lista</span><strong>{ready}</strong></div>
+        <div><span>Vigilancia</span><strong>{watch}</strong></div><div><span>Descartadas/bloqueadas</span><strong>{discarded}</strong></div>
+      </div>{primary}
+      <p class="futures-health-line">Salud TradingView disponible: {received}/{required} eventos aceptados/observados · motor diario procesó {processed}. Una señal confirmada todavía debe superar riesgo y cartera.</p>
+    """.format(primary=primary_html, received=html_escape(tradingview.get("total_received_required_event_count", 0)), required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))), processed=html_escape(daily.get("processed_total", 0)), **{key: html_escape(value) for key, value in funnel.items()})
+    status = intraday.get("message") or "Radar de futuros en monitoreo."
     recent_rows = []
-    for event in daily.get("recent_events") or []:
-        if not isinstance(event, dict):
-            continue
-        accepted = event.get("accepted") is True
-        outcome = "Evaluada" if accepted else "Cuarentena"
-        reason = ""
-        if not accepted:
-            missing = event.get("missing_fields") if isinstance(event.get("missing_fields"), list) else []
-            reason = "Faltan: {}".format(", ".join(str(item) for item in missing[:5])) if missing else ", ".join(str(item) for item in (event.get("quarantine_reasons") or [])[:3])
+    for event in rows:
         recent_rows.append(
-            '<li class="futures-event {klass}"><span>{time}</span><strong>{ticker} · {event}</strong><small>{price} · {outcome}{reason}</small></li>'.format(
-                klass="event-ok" if accepted else "event-quarantine",
-                time=html_escape(friendly_age(event.get("received_at"))),
-                ticker=html_escape(event.get("ticker") or "FUTURES"),
-                event=html_escape(event.get("event") or event.get("event_code") or "Evento"),
-                price=html_escape("Disparo " + compact_contract_value(event.get("price")) if event.get("price") is not None else "Sin precio"),
-                outcome=html_escape(outcome),
-                reason=html_escape(" · " + reason if reason else ""),
+            '<li class="futures-event event-{klass}"><span>{time}</span><strong>{ticker} · {stage}</strong><small>Disparo {price} · {latency} · {why}</small></li>'.format(
+                klass=html_escape(event["stage_key"]), time=html_escape(friendly_age(event.get("received_at"))), ticker=html_escape(event["ticker"]), stage=html_escape(event["stage"]),
+                price=html_escape(compact_contract_value(event["entry"])), latency=html_escape(event["latency"]["label"]), why=html_escape(event["why"]),
             )
         )
     quarantine_summary = ""
@@ -5312,7 +5436,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
             ),
         )
     if recent_rows:
-        body += '<details class="futures-history" open><summary>Actividad de futuros recibida hoy ({})</summary>{}<ol>{}</ol></details>'.format(
+        body += '<details class="futures-history" open><summary>Historial operativo de futuros ({})</summary>{}<ol>{}</ol></details>'.format(
             len(recent_rows), quarantine_summary, "".join(recent_rows)
         )
     return """
@@ -8812,8 +8936,19 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .futures-history {{ margin-top:12px; border:1px solid var(--line); border-radius:9px; padding:8px 12px; background:var(--soft); }}
           .futures-history ol {{ list-style:none; margin:8px 0 0; padding:0; display:grid; gap:6px; }}
           .futures-event {{ display:grid; grid-template-columns:90px minmax(160px,.55fr) minmax(260px,1fr); gap:10px; align-items:center; border-left:4px solid #16a34a; padding:8px 10px; background:white; }}
-          .futures-event.event-quarantine {{ border-left-color:#b42318; }}
+          .futures-event.event-discarded,.futures-event.event-blocked {{ border-left-color:#b42318; }} .futures-event.event-watch,.futures-event.event-late {{ border-left-color:#d97706; }} .futures-event.event-detected,.futures-event.event-observed {{ border-left-color:#64748b; }}
           .futures-event span,.futures-event small {{ color:var(--muted); font-size:.78rem; }}
+          .futures-funnel {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); margin:14px 0; border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+          .futures-funnel > div {{ padding:12px; border-right:1px solid var(--line); background:#fff; }} .futures-funnel > div:last-child {{ border-right:0; }}
+          .futures-funnel span,.futures-funnel strong {{ display:block; overflow-wrap:anywhere; }} .futures-funnel span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:900; }} .futures-funnel strong {{ margin-top:4px; font-size:1.15rem; }}
+          .futures-primary {{ border:1px solid var(--line); border-left:6px solid #64748b; border-radius:10px; padding:15px; background:#fff; }}
+          .futures-primary.futures-ready {{ border-left-color:#16a34a; }} .futures-primary.futures-confirmed {{ border-left-color:#2563eb; }} .futures-primary.futures-watch,.futures-primary.futures-late {{ border-left-color:#d97706; }} .futures-primary.futures-blocked,.futures-primary.futures-discarded {{ border-left-color:#b42318; }}
+          .futures-primary-head {{ display:flex; justify-content:space-between; gap:14px; align-items:start; }} .futures-primary-head h3 {{ margin:0; font-size:1.3rem; }} .futures-primary-head .eyebrow {{ margin-bottom:4px; }}
+          .futures-primary-head > b {{ border-radius:999px; padding:6px 9px; background:var(--soft); font-size:.76rem; white-space:nowrap; }}
+          .futures-recommendation {{ font-weight:800; line-height:1.35; margin:12px 0; }}
+          .futures-levels {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:7px; }} .futures-levels span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:850; border:1px solid var(--line); border-radius:8px; padding:8px; background:var(--soft); }} .futures-levels strong {{ display:block; color:var(--ink); text-transform:none; font-size:.84rem; margin-top:3px; overflow-wrap:anywhere; }}
+          .futures-decision-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:10px; }} .futures-decision-grid span {{ color:var(--muted); font-size:.7rem; text-transform:uppercase; font-weight:850; border-top:1px solid var(--line); padding-top:8px; }} .futures-decision-grid strong {{ display:block; color:var(--ink); text-transform:none; line-height:1.3; margin-top:3px; }}
+          .futures-health-line {{ color:var(--muted); margin:10px 0; font-size:.82rem; }}
           .support-details > summary,.diagnostic-alerts > summary {{ cursor:pointer; font-weight:900; color:var(--ink); }}
           .support-details[open] > summary,.diagnostic-alerts[open] > summary {{ margin-bottom:12px; }}
           .support-details .panel {{ box-shadow:none; margin-top:12px; }}
@@ -8933,7 +9068,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head {{ display:block; }} .canslim-card-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>

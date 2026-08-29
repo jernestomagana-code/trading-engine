@@ -1336,8 +1336,8 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
 
         self.assertEqual(latest["ticker"], "US500F")
         self.assertEqual(latest["tp2_price"], 7515.93)
-        self.assertIn("Última ENTRY: US500F SHORT", html)
-        self.assertIn("ATR estimados", html)
+        self.assertIn("US500F · SHORT", html)
+        self.assertIn("Stop y targets estimados por ATR", html)
 
     def test_ready_control_tower_empty_positions_remove_closed_snapshot_position(self):
         with tempfile.TemporaryDirectory() as tmp:
