@@ -13,7 +13,7 @@ manual review only.
    - `MNQ1!` `5m` and `MES1!` `5m` with
      `Stock Ultimus Intraday Futures Alerts v1` / `Any alert() function call`.
    - `QQQ` `15m`, `SPY` `15m`, and `VIX` `1D` with
-     `Stock Ultimus Options Underlying Alerts v1` / `Any alert() function call`.
+     `Stock Ultimus Options Underlying Alerts v1.1` / `Any alert() function call`.
    - `USTEC.F` `15m` and `US500F` `15m` with
      `Chris IA REV PRO` / `Any alert() function call`.
    - Old per-condition, RSI, crossing-price, duplicate, or generic alerts remain

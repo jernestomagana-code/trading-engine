@@ -1,121 +1,51 @@
 //@version=6
-indicator("Stock Ultimus Options Underlying Alerts v1", overlay=true, max_labels_count=200)
-
-// Technical evidence only. This script does not authorize orders.
-
-timezoneInput = input.string("America/New_York", "Session timezone")
-premarketSession = input.session("0400-0929", "Premarket session")
-openingRangeSession = input.session("0930-0945", "Opening range session")
-regularSession = input.session("0930-1600", "Regular session")
-emaFastLength = input.int(21, "EMA fast length", minval=1)
-emaSlowLength = input.int(50, "EMA slow length", minval=1)
-rsiLength = input.int(14, "RSI length", minval=1)
-adxLength = input.int(14, "ADX length", minval=1)
-adxSmoothing = input.int(14, "ADX smoothing", minval=1)
-atrLength = input.int(14, "ATR length", minval=1)
-rvolLength = input.int(20, "RVOL length", minval=1)
-minAdx = input.float(18.0, "Minimum ADX", minval=0.0, step=0.5)
-minRvol = input.float(1.05, "Minimum RVOL", minval=0.0, step=0.05)
-longRsiFloor = input.float(52.0, "Long RSI floor", minval=0.0, maxval=100.0, step=0.5)
-shortRsiCeiling = input.float(48.0, "Short RSI ceiling", minval=0.0, maxval=100.0, step=0.5)
-vixElevatedLevel = input.float(22.0, "VIX elevated level", minval=1.0, step=0.5)
-vixNormalizedLevel = input.float(18.0, "VIX normalized level", minval=1.0, step=0.5)
-stopAtrMultiple = input.float(1.0, "Stop ATR multiple", minval=0.1, step=0.1)
-targetAtrMultiple = input.float(2.0, "Target ATR multiple", minval=0.1, step=0.1)
-snapshotEveryBars = input.int(3, "Snapshot every N bars", minval=1)
-
-inPremarket = not na(time(timeframe.period, premarketSession, timezoneInput))
-inOpeningRange = not na(time(timeframe.period, openingRangeSession, timezoneInput))
-inRegular = not na(time(timeframe.period, regularSession, timezoneInput))
-newDay = ta.change(time("D", "0000-2359", timezoneInput)) != 0
-newRegularSession = inRegular and not inRegular[1]
-
-var float premarketHigh = na
-var float premarketLow = na
-var float openingRangeHigh = na
-var float openingRangeLow = na
-var float logicalStop = na
-var float logicalTarget = na
-
-premarketHigh := newDay ? na : inPremarket ? (na(premarketHigh) ? high : math.max(premarketHigh, high)) : premarketHigh
-premarketLow := newDay ? na : inPremarket ? (na(premarketLow) ? low : math.min(premarketLow, low)) : premarketLow
-openingRangeHigh := newDay ? na : newRegularSession ? high : inOpeningRange ? (na(openingRangeHigh) ? high : math.max(openingRangeHigh, high)) : openingRangeHigh
-openingRangeLow := newDay ? na : newRegularSession ? low : inOpeningRange ? (na(openingRangeLow) ? low : math.min(openingRangeLow, low)) : openingRangeLow
-
-vwapValue = ta.vwap(hlc3)
-emaFast = ta.ema(close, emaFastLength)
-emaSlow = ta.ema(close, emaSlowLength)
-rsiValue = ta.rsi(close, rsiLength)
-[plusDi, minusDi, adxValue] = ta.dmi(adxLength, adxSmoothing)
-atrValue = ta.atr(atrLength)
-avgVolume = ta.sma(volume, rvolLength)
-rvolValue = avgVolume > 0 ? volume / avgVolume : na
-trendStrength = atrValue > 0 ? math.abs(emaFast - emaSlow) / atrValue : na
-
-jsonNumber(value) =>
-    na(value) ? "0" : str.tostring(value, format.mintick)
-
-jsonStringPair(key, value) =>
-    "\"" + key + "\":\"" + value + "\""
-
-jsonNumberPair(key, value) =>
-    "\"" + key + "\":" + jsonNumber(value)
-
-symbolCode = str.contains(syminfo.ticker, "VIX") ? "VIX" : str.contains(syminfo.ticker, "SPY") ? "SPY" : "QQQ"
-timeframeCode = timeframe.period == "D" ? "D" : timeframe.period + "M"
-
-buildPayload(eventName, eventCode, direction, sessionState, vwapPosition, invalidationText, rsiStateText, trendStateText, marketRegimeText, underlyingSignalText, volatilityStateText, confirmationBiasText) =>
-    "{" + jsonStringPair("action", "ALERT_ONLY") + "," + jsonNumberPair("adx", adxValue) + "," + jsonNumberPair("atr", atrValue) + "," + jsonStringPair("breakout_direction", direction) + "," + jsonStringPair("confirmation_bias", confirmationBiasText) + "," + jsonNumberPair("ema_fast", emaFast) + "," + jsonNumberPair("ema_slow", emaSlow) + "," + jsonStringPair("event", eventName) + "," + jsonStringPair("event_code", eventCode) + "," + jsonStringPair("invalidation", invalidationText) + "," + jsonNumberPair("logical_stop", logicalStop) + "," + jsonNumberPair("logical_target", logicalTarget) + "," + jsonStringPair("major_event_window", "NONE") + "," + jsonStringPair("market_regime", marketRegimeText) + "," + jsonNumberPair("opening_range_high", openingRangeHigh) + "," + jsonNumberPair("opening_range_low", openingRangeLow) + "," + jsonStringPair("portfolio_status", "OK") + "," + jsonNumberPair("premarket_high", premarketHigh) + "," + jsonNumberPair("premarket_low", premarketLow) + "," + jsonNumberPair("price", close) + "," + jsonStringPair("risk_daily_status", "OK") + "," + jsonNumberPair("rsi", rsiValue) + "," + jsonStringPair("rsi_divergence", "NONE") + "," + jsonStringPair("rsi_state", rsiStateText) + "," + jsonStringPair("session_state", sessionState) + "," + jsonStringPair("source", "TRADINGVIEW") + "," + jsonStringPair("strategy_context", "OPTIONS_UNDERLYING_CONFIRMATION") + "," + jsonStringPair("ticker", syminfo.ticker) + "," + jsonStringPair("timeframe", timeframe.period) + "," + jsonStringPair("trend_state", trendStateText) + "," + jsonNumberPair("trend_strength", trendStrength) + "," + jsonStringPair("underlying_signal", underlyingSignalText) + "," + jsonStringPair("volatility_state", volatilityStateText) + "," + jsonNumberPair("volume_relative", rvolValue) + "," + jsonNumberPair("vwap", vwapValue) + "," + jsonStringPair("vwap_position", vwapPosition) + "}"
-
-qualityOk = adxValue >= minAdx and rvolValue >= minRvol
-bullTrend = close > vwapValue and emaFast > emaSlow and rsiValue >= longRsiFloor
-bearTrend = close < vwapValue and emaFast < emaSlow and rsiValue <= shortRsiCeiling
-underlyingTechConfirmLong = barstate.isconfirmed and inRegular and bullTrend and qualityOk
-underlyingTechConfirmShort = barstate.isconfirmed and inRegular and bearTrend and qualityOk
-underlyingRegimeSnapshot = barstate.isconfirmed and inRegular and bar_index % snapshotEveryBars == 0
-vixRiskElevated = barstate.isconfirmed and close >= vixElevatedLevel and close > emaFast
-vixRiskNormalized = barstate.isconfirmed and close <= vixNormalizedLevel and close < emaFast
-
-logicalStop := newDay ? na : underlyingTechConfirmLong ? math.min(vwapValue, close - atrValue * stopAtrMultiple) : underlyingTechConfirmShort ? math.max(vwapValue, close + atrValue * stopAtrMultiple) : logicalStop
-logicalTarget := newDay ? na : underlyingTechConfirmLong ? close + atrValue * targetAtrMultiple : underlyingTechConfirmShort ? close - atrValue * targetAtrMultiple : logicalTarget
-
-if underlyingTechConfirmLong
-    alert(buildPayload("TECH_CONFIRM", symbolCode + "_TECH_CONFIRM_LONG_" + timeframeCode, "LONG", "REGULAR", "ABOVE", "VWAP_LOST_OR_TREND_LOST", "BULLISH_CONFIRMATION", "BULLISH", "RISK_ON", "TECH_CONFIRM_LONG", "NORMAL", "LONG"), alert.freq_once_per_bar_close)
-
-if underlyingTechConfirmShort
-    alert(buildPayload("TECH_CONFIRM", symbolCode + "_TECH_CONFIRM_SHORT_" + timeframeCode, "SHORT", "REGULAR", "BELOW", "VWAP_RECLAIMED_OR_TREND_RECLAIMED", "BEARISH_CONFIRMATION", "BEARISH", "RISK_OFF", "TECH_CONFIRM_SHORT", "NORMAL", "SHORT"), alert.freq_once_per_bar_close)
-
-if underlyingRegimeSnapshot
-    alert(buildPayload("REGIME_SNAPSHOT", symbolCode + "_REGIME_SNAPSHOT_" + timeframeCode, "NONE", "REGULAR", "UNKNOWN", "NONE", "NEUTRAL", "NEUTRAL", "OBSERVE", "REGIME_SNAPSHOT", "NORMAL", "NEUTRAL"), alert.freq_once_per_bar_close)
-
-if vixRiskElevated
-    alert(buildPayload("VOLATILITY_RISK", "VIX_RISK_ELEVATED_" + timeframeCode, "BEARISH", "REGULAR", "UNKNOWN", "VIX_NORMALIZED", "VOLATILITY_EXPANDING", "RISK_OFF", "RISK_OFF", "VIX_RISK_ELEVATED", "ELEVATED", "RISK_OFF"), alert.freq_once_per_bar_close)
-
-if vixRiskNormalized
-    alert(buildPayload("VOLATILITY_RISK", "VIX_RISK_NORMALIZED_" + timeframeCode, "NEUTRAL", "REGULAR", "UNKNOWN", "VIX_REELEVATED", "VOLATILITY_NORMALIZING", "RISK_ON", "RISK_ON", "VIX_RISK_NORMALIZED", "NORMALIZED", "RISK_ON"), alert.freq_once_per_bar_close)
-
-plot(vwapValue, title="VWAP", color=color.new(color.blue, 0), linewidth=2)
-plot(openingRangeHigh, title="ORH", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
-plot(openingRangeLow, title="ORL", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
-plot(premarketHigh, title="PMH", color=color.new(color.teal, 35), linewidth=1, style=plot.style_linebr)
-plot(premarketLow, title="PML", color=color.new(color.orange, 35), linewidth=1, style=plot.style_linebr)
-plot(logicalStop, title="STOP", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
-plot(logicalTarget, title="TARGET", color=color.new(color.green, 60), linewidth=1, style=plot.style_linebr)
-plot(adxValue, title="ADX", display=display.data_window)
-plot(atrValue, title="ATR", display=display.data_window)
-plot(rvolValue, title="RVOL", display=display.data_window)
-plot(rsiValue, title="RSI", display=display.data_window)
-plot(emaFast, title="EMA_FAST", color=color.new(color.aqua, 0), linewidth=1)
-plot(emaSlow, title="EMA_SLOW", color=color.new(color.purple, 0), linewidth=1)
-plot(trendStrength, title="TREND_STRENGTH", display=display.data_window)
-
-plotshape(underlyingTechConfirmLong, title="Underlying long marker", style=shape.triangleup, color=color.new(color.green, 0), location=location.belowbar, size=size.tiny, text="UL")
-plotshape(underlyingTechConfirmShort, title="Underlying short marker", style=shape.triangledown, color=color.new(color.red, 0), location=location.abovebar, size=size.tiny, text="US")
-plotshape(vixRiskElevated, title="VIX elevated marker", style=shape.xcross, color=color.new(color.orange, 0), location=location.top, size=size.tiny, text="VIX+")
-plotshape(vixRiskNormalized, title="VIX normalized marker", style=shape.circle, color=color.new(color.green, 0), location=location.bottom, size=size.tiny, text="VIX-")
-
-alertcondition(underlyingTechConfirmLong, title="Underlying Tech Confirm Long", message="Stock Ultimus Underlying Tech Confirm Long")
-alertcondition(underlyingTechConfirmShort, title="Underlying Tech Confirm Short", message="Stock Ultimus Underlying Tech Confirm Short")
-alertcondition(underlyingRegimeSnapshot, title="Underlying Regime Snapshot", message="Stock Ultimus Underlying Regime Snapshot")
-alertcondition(vixRiskElevated, title="VIX Risk Elevated", message="Stock Ultimus VIX Risk Elevated")
-alertcondition(vixRiskNormalized, title="VIX Risk Normalized", message="Stock Ultimus VIX Risk Normalized")
+indicator("Stock Ultimus Options Underlying Alerts v1.1",overlay=true)
+// Technical evidence only. Never authorizes or submits an order.
+tz=input.string("America/New_York","Timezone")
+rth=input.session("0930-1600","Regular session")
+minAdx=input.float(18.0,"Minimum ADX")
+minRvol=input.float(1.05,"Minimum RVOL")
+vixHigh=input.float(22.0,"VIX elevated")
+vixLow=input.float(18.0,"VIX normalized")
+regular=not na(time(timeframe.period,rth,tz))
+vwapValue=ta.vwap(hlc3)
+emaFast=ta.ema(close,21)
+emaSlow=ta.ema(close,50)
+rsiValue=ta.rsi(close,14)
+[plusDi,minusDi,adxValue]=ta.dmi(14,14)
+atrValue=ta.atr(14)
+averageVolume=ta.sma(volume,20)
+rvolValue=averageVolume>0?volume/averageVolume:0.0
+symbolCode=str.contains(syminfo.ticker,"VIX")?"VIX":str.contains(syminfo.ticker,"SPY")?"SPY":"QQQ"
+timeframeCode=timeframe.period=="D"?"D":timeframe.period+"M"
+qualityOk=adxValue>=minAdx and rvolValue>=minRvol
+longSignal=barstate.isconfirmed and regular and qualityOk and close>vwapValue and emaFast>emaSlow and rsiValue>=52
+shortSignal=barstate.isconfirmed and regular and qualityOk and close<vwapValue and emaFast<emaSlow and rsiValue<=48
+snapshotSignal=barstate.isconfirmed and regular and symbolCode!="VIX" and bar_index%3==0
+vixElevated=barstate.isconfirmed and symbolCode=="VIX" and close>=vixHigh and close>emaFast
+vixNormalized=barstate.isconfirmed and symbolCode=="VIX" and close<=vixLow and close<emaFast
+num(value)=>na(value)?"0":str.tostring(value,format.mintick)
+textPair(key,value)=>"\""+key+"\":\""+value+"\""
+numPair(key,value)=>"\""+key+"\":"+num(value)
+payload(eventName,eventCode,direction,signalName,volatilityState,stopPrice,targetPrice)=>
+    "{"+textPair("source","TRADINGVIEW")+","+textPair("strategy_context","OPTIONS_UNDERLYING_CONFIRMATION")+","+textPair("event",eventName)+","+textPair("event_code",eventCode)+","+textPair("ticker",syminfo.ticker)+","+textPair("timeframe",timeframe.period)+","+textPair("breakout_direction",direction)+","+numPair("price",close)+","+numPair("logical_stop",stopPrice)+","+numPair("logical_target",targetPrice)+","+numPair("adx",adxValue)+","+numPair("atr",atrValue)+","+numPair("rsi",rsiValue)+","+numPair("volume_relative",rvolValue)+","+numPair("vwap",vwapValue)+","+textPair("underlying_signal",signalName)+","+textPair("volatility_state",volatilityState)+",\"action\":\"ALERT_ONLY\",\"execution_authorized\":false,\"not_order_instruction\":true}"
+if longSignal
+    alert(payload("TECH_CONFIRM",symbolCode+"_TECH_CONFIRM_LONG_"+timeframeCode,"LONG","TECH_CONFIRM_LONG","NORMAL",close-atrValue,close+2*atrValue),alert.freq_once_per_bar_close)
+if shortSignal
+    alert(payload("TECH_CONFIRM",symbolCode+"_TECH_CONFIRM_SHORT_"+timeframeCode,"SHORT","TECH_CONFIRM_SHORT","NORMAL",close+atrValue,close-2*atrValue),alert.freq_once_per_bar_close)
+if snapshotSignal
+    alert(payload("REGIME_SNAPSHOT",symbolCode+"_REGIME_SNAPSHOT_"+timeframeCode,"NONE","REGIME_SNAPSHOT","NORMAL",0,0),alert.freq_once_per_bar_close)
+if vixElevated
+    alert(payload("VOLATILITY_RISK","VIX_RISK_ELEVATED_"+timeframeCode,"BEARISH","VIX_RISK_ELEVATED","ELEVATED",0,0),alert.freq_once_per_bar_close)
+if vixNormalized
+    alert(payload("VOLATILITY_RISK","VIX_RISK_NORMALIZED_"+timeframeCode,"NEUTRAL","VIX_RISK_NORMALIZED","NORMALIZED",0,0),alert.freq_once_per_bar_close)
+plot(vwapValue,"VWAP",color.blue,2)
+plot(emaFast,"EMA fast",color.aqua)
+plot(emaSlow,"EMA slow",color.purple)
+plotshape(longSignal,"Long",shape.triangleup,location.belowbar,color.green,size=size.tiny)
+plotshape(shortSignal,"Short",shape.triangledown,location.abovebar,color.red,size=size.tiny)
+alertcondition(longSignal,"Underlying Tech Confirm Long","Stock Ultimus Underlying Tech Confirm Long")
+alertcondition(shortSignal,"Underlying Tech Confirm Short","Stock Ultimus Underlying Tech Confirm Short")
+alertcondition(snapshotSignal,"Underlying Regime Snapshot","Stock Ultimus Underlying Regime Snapshot")
+alertcondition(vixElevated,"VIX Risk Elevated","Stock Ultimus VIX Risk Elevated")
+alertcondition(vixNormalized,"VIX Risk Normalized","Stock Ultimus VIX Risk Normalized")
