@@ -142,8 +142,9 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Ver {len(secondary_alerts)} alertas adicionales", source)
         self.assertIn('id="canslim-radar"', source)
         self.assertIn("De preselección C/A/L/M a decisión final", source)
-        self.assertIn("Evaluados por el motor", source)
-        self.assertIn("{contract_evaluated} con contrato · {final_evaluated} en compuerta final", source)
+        self.assertIn("1 · Universo", source)
+        self.assertIn("5 · Entrada lista", source)
+        self.assertIn("la lista se ordena por cercanía a una decisión", source)
         self.assertIn("Actividad de futuros recibida hoy", source)
         self.assertIn('<details id="alertas" class="panel operator-workspace secondary-workspace" open>', source)
         risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
@@ -225,6 +226,42 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertTrue(alert["canslim_passes"])
         self.assertEqual(alert["canslim_rating"], "LEADER")
 
+    def test_canslim_funnel_ranks_actionability_before_raw_score(self):
+        candidates = {"generated_at": "2026-08-29T15:00:00+00:00", "candidates": [
+            {
+                "ticker": "HIGH",
+                "canslim_passes": True,
+                "canslim_score": 100,
+                "canslim_component_coverage_pct": 50,
+                "canslim_missing_components": ["L", "M"],
+                "canslim": {"components": {"C_quarterly_growth": 100, "A_annual_growth": 100, "L_relative_strength": None, "M_market": None}},
+            },
+            {
+                "ticker": "READY",
+                "canslim_passes": True,
+                "canslim_score": 72,
+                "canslim_component_coverage_pct": 100,
+                "canslim": {"components": {"C_quarterly_growth": 72, "A_annual_growth": 74, "L_relative_strength": 71, "M_market": 70}},
+            },
+        ]}
+        decisions = {"by_ticker": [{"ticker": "READY", "best": {"strategy": "NAKED_PUT", "dte": 35, "strike": 90}}]}
+        operator = {"data": {"active_alerts": [{"ticker": "READY", "state": "ENTRY_READY", "entry_price": 101}], "diagnostic_alerts": []}}
+
+        rows = console.build_canslim_operational_rows(operator, candidates, decisions)
+
+        self.assertEqual(rows[0]["ticker"], "READY")
+        self.assertEqual(rows[0]["stage"], "Entrada lista")
+        self.assertEqual(rows[1]["coverage_label"], "Parcial; falta L, M")
+        self.assertEqual(rows[1]["relative_strength"], "Pendiente; L no disponible")
+
+    def test_canslim_funnel_explains_each_operational_field(self):
+        source = CONSOLE_SOURCE.read_text(encoding="utf-8")
+
+        for label in ("Gatillo", "Fortaleza relativa", "Punto de compra / distancia", "Volumen vs promedio", "Estrategia propuesta", "Bloqueo principal", "Siguiente condición necesaria"):
+            self.assertIn(label, source)
+        self.assertIn('class="canslim-components"', source)
+        self.assertIn("Pendiente; la fuente actual no lo entrega", source)
+
     def test_position_recommendations_use_full_width_responsive_layout(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")
 
@@ -233,7 +270,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn(".position-structure-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr));", source)
         self.assertIn("@media (max-width:620px)", source)
         self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", source)
-        self.assertIn(".position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }}", source)
+        self.assertIn(".position-structure-grid,.position-profile-grid,.canslim-facts {{ grid-template-columns:minmax(0,1fr); }}", source)
         self.assertIn(".position-comparison-scroll {{ overflow-x:auto; max-width:100%;", source)
         self.assertEqual(console.friendly_operator_state("REVIEW_RISK"), "Revisar riesgo")
         self.assertEqual(console.friendly_operator_state("STALE"), "Desactualizados")

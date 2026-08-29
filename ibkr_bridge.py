@@ -1005,6 +1005,10 @@ LOCAL_TECHNICAL_MAX_BARS = int(
     _v283_os.environ.get("IBKR_LOCAL_TECHNICAL_MAX_BARS", "120")
 )
 ACTIVE_POSITION_TECHNICAL_PATH = _v283_Path("runtime") / "active_position_technical_latest.json"
+CANSLIM_CANDIDATES_PATH = _v283_Path("runtime") / "canslim_candidates_latest.json"
+CANSLIM_HISTORICAL_MAX_SYMBOLS = int(
+    _v283_os.environ.get("IBKR_CANSLIM_HISTORICAL_MAX_SYMBOLS", "24")
+)
 
 # Mandamos opciones aunque estén incompletas, pero la decisión queda bloqueada.
 SEND_OPTIONS_WITHOUT_GREEKS = True
@@ -2635,8 +2639,28 @@ def get_price_snapshot(symbol):
 
 
 def refresh_active_position_technical_snapshot():
-    """Always collect daily bars for held underlyings, even when live price works."""
-    symbols = sorted(_bridge_held_underlying_symbols())
+    """Collect daily bars for positions, CANSLIM preselection and benchmarks."""
+    held_symbols = set(_bridge_held_underlying_symbols())
+    canslim_symbols = []
+    try:
+        canslim_payload = _v283_json.loads(CANSLIM_CANDIDATES_PATH.read_text())
+        candidates = canslim_payload.get("candidates") if isinstance(canslim_payload, dict) else []
+        canslim_symbols = [
+            str(row.get("ticker") or "").strip().upper()
+            for row in (candidates or [])
+            if isinstance(row, dict) and row.get("canslim_passes") is True and row.get("ticker")
+        ]
+    except Exception:
+        canslim_symbols = []
+    # Benchmarks are mandatory for L (relative strength) and M (market).
+    priority_symbols = ["SPY", "QQQ"] + canslim_symbols
+    selected_canslim = []
+    for symbol in priority_symbols:
+        if symbol and symbol not in selected_canslim:
+            selected_canslim.append(symbol)
+        if len(selected_canslim) >= max(2, CANSLIM_HISTORICAL_MAX_SYMBOLS):
+            break
+    symbols = sorted(held_symbols | set(selected_canslim))
     previous = {}
     try:
         loaded = _v283_json.loads(ACTIVE_POSITION_TECHNICAL_PATH.read_text())
@@ -2675,6 +2699,10 @@ def refresh_active_position_technical_snapshot():
         "active_position_technical_version": "active_position_technical_v1",
         "generated_at": now_iso(),
         "symbols_requested": symbols,
+        "held_symbols_requested": sorted(held_symbols),
+        "canslim_symbols_requested": selected_canslim,
+        "canslim_benchmarks_requested": ["SPY", "QQQ"],
+        "supports_canslim_l_and_m": True,
         "by_ticker": by_ticker,
         "attempts": attempts,
         "execution_authorized": False,
@@ -2685,6 +2713,7 @@ def refresh_active_position_technical_snapshot():
     print(
         "ACTIVE POSITION TECHNICAL"
         f" | requested:{len(symbols)}"
+        f" | canslim:{len(selected_canslim)}"
         f" | available:{sum(1 for row in attempts if row.get('status') == 'AVAILABLE')}"
         f" | preserved:{len(by_ticker)}"
     )

@@ -663,7 +663,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         report["intraday_futures_premarket_context"] = premarket_context
 
     if args.refresh:
-        report["canslim_step"] = build_canslim_candidates(args)
+        # First pass identifies the C/A preselection. The IBKR bridge then
+        # collects daily bars for those symbols plus SPY/QQQ. A second pass
+        # completes L/M when bars are available.
+        report["canslim_pre_bridge_step"] = build_canslim_candidates(args)
         if not ibkr_open:
             report["control_tower_refresh_step"] = {
                 "name": "refresh_multi_account_control_tower",
@@ -679,6 +682,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["refresh_step"] = refresh_bridge(args, ingest_token)
             checks["runtime_freshness_after_refresh"] = runtime_freshness()
+        report["canslim_step"] = build_canslim_candidates(args)
+        report["canslim_step"]["phase"] = "POST_IBKR_HISTORY_L_M"
+        report["canslim_step"]["fallback_partial_allowed"] = True
         if not ibkr_open:
             report["capacity_refresh_step"] = {"name": "refresh_account_capacity", "ok": False, "error": "IBKR_PORT_CLOSED"}
         else:

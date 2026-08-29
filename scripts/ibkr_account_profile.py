@@ -5549,9 +5549,13 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
     )
 
 
-def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
-    candidates_payload = load_json_file(RUNTIME / "canslim_candidates_latest.json")
-    decision_payload = load_json_file(RUNTIME / "decision_desk_snapshot.json")
+def build_canslim_operational_rows(
+    operator_payload: dict[str, Any],
+    candidates_payload: dict[str, Any] | None = None,
+    decision_payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    candidates_payload = candidates_payload if isinstance(candidates_payload, dict) else load_json_file(RUNTIME / "canslim_candidates_latest.json")
+    decision_payload = decision_payload if isinstance(decision_payload, dict) else load_json_file(RUNTIME / "decision_desk_snapshot.json")
     candidates = candidates_payload.get("candidates") if isinstance(candidates_payload.get("candidates"), list) else []
     passed = [item for item in candidates if isinstance(item, dict) and item.get("canslim_passes") is True]
     decisions = decision_payload.get("by_ticker") if isinstance(decision_payload.get("by_ticker"), list) else []
@@ -5577,10 +5581,23 @@ def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
         "WAIT_OPTIONS_DATA": "Faltan datos completos de opciones.",
         "WAIT_MARKET": "Espera una condición válida de mercado.",
     }
-
-    def row(item: dict[str, Any]) -> str:
+    component_labels = {
+        "C": "C · trimestre",
+        "A": "A · anual",
+        "L": "L · fortaleza relativa",
+        "M": "M · mercado",
+    }
+    stage_labels = {
+        "ENTRY_READY": ("ready", "Entrada lista", 0),
+        "WAIT_MARKET": ("gate", "En compuerta final", 1),
+        "WAIT_TECHNICAL": ("forming", "Setup en formación", 2),
+        "WAIT_OPTIONS_DATA": ("blocked", "Bloqueada por datos", 4),
+        "RISK_BLOCKED": ("blocked", "Bloqueada por riesgo", 4),
+    }
+    rows: list[dict[str, Any]] = []
+    for item in passed:
         ticker = str(item.get("ticker") or "UNKNOWN").upper()
-        score = item.get("canslim_score")
+        score = console_float_or_none(item.get("canslim_score"))
         rating = item.get("canslim_rating") or item.get("rating") or "Aprobado"
         canslim = item.get("canslim") if isinstance(item.get("canslim"), dict) else {}
         components = canslim.get("components") if isinstance(canslim.get("components"), dict) else {}
@@ -5592,58 +5609,139 @@ def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
         final = final_by_ticker.get(ticker) or {}
         final_state = str(final.get("state") or final.get("final_state") or "").upper()
         if final_state:
-            stage = friendly_operator_state(final_state)
-            detail = blocker_labels.get(str(final.get("main_blocker") or final_state).upper(), alert_reason_plain(final))
+            stage_key, stage, stage_rank = stage_labels.get(final_state, ("gate", friendly_operator_state(final_state), 2))
+            blocker = blocker_labels.get(str(final.get("main_blocker") or final_state).upper(), alert_reason_plain(final))
             capital = console_float_or_none((final.get("economics") or {}).get("capital_required"))
             if final_state == "RISK_BLOCKED" and capital is not None and available_capacity is not None and capital > available_capacity:
-                detail = "Capital estimado {} frente a {} disponibles en la cuenta activa.".format(
+                blocker = "Capital estimado {} frente a {} disponibles en la cuenta activa.".format(
                     coberturas_money(capital), coberturas_money(available_capacity)
                 )
         elif decision:
-            stage = "Preselección técnica"
-            detail = "El radar local encontró contrato, pero la evaluación final no la elevó como oportunidad operable."
+            stage_key, stage, stage_rank = "contract", "Contrato evaluado", 3
+            blocker = "Falta que la evaluación final confirme mercado, técnica, riesgo y capacidad."
         else:
-            stage = "Filtro fundamental aprobado"
-            detail = "No se seleccionó contrato dentro del radar acotado de hoy."
-        contract = ""
+            stage_key, stage, stage_rank = "fundamental", "Preselección fundamental", 4
+            blocker = "Aún no se seleccionó un contrato dentro del radar acotado de hoy."
+        contract = "Sin contrato priorizado"
         if decision:
             contract = "{} · {} DTE · strike {}".format(
                 friendly_operator_state(decision.get("strategy") or "Estrategia pendiente"),
                 decision.get("dte") if decision.get("dte") is not None else "N/D",
                 decision.get("strike") if decision.get("strike") is not None else "N/D",
             )
+        component_rows = []
+        normalized_components = {
+            "C": components.get("C_quarterly_growth"),
+            "A": components.get("A_annual_growth"),
+            "L": components.get("L_relative_strength"),
+            "M": components.get("M_market"),
+        }
+        for key, value in normalized_components.items():
+            component_rows.append({
+                "key": key,
+                "label": component_labels[key],
+                "value": value,
+                "available": value is not None,
+            })
+        trigger = final.get("trigger_price") or final.get("entry_price") or final.get("price")
+        trigger_label = "Pendiente de confirmación técnica" if trigger is None else "Precio {}".format(compact_contract_value(trigger))
+        next_event = {
+            "ready": "Revisar contrato, tamaño, riesgo y ticket en TWS.",
+            "gate": "Esperar la condición de mercado indicada; no anticipar la entrada.",
+            "forming": "Esperar confirmación técnica real del setup.",
+            "contract": "Esperar evaluación final de técnica, mercado, riesgo y capacidad.",
+            "fundamental": "Esperar que el radar encuentre técnica y contrato válidos.",
+            "blocked": "Resolver el bloqueo indicado antes de reconsiderar la entrada.",
+        }[stage_key]
+        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
+        rs = metrics.get("relative_strength") if isinstance(metrics.get("relative_strength"), dict) else {}
+        ticker_return = console_float_or_none(rs.get("ticker_return"))
+        benchmark_return = console_float_or_none(rs.get("benchmark_return"))
+        if ticker_return is None or benchmark_return is None:
+            relative_strength = "Pendiente; L no disponible"
+        else:
+            relative_strength = "Activo {:.1f}% vs referencia {:.1f}%".format(ticker_return, benchmark_return)
+        coverage_value = console_float_or_none(coverage) or 0.0
+        rows.append({
+            "ticker": ticker,
+            "score": score or 0.0,
+            "rating": friendly_operator_state(rating),
+            "coverage": coverage_value,
+            "coverage_label": "Completo" if coverage_value >= 99.5 else "Parcial; falta {}".format(", ".join(missing_components) or "cobertura"),
+            "components": component_rows,
+            "stage_key": stage_key,
+            "stage": stage,
+            "stage_rank": stage_rank,
+            "blocker": blocker,
+            "next_event": next_event,
+            "contract": contract,
+            "trigger": trigger_label,
+            "relative_strength": relative_strength,
+            "volume": "Pendiente; la fuente actual no lo entrega",
+            "buy_point": "Pendiente; la fuente actual no lo entrega",
+            "freshness": friendly_age(candidates_payload.get("generated_at")),
+        })
+    return sorted(rows, key=lambda row: (row["stage_rank"], -row["coverage"], -row["score"], row["ticker"]))
+
+
+def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
+    candidates_payload = load_json_file(RUNTIME / "canslim_candidates_latest.json")
+    decision_payload = load_json_file(RUNTIME / "decision_desk_snapshot.json")
+    candidates = candidates_payload.get("candidates") if isinstance(candidates_payload.get("candidates"), list) else []
+    passed = [item for item in candidates if isinstance(item, dict) and item.get("canslim_passes") is True]
+    operational_rows = build_canslim_operational_rows(operator_payload, candidates_payload, decision_payload)
+
+    def row(item: dict[str, Any]) -> str:
+        component_html = "".join(
+            '<span class="canslim-component {}"><b>{}</b><small>{}</small></span>'.format(
+                "component-ok" if component["available"] else "component-missing",
+                html_escape(component["key"]),
+                html_escape(compact_contract_value(component["value"]) if component["available"] else "faltante"),
+            )
+            for component in item["components"]
+        )
         return """
-        <article class="canslim-row">
-          <div><strong>{ticker}</strong><small>Score C/A/L/M {score} · {rating} · cobertura {coverage}</small></div>
-          <div><b>{stage}</b><small>{detail}</small></div>
-          <span>{contract}</span>
+        <article class="canslim-card canslim-{stage_key}">
+          <div class="canslim-card-head">
+            <div><strong>{ticker}</strong><small>Score {score:.0f}/100 · {rating} · datos {freshness}</small></div>
+            <b>{stage}</b>
+          </div>
+          <div class="canslim-components" aria-label="Cobertura C A L M">{components}</div>
+          <p class="canslim-coverage"><strong>Cobertura {coverage:.0f}%:</strong> {coverage_label}</p>
+          <div class="canslim-facts">
+            <span>Gatillo<strong>{trigger}</strong></span>
+            <span>Fortaleza relativa<strong>{relative_strength}</strong></span>
+            <span>Punto de compra / distancia<strong>{buy_point}</strong></span>
+            <span>Volumen vs promedio<strong>{volume}</strong></span>
+            <span>Estrategia propuesta<strong>{contract}</strong></span>
+            <span>Bloqueo principal<strong>{blocker}</strong></span>
+          </div>
+          <div class="canslim-next"><span>Siguiente condición necesaria</span><strong>{next_event}</strong></div>
         </article>
         """.format(
-            ticker=html_escape(ticker),
-            score=html_escape(score if score is not None else "N/D"),
-            rating=html_escape(friendly_operator_state(rating)),
-            coverage=html_escape("{}%".format(coverage) if coverage is not None else ("parcial; falta " + ",".join(missing_components) if missing_components else "sin detalle")),
-            stage=html_escape(stage),
-            detail=html_escape(detail),
-            contract=html_escape(contract or "Sin contrato priorizado"),
+            ticker=html_escape(item["ticker"]), score=item["score"], rating=html_escape(item["rating"]),
+            freshness=html_escape(item["freshness"]), stage_key=html_escape(item["stage_key"]), stage=html_escape(item["stage"]),
+            components=component_html, coverage=item["coverage"], coverage_label=html_escape(item["coverage_label"]),
+            trigger=html_escape(item["trigger"]), relative_strength=html_escape(item["relative_strength"]),
+            buy_point=html_escape(item["buy_point"]), volume=html_escape(item["volume"]), contract=html_escape(item["contract"]),
+            blocker=html_escape(item["blocker"]), next_event=html_escape(item["next_event"]),
         )
 
-    ordered = sorted(
-        passed,
-        key=lambda item: (
-            str(item.get("ticker") or "").upper() not in final_by_ticker,
-            str(item.get("ticker") or "").upper() not in decision_by_ticker,
-            -(console_float_or_none(item.get("canslim_score")) or 0.0),
-        ),
-    )
+    ordered = operational_rows
     passed_tickers = {str(item.get("ticker") or "").upper() for item in passed}
+    decisions = decision_payload.get("by_ticker") if isinstance(decision_payload.get("by_ticker"), list) else []
+    decision_by_ticker = {str(item.get("ticker") or "").upper() for item in decisions if isinstance(item, dict) and item.get("best")}
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    final_alerts = [item for field in ("active_alerts", "diagnostic_alerts") for item in (data.get(field) or []) if isinstance(item, dict)]
+    final_by_ticker = {str(item.get("ticker") or "").upper(): item for item in final_alerts if item.get("ticker")}
     contract_evaluated_count = len(passed_tickers & set(decision_by_ticker))
     final_evaluated_count = len(passed_tickers & set(final_by_ticker))
     evaluated_count = len(passed_tickers & (set(decision_by_ticker) | set(final_by_ticker)))
     ready_count = sum(
-        1 for item in passed
-        if str((final_by_ticker.get(str(item.get("ticker") or "").upper()) or {}).get("state") or "").upper() == "ENTRY_READY"
+        1 for item in operational_rows if item["stage_key"] == "ready"
     )
+    gate_count = sum(1 for item in operational_rows if item["stage_key"] in {"gate", "forming"})
+    rejected_count = max(0, len(candidates) - len(passed))
     visible = ordered[:8]
     remaining = ordered[8:]
     remaining_html = ""
@@ -5659,23 +5757,25 @@ def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
         <div><p class="eyebrow">Radar CANSLIM</p><h2>De preselección C/A/L/M a decisión final</h2></div>
         <p>El score usa los componentes disponibles y muestra su cobertura; opciones, técnica, riesgo y capacidad deciden si merece revisión.</p>
       </div>
-      <div class="position-overview">
-        <div><span>Analizados</span><strong>{analyzed}</strong><small>{freshness}</small></div>
-        <div><span>Preseleccionados</span><strong>{passed}</strong><small>score disponible ≥ 70; revisa cobertura C/A/L/M</small></div>
-        <div><span>Evaluados por el motor</span><strong>{evaluated}</strong><small>{contract_evaluated} con contrato · {final_evaluated} en compuerta final</small></div>
-        <div><span>Entrada final</span><strong>{ready}</strong><small>{network}</small></div>
+      <div class="canslim-funnel">
+        <div><span>1 · Universo</span><strong>{analyzed}</strong><small>{freshness}</small></div>
+        <div><span>2 · Preselección</span><strong>{passed}</strong><small>C/A/L/M ≥ 70 según cobertura disponible</small></div>
+        <div><span>3 · Contrato</span><strong>{contract_evaluated}</strong><small>opción priorizada</small></div>
+        <div><span>4 · Setup / compuerta</span><strong>{gate}</strong><small>requiere condición final</small></div>
+        <div><span>5 · Entrada lista</span><strong>{ready}</strong><small>{network}</small></div>
+        <div><span>Descartados</span><strong>{rejected}</strong><small>no superaron la preselección</small></div>
       </div>
-      <p class="canslim-explanation"><strong>Lectura correcta:</strong> una preselección no significa comprar. Si falta L o M el score se identifica como parcial; una entrada sólo aparece cuando además supera técnica, contrato, riesgo y capacidad.</p>
+      <p class="canslim-explanation"><strong>Lectura correcta:</strong> la lista se ordena por cercanía a una decisión, no por score aislado. Una preselección no significa comprar; una entrada sólo aparece cuando además supera técnica, contrato, mercado, riesgo y capacidad.</p>
       <div class="canslim-list">{rows}</div>
       {remaining}
     </section>
     """.format(
         analyzed=html_escape(candidates_payload.get("candidate_count") or len(candidates)),
         passed=html_escape(len(passed)),
-        evaluated=html_escape(evaluated_count),
         contract_evaluated=html_escape(contract_evaluated_count),
-        final_evaluated=html_escape(final_evaluated_count),
+        gate=html_escape(gate_count),
         ready=html_escape(ready_count),
+        rejected=html_escape(rejected_count),
         freshness=html_escape(friendly_age(generated_at)),
         network=html_escape("Fuentes OK" if network.get("status") == "OK" else "Revisar fuentes"),
         rows="".join(row(item) for item in visible) or '<div class="empty-state"><strong>Sin candidatos CANSLIM</strong><span>Ejecuta la apertura diaria para actualizar el universo.</span></div>',
@@ -8682,12 +8782,33 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-card > a {{ display:inline-block; margin-top:10px; color:var(--accent-strong); font-weight:850; }}
           .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
           .canslim-list {{ display:grid; gap:8px; }}
-          .canslim-row {{ display:grid; grid-template-columns:minmax(120px,.35fr) minmax(260px,1.25fr) minmax(180px,.7fr); gap:12px; align-items:center; border:1px solid var(--line); border-radius:9px; padding:11px 13px; background:#fff; }}
-          .canslim-row strong,.canslim-row small,.canslim-row b,.canslim-row span {{ display:block; }}
-          .canslim-row small,.canslim-row span {{ color:var(--muted); font-size:.78rem; line-height:1.3; }}
+          .canslim-funnel {{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:0; margin:14px 0; border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+          .canslim-funnel > div {{ padding:12px; border-right:1px solid var(--line); min-width:0; background:#fff; }}
+          .canslim-funnel > div:last-child {{ border-right:0; }}
+          .canslim-funnel span,.canslim-funnel strong,.canslim-funnel small {{ display:block; overflow-wrap:anywhere; }}
+          .canslim-funnel span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:900; }}
+          .canslim-funnel strong {{ font-size:1.15rem; margin:4px 0; }}
+          .canslim-funnel small {{ color:var(--muted); font-size:.72rem; line-height:1.25; }}
+          .canslim-list {{ display:grid; gap:10px; }}
+          .canslim-card {{ border:1px solid var(--line); border-left:6px solid #64748b; border-radius:10px; padding:14px; background:#fff; }}
+          .canslim-card.canslim-ready {{ border-left-color:#16a34a; }} .canslim-card.canslim-gate,.canslim-card.canslim-forming {{ border-left-color:#d97706; }} .canslim-card.canslim-blocked {{ border-left-color:#b42318; }} .canslim-card.canslim-contract {{ border-left-color:#2563eb; }}
+          .canslim-card-head {{ display:flex; justify-content:space-between; gap:14px; align-items:flex-start; }}
+          .canslim-card-head strong,.canslim-card-head small {{ display:block; }}
+          .canslim-card-head strong {{ font-size:1.25rem; }} .canslim-card-head small {{ color:var(--muted); margin-top:3px; }}
+          .canslim-card-head > b {{ border-radius:999px; padding:6px 9px; background:var(--soft); font-size:.76rem; white-space:nowrap; }}
+          .canslim-components {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; margin-top:12px; }}
+          .canslim-component {{ display:flex; justify-content:space-between; gap:8px; border:1px solid var(--line); border-radius:8px; padding:8px 9px; background:#f8fafc; }}
+          .canslim-component b,.canslim-component small {{ display:block; }} .canslim-component small {{ color:var(--muted); }}
+          .canslim-component.component-ok {{ border-color:#86d5aa; background:#f3fbf6; }} .canslim-component.component-missing {{ border-color:#f4c58f; background:#fff8ed; }}
+          .canslim-coverage {{ margin:8px 0 0; color:var(--muted); font-size:.8rem; }}
+          .canslim-facts {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }}
+          .canslim-facts > span {{ color:var(--muted); font-size:.7rem; text-transform:uppercase; font-weight:850; border-top:1px solid var(--line); padding-top:8px; }}
+          .canslim-facts strong {{ display:block; color:var(--ink); font-size:.8rem; text-transform:none; line-height:1.3; margin-top:3px; overflow-wrap:anywhere; }}
+          .canslim-next {{ display:grid; grid-template-columns:180px minmax(0,1fr); gap:10px; align-items:center; margin-top:12px; border-radius:8px; padding:10px 12px; background:#eef6ff; }}
+          .canslim-next span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:900; }} .canslim-next strong {{ line-height:1.3; }}
           .remaining-canslim {{ margin-top:10px; }}
           .remaining-canslim > summary,.futures-history > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
-          .remaining-canslim .canslim-row {{ margin-top:8px; }}
+          .remaining-canslim .canslim-card {{ margin-top:8px; }}
           .futures-history {{ margin-top:12px; border:1px solid var(--line); border-radius:9px; padding:8px 12px; background:var(--soft); }}
           .futures-history ol {{ list-style:none; margin:8px 0 0; padding:0; display:grid; gap:6px; }}
           .futures-event {{ display:grid; grid-template-columns:90px minmax(160px,.55fr) minmax(260px,1fr); gap:10px; align-items:center; border-left:4px solid #16a34a; padding:8px 10px; background:white; }}
@@ -8812,7 +8933,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.canslim-row,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid {{ grid-template-columns:minmax(0,1fr); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head {{ display:block; }} .canslim-card-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>

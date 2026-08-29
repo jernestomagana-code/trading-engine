@@ -670,6 +670,7 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
 
     def test_daily_open_checklist_is_safe_operator_automation(self):
         source = DAILY_OPEN_CHECKLIST.read_text()
+        bridge_source = BRIDGE.read_text()
 
         self.assertIn("STOCK_ULTIMUS_DAILY_OPEN_CHECKLIST", source)
         self.assertIn("/gpt_v32_operator_today", source)
@@ -678,6 +679,10 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("scripts/daily_open_checklist.py", str(DAILY_OPEN_CHECKLIST))
         self.assertIn("scripts/build_canslim_free_candidates.py", source)
         self.assertIn("canslim_step", source)
+        self.assertIn("canslim_pre_bridge_step", source)
+        self.assertIn("POST_IBKR_HISTORY_L_M", source)
+        self.assertLess(source.index('report["canslim_pre_bridge_step"]'), source.index('report["refresh_step"] = refresh_bridge'))
+        self.assertGreater(source.index('report["canslim_step"] = build_canslim_candidates(args)'), source.index('report["refresh_step"] = refresh_bridge'))
         self.assertIn("rsp_refresh_step", source)
         self.assertIn("--coberturas-rsp-weekly", source)
         self.assertIn("RSP_READY_FOR_MANUAL_REVIEW", source)
@@ -694,6 +699,9 @@ class LocalDailyEvaluationRunnerTests(unittest.TestCase):
         self.assertIn("Decision support", source)
         self.assertNotIn("send_resend_email", source)
         self.assertNotIn("placeOrder", source)
+        self.assertIn('priority_symbols = ["SPY", "QQQ"] + canslim_symbols', bridge_source)
+        self.assertIn('"supports_canslim_l_and_m": True', bridge_source)
+        self.assertIn("CANSLIM_HISTORICAL_MAX_SYMBOLS", bridge_source)
         self.assertNotIn(".place_order", source)
 
     def test_v32_nudge_preflight_check_is_safe_operator_helper(self):

@@ -686,6 +686,26 @@ def build_payload(
         errors=errors or {},
         error_state=error_state,
     )
+    full_l_m_count = sum(
+        1 for row in rows
+        if (row.get("canslim") or {}).get("components", {}).get("L_relative_strength") is not None
+        and (row.get("canslim") or {}).get("components", {}).get("M_market") is not None
+    )
+    history_health = {
+        "status": "FULL" if rows and full_l_m_count == len(rows) else ("PARTIAL" if bars_by_ticker else "MISSING"),
+        "bar_symbol_count": len(bars_by_ticker),
+        "bar_symbols": sorted(bars_by_ticker),
+        "spy_available": "SPY" in bars_by_ticker,
+        "qqq_available": "QQQ" in bars_by_ticker,
+        "full_c_a_l_m_count": sum(1 for row in rows if row.get("canslim_component_coverage_pct") == 100.0),
+        "full_l_m_count": full_l_m_count,
+        "partial_component_count": sum(1 for row in rows if row.get("canslim_component_coverage_pct") != 100.0),
+        "next_required_action": (
+            "No historical-data action required."
+            if rows and full_l_m_count == len(rows)
+            else "Open TWS and run daily open to refresh SPY, QQQ and CANSLIM candidate history."
+        ),
+    }
     return {
         "engine": ENGINE,
         "engine_version": ENGINE_VERSION,
@@ -699,6 +719,7 @@ def build_payload(
         "by_ticker": {row["ticker"]: row for row in rows},
         "errors": errors or {},
         "network_health": network_health,
+        "historical_data_health": history_health,
         "error_state_version": (error_state or {}).get("version"),
         "manual_review_required": True,
         "execution_authorized": False,

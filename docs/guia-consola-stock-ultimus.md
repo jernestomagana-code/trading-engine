@@ -221,7 +221,22 @@ Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Me
 Este panel permanece cerrado cuando no hay una señal operable. La consola separa:
 
 - **Alertas Operables:** configuraciones con suficiente calidad para revisión humana.
-- **Radar CANSLIM:** presenta el embudo completo del día: universo analizado, preselecciones con score disponible ≥70, cobertura de componentes C/A/L/M, cuántas fueron evaluadas por el motor, cuáles tuvieron contrato o llegaron a la compuerta final y cuáles —si existe alguna— quedaron realmente `ENTRY_READY`. Si faltan L o M, el score se rotula como parcial. El total evaluado usa la unión de ambas rutas para mantener un embudo coherente aunque una señal final venga de otra fuente operativa. Una preselección CANSLIM no equivale a una recomendación de compra.
+- **Radar CANSLIM:** presenta un embudo operativo ordenado por cercanía a una decisión, no por el score aislado: **Universo → Preselección → Contrato → Setup/compuerta → Entrada lista**. También informa cuántos símbolos fueron descartados. Cada tarjeta muestra cobertura C/A/L/M, gatillo, fortaleza relativa, punto de compra/distancia, volumen, estrategia propuesta, bloqueo principal y el siguiente evento que debe ocurrir. Cuando la fuente todavía no entrega una métrica —actualmente pueden faltar L, M, punto de compra o volumen relativo— aparece como **Pendiente/no disponible**; la consola no la supone. Si faltan L o M, el score se rotula como parcial. Una preselección CANSLIM no equivale a una recomendación de compra.
+
+Cómo leer las etapas CANSLIM:
+
+1. **Preselección fundamental:** superó el filtro con los componentes disponibles, pero todavía no hay contrato priorizado.
+2. **Contrato evaluado:** existe una estructura de opción candidata; aún falta la compuerta final.
+3. **Setup en formación / compuerta final:** el motor ya la sigue, pero debe ocurrir la condición técnica o de mercado indicada.
+4. **Bloqueada:** faltan datos, riesgo o capacidad; no debe tratarse como entrada.
+5. **Entrada lista:** merece revisión manual inmediata de contrato, tamaño, riesgo y ticket en TWS. La consola no coloca la orden.
+
+### De dónde salen L y M
+
+- **L (Leader):** compara el rendimiento diario del activo con SPY y QQQ usando el historial recogido por IBKR. Un valor alto indica que el activo está liderando a las referencias; no basta por sí solo para entrar.
+- **M (Market):** evalúa la tendencia reciente de SPY y QQQ con ese mismo historial. Sirve para evitar que un buen crecimiento fundamental se interprete fuera del contexto general del mercado.
+
+La apertura diaria hace dos pasadas: primero identifica los candidatos por C/A; luego el puente de IBKR descarga historial para SPY, QQQ y los preseleccionados, y finalmente recalcula C/A/L/M. Si TWS está cerrado o IBKR no entrega suficientes barras, la consola conserva el candidato como **parcial** y lo muestra como pendiente, pero no inventa L/M ni lo presenta como CANSLIM completo.
 - **Futuros Intradía:** señales nativas de MNQ/MES recibidas desde TradingView. El bloque conserva la actividad recibida durante el día, incluso si una señal venció, fue degradada a vigilancia o quedó en cuarentena. Allí verás precio de disparo, stop, targets, resultado final, si se envió o no al celular y el motivo. Chris IA queda como evidencia histórica y ya no condiciona la disponibilidad operativa.
 - **Diagnóstico oculto:** casos con datos insuficientes, espera, bloqueo o calidad baja.
 - **Ya revisadas/en seguimiento/cerradas:** historial operativo reciente.
