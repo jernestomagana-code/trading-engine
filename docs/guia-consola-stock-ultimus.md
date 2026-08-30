@@ -345,7 +345,16 @@ En **IBKR aplicada**, escribe una nota, el precio real de fill y la cantidad. Un
 
 ## 9. Cartera y explorador de posiciones
 
-La vista **Cartera** muestra primero el riesgo y después un explorador compacto de posiciones. Escribe un ticker —por ejemplo `NFLX`— y, si existe una sola coincidencia, su tarjeta se abre automáticamente. Cada fila enseña ticker, estructura y recomendación principal; los escenarios, formularios y diagnósticos permanecen cerrados hasta seleccionar **Ver gestión**.
+La vista **Cartera** funciona como una bandeja de decisiones, no como una lista indiferenciada. Arriba resume cuatro grupos y presenta las posiciones en este mismo orden:
+
+1. **Actuar ahora:** riesgo, asignación, defensa, reducción o cierre sensible al tiempo.
+2. **Revisar hoy:** existe una decisión que necesita criterio humano, pero no una emergencia operativa.
+3. **Mantener:** la recomendación principal es no modificar la posición; esto también es una decisión explícita del motor.
+4. **Actualizar datos:** IBKR o la lectura técnica no permiten sostener todavía una recomendación operable.
+
+Las posiciones cuya lectura ya se marcó como revisada se mueven a **Revisiones completadas**. No regresan a la cola principal hasta que cambie la posición, su estructura o la recomendación.
+
+Escribe un ticker —por ejemplo `NFLX`— y, si existe una sola coincidencia, su tarjeta se abre automáticamente. Cada fila enseña ticker, estructura, recomendación principal y **Próximo control**. Al seleccionar **Ver gestión**, la primera franja responde tres preguntas: **qué hacer ahora**, **por qué ahora** y **qué haría cambiar el plan**. Los escenarios, formularios y diagnósticos permanecen como detalle secundario.
 
 Cada posición incluye además **Posibilidades de gestión**. No es una lista genérica de botones: cambia según el instrumento. Las acciones largas comparan mantener, covered call parcial o total, protective put, collar, reducciones parciales y salida; las puts vendidas y covered calls comparan mantener, recomprar, rolar, asignación y defensa; las opciones largas y cualquier riesgo descubierto reciben rutas específicas. Cada posibilidad indica si está **lista para revisión**, si **falta cadena**, **falta precio**, **faltan datos** o conviene **esperar liquidez**.
 

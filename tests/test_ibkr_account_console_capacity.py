@@ -508,6 +508,40 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("call_wall", html)
         self.assertIn("gamma_blob", html)
 
+    def test_position_action_queue_prioritizes_decisions_and_keeps_hold_explicit(self):
+        urgent = account_console.position_action_queue_metadata({
+            "management_action": "REVIEW_ASSIGNMENT_RISK",
+            "exit_state": "RISK_REVIEW",
+            "dte": 3,
+            "reasons": ["Underlying is below the short-put strike; assignment risk needs review."],
+            "technical": {"support": 210, "resistance": 225},
+        })
+        maintain = account_console.position_action_queue_metadata({
+            "management_action": "NO_ACTION_RECOMMENDED",
+            "exit_state": "MONITOR",
+            "reasons": ["Covered call has no deterministic exit trigger; monitor."],
+            "technical": {"support": 210},
+        })
+        completed = account_console.position_action_queue_metadata({
+            "management_action": "REVIEW_ROLL",
+            "exit_state": "MONITOR",
+        }, acknowledged=True)
+        expired = account_console.position_action_queue_metadata({
+            "management_action": "NO_POSITION",
+            "exit_state": "POSITION_EXPIRED",
+            "dte": -2,
+            "blockers": ["POSITION_EXPIRED"],
+        })
+
+        self.assertEqual(urgent["key"], "act")
+        self.assertEqual(urgent["checkpoint"], "Antes del vencimiento · 3 DTE")
+        self.assertEqual(maintain["key"], "maintain")
+        self.assertIn("no tiene un disparador", maintain["why_now"])
+        self.assertEqual(completed["key"], "completed")
+        self.assertEqual(expired["key"], "data")
+        self.assertEqual(expired["label"], "Conciliar con IBKR")
+        self.assertNotIn("-2 DTE", expired["checkpoint"])
+
     def test_console_renders_long_stock_scenario_comparison(self):
         item = {
             "management_alternatives": {

@@ -2633,6 +2633,7 @@ FRIENDLY_OPERATOR_STATES = {
     "ASSIGNMENT_REVIEW": "Revisar asignación",
     "TAKE_PROFIT_REVIEW": "Revisar toma de ganancia",
     "NO_ACTION_RECOMMENDED": "Mantener sin cambios",
+    "NO_POSITION": "Posición vencida; conciliar",
     "FRESH": "Actualizados",
     "STALE": "Desactualizados",
     "READY_FOR_DECISION_REVIEW": "Listo para revisar decisiones",
@@ -6290,6 +6291,10 @@ def friendly_position_reason(text: str) -> str:
         "Long-stock thesis may be damaged by event risk or a broken support level.": "La tesis de las acciones puede estar dañada por un evento de riesgo o por ruptura de soporte.",
         "Open futures exposure conflicts with the latest technical context; review stop, reduction, or exit manually.": "La posición de futuros contradice el contexto técnico; revisar manualmente stop, reducción o salida.",
         "Open futures exposure requires an explicit stop, target, session context, and daily-loss review.": "La posición de futuros requiere revisar stop, objetivo, contexto de sesión y pérdida diaria máxima.",
+        "Position expiration is in the past.": "El contrato ya venció; confirma en IBKR que no siga abierto y concilia el historial.",
+        "Short call is not covered by detected long shares.": "La call vendida no tiene acciones detectadas que la cubran; confirma la estructura en IBKR.",
+        "Covered call is near expiration and near the strike; pin risk and called-away path need review.": "El covered call está próximo al vencimiento y cerca del strike; revisar asignación o rolleo.",
+        "Detected calendar spread across 2 expiries; review the combined net exposure, roll and exit plan, not each leg separately.": "Se detectó un spread calendario entre dos vencimientos; revisa exposición, rolleo y salida como una sola estructura.",
     }
     return replacements.get(text, text)
 
@@ -6614,6 +6619,7 @@ def render_position_management_card(
     item: dict[str, Any],
     acknowledged_event: dict[str, Any] | None = None,
     related_stock: dict[str, Any] | None = None,
+    queue_meta: dict[str, Any] | None = None,
 ) -> str:
     technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
     thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
@@ -6639,7 +6645,7 @@ def render_position_management_card(
         "gamma=" + ("OK" if technical.get("gamma_available") else "pendiente"),
     ]
     primary_action = friendly_operator_state(item.get("management_action"))
-    needs_attention = any(word in str(item.get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW"))
+    queue_meta = queue_meta if isinstance(queue_meta, dict) else position_action_queue_metadata(item, bool(acknowledged_event))
     management_fingerprint = shared_position_management_journal.management_fingerprint(item)
     action_upper = str(item.get("management_action") or "").upper()
     if acknowledged_event:
@@ -6709,13 +6715,19 @@ def render_position_management_card(
         </details>
         """.format(alternatives=render_position_alternatives(related_stock))
     return """
-    <details class="alert-card position-card" data-position-card data-ticker="{ticker_raw}">
+    <details class="alert-card position-card" data-position-card data-priority="{priority_key}" data-ticker="{ticker_raw}">
       <summary class="position-card-summary">
         <span class="position-card-identity"><strong>{ticker}</strong><small>{contract}</small></span>
-        <span class="position-card-recommendation"><small>Recomendación principal</small><b>{primary_action}</b><em>{reason}</em></span>
+        <span class="position-card-recommendation"><small>{priority_label} · Recomendación principal</small><b>{primary_action}</b><em>{reason}</em></span>
+        <span class="position-card-checkpoint"><small>Próximo control</small><b>{checkpoint}</b></span>
         <span class="position-card-open">Ver gestión</span>
       </summary>
       <div class="position-card-body">
+      <div class="position-decision-brief">
+        <div><span>Qué hacer ahora</span><strong>{primary_action}</strong></div>
+        <div><span>Por qué ahora</span><strong>{why_now}</strong></div>
+        <div><span>Qué haría cambiar el plan</span><strong>{change_trigger}</strong></div>
+      </div>
       {structure}
       {alternatives}
       {related_stock}
@@ -6789,6 +6801,11 @@ def render_position_management_card(
         roll_plan=html_escape(thesis.get("roll_plan") or ""),
         action=position_badge(item.get("management_action"), primary_action),
         primary_action=html_escape(primary_action),
+        priority_key=html_escape(queue_meta.get("key") or "review"),
+        priority_label=html_escape(queue_meta.get("label") or "Revisar hoy"),
+        checkpoint=html_escape(queue_meta.get("checkpoint") or "Próxima apertura"),
+        why_now=html_escape(queue_meta.get("why_now") or reason_text),
+        change_trigger=html_escape(queue_meta.get("change_trigger") or "Cambio de precio, riesgo o recomendación."),
         state=position_badge(item.get("exit_state")),
         contract=html_escape(" · ".join(friendly_operator_state(bit) if str(bit).upper() in FRIENDLY_OPERATOR_STATES else str(bit) for bit in contract_bits if bit not in [None, ""])),
         structure=structure_html,
@@ -6803,6 +6820,82 @@ def render_position_management_card(
         warnings=html_escape(", ".join(str(x) for x in warnings[:4]) or "none"),
         blockers=html_escape(", ".join(str(x) for x in blockers[:4]) or "none"),
     )
+
+
+def position_action_queue_metadata(item: dict[str, Any], acknowledged: bool = False) -> dict[str, Any]:
+    """Translate engine output into one operator-facing priority without changing its decision."""
+    action = str(item.get("management_action") or "").upper()
+    exit_state = str(item.get("exit_state") or "").upper()
+    warnings = [str(value).upper() for value in (item.get("warnings") or [])]
+    blockers = [str(value).upper() for value in (item.get("blockers") or [])]
+    technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
+    reasons = item.get("reasons") if isinstance(item.get("reasons"), list) else []
+    dte = console_float_or_none(item.get("dte"))
+    reason = friendly_position_reason(str((reasons or item.get("warnings") or item.get("blockers") or [""])[0]))
+
+    urgent_terms = ("RISK", "DEFENSIVE", "ASSIGNMENT", "REDUCE", "CLOSE", "EXIT")
+    data_terms = ("REFRESH", "WAIT_DATA", "MISSING_DATA")
+    expired = dte is not None and dte < 0
+    if acknowledged:
+        key, label, rank = "completed", "Revisión completada", 4
+    elif expired:
+        key, label, rank = "data", "Conciliar con IBKR", 3
+    elif any(term in action for term in data_terms):
+        key, label, rank = "data", "Actualizar datos", 3
+    elif any(term in action or term in exit_state for term in urgent_terms) or blockers:
+        key, label, rank = "act", "Actuar ahora", 0
+    elif action in {"NO_ACTION_RECOMMENDED", "MONITOR", "HOLD"} or exit_state in {"MONITOR", "LINKED_STRUCTURE_LEG"}:
+        key, label, rank = "maintain", "Mantener", 2
+    else:
+        key, label, rank = "review", "Revisar hoy", 1
+
+    if expired:
+        checkpoint = "En la próxima actualización IBKR"
+    elif key == "data":
+        checkpoint = "Después de actualizar IBKR"
+    elif dte is not None and dte <= 7:
+        checkpoint = "Antes del vencimiento · {} DTE".format(int(dte) if dte.is_integer() else dte)
+    elif technical.get("event_risk") or technical.get("earnings_soon") or technical.get("ex_dividend_soon"):
+        checkpoint = "Antes del próximo evento"
+    elif key == "act":
+        checkpoint = "En esta sesión"
+    elif key == "completed":
+        checkpoint = "Cuando cambie la posición"
+    else:
+        checkpoint = "Próxima apertura diaria"
+
+    triggers = []
+    support = technical.get("support")
+    resistance = technical.get("resistance")
+    if support is not None:
+        triggers.append("romper soporte {}".format(support))
+    if resistance is not None:
+        triggers.append("superar resistencia {}".format(resistance))
+    if dte is not None and dte <= 21:
+        triggers.append("acercarse al vencimiento")
+    if not triggers:
+        triggers.append("cambio de riesgo, precio o estructura")
+    if expired:
+        why_now = "El vencimiento ya pasó; no debe tratarse como una operación todavía activa."
+    elif key == "data":
+        why_now = "Faltan datos para sostener una recomendación operable."
+    elif key == "maintain":
+        why_now = reason or "No existe un disparador que justifique modificar la posición."
+    elif key == "completed":
+        why_now = "Ya evaluaste esta misma posición y la recomendación no ha cambiado."
+    else:
+        why_now = reason or "El motor detectó una condición que requiere decisión humana."
+    score = rank * 100 + (dte if dte is not None else 99)
+    return {
+        "key": key,
+        "label": label,
+        "rank": rank,
+        "score": score,
+        "checkpoint": checkpoint,
+        "why_now": why_now,
+        "change_trigger": "; ".join(triggers[:3]).capitalize() + ".",
+        "warnings": warnings,
+    }
 
 
 def render_active_positions_panel(
@@ -6854,18 +6947,48 @@ def render_active_positions_panel(
         and str(item.get("position_id") or "") not in linked_futures_ids
     ]
     positions_unconfirmed = payload.get("position_data_warning") == "BROKER_REFRESH_FAILED_POSITIONS_UNCONFIRMED"
+    queue_rows = []
+    for item in visible_positions:
+        position_id = str(item.get("position_id") or "")
+        acknowledged_event = acknowledged_positions.get(position_id)
+        queue_rows.append((
+            position_action_queue_metadata(item, bool(acknowledged_event)),
+            item,
+            acknowledged_event,
+        ))
+    queue_rows.sort(key=lambda row: (row[0].get("score", 999), str(row[1].get("ticker") or "")))
+    queue_counts = {
+        key: sum(1 for meta, _, _ in queue_rows if meta.get("key") == key)
+        for key in ("act", "review", "maintain", "data", "completed")
+    }
     if positions:
-        priority = lambda item: 0 if any(word in str((item or {}).get("management_action") or "").upper() for word in ("RISK", "ASSIGNMENT", "DEFENSIVE", "REVIEW")) else 1
-        cards = "".join(
+        pending_cards = "".join(
             render_position_management_card(
                 item,
-                acknowledged_positions.get(str(item.get("position_id") or "")),
+                acknowledged_event,
                 fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
                 if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
+                meta,
             )
-            for item in sorted(visible_positions, key=priority)[:8]
-            if isinstance(item, dict)
+            for meta, item, acknowledged_event in queue_rows
+            if meta.get("key") != "completed"
         )
+        completed_cards = "".join(
+            render_position_management_card(
+                item,
+                acknowledged_event,
+                fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
+                if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
+                meta,
+            )
+            for meta, item, acknowledged_event in queue_rows
+            if meta.get("key") == "completed"
+        )
+        cards = pending_cards or '<div class="empty-state"><strong>Todo revisado</strong><span>No hay decisiones pendientes con la lectura actual.</span></div>'
+        if completed_cards:
+            cards += '<details class="position-completed"><summary>Revisiones completadas ({})</summary><div class="position-list">{}</div></details>'.format(
+                queue_counts["completed"], completed_cards
+            )
     elif positions_unconfirmed:
         cards = """
         <div class="tiles">
@@ -6921,11 +7044,12 @@ def render_active_positions_panel(
         <p>{next_text}</p>
       </div>
       <div class="position-overview">
-        <div><span>Estructuras visibles</span><strong>{visible_count}</strong><small>{positions_found} instrumentos · {review_count} requieren revisión</small></div>
-        <div><span>Riesgo inmediato</span><strong>{risk_count}</strong><small>{portfolio_status}</small></div>
-        <div><span>Datos</span><strong>{freshness}</strong><small>{age}</small></div>
-        <div><span>Seguimiento</span><strong>{pending_followup}</strong><small>pendiente(s)</small></div>
+        <div class="queue-count queue-act"><span>Actuar ahora</span><strong>{act_count}</strong><small>Riesgo inmediato o decisión sensible al tiempo</small></div>
+        <div class="queue-count queue-review"><span>Revisar hoy</span><strong>{today_count}</strong><small>requieren criterio humano</small></div>
+        <div class="queue-count queue-maintain"><span>Mantener</span><strong>{maintain_count}</strong><small>sin cambio recomendado</small></div>
+        <div class="queue-count queue-data"><span>Actualizar datos</span><strong>{data_count}</strong><small>{freshness} · {age}</small></div>
       </div>
+      <div class="sr-only"><strong>{visible_count}</strong><small>{positions_found} instrumentos · {review_count} requieren revisión · Seguimiento {pending_followup} pendiente(s)</small></div>
       <div class="position-explorer-tools">
         <label for="position-search">Buscar una posición</label>
         <input id="position-search" type="search" placeholder="Escribe un ticker, por ejemplo NFLX" autocomplete="off">
@@ -6951,6 +7075,10 @@ def render_active_positions_panel(
         age=html_escape("requiere refresh" if positions_unconfirmed else friendly_age(payload.get("generated_at"))),
         journal_count=html_escape(journal_summary.get("event_count", 0)),
         pending_followup=html_escape(journal_evaluation.get("pending_followup_count", 0)),
+        act_count=html_escape(queue_counts.get("act", 0)),
+        today_count=html_escape(queue_counts.get("review", 0)),
+        maintain_count=html_escape(queue_counts.get("maintain", 0)),
+        data_count=html_escape(queue_counts.get("data", 0)),
         cards=cards,
         alerts_html=alerts_html,
         alias=html_escape(alias),
@@ -8662,7 +8790,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-list {{ display:grid; gap:10px; }}
           .position-card {{ display:block; padding:0; overflow:hidden; }}
           .position-card[hidden] {{ display:none; }}
-          .position-card-summary {{ cursor:pointer; list-style:none; display:grid; grid-template-columns:minmax(150px,.55fr) minmax(260px,1.45fr) auto; gap:14px; align-items:center; padding:14px 16px; }}
+          .position-card-summary {{ cursor:pointer; list-style:none; display:grid; grid-template-columns:minmax(140px,.48fr) minmax(260px,1.25fr) minmax(150px,.5fr) auto; gap:14px; align-items:center; padding:14px 16px; }}
           .position-card-summary::-webkit-details-marker {{ display:none; }}
           .position-card[open] > .position-card-summary {{ border-bottom:1px solid var(--line); background:var(--soft); }}
           .position-card-identity strong,.position-card-identity small,.position-card-recommendation small,.position-card-recommendation b,.position-card-recommendation em {{ display:block; }}
@@ -8671,6 +8799,25 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-card-recommendation b {{ margin:2px 0; }}
           .position-card-recommendation em {{ color:var(--muted); font-style:normal; font-size:.8rem; line-height:1.3; }}
           .position-card-open {{ color:var(--accent-strong); font-size:.8rem; font-weight:900; white-space:nowrap; }}
+          .position-card-checkpoint small,.position-card-checkpoint b {{ display:block; }}
+          .position-card-checkpoint small {{ color:var(--muted); font-size:.7rem; text-transform:uppercase; font-weight:850; }}
+          .position-card-checkpoint b {{ margin-top:3px; font-size:.82rem; }}
+          .position-card[data-priority="act"] {{ border-left:6px solid #b42318; }}
+          .position-card[data-priority="review"] {{ border-left:6px solid #d97706; }}
+          .position-card[data-priority="maintain"] {{ border-left:6px solid #16a34a; }}
+          .position-card[data-priority="data"] {{ border-left:6px solid #64748b; }}
+          .position-card[data-priority="completed"] {{ opacity:.78; }}
+          .position-decision-brief {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:12px; }}
+          .position-decision-brief > div {{ padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; }}
+          .position-decision-brief span,.position-decision-brief strong {{ display:block; }}
+          .position-decision-brief span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:850; }}
+          .position-decision-brief strong {{ margin-top:4px; font-size:.82rem; line-height:1.35; }}
+          .position-completed {{ margin-top:14px; border:1px solid var(--line); border-radius:10px; background:#f8fafc; }}
+          .position-completed > summary {{ cursor:pointer; padding:12px 14px; font-weight:850; color:var(--muted); }}
+          .position-completed > .position-list {{ padding:0 10px 10px; }}
+          .queue-count {{ border-top:4px solid transparent; }}
+          .queue-count.queue-act {{ border-top-color:#b42318; }} .queue-count.queue-review {{ border-top-color:#d97706; }}
+          .queue-count.queue-maintain {{ border-top-color:#16a34a; }} .queue-count.queue-data {{ border-top-color:#64748b; }}
           .position-card[open] .position-card-open {{ font-size:0; }}
           .position-card[open] .position-card-open::before {{ content:"Cerrar"; font-size:.8rem; }}
           .position-card-body {{ padding:14px 16px 16px; }}
@@ -9068,7 +9215,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
       <body>
