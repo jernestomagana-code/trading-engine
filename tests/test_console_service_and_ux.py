@@ -164,7 +164,10 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('{history_learning_summary}', source)
         self.assertIn('id="cartera" class="operator-subsection"', source)
         self.assertIn('id="resultados" class="operator-subsection" open', source)
-        self.assertIn('id="herramientas" class="panel operator-workspace" open', source)
+        self.assertIn('id="cuentas-config" class="panel operator-workspace" open', source)
+        self.assertIn('id="herramientas" class="panel operator-workspace"', source)
+        self.assertIn('Soporte y diagnóstico avanzado', source)
+        self.assertIn('{configuration_overview}', source)
         self.assertIn('href="/guide">Ayuda</a>', source)
         self.assertIn('class="panel command-center command-{level}"', source)
         self.assertIn('Tus tres prioridades', source)
@@ -183,7 +186,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
         positions_index = source.index('<div id="posiciones">{active_positions}</div>')
         rsp_index = source.index("            {coberturas}\n", positions_index)
-        tools_index = source.index('<details id="herramientas" class="panel operator-workspace" open>')
+        tools_index = source.index('<details id="herramientas" class="panel operator-workspace">')
         self.assertLess(risk_index, positions_index)
         self.assertLess(positions_index, rsp_index)
         self.assertNotIn("{coberturas}", source[tools_index:source.index("</details>", tools_index)])
@@ -407,6 +410,20 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         }
 
         self.assertEqual(console.effective_daily_open_status(report), "EVIDENCE_COLLECTION_ONLY")
+
+    def test_configuration_overview_distinguishes_setup_from_daily_operation(self):
+        rendered = console.render_configuration_overview(
+            {"retiro": {}},
+            {"account_alias": "retiro", "account_scope": "retiro"},
+            {"account_alias": "retiro", "account_scope": "retiro"},
+            {"ok": True, "data": {"account_alias": "retiro", "account_scope": "retiro"}},
+        )
+
+        self.assertIn("¿Está lista esta instalación?", rendered)
+        self.assertIn("Cuenta protegida", rendered)
+        self.assertIn("Cuenta local y producción coinciden", rendered)
+        self.assertIn("La apertura diaria y los pendientes se atienden en Hoy", rendered)
+        self.assertIn('href="#view-hoy"', rendered)
 
 
 if __name__ == "__main__":

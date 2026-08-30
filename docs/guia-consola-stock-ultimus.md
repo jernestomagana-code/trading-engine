@@ -596,7 +596,14 @@ Permite revisar desempeño y calidad por estrategia, fuente y régimen. El siste
 
 ## 14. Configuración y administración
 
-Es una zona de uso ocasional. Incluye:
+Es una zona de uso ocasional, no el lugar donde se opera cada día. La parte superior muestra **¿Está lista esta instalación?** con cuatro pasos:
+
+1. cuenta protegida en Keychain;
+2. cuenta seleccionada;
+3. contexto local y producción alineados;
+4. enlace de regreso a **Hoy**, donde se realiza la operación cotidiana.
+
+**Cuenta y conexión** permanece visible porque contiene las acciones normales para seleccionar, alinear o crear perfiles. **Soporte y diagnóstico avanzado** queda cerrado y sólo se abre ante una prueba, mantenimiento o investigación concreta. Incluye:
 
 - **Estado Ejecutivo y Revisión Manual V31:** vista detallada de estados, bloqueos y contratos.
 - **Pregunta operativa local:** consulta explicaciones del motor desde la consola.

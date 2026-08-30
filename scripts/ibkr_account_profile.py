@@ -7250,6 +7250,44 @@ def render_profile_cards(profiles: dict[str, Any], active: dict[str, Any]) -> st
     return "\n".join(profile_cards)
 
 
+def render_configuration_overview(
+    profiles: dict[str, Any],
+    active: dict[str, Any],
+    snapshot: dict[str, Any],
+    operator_payload: dict[str, Any],
+) -> str:
+    """Explain setup state and route ordinary operators to the right action."""
+    comparison = selected_vs_published(active, snapshot, operator_payload)
+    profile_count = len(profiles)
+    active_alias = str(active.get("account_alias") or "").strip()
+    aligned = comparison.get("matches") is True
+    steps = [
+        ("1", "Cuenta protegida", "LISTO" if profile_count else "PENDIENTE", f"{profile_count} perfil(es) guardados" if profile_count else "Crea el primer perfil abajo"),
+        ("2", "Cuenta seleccionada", "LISTO" if active_alias else "PENDIENTE", active_alias or "Selecciona una cuenta"),
+        ("3", "Contexto publicado", "LISTO" if aligned else "REVISAR", "Cuenta local y producción coinciden" if aligned else "Usa Alinear cuenta rápido"),
+        ("4", "Operación cotidiana", "DESDE HOY", "La apertura diaria y los pendientes se atienden en Hoy"),
+    ]
+    cards = []
+    for number, title, state, detail in steps:
+        cards.append("""
+          <div class="setup-step setup-{state_class}">
+            <b>{number}</b><div><strong>{title}</strong><span>{detail}</span></div><em>{state}</em>
+          </div>
+        """.format(
+            number=html_escape(number), title=html_escape(title), state=html_escape(state),
+            state_class=html_escape(state.lower()), detail=html_escape(detail),
+        ))
+    return """
+    <section class="panel configuration-overview">
+      <div class="section-head">
+        <div><p class="eyebrow">Guía rápida</p><h2>¿Está lista esta instalación?</h2><p>Configuración se usa para instalar, cambiar cuentas o diagnosticar. La operación diaria ocurre en Hoy.</p></div>
+        <a class="button-link" href="#view-hoy">Ir a Hoy</a>
+      </div>
+      <div class="setup-steps">{steps}</div>
+    </section>
+    """.format(steps="".join(cards))
+
+
 def is_daily_open_result(result: dict[str, Any]) -> bool:
     return "daily_open_checklist.py" in str(result.get("command") or "")
 
@@ -9043,6 +9081,11 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .history-strategy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
           .history-strategy-card {{ border:1px solid var(--line); border-radius:10px; padding:11px; }}
           .history-strategy-card small {{ margin-top:6px; font-weight:750; color:var(--accent-strong); }}
+          .setup-steps {{ display:grid; gap:8px; margin-top:12px; }}
+          .setup-step {{ display:grid; grid-template-columns:32px minmax(0,1fr) auto; align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:10px; }}
+          .setup-step > b {{ display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:var(--soft); }}
+          .setup-step span {{ display:block; color:var(--muted); margin-top:2px; }}
+          .setup-step em {{ font-style:normal; font-size:.72rem; font-weight:900; color:var(--accent-strong); }}
           .signal strong,.signal small,.thinking-now strong,.thinking-now small,.operator-next strong,.operator-next small,.top-quick-actions span {{ overflow-wrap:anywhere; }}
           .operator-next span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:900; }}
           .operator-next strong {{ font-size:1rem; line-height:1.25; }}
@@ -9490,23 +9533,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           </section>
 
           <section id="view-configuracion" class="console-view" data-console-view="configuracion">
-          <div class="view-intro"><div><p class="eyebrow">Configuración</p><h2>Conexiones y mantenimiento</h2></div><p>Herramientas ocasionales para cuentas, publicación, diagnóstico y soporte.</p></div>
-          <details id="herramientas" class="panel operator-workspace" open>
-            <summary><span>Administración<small>Cuentas, conexión, publicación, mantenimiento y diagnóstico técnico.</small></span></summary>
+          <div class="view-intro"><div><p class="eyebrow">Configuración</p><h2>Instalación, cuentas y soporte</h2></div><p>Configura una vez; vuelve aquí sólo para cambiar cuentas, probar conexiones o diagnosticar.</p></div>
+          {configuration_overview}
+          <details id="cuentas-config" class="panel operator-workspace" open>
+            <summary><span>Cuenta y conexión<small>Selecciona, alinea o crea un perfil protegido.</small></span></summary>
             <div class="workspace-body">
-              {v31_console_support}
-              {question_support}
-              {admin_support}
               {context}
-              {notifications}
-              {preventive_maintenance}
-              <details class="panel support-details">
-                <summary>Ver diagnostico tecnico y salud de modulos</summary>
-                {modules}
-                {market_mode}
-                {timeline}
-                {diagnostic}
-              </details>
               <details class="panel support-details">
                 <summary>Administrar cuentas y perfiles</summary>
                 <section>
@@ -9528,6 +9560,23 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                     <p><button class="secondary">Guardar perfil local</button></p>
                   </form>
                 </section>
+              </details>
+            </div>
+          </details>
+          <details id="herramientas" class="panel operator-workspace">
+            <summary><span>Soporte y diagnóstico avanzado<small>Pruebas, mantenimiento, módulos e informes técnicos.</small></span></summary>
+            <div class="workspace-body">
+              {v31_console_support}
+              {question_support}
+              {admin_support}
+              {notifications}
+              {preventive_maintenance}
+              <details class="panel support-details">
+                <summary>Ver diagnostico tecnico y salud de modulos</summary>
+                {modules}
+                {market_mode}
+                {timeline}
+                {diagnostic}
               </details>
               {output}
             </div>
@@ -9717,6 +9766,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
+        configuration_overview=render_configuration_overview(profiles, active, snapshot, operator_payload),
         health=render_console_health(active, snapshot, operator_payload, reports),
         active_process=render_active_process_panel(),
         today=render_today_panel(active, snapshot, operator_payload, reports),
