@@ -568,6 +568,14 @@ Muestra automatizaciones locales de riesgo, outbox, digest, acciones humanas y s
 
 Esta sección sirve para evaluar si las decisiones y alertas realmente funcionan con evidencia acumulada.
 
+Al entrar a **Historial**, la primera tarjeta es la **Conclusión del motor**. Debe leerse en este orden:
+
+1. **Conclusión:** indica si ya existe evidencia suficiente para revisar parámetros o si todavía conviene mantenerlos sin cambios.
+2. **Marcador de evidencia:** muestra decisiones registradas, resultados completos frente al mínimo requerido, cobertura de decisiones, alertas resueltas y precisión verificable.
+3. **Qué hemos observado por estrategia:** resume acierto y expectativa únicamente cuando existen resultados completos. Mientras la muestra sea insuficiente, esos valores son observaciones preliminares y no conclusiones.
+
+Los informes extensos quedan dentro de **Detalle e informes técnicos** para que la lectura cotidiana no se mezcle con diagnóstico avanzado.
+
 ### Historial de decisiones y resultados
 
 Relaciona decisiones con resultados, PnL y estrategia. **Actualizar seguimiento ahora** evalúa checkpoints y sincroniza diarios; no toca IBKR.

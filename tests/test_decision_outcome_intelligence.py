@@ -82,6 +82,46 @@ class DecisionOutcomeIntelligenceTests(unittest.TestCase):
         self.assertIn("Seguimiento automático", rendered)
         self.assertIn("Actualizar seguimiento ahora", rendered)
 
+    def test_history_summary_explains_when_sample_is_not_ready(self):
+        payload = intelligence.build_intelligence(
+            self.decisions, self.outcomes, generated_at="2026-07-06T00:00:00+00:00"
+        )
+        effectiveness = {"resolved_entry_alert_count": 1, "verified_precision_pct": 100.0}
+        with patch.object(account_console, "load_decision_outcome_intelligence", return_value=payload), patch.object(
+            account_console, "load_alert_effectiveness", return_value=effectiveness
+        ):
+            rendered = account_console.render_history_learning_summary()
+
+        self.assertIn("Todavía no conviene cambiar parámetros", rendered)
+        self.assertIn("Faltan 30 resultados", rendered)
+        self.assertIn("Todavía no hay resultados completos por estrategia", rendered)
+        self.assertIn("Precisión verificable", rendered)
+
+    def test_history_summary_marks_review_ready_without_automatic_changes(self):
+        payload = {
+            "parameter_review_ready": True,
+            "decision_count": 42,
+            "complete_closed_outcomes": 30,
+            "minimum_complete_outcomes": 30,
+            "actionable_outcome_coverage_pct": 95.0,
+            "strategies": [{
+                "strategy": "FUTURES_FAST",
+                "complete_closed_outcomes": 30,
+                "win_rate": 60.0,
+                "expectancy_r": 0.25,
+                "parameter_review_ready": True,
+            }],
+        }
+        effectiveness = {"resolved_entry_alert_count": 30, "verified_precision_pct": 60.0}
+        with patch.object(account_console, "load_decision_outcome_intelligence", return_value=payload), patch.object(
+            account_console, "load_alert_effectiveness", return_value=effectiveness
+        ):
+            rendered = account_console.render_history_learning_summary()
+
+        self.assertIn("Ya existe evidencia suficiente para revisar parámetros", rendered)
+        self.assertIn("LISTO PARA REVISIÓN", rendered)
+        self.assertIn("Muestra suficiente para revisión manual", rendered)
+
     def test_remote_outcomes_sync_is_sanitized_and_atomic(self):
         remote = {
             "outcomes": [{

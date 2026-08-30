@@ -159,7 +159,9 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion"):
             self.assertIn(f'data-console-view-link="{view}"', source)
             self.assertIn(f'data-console-view="{view}"', source)
-        self.assertIn('id="analisis" class="panel operator-workspace" open', source)
+        self.assertIn('id="analisis" class="panel operator-workspace"', source)
+        self.assertIn('Detalle e informes técnicos', source)
+        self.assertIn('{history_learning_summary}', source)
         self.assertIn('id="cartera" class="operator-subsection"', source)
         self.assertIn('id="resultados" class="operator-subsection" open', source)
         self.assertIn('id="herramientas" class="panel operator-workspace" open', source)

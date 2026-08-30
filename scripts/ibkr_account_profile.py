@@ -8182,6 +8182,95 @@ def render_decision_outcome_panel() -> str:
     )
 
 
+def render_history_learning_summary() -> str:
+    """Lead the History view with a plain-language, evidence-aware conclusion."""
+    payload = load_decision_outcome_intelligence()
+    effectiveness = load_alert_effectiveness()
+    complete = int(payload.get("complete_closed_outcomes") or 0)
+    minimum = int(payload.get("minimum_complete_outcomes") or 30)
+    remaining = max(minimum - complete, 0)
+    ready = payload.get("parameter_review_ready") is True
+    resolved = int(effectiveness.get("resolved_entry_alert_count") or 0)
+    precision = effectiveness.get("verified_precision_pct")
+    coverage = payload.get("actionable_outcome_coverage_pct")
+
+    observed = [
+        row for row in (payload.get("strategies") or [])
+        if isinstance(row, dict) and int(row.get("complete_closed_outcomes") or 0) > 0
+    ]
+    observed.sort(
+        key=lambda row: (
+            int(row.get("complete_closed_outcomes") or 0),
+            float(row.get("expectancy_r") or 0),
+        ),
+        reverse=True,
+    )
+    strategy_cards = []
+    for row in observed[:4]:
+        expectancy = row.get("expectancy_r")
+        win_rate = row.get("win_rate")
+        if not ready:
+            conclusion = "Observación preliminar; no ajustar reglas"
+        elif row.get("parameter_review_ready"):
+            conclusion = "Muestra suficiente para revisión manual"
+        else:
+            conclusion = "Esta estrategia todavía acumula evidencia"
+        strategy_cards.append("""
+          <div class="history-strategy-card">
+            <strong>{strategy}</strong>
+            <span>{complete} resultados completos</span>
+            <span>Acierto: {win_rate} · Expectativa: {expectancy}</span>
+            <small>{conclusion}</small>
+          </div>
+        """.format(
+            strategy=html_escape(row.get("strategy") or "UNKNOWN"),
+            complete=html_escape(row.get("complete_closed_outcomes") or 0),
+            win_rate=html_escape(f"{win_rate:.1f}%" if isinstance(win_rate, (int, float)) else "Sin muestra"),
+            expectancy=html_escape(f"{expectancy:.2f} R" if isinstance(expectancy, (int, float)) else "Sin muestra"),
+            conclusion=html_escape(conclusion),
+        ))
+
+    if ready:
+        headline = "Ya existe evidencia suficiente para revisar parámetros"
+        guidance = "Revisa cada estrategia por separado antes de cambiar reglas; la consola nunca las modifica automáticamente."
+        status = "LISTO PARA REVISIÓN"
+    else:
+        headline = "Todavía no conviene cambiar parámetros"
+        guidance = f"Faltan {remaining} resultados cerrados y completos para alcanzar la muestra mínima de {minimum}. Los datos actuales sirven para observar, no para concluir."
+        status = "ACUMULANDO EVIDENCIA"
+
+    return """
+    <section class="panel history-learning-summary status-{status_class}">
+      <div class="section-head">
+        <div><p class="eyebrow">Conclusión del motor</p><h2>{headline}</h2><p>{guidance}</p></div>
+        <strong>{status}</strong>
+      </div>
+      <div class="history-scoreboard">
+        <div><span>Decisiones registradas</span><strong>{decisions}</strong></div>
+        <div><span>Resultados completos</span><strong>{complete}/{minimum}</strong></div>
+        <div><span>Cobertura de decisiones</span><strong>{coverage}</strong></div>
+        <div><span>Alertas ya resueltas</span><strong>{resolved}</strong></div>
+        <div><span>Precisión verificable</span><strong>{precision}</strong></div>
+      </div>
+      <h3>Qué hemos observado por estrategia</h3>
+      <div class="history-strategy-grid">{strategies}</div>
+      <p class="muted">“Sin muestra” significa que aún no existe un resultado cerrado vinculado; no equivale a 0%.</p>
+    </section>
+    """.format(
+        status_class="ready" if ready else "building",
+        headline=html_escape(headline),
+        guidance=html_escape(guidance),
+        status=html_escape(status),
+        decisions=html_escape(payload.get("decision_count") or 0),
+        complete=html_escape(complete),
+        minimum=html_escape(minimum),
+        coverage=html_escape(f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else "Sin decisiones"),
+        resolved=html_escape(resolved),
+        precision=html_escape(f"{precision:.1f}%" if isinstance(precision, (int, float)) else "Sin muestra"),
+        strategies="".join(strategy_cards) or '<p class="empty">Todavía no hay resultados completos por estrategia.</p>',
+    )
+
+
 def load_alert_effectiveness() -> dict[str, Any]:
     return shared_alert_effectiveness.build_from_runtime(RUNTIME)
 
@@ -8947,6 +9036,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .thinking-now {{ border-left:1px solid var(--line); padding-left:10px; }}
           .operator-next {{ grid-column:1 / -1; display:grid; grid-template-columns:180px 1fr auto; gap:10px; align-items:center; border:1px solid var(--line); border-radius:8px; padding:9px 11px; background:#ffffff; }}
           .signal,.thinking-now,.control-facts,.operator-next,.top-quick-actions {{ min-width:0; }}
+          .history-scoreboard {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin:14px 0; }}
+          .history-scoreboard > div {{ border:1px solid var(--line); border-radius:10px; background:var(--soft); padding:11px; min-width:0; }}
+          .history-scoreboard span,.history-strategy-card span,.history-strategy-card small {{ display:block; color:var(--muted); }}
+          .history-scoreboard strong {{ display:block; margin-top:4px; font-size:1.12rem; }}
+          .history-strategy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+          .history-strategy-card {{ border:1px solid var(--line); border-radius:10px; padding:11px; }}
+          .history-strategy-card small {{ margin-top:6px; font-weight:750; color:var(--accent-strong); }}
           .signal strong,.signal small,.thinking-now strong,.thinking-now small,.operator-next strong,.operator-next small,.top-quick-actions span {{ overflow-wrap:anywhere; }}
           .operator-next span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:900; }}
           .operator-next strong {{ font-size:1rem; line-height:1.25; }}
@@ -9316,7 +9412,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
-          @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
+          @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
@@ -9378,8 +9474,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
 
           <section id="view-historial" class="console-view" data-console-view="historial">
             <div class="view-intro"><div><p class="eyebrow">Historial</p><h2>Resultados y aprendizaje</h2></div><p>Consulta decisiones previas, efectividad, reportes y evolución del motor.</p></div>
-            <details id="analisis" class="panel operator-workspace" open>
-              <summary><span>Resultados y aprendizaje<small>Seguimiento de decisiones, alertas y reportes.</small></span></summary>
+            {history_learning_summary}
+            <details id="analisis" class="panel operator-workspace">
+              <summary><span>Detalle e informes técnicos<small>Seguimiento, tablas, efectividad y reportes ejecutivos.</small></span></summary>
               <div class="workspace-body">
               <details id="resultados" class="operator-subsection" open>
                 <summary>Resultados, reportes y aprendizaje</summary>
@@ -9635,6 +9732,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_whatif=render_portfolio_whatif_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
+        history_learning_summary=render_history_learning_summary(),
         alert_effectiveness=render_alert_effectiveness_panel(),
         executive_report=render_executive_report_panel(),
         preventive_maintenance=render_preventive_maintenance_panel(),
