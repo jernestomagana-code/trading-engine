@@ -287,11 +287,15 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(rows[0]["stage"], "Entrada lista")
         self.assertEqual(rows[1]["coverage_label"], "Parcial; falta L, M")
         self.assertEqual(rows[1]["relative_strength"], "Pendiente; L no disponible")
+        self.assertIn("Entrada al confirmar 101", rows[0]["trigger"])
+        self.assertIn("lectura preliminar", rows[1]["qualification"])
+        self.assertEqual(rows[1]["missing_data"], "Falta L, M")
+        self.assertIn("falta soporte", rows[0]["invalidation"])
 
     def test_canslim_funnel_explains_each_operational_field(self):
         source = CONSOLE_SOURCE.read_text(encoding="utf-8")
 
-        for label in ("Gatillo", "Fortaleza relativa", "Punto de compra / distancia", "Volumen vs promedio", "Estrategia propuesta", "Bloqueo principal", "Siguiente condición necesaria"):
+        for label in ("Por qué está en la lista", "Entrada esperada", "Invalidación", "Dato pendiente", "Gatillo", "Fortaleza relativa", "Punto de compra / distancia", "Volumen vs promedio", "Estrategia propuesta", "Bloqueo principal", "Siguiente condición necesaria"):
             self.assertIn(label, source)
         self.assertIn('class="canslim-components"', source)
         self.assertIn("Pendiente; la fuente actual no lo entrega", source)
