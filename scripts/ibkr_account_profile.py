@@ -2718,18 +2718,37 @@ def build_unified_pending_items(
 ) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
     risk_alerts = risk_payload.get("alerts") if isinstance(risk_payload.get("alerts"), list) else []
-    for alert in risk_alerts:
-        if not isinstance(alert, dict) or str(alert.get("operational_status") or "OPEN").upper() != "OPEN":
+    open_high_risk = [
+        alert for alert in risk_alerts
+        if isinstance(alert, dict)
+        and str(alert.get("operational_status") or "OPEN").upper() == "OPEN"
+        and str(alert.get("severity") or "WATCH").upper() in {"CRITICAL", "HIGH"}
+    ]
+    data_risk_terms = ("DATOS", "NAV INVÁLIDO", "MÉTRICAS DE RIESGO INCOMPLETAS", "NO CONFIABLES")
+    data_risk = [alert for alert in open_high_risk if any(term in str(alert.get("title") or "").upper() for term in data_risk_terms)]
+    if data_risk:
+        accounts = sorted({str(alert.get("account_alias") or "").strip() for alert in data_risk if alert.get("account_alias")})
+        items.append({
+            "level": "critical",
+            "area": "Riesgo",
+            "title": "Actualizar datos de riesgo multicuenta",
+            "detail": "{} alertas relacionadas se resuelven con una sola actualización IBKR{}; no aumentar riesgo hasta confirmarlas.".format(
+                len(data_risk), " para " + ", ".join(accounts) if accounts else ""
+            ),
+            "href": "#riesgo",
+            "when": "Resolver ahora",
+        })
+    for alert in open_high_risk:
+        if alert in data_risk:
             continue
         severity = str(alert.get("severity") or "WATCH").upper()
-        if severity not in {"CRITICAL", "HIGH"}:
-            continue
         items.append({
             "level": "critical" if severity == "CRITICAL" else "high",
             "area": "Riesgo",
             "title": str(alert.get("title") or "Revisar alerta de riesgo"),
             "detail": str(alert.get("recommended_action") or "Revisión manual requerida."),
             "href": "#riesgo",
+            "when": "Resolver ahora" if severity == "CRITICAL" else "Revisar hoy",
         })
 
     positions = position_payload.get("positions") if isinstance(position_payload.get("positions"), list) else []
@@ -2737,26 +2756,29 @@ def build_unified_pending_items(
         position_payload,
         path=POSITION_MANAGEMENT_JOURNAL_PATH,
     )
+    position_items: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for item in positions:
         if not isinstance(item, dict):
             continue
+        position_id = str(item.get("position_id") or "")
+        acknowledged = position_id in acknowledged_positions
+        meta = position_action_queue_metadata(item, acknowledged)
+        if meta.get("key") not in {"act", "review", "data"}:
+            continue
+        ticker_key = str(item.get("ticker") or position_id or "Posición").upper()
+        previous = position_items.get(ticker_key)
+        if previous is None or meta.get("score", 999) < previous[1].get("score", 999):
+            position_items[ticker_key] = (item, meta)
+    for item, meta in sorted(position_items.values(), key=lambda pair: pair[1].get("score", 999)):
         action = str(item.get("management_action") or "").upper()
-        if action in {"", "NO_ACTION_RECOMMENDED", "MONITOR"}:
-            continue
-        if str(item.get("position_id") or "") in acknowledged_positions:
-            continue
         ticker = str(item.get("ticker") or "Posición")
-        detail = "Revisar los datos y registrar la decisión manual."
-        if "ASSIGNMENT" in action:
-            detail = "El subyacente está bajo el strike de la put; revisar asignación, cierre o roll."
-        elif "REFRESH" in action:
-            detail = "Actualizar precios y contexto antes de decidir."
         items.append({
-            "level": "high" if any(word in action for word in ("RISK", "ASSIGNMENT", "DEFENSIVE")) else "watch",
+            "level": "high" if meta.get("key") == "act" else "watch",
             "area": "Posiciones",
-            "title": "{} — {}".format(ticker, friendly_operator_state(action)),
-            "detail": detail,
+            "title": "{} — {}".format(ticker, meta.get("label") or friendly_operator_state(action)),
+            "detail": "{} Próximo control: {}".format(meta.get("why_now") or "Revisión manual requerida.", meta.get("checkpoint") or "hoy"),
             "href": "#posiciones",
+            "when": "Resolver ahora" if meta.get("key") == "act" else "Actualizar datos" if meta.get("key") == "data" else "Revisar hoy",
         })
 
     rsp_ibkr = rsp_payload.get("ibkr") if isinstance(rsp_payload.get("ibkr"), dict) else {}
@@ -2781,21 +2803,24 @@ def build_unified_pending_items(
             "title": rsp_title,
             "detail": rsp_detail,
             "href": "#coberturas-rsp",
+            "when": "Actualizar datos" if "MISSING" in " ".join(str(value) for value in rsp_blockers) else "Revisar hoy",
         })
 
     operator_data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
-    active_alerts = operator_data.get("active_alerts") if isinstance(operator_data.get("active_alerts"), list) else []
-    for alert in active_alerts:
-        if not isinstance(alert, dict) or is_handled_alert(alert):
-            continue
-        if alert_operator_visibility(alert) not in {"HIGH_PROBABILITY", "RADAR"}:
+    for opportunity in build_unified_opportunity_items(operator_payload, rsp_payload):
+        if opportunity.get("state") != "ready":
             continue
         items.append({
-            "level": "high" if str(alert.get("severity") or "").upper() == "ACTION" else "watch",
-            "area": "Alerta",
-            "title": "{} — {}".format(alert.get("ticker") or "Señal", friendly_operator_state(alert.get("state"))),
-            "detail": alert_review_guidance(alert),
-            "href": "#alertas",
+            "level": "high",
+            "area": "Oportunidad",
+            "title": "{} — {}".format(opportunity.get("ticker") or "Entrada", opportunity.get("state_label") or "Entrada lista"),
+            "detail": "{} Entrada: {} · riesgo: {}.".format(
+                opportunity.get("action") or opportunity.get("recommendation") or "Revisar entrada",
+                opportunity.get("trigger") or "pendiente",
+                opportunity.get("invalidation") or "pendiente",
+            ),
+            "href": "#opportunity-center",
+            "when": "Revisar ahora",
         })
     rank = {"critical": 0, "high": 1, "watch": 2}
     return sorted(items, key=lambda item: rank.get(item.get("level") or "watch", 3))
@@ -2844,13 +2869,14 @@ def render_command_center(
         return (
             '<a class="operator-task task-{level}" href="{href}"><span>{index}</span>'
             '<div><small>{area}</small><strong>{title}</strong><p>{detail}</p></div>'
-            '<b>Revisar →</b></a>'.format(
+            '<b>{when} · Revisar →</b></a>'.format(
                 level=html_escape(item.get("level") or "watch"),
                 href=html_escape(item.get("href") or "#hoy"),
                 index=index,
                 area=html_escape(item.get("area") or "Pendiente"),
                 title=html_escape(item.get("title") or "Revisión pendiente"),
                 detail=html_escape(item.get("detail") or ""),
+                when=html_escape(item.get("when") or "Revisar hoy"),
             )
         )
 
@@ -6226,36 +6252,33 @@ def console_active_position_management(snapshot: dict[str, Any] | None = None, v
     # useful for diagnosis, but must not reappear as current positions (or emit
     # false close/open lifecycle alerts) while IBKR is disconnected.
     broker_positions_unconfirmed = False
-    if snapshot.get("path"):
-        tower = load_json_file(CONTROL_TOWER_PATH)
-        tower_accounts = [row for row in (tower.get("accounts") or []) if isinstance(row, dict)]
-        tower_age_seconds = cache_age_seconds(tower.get("generated_at"))
-        snapshot_data_for_freshness = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
-        snapshot_generated_at = (
-            snapshot_data_for_freshness.get("generated_at")
-            or snapshot.get("generated_at")
-            or snapshot.get("mtime")
-        )
-        failed_refresh_is_newer = bool(
-            timestamp_sort_value(tower.get("generated_at"))
-            >= timestamp_sort_value(snapshot_generated_at)
-        )
-        ready_accounts = sum(
-            1 for row in tower_accounts
-            if str(row.get("refresh_status") or "").upper() == "READY"
-        )
-        failed_accounts = sum(
-            1 for row in tower_accounts
-            if str(row.get("refresh_status") or "").upper() in {"BROKER_REFRESH_FAILED", "ERROR", "TIMEOUT"}
-        )
-        broker_positions_unconfirmed = bool(
-            tower_accounts
-            and ready_accounts == 0
-            and failed_accounts > 0
-            and tower_age_seconds is not None
-            and tower_age_seconds <= 15 * 60
-            and failed_refresh_is_newer
-        )
+    tower = load_json_file(CONTROL_TOWER_PATH)
+    tower_accounts = [row for row in (tower.get("accounts") or []) if isinstance(row, dict)]
+    snapshot_data_for_freshness = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+    snapshot_generated_at = (
+        snapshot_data_for_freshness.get("generated_at")
+        or snapshot.get("generated_at")
+        or snapshot.get("mtime")
+    )
+    failed_refresh_is_newer = bool(
+        timestamp_sort_value(tower.get("generated_at"))
+        >= timestamp_sort_value(snapshot_generated_at)
+    )
+    ready_accounts = sum(
+        1 for row in tower_accounts
+        if str(row.get("refresh_status") or "").upper() == "READY"
+    )
+    failed_accounts = sum(
+        1 for row in tower_accounts
+        if str(row.get("refresh_status") or "").upper() in {"BROKER_REFRESH_FAILED", "ERROR", "TIMEOUT"}
+    )
+    broker_positions_unconfirmed = bool(
+        tower_accounts
+        and any(isinstance(row, dict) for row in (payload.get("positions") or []))
+        and ready_accounts == 0
+        and failed_accounts > 0
+        and failed_refresh_is_newer
+    )
     if broker_positions_unconfirmed:
         suppressed_positions = [row for row in (payload.get("positions") or []) if isinstance(row, dict)]
         payload["positions"] = []

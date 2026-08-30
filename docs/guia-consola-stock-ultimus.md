@@ -196,6 +196,8 @@ La consola recuerda la última vista elegida después de una actualización. Los
 3. RSP con lectura/cadena/capacidad pendiente;
 4. alertas u oportunidades con calidad suficiente.
 
+La cola consolida incidencias repetidas que se resuelven con la misma acción. Por ejemplo, datos, NAV y métricas incompletas de varias cuentas aparecen como una sola prioridad **Actualizar datos de riesgo multicuenta**, indicando cuántas alertas agrupa. También combina varias patas del mismo ticker y reutiliza la clasificación de Cartera: **Actuar ahora**, **Revisar hoy** o **Actualizar datos**. Las preselecciones CANSLIM y señales en formación permanecen en Oportunidades; sólo una **Entrada lista** sube a Hoy. Así las tres filas no quedan ocupadas por diez versiones del mismo problema.
+
 | Modo | Significado | Conducta recomendada |
 |---|---|---|
 | Monitoreo | No hay bloqueo ni alerta prioritaria inmediata. | Actualizar estado periódicamente. |
@@ -470,7 +472,7 @@ Si el contexto aparece fresco pero la cadena queda pendiente, el JSON sí fue gu
 
 La cadena semanal RSP se conserva en un archivo independiente: un refresco general ya no puede reemplazarla y, de forma recíproca, el refresh RSP tampoco reemplaza el radar general ni su Decision Desk. La apertura también actualiza la capacidad de la cuenta antes de comparar estrategias.
 
-La consola sólo usa posiciones remotas de RSP cuando el snapshot publicado es fresco. Una posición vencida o una copia remota vieja nunca puede reaparecer como si siguiera abierta si la lectura local actual de IBKR ya no la contiene. Si una actualización reciente falla para todas las cuentas, las posiciones históricas tampoco se presentan como abiertas ni generan falsos eventos de cierre: se muestra **Posiciones sin confirmar — iniciar sesión en TWS y refrescar IBKR**. Así la consola solicita confirmación del broker en vez de inventar una gestión sobre una posición fantasma.
+La consola sólo usa posiciones remotas de RSP cuando el snapshot publicado es fresco. Una posición vencida o una copia remota vieja nunca puede reaparecer como si siguiera abierta si la lectura local actual de IBKR ya no la contiene. Si el último intento de actualización es posterior al snapshot y falla para todas las cuentas, las posiciones históricas tampoco se presentan como abiertas ni generan falsos eventos de cierre, aunque el fallo ya tenga varias horas: se muestra **Posiciones sin confirmar — iniciar sesión en TWS y refrescar IBKR**. Así la consola solicita confirmación del broker en vez de inventar una gestión sobre una posición fantasma como MNQ después de haberla cerrado.
 
 La capacidad RSP toma primero la lectura fresca de la cuenta `retiro` en Control Tower. Si el sidecar semanal de RSP es más antiguo, no puede conservar fondos disponibles de la jornada anterior. Para revisar un ciclo nuevo, tanto buying power como fondos disponibles deben soportar el capital de decisión estimado o confirmado; de lo contrario la salida es **WAIT_ACCOUNT_CAPACITY**, aunque una estrategia siga apareciendo como preferencia comparativa condicional.
 

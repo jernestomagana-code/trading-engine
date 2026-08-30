@@ -1238,7 +1238,6 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             }
             snapshot = {
                 "available": True,
-                "path": str(Path(tmp) / "old_master_snapshot.json"),
                 "data": historical_context,
             }
             with (

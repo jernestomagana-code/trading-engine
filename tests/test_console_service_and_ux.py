@@ -104,6 +104,28 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         pending = console.build_unified_pending_items({}, {"positions": []}, {"alerts": []}, rsp)
         self.assertTrue(any(item.get("title") == "Coberturas RSP necesita actualización" for item in pending))
 
+    def test_today_queue_consolidates_repeated_data_risk_and_uses_position_priority(self):
+        risk = {"alerts": [
+            {"severity": "CRITICAL", "account_alias": "retiro", "title": "Datos no confiables en retiro"},
+            {"severity": "CRITICAL", "account_alias": "retiro", "title": "NAV inválido en retiro"},
+            {"severity": "CRITICAL", "account_alias": "remanente", "title": "Métricas de riesgo incompletas en remanente"},
+        ]}
+        positions = {"positions": [
+            {"position_id": "A", "ticker": "NFLX", "management_action": "REVIEW_RISK", "exit_state": "RISK_REVIEW", "reasons": ["Review risk."]},
+            {"position_id": "B", "ticker": "NFLX", "management_action": "REFRESH_DATA", "exit_state": "MONITOR"},
+            {"position_id": "C", "ticker": "RSP", "management_action": "NO_ACTION_RECOMMENDED", "exit_state": "MONITOR"},
+        ]}
+
+        pending = console.build_unified_pending_items({}, positions, risk, {})
+
+        risk_rows = [item for item in pending if item["area"] == "Riesgo"]
+        position_rows = [item for item in pending if item["area"] == "Posiciones"]
+        self.assertEqual(len(risk_rows), 1)
+        self.assertIn("3 alertas relacionadas", risk_rows[0]["detail"])
+        self.assertEqual(len(position_rows), 1)
+        self.assertIn("NFLX", position_rows[0]["title"])
+        self.assertEqual(position_rows[0]["when"], "Resolver ahora")
+
     def test_launch_agent_runs_from_application_support(self):
         payload = installer.plist_payload(8765)
         command = " ".join(payload["ProgramArguments"])
