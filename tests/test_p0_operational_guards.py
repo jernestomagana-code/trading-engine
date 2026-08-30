@@ -99,7 +99,11 @@ class BridgeEntrypointTests(unittest.TestCase):
         self.assertTrue({"PLTR", "CRWD", "NOW", "UBER", "PANW"}.issubset(default_watchlist))
 
         source = BRIDGE.read_text()
-        self.assertIn("FAST_WATCHLIST = list(DEFAULT_WATCHLIST)", source)
+        fast_watchlist = set(module_vars["FAST_WATCHLIST"])
+        self.assertLess(len(fast_watchlist), len(default_watchlist))
+        self.assertTrue({"QQQ", "SPY", "RSP", "TLT"}.issubset(fast_watchlist))
+        self.assertIn("IBKR_MAX_WATCHLIST_SYMBOLS_PER_RUN", source)
+        self.assertIn("WATCHLIST_REQUESTED[:MAX_WATCHLIST_SYMBOLS_PER_RUN]", source)
         self.assertIn("FAST_OPTION_SYMBOLS = list(DEFAULT_OPTION_SYMBOLS)", source)
 
     def test_option_chain_selection_prefers_exact_trading_class(self):
