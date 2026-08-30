@@ -5492,6 +5492,9 @@ def build_unified_opportunity_items(
         raw_state = alert.get("state") or alert.get("signal_actionability") or alert.get("confirmation_gate_status")
         state_key, state_label, rank = normalized_state(raw_state, alert.get("severity"))
         trigger = alert.get("entry_price") or alert.get("trigger_price") or alert.get("price")
+        stop = alert.get("stop_loss") or alert.get("stop_price") or alert.get("stop")
+        target_1 = alert.get("target_1") or alert.get("target1") or alert.get("tp1")
+        target_2 = alert.get("target_2") or alert.get("target2") or alert.get("tp2")
         blocker = alert.get("main_blocker") or alert.get("decision_explanation") or alert_reason_plain(alert)
         items.append({
             "type": "futures",
@@ -5501,7 +5504,10 @@ def build_unified_opportunity_items(
             "state_label": state_label,
             "rank": rank,
             "recommendation": alert_review_guidance(alert),
+            "action": "Revisar entrada" if state_key == "ready" else "Esperar nueva confirmación",
             "trigger": compact_contract_value(trigger) if trigger is not None else "Sin gatillo vigente",
+            "invalidation": "Stop {}".format(compact_contract_value(stop)) if stop is not None else "Stop pendiente; no entrar",
+            "target": "TP1 {} · TP2 {}".format(compact_contract_value(target_1), compact_contract_value(target_2)) if target_1 is not None or target_2 is not None else "Objetivos pendientes",
             "quality": alert_quality_score(alert),
             "metric_label": "Calidad",
             "blocker": friendly_operator_state(blocker, "Sin bloqueo informado"),
@@ -5518,6 +5524,9 @@ def build_unified_opportunity_items(
                 latest.get("severity"),
             )
             trigger = latest.get("entry_price") or latest.get("price")
+            stop = latest.get("stop_loss") or latest.get("stop_price") or latest.get("stop")
+            target_1 = latest.get("target_1") or latest.get("target1") or latest.get("tp1")
+            target_2 = latest.get("target_2") or latest.get("target2") or latest.get("tp2")
             items.append({
                 "type": "futures",
                 "type_label": "Futuros",
@@ -5526,7 +5535,10 @@ def build_unified_opportunity_items(
                 "state_label": state_label,
                 "rank": rank,
                 "recommendation": latest.get("decision_explanation") or "La última señal no permanece operable; esperar una nueva confirmación.",
+                "action": "Revisar entrada" if state_key == "ready" else "Esperar nueva confirmación",
                 "trigger": compact_contract_value(trigger) if trigger is not None else "Sin gatillo vigente",
+                "invalidation": "Stop {}".format(compact_contract_value(stop)) if stop is not None else "Stop pendiente; no entrar",
+                "target": "TP1 {} · TP2 {}".format(compact_contract_value(target_1), compact_contract_value(target_2)) if target_1 is not None or target_2 is not None else "Objetivos pendientes",
                 "quality": console_float_or_none(latest.get("confirmation_quality_score")) or 0.0,
                 "metric_label": "Calidad",
                 "blocker": friendly_operator_state(latest.get("main_blocker") or latest.get("confirmation_gate_status"), "Sin ENTRY vigente"),
@@ -5543,33 +5555,23 @@ def build_unified_opportunity_items(
                 "state_label": "Bloqueada" if failed else "Esperar",
                 "rank": 3 if failed else 2,
                 "recommendation": intraday.get("message") or "Sin señal vigente; mantener el monitoreo de MNQ y MES.",
+                "action": "Esperar nueva señal",
                 "trigger": "Sin gatillo vigente",
+                "invalidation": "No aplica sin señal",
+                "target": "No aplica sin señal",
                 "quality": 0.0,
                 "metric_label": "Calidad",
                 "blocker": "Revisar telemetría de futuros" if failed else "Ninguna señal alcanzó ENTRY_READY",
                 "freshness": friendly_age(intraday.get("updated_at") or daily.get("generated_at")),
             })
 
-    candidates = [item for item in (candidates_payload.get("candidates") or []) if isinstance(item, dict)]
-    passed = [item for item in candidates if item.get("canslim_passes") is True]
-    for candidate in sorted(passed, key=lambda item: -(console_float_or_none(item.get("canslim_score")) or 0.0))[:5]:
-        ticker = str(candidate.get("ticker") or "UNKNOWN").upper()
-        final = final_by_ticker.get(ticker) or {}
-        if final:
-            raw_state = final.get("state") or final.get("final_state")
-            state_key, state_label, rank = normalized_state(raw_state, final.get("severity"))
-            recommendation = (
-                alert_review_guidance(final)
-                if state_key == "ready"
-                else alert_reason_plain(final)
-            )
-            blocker = final.get("main_blocker") or alert_reason_plain(final)
-            trigger = final.get("entry_price") or final.get("trigger_price") or final.get("price")
-        else:
-            state_key, state_label, rank = "forming", "Preparándose", 1
-            recommendation = "Mantener en radar hasta que técnica, contrato, riesgo y capacidad completen la evaluación."
-            blocker = "Falta elevar la preselección fundamental a decisión final."
-            trigger = candidate.get("pivot_price") or candidate.get("buy_point")
+    canslim_rows = build_canslim_operational_rows(operator_payload, candidates_payload)
+    for candidate in canslim_rows[:3]:
+        ticker = candidate["ticker"]
+        stage_key = candidate.get("stage_key")
+        state_key = "ready" if stage_key == "ready" else ("blocked" if stage_key == "blocked" else "forming")
+        state_label = "Entrada lista" if state_key == "ready" else ("Bloqueada" if state_key == "blocked" else "Preparándose")
+        rank = 0 if state_key == "ready" else (3 if state_key == "blocked" else 1)
         items.append({
             "type": "canslim",
             "type_label": "CANSLIM",
@@ -5577,12 +5579,15 @@ def build_unified_opportunity_items(
             "state": state_key,
             "state_label": state_label,
             "rank": rank,
-            "recommendation": recommendation,
-            "trigger": compact_contract_value(trigger) if trigger is not None else "Gatillo técnico pendiente",
-            "quality": console_float_or_none(candidate.get("canslim_score")) or alert_quality_score(final),
+            "recommendation": candidate.get("qualification") or candidate.get("next_event"),
+            "action": candidate.get("next_event"),
+            "trigger": candidate.get("trigger") or "Gatillo técnico pendiente",
+            "invalidation": candidate.get("invalidation") or "Invalidación técnica pendiente",
+            "target": "Objetivo técnico pendiente",
+            "quality": console_float_or_none(candidate.get("score")) or 0.0,
             "metric_label": "Score CANSLIM",
-            "blocker": friendly_operator_state(blocker, "Sin bloqueo informado"),
-            "freshness": friendly_age(candidates_payload.get("generated_at")),
+            "blocker": candidate.get("blocker") or candidate.get("missing_data") or "Sin bloqueo informado",
+            "freshness": candidate.get("freshness") or friendly_age(candidates_payload.get("generated_at")),
         })
 
     recommendation = rsp_payload.get("strategy_recommendation") if isinstance(rsp_payload.get("strategy_recommendation"), dict) else {}
@@ -5598,6 +5603,8 @@ def build_unified_opportunity_items(
         rsp_state = ("forming", "Preparándose", 1)
     rsp_candidate = recommendation.get("selected_candidate") if isinstance(recommendation.get("selected_candidate"), dict) else {}
     rsp_trigger = rsp_candidate.get("strike") or recommendation.get("strike")
+    rsp_breakeven = rsp_candidate.get("breakeven") or recommendation.get("breakeven")
+    rsp_max_gain = rsp_candidate.get("max_gain") or rsp_candidate.get("max_profit") or recommendation.get("max_gain") or recommendation.get("max_profit")
     items.append({
         "type": "rsp",
         "type_label": "RSP",
@@ -5606,7 +5613,10 @@ def build_unified_opportunity_items(
         "state_label": rsp_state[1],
         "rank": rsp_state[2],
         "recommendation": friendly_operator_state(recommendation.get("recommendation") or rsp_status, rsp_payload.get("next_action") or "Actualizar y evaluar RSP."),
+        "action": "Revisar estructura RSP" if rsp_state[0] == "ready" else friendly_operator_state(rsp_payload.get("next_action") or rsp_status, "Esperar nueva evaluación RSP"),
         "trigger": "Strike " + compact_contract_value(rsp_trigger) if rsp_trigger is not None else "Sin strike priorizado",
+        "invalidation": "Breakeven {}".format(compact_contract_value(rsp_breakeven)) if rsp_breakeven is not None else "Riesgo definido por estructura pendiente",
+        "target": "Ganancia máxima {}".format(coberturas_money(rsp_max_gain)) if rsp_max_gain is not None else "Ganancia objetivo pendiente",
         "quality": console_float_or_none(recommendation.get("score")) or 0.0,
         "metric_label": "Score RSP",
         "blocker": friendly_operator_state(rsp_blockers[0], "Sin bloqueo; revisar estructura y capacidad") if rsp_blockers else "Sin bloqueo; revisar estructura y capacidad",
@@ -5629,7 +5639,13 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
           <div class="opportunity-identity"><strong>{ticker}</strong><small>{quality} · {freshness}</small></div>
           <p>{recommendation}</p>
-          <div class="opportunity-facts"><span>Gatillo<strong>{trigger}</strong></span><span>Falta / bloqueo<strong>{blocker}</strong></span></div>
+          <div class="opportunity-action"><span>Qué hacer ahora</span><strong>{action}</strong></div>
+          <div class="opportunity-facts">
+            <span>Entrada / nivel<strong>{trigger}</strong></span>
+            <span>Invalida / riesgo<strong>{invalidation}</strong></span>
+            <span>Objetivo<strong>{target_value}</strong></span>
+            <span>Falta / bloqueo<strong>{blocker}</strong></span>
+          </div>
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
@@ -5641,7 +5657,10 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             quality=html_escape(quality_label),
             freshness=html_escape(item.get("freshness") or "sin hora"),
             recommendation=html_escape(item.get("recommendation") or "Sin recomendación disponible"),
+            action=html_escape(item.get("action") or "Esperar evaluación"),
             trigger=html_escape(item.get("trigger") or "Pendiente"),
+            invalidation=html_escape(item.get("invalidation") or "Pendiente"),
+            target_value=html_escape(item.get("target") or "Pendiente"),
             blocker=html_escape(item.get("blocker") or "Sin bloqueo informado"),
             target="canslim-radar" if item["type"] == "canslim" else ("alertas" if item["type"] == "futures" else "coberturas-rsp"),
         )
@@ -9089,14 +9108,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-card {{ min-width:0; border:1px solid var(--line); border-left:5px solid #64748b; border-radius:10px; padding:12px; background:#fff; }}
           .opportunity-card[hidden] {{ display:none; }}
           .opportunity-ready {{ border-left-color:#047857; }} .opportunity-forming {{ border-left-color:#d97706; }} .opportunity-waiting {{ border-left-color:#64748b; }} .opportunity-blocked {{ border-left-color:#b42318; }}
-          .opportunity-card-head,.opportunity-identity,.opportunity-facts {{ display:flex; justify-content:space-between; gap:10px; }}
+          .opportunity-card-head,.opportunity-identity {{ display:flex; justify-content:space-between; gap:10px; }}
           .opportunity-card-head span {{ color:var(--muted); font-size:.75rem; font-weight:900; text-transform:uppercase; }}
           .opportunity-card-head b {{ font-size:.8rem; }}
           .opportunity-identity {{ align-items:end; margin-top:7px; }}
           .opportunity-identity strong {{ font-size:1.3rem; }} .opportunity-identity small {{ color:var(--muted); text-align:right; }}
           .opportunity-card p {{ margin:9px 0; line-height:1.35; }}
-          .opportunity-facts {{ padding-top:9px; border-top:1px solid var(--line); }}
-          .opportunity-facts span {{ flex:1; color:var(--muted); font-size:.72rem; text-transform:uppercase; }}
+          .opportunity-action {{ margin:9px 0; padding:9px 10px; border-radius:8px; background:#eef6ff; }}
+          .opportunity-action span,.opportunity-action strong {{ display:block; }}
+          .opportunity-action span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:850; }}
+          .opportunity-action strong {{ margin-top:3px; font-size:.84rem; line-height:1.35; }}
+          .opportunity-facts {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding-top:9px; border-top:1px solid var(--line); }}
+          .opportunity-facts span {{ min-width:0; color:var(--muted); font-size:.72rem; text-transform:uppercase; }}
           .opportunity-facts strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.82rem; text-transform:none; }}
           .opportunity-card > a {{ display:inline-block; margin-top:10px; color:var(--accent-strong); font-weight:850; }}
           .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
@@ -9268,7 +9291,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
-          @media (max-width:620px) {{ .canslim-decision-brief {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
+          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}

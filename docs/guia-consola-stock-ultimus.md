@@ -450,8 +450,9 @@ ordena por posibilidad real de acción. Las tarjetas utilizan cuatro estados:
 
 Los filtros **Todas**, **CANSLIM**, **Futuros** y **RSP** sólo cambian lo que se
 muestra; no modifican el motor ni las alertas. Cada tarjeta presenta la misma
-secuencia: activo, estado, calidad, recomendación principal, gatillo, bloqueo,
-vigencia y enlace al detalle. Una tarjeta verde significa **revisar ahora**, no
+secuencia: activo, estado, calidad, **qué hacer ahora**, **entrada o nivel**,
+**invalidación o riesgo**, **objetivo**, bloqueo, vigencia y enlace al detalle.
+El Centro utiliza el mismo orden operativo que el radar CANSLIM; no vuelve a ordenar esos candidatos únicamente por score. Una tarjeta verde significa **revisar ahora**, no
 ejecutar una orden.
 
 RSP forma parte de **Oportunidades**, junto con futuros y demás alertas de entrada. El panel presenta primero la decisión, frescura, capacidad y candidatos. El editor para pegar la lectura está dentro de **Actualizar lectura de mercado RSP**.

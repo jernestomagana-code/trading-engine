@@ -25,6 +25,9 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
                         "state": "ENTRY_READY",
                         "severity": "ACTION",
                         "entry_price": 20100,
+                        "stop_loss": 20070,
+                        "target_1": 20130,
+                        "target_2": 20160,
                         "confirmation_quality_score": 88,
                     },
                     {
@@ -53,6 +56,8 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
 
         self.assertEqual(items[0]["type"], "futures")
         self.assertEqual(items[0]["state"], "ready")
+        self.assertEqual(items[0]["invalidation"], "Stop 20070")
+        self.assertEqual(items[0]["target"], "TP1 20130 · TP2 20160")
         self.assertEqual({item["type"] for item in items}, {"futures", "canslim", "rsp"})
         self.assertEqual(next(item for item in items if item["type"] == "rsp")["state"], "waiting")
 
@@ -69,6 +74,10 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('data-opportunity-filter="rsp"', html)
         self.assertIn("Entradas listas", html)
         self.assertIn("Preparándose", html)
+        self.assertIn("Qué hacer ahora", html)
+        self.assertIn("Entrada / nivel", html)
+        self.assertIn("Invalida / riesgo", html)
+        self.assertIn("Objetivo", html)
         self.assertIn("Falta / bloqueo", html)
 
     def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
