@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2_1_compact_options"
+PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2_2_daily_vix"
 OPTIONS_UNDERLYING_CONTEXT = "OPTIONS_UNDERLYING_CONFIRMATION"
 CHRIS_IA_CONTEXT = "CHRIS_IA_REVERSAL_PRO"
 REQUIRED_FIELDS = [
@@ -219,6 +219,20 @@ def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if has_value(payload.get(key)):
                 normalized[canonical] = payload.get(key)
                 break
+    # TradingView may expose the daily period as either "D" or "1D".  The
+    # original compact Pine expression appended "M" to "1D" and produced the
+    # legacy VIX suffix "_1DM". Canonicalize it server-side so already-created
+    # alerts remain compatible while the Pine source now emits "_D".
+    event_code = safe_upper(normalized.get("event_code"))
+    ticker = safe_upper(normalized.get("ticker"))
+    strategy_context = safe_upper(normalized.get("strategy_context"))
+    if (
+        ticker == "VIX"
+        and strategy_context == OPTIONS_UNDERLYING_CONTEXT
+        and event_code.endswith("_1DM")
+    ):
+        normalized["source_event_code"] = normalized.get("event_code")
+        normalized["event_code"] = event_code[:-4] + "_D"
     return normalized
 
 

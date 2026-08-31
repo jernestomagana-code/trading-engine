@@ -283,6 +283,8 @@ Al pulsar **Actualizar pantalla**, la consola consulta primero operador, ledger 
 
 Las alertas compactas de QQQ, SPY y VIX aportan confirmación técnica del subyacente: precio, VWAP, dirección, ADX, ATR, volumen relativo, RSI, señal y estado de volatilidad. No necesitan duplicar sesión, cuenta, capacidad ni riesgo de cartera; esos controles se incorporan posteriormente desde las fuentes autoritativas del motor. La ausencia de cualquiera de los campos técnicos compactos sí mantiene el evento en cuarentena.
 
+Para VIX diario, el código canónico termina en `_D`. El motor también normaliza automáticamente el sufijo legado `_1DM` que algunas versiones de TradingView generaban al representar el marco diario como `1D`; esto evita perder la alerta mientras se conserva su código original dentro del payload crudo para auditoría.
+
 ### Severidades
 
 | Severidad | Interpretación |

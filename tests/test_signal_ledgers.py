@@ -17,6 +17,12 @@ import tradingview_signal_ledger
 
 
 class SignalLedgerTests(unittest.TestCase):
+    def test_options_underlying_pine_normalizes_daily_timeframe_code(self):
+        source = (ROOT / "tradingview" / "stock_ultimus_options_underlying_alerts_v1.pine").read_text()
+
+        self.assertIn('timeframe.period=="D" or timeframe.period=="1D"', source)
+        self.assertIn('"VIX_RISK_NORMALIZED_"+timeframeCode', source)
+
     def test_active_tradingview_alerts_expose_renewal_window(self):
         coverage = tradingview_alert_coverage.load_coverage(
             ROOT / "config" / "tradingview_alert_coverage_v1.json"
@@ -212,7 +218,7 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertTrue(first["accepted_for_engine"])
         self.assertEqual(events[0]["candidate_source"], "TRADINGVIEW_ALERT")
-        self.assertEqual(events[0]["payload_contract_version"], "tradingview_signal_payload_v2_1_compact_options")
+        self.assertEqual(events[0]["payload_contract_version"], "tradingview_signal_payload_v2_2_daily_vix")
         self.assertEqual(events[0]["alert_contract_status"], "ACCEPTED")
         self.assertEqual(events[0]["event_code"], "MNQ_ORB_BREAKOUT_LONG_5M")
         self.assertTrue(events[0]["payload_validation"]["valid"])
@@ -283,6 +289,44 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(event["accepted_for_engine"])
         self.assertEqual(event["missing_context_fields"], [])
         self.assertEqual(event["alert_contract_status"], "ACCEPTED")
+
+    def test_vix_daily_legacy_1dm_event_code_is_normalized_and_accepted(self):
+        payload = {
+            "source": "TRADINGVIEW",
+            "strategy_context": "OPTIONS_UNDERLYING_CONFIRMATION",
+            "event": "VOLATILITY_RISK",
+            "event_code": "VIX_RISK_NORMALIZED_1DM",
+            "ticker": "VIX",
+            "timeframe": "1D",
+            "breakout_direction": "NEUTRAL",
+            "price": 14.9,
+            "logical_stop": 0,
+            "logical_target": 0,
+            "adx": 20.0,
+            "atr": 1.1,
+            "rsi": 48.0,
+            "volume_relative": 1.0,
+            "vwap": 14.8,
+            "underlying_signal": "VIX_RISK_NORMALIZED",
+            "volatility_state": "NORMALIZED",
+            "action": "ALERT_ONLY",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+        validation = tradingview_payload_contract.validate_payload(payload, allow_placeholders=False)
+        event = tradingview_signal_ledger.normalize_signal_event(
+            payload,
+            raw_text=json.dumps(payload),
+            endpoint="/technical_snapshot",
+        )
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["normalized_payload"]["event_code"], "VIX_RISK_NORMALIZED_D")
+        self.assertEqual(validation["normalized_payload"]["source_event_code"], "VIX_RISK_NORMALIZED_1DM")
+        self.assertEqual(event["event_code"], "VIX_RISK_NORMALIZED_D")
+        self.assertTrue(event["accepted_for_engine"])
+        self.assertEqual(event["quarantine_reasons"], [])
 
     def test_tradingview_ledger_quarantines_legacy_payload_without_event_code(self):
         with tempfile.TemporaryDirectory() as tmp:

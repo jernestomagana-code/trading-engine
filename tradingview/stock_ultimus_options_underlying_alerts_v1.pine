@@ -17,7 +17,7 @@ atrValue=ta.atr(14)
 averageVolume=ta.sma(volume,20)
 rvolValue=averageVolume>0?volume/averageVolume:0.0
 symbolCode=str.contains(syminfo.ticker,"VIX")?"VIX":str.contains(syminfo.ticker,"SPY")?"SPY":"QQQ"
-timeframeCode=timeframe.period=="D"?"D":timeframe.period+"M"
+timeframeCode=(timeframe.period=="D" or timeframe.period=="1D")?"D":timeframe.period+"M"
 qualityOk=adxValue>=minAdx and rvolValue>=minRvol
 longSignal=barstate.isconfirmed and regular and qualityOk and close>vwapValue and emaFast>emaSlow and rsiValue>=52
 shortSignal=barstate.isconfirmed and regular and qualityOk and close<vwapValue and emaFast<emaSlow and rsiValue<=48
