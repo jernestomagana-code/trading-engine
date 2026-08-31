@@ -90,6 +90,7 @@ TRADINGVIEW_BUNDLE_HEALTH_PATH = RUNTIME / "tradingview_alert_bundle_health.json
 MARKET_OPEN_READINESS_PATH = RUNTIME / "market_open_readiness_latest.json"
 POST_OPEN_MONITOR_PATH = RUNTIME / "post_open_monitor_latest.json"
 OPERATOR_NOTIFY_PATH = RUNTIME / "v32_operator_notify_latest.json"
+ENVIRONMENT_AUTH_PATH = RUNTIME / "environment_auth_check_latest.json"
 OPERATIONAL_EDGE_PATH = RUNTIME / "v32_operational_edge_latest.json"
 DAILY_OPEN_CHECKLIST_PATH = RUNTIME / "daily_open_checklist_latest.json"
 OPERATOR_GUIDE_PATH = ROOT / "docs" / "guia-consola-stock-ultimus.md"
@@ -97,6 +98,7 @@ KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
 SNAPSHOT_INGEST_KEYCHAIN_SERVICES = ("stock-ultimus-snapshot-ingest", "stock-ultimus-snapshot-ingest-token")
 DEFAULT_PUBLIC_BASE_URL = "https://trading-engine-p097.onrender.com"
+CONSOLE_LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.stockultimus.local-console.plist"
 FAST_KEYCHAIN_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_KEYCHAIN_TIMEOUT_SECONDS", "2"))
 REMOTE_READ_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_TIMEOUT_SECONDS", "5"))
 REMOTE_VERIFY_TIMEOUT_SECONDS = float(os.getenv("STOCK_ULTIMUS_CONSOLE_REMOTE_VERIFY_TIMEOUT_SECONDS", "20"))
@@ -7255,37 +7257,89 @@ def render_configuration_overview(
     active: dict[str, Any],
     snapshot: dict[str, Any],
     operator_payload: dict[str, Any],
+    reports: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """Explain setup state and route ordinary operators to the right action."""
+    """Render a non-technical installation assistant with verifiable gates."""
+    reports = reports if isinstance(reports, dict) else {}
     comparison = selected_vs_published(active, snapshot, operator_payload)
     profile_count = len(profiles)
     active_alias = str(active.get("account_alias") or "").strip()
     aligned = comparison.get("matches") is True
+    tower = load_json_file(CONTROL_TOWER_PATH)
+    tower_accounts = [row for row in (tower.get("accounts") or []) if isinstance(row, dict)]
+    accounts_ready = bool(
+        profile_count
+        and len(tower_accounts) >= profile_count
+        and all(row.get("configured") and row.get("keychain_ready") and str(row.get("refresh_status") or "").upper() == "READY" for row in tower_accounts)
+    )
+    tws_ready = str(tower.get("status") or "").upper() == "READY" and bool(tower_accounts)
+    service_ready = CONSOLE_LAUNCH_AGENT_PATH.exists()
+    environment = load_json_file(ENVIRONMENT_AUTH_PATH)
+    env_checks = environment.get("checks") if isinstance(environment.get("checks"), dict) else {}
+    notifications_ready = (env_checks.get("pushover_channel_configured") or {}).get("ok") is True
+    auth_ready = (env_checks.get("read_token") or {}).get("ok") is True and (env_checks.get("ingest_token") or {}).get("ok") is True
+    production_ready = bool(operator_payload.get("ok")) and aligned and auth_ready
+    tv = reports.get("tradingview") if isinstance(reports.get("tradingview"), dict) else load_json_file(TRADINGVIEW_BUNDLE_HEALTH_PATH)
+    coverages = {str(row.get("name") or ""): row for row in (tv.get("coverages") or []) if isinstance(row, dict)}
+    futures_count = int((coverages.get("intraday_index_futures") or {}).get("production_active_alert_count") or 0)
+    options_count = int((coverages.get("options_underlying_confirmation") or {}).get("production_active_alert_count") or 0)
+    tv_configured = tv.get("coverage_valid") is True and futures_count >= 2 and options_count >= 3
+    tv_live_confirmed = bool(tv.get("real_e2e_confirmed"))
+    base_checks = [service_ready, tws_ready, accounts_ready, production_ready, tv_configured, notifications_ready]
+    ready_count = sum(1 for value in base_checks if value)
+    installation_ready = all(base_checks)
+
+    alias_field = html_escape(active_alias)
     steps = [
-        ("1", "Cuenta protegida", "LISTO" if profile_count else "PENDIENTE", f"{profile_count} perfil(es) guardados" if profile_count else "Crea el primer perfil abajo"),
-        ("2", "Cuenta seleccionada", "LISTO" if active_alias else "PENDIENTE", active_alias or "Selecciona una cuenta"),
-        ("3", "Contexto publicado", "LISTO" if aligned else "REVISAR", "Cuenta local y producción coinciden" if aligned else "Usa Alinear cuenta rápido"),
-        ("4", "Operación cotidiana", "DESDE HOY", "La apertura diaria y los pendientes se atienden en Hoy"),
+        ("1", "Consola permanente", "LISTO" if service_ready else "REVISAR", "Arranca automáticamente con tu sesión de macOS" if service_ready else "Falta instalar el servicio permanente", '<a class="button-link secondary" href="/guide#la-consola-no-abre">Ver ayuda</a>'),
+        ("2", "TWS y conexión API", "LISTO" if tws_ready else "REVISAR", "TWS responde y la Torre de Control puede leer cuentas" if tws_ready else "Abre TWS, desbloquéalo y valida la API", '<form method="post" action="/control-tower-refresh" data-busy="Validando TWS y cuentas"><button class="secondary">Probar TWS</button></form>'),
+        ("3", "Cuentas protegidas", "LISTO" if accounts_ready else "REVISAR", f"{len(tower_accounts) or profile_count} cuenta(s) listas y guardadas sin mostrar identificadores" if accounts_ready else "Revisa perfiles, Keychain y lectura multicuenta", '<a class="button-link secondary" href="#cuentas-config">Revisar cuentas</a>'),
+        ("4", "Producción y contexto", "LISTO" if production_ready else "REVISAR", "Lectura protegida y cuenta local/publicada alineadas" if production_ready else "Valida tokens y alinea la cuenta activa", ('<form method="post" action="/select-refresh" data-busy="Alineando cuenta"><input name="alias" value="{}" type="hidden"><button class="secondary"{}>Alinear cuenta</button></form>'.format(alias_field, "" if active_alias else " disabled"))),
+        ("5", "TradingView", "LISTO" if tv_configured else "REVISAR", f"{futures_count}/2 alertas de futuros y {options_count}/3 de opciones activas" if tv_configured else "Deben estar activas 2 alertas MNQ/MES y 3 QQQ/SPY/VIX", '<form method="post" action="/market-open-readiness" data-busy="Validando TradingView"><button class="secondary">Validar alertas</button></form>'),
+        ("6", "Notificaciones móviles", "LISTO" if notifications_ready else "REVISAR", "Canal Pushover configurado; sólo ENTRY llega al celular" if notifications_ready else "Falta configurar o validar el canal Pushover", '<form method="post" action="/notification-preview" data-busy="Validando notificaciones"><button class="secondary">Probar sin enviar</button></form>'),
     ]
     cards = []
-    for number, title, state, detail in steps:
+    for number, title, state, detail, action in steps:
         cards.append("""
           <div class="setup-step setup-{state_class}">
-            <b>{number}</b><div><strong>{title}</strong><span>{detail}</span></div><em>{state}</em>
+            <b>{number}</b><div><strong>{title}</strong><span>{detail}</span></div><em>{state}</em><div class="setup-action">{action}</div>
           </div>
         """.format(
             number=html_escape(number), title=html_escape(title), state=html_escape(state),
-            state_class=html_escape(state.lower()), detail=html_escape(detail),
+            state_class=html_escape(state.lower()), detail=html_escape(detail), action=action,
         ))
+    live_status = "VALIDADO EN VIVO" if tv_live_confirmed else "PENDIENTE DE MERCADO ABIERTO"
+    final_title = "Instalación base lista" if installation_ready else "Instalación requiere atención"
+    final_detail = (
+        "La plataforma puede operarse. La próxima sesión real confirmará cadenas y recorrido de alertas."
+        if installation_ready and not tv_live_confirmed
+        else "Servicio, cuentas, producción, TradingView y notificaciones superaron las comprobaciones."
+        if installation_ready
+        else "Completa los pasos marcados REVISAR antes de entregar la plataforma a un tercero."
+    )
     return """
     <section class="panel configuration-overview">
       <div class="section-head">
-        <div><p class="eyebrow">Guía rápida</p><h2>¿Está lista esta instalación?</h2><p>Configuración se usa para instalar, cambiar cuentas o diagnosticar. La operación diaria ocurre en Hoy.</p></div>
+        <div><p class="eyebrow">Asistente de puesta en marcha</p><h2>¿Está lista esta instalación?</h2><p>Sigue los seis pasos en orden. LISTO confirma una comprobación real; REVISAR indica la acción exacta que falta.</p></div>
         <a class="button-link" href="#view-hoy">Ir a Hoy</a>
       </div>
+      <div class="setup-progress"><span>Avance de instalación</span><strong>{ready}/6</strong><div><i style="width:{progress}%"></i></div></div>
       <div class="setup-steps">{steps}</div>
+      <div class="installation-final installation-{final_class}">
+        <div><small>Validación final</small><strong>{final_title}</strong><span>{final_detail}</span></div>
+        <em>{live_status}</em>
+      </div>
+      <p class="muted">La validación nunca crea órdenes. Una prueba de notificación sólo envía si eliges expresamente el botón de prueba dentro de Soporte.</p>
     </section>
-    """.format(steps="".join(cards))
+    """.format(
+        ready=ready_count,
+        progress=round((ready_count / 6) * 100),
+        steps="".join(cards),
+        final_class="ready" if installation_ready else "review",
+        final_title=html_escape(final_title),
+        final_detail=html_escape(final_detail),
+        live_status=html_escape(live_status),
+    )
 
 
 def is_daily_open_result(result: dict[str, Any]) -> bool:
@@ -9082,10 +9136,19 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .history-strategy-card {{ border:1px solid var(--line); border-radius:10px; padding:11px; }}
           .history-strategy-card small {{ margin-top:6px; font-weight:750; color:var(--accent-strong); }}
           .setup-steps {{ display:grid; gap:8px; margin-top:12px; }}
-          .setup-step {{ display:grid; grid-template-columns:32px minmax(0,1fr) auto; align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:10px; }}
+          .setup-step {{ display:grid; grid-template-columns:32px minmax(0,1fr) auto minmax(130px,auto); align-items:center; gap:10px; border:1px solid var(--line); border-radius:10px; padding:10px; }}
           .setup-step > b {{ display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:var(--soft); }}
           .setup-step span {{ display:block; color:var(--muted); margin-top:2px; }}
           .setup-step em {{ font-style:normal; font-size:.72rem; font-weight:900; color:var(--accent-strong); }}
+          .setup-action {{ justify-self:end; }}
+          .setup-action form,.setup-action button {{ margin:0; }}
+          .setup-progress {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 12px; align-items:center; margin-top:14px; }}
+          .setup-progress > div {{ grid-column:1/-1; height:8px; background:var(--soft); border-radius:999px; overflow:hidden; }}
+          .setup-progress i {{ display:block; height:100%; background:var(--accent); border-radius:inherit; }}
+          .installation-final {{ display:flex; justify-content:space-between; gap:16px; align-items:center; margin-top:12px; border:1px solid var(--line); border-radius:10px; padding:14px; }}
+          .installation-final small,.installation-final strong,.installation-final span {{ display:block; }}
+          .installation-final span {{ color:var(--muted); margin-top:3px; }}
+          .installation-final em {{ font-style:normal; font-size:.75rem; font-weight:900; color:var(--accent-strong); text-align:right; }}
           .signal strong,.signal small,.thinking-now strong,.thinking-now small,.operator-next strong,.operator-next small,.top-quick-actions span {{ overflow-wrap:anywhere; }}
           .operator-next span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:900; }}
           .operator-next strong {{ font-size:1rem; line-height:1.25; }}
@@ -9455,7 +9518,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
-          @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
+          @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
         </style>
       </head>
@@ -9766,7 +9829,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     </html>
     """.format(
         context=render_console_context(active, snapshot, operator_payload),
-        configuration_overview=render_configuration_overview(profiles, active, snapshot, operator_payload),
+        configuration_overview=render_configuration_overview(profiles, active, snapshot, operator_payload, reports),
         health=render_console_health(active, snapshot, operator_payload, reports),
         active_process=render_active_process_panel(),
         today=render_today_panel(active, snapshot, operator_payload, reports),

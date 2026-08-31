@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import install_stock_ultimus_console_launchd as installer
 from scripts import ibkr_account_profile as console
@@ -412,18 +415,62 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(console.effective_daily_open_status(report), "EVIDENCE_COLLECTION_ONLY")
 
     def test_configuration_overview_distinguishes_setup_from_daily_operation(self):
-        rendered = console.render_configuration_overview(
-            {"retiro": {}},
-            {"account_alias": "retiro", "account_scope": "retiro"},
-            {"account_alias": "retiro", "account_scope": "retiro"},
-            {"ok": True, "data": {"account_alias": "retiro", "account_scope": "retiro"}},
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tower = root / "tower.json"
+            auth = root / "auth.json"
+            service = root / "console.plist"
+            service.write_text("installed")
+            tower.write_text(json.dumps({
+                "status": "READY",
+                "accounts": [{
+                    "account_alias": "retiro", "configured": True,
+                    "keychain_ready": True, "refresh_status": "READY",
+                }],
+            }))
+            auth.write_text(json.dumps({"checks": {
+                "read_token": {"ok": True}, "ingest_token": {"ok": True},
+                "pushover_channel_configured": {"ok": True},
+            }}))
+            reports = {"tradingview": {
+                "coverage_valid": True, "real_e2e_confirmed": False,
+                "coverages": [
+                    {"name": "intraday_index_futures", "production_active_alert_count": 2},
+                    {"name": "options_underlying_confirmation", "production_active_alert_count": 3},
+                ],
+            }}
+            with patch.object(console, "CONTROL_TOWER_PATH", tower), patch.object(
+                console, "ENVIRONMENT_AUTH_PATH", auth
+            ), patch.object(console, "CONSOLE_LAUNCH_AGENT_PATH", service):
+                rendered = console.render_configuration_overview(
+                    {"retiro": {}},
+                    {"account_alias": "retiro", "account_scope": "retiro"},
+                    {"account_alias": "retiro", "account_scope": "retiro"},
+                    {"ok": True, "data": {"account_alias": "retiro", "account_scope": "retiro"}},
+                    reports,
+                )
 
         self.assertIn("¿Está lista esta instalación?", rendered)
-        self.assertIn("Cuenta protegida", rendered)
-        self.assertIn("Cuenta local y producción coinciden", rendered)
-        self.assertIn("La apertura diaria y los pendientes se atienden en Hoy", rendered)
+        self.assertIn("6/6", rendered)
+        self.assertIn("Instalación base lista", rendered)
+        self.assertIn("PENDIENTE DE MERCADO ABIERTO", rendered)
+        self.assertIn("TWS y conexión API", rendered)
+        self.assertIn("Notificaciones móviles", rendered)
+        self.assertIn("Probar sin enviar", rendered)
         self.assertIn('href="#view-hoy"', rendered)
+
+    def test_configuration_overview_does_not_call_missing_setup_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            missing = root / "missing.json"
+            with patch.object(console, "CONTROL_TOWER_PATH", missing), patch.object(
+                console, "ENVIRONMENT_AUTH_PATH", missing
+            ), patch.object(console, "CONSOLE_LAUNCH_AGENT_PATH", root / "missing.plist"):
+                rendered = console.render_configuration_overview({}, {}, {}, {"ok": False}, {"tradingview": {}})
+
+        self.assertIn("0/6", rendered)
+        self.assertIn("Instalación requiere atención", rendered)
+        self.assertIn("REVISAR", rendered)
 
 
 if __name__ == "__main__":

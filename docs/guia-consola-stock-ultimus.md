@@ -598,12 +598,16 @@ Permite revisar desempeño y calidad por estrategia, fuente y régimen. El siste
 
 ## 14. Configuración y administración
 
-Es una zona de uso ocasional, no el lugar donde se opera cada día. La parte superior muestra **¿Está lista esta instalación?** con cuatro pasos:
+Es una zona de uso ocasional, no el lugar donde se opera cada día. La parte superior contiene el **Asistente de puesta en marcha**, que permite entregar la plataforma a otra persona sin exigirle conocimientos de archivos o terminal. Comprueba seis pasos:
 
-1. cuenta protegida en Keychain;
-2. cuenta seleccionada;
-3. contexto local y producción alineados;
-4. enlace de regreso a **Hoy**, donde se realiza la operación cotidiana.
+1. **Consola permanente:** confirma que el servicio está instalado y puede arrancar con la sesión de macOS.
+2. **TWS y conexión API:** comprueba que TWS responde y que la Torre de Control puede leer datos.
+3. **Cuentas protegidas:** valida perfiles, Keychain y lectura multicuenta sin mostrar identificadores reales.
+4. **Producción y contexto:** verifica tokens de lectura/publicación y que la cuenta local coincida con la publicada.
+5. **TradingView:** exige al menos las dos alertas consolidadas MNQ/MES y las tres QQQ/SPY/VIX del proyecto.
+6. **Notificaciones móviles:** confirma que Pushover está configurado y recuerda que sólo las entradas aprobadas llegan al celular.
+
+Cada fila muestra **LISTO** o **REVISAR** y ofrece la acción concreta correspondiente. El marcador `6/6` significa que la instalación base está completa. **Pendiente de mercado abierto** no invalida la instalación: indica que todavía falta observar cadenas y payloads reales durante una sesión. **Validado en vivo** sólo aparece cuando ese recorrido real ya quedó confirmado. Ninguna validación crea órdenes y **Probar sin enviar** consulta el canal en modo preview.
 
 **Cuenta y conexión** permanece visible porque contiene las acciones normales para seleccionar, alinear o crear perfiles. **Soporte y diagnóstico avanzado** queda cerrado y sólo se abre ante una prueba, mantenimiento o investigación concreta. Incluye:
 
