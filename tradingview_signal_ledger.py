@@ -34,10 +34,8 @@ REQUIRED_CONTEXT_FIELDS = [
 ]
 OPTIONS_CONTEXT_FIELDS = [
     "rsi",
-    "rsi_state",
-    "trend_state",
-    "market_regime",
     "underlying_signal",
+    "volatility_state",
 ]
 CHRIS_IA_CONTEXT_FIELDS = [
     "breakout_direction",
@@ -176,9 +174,16 @@ def _required_context_fields(strategy_context: str) -> list[str]:
     context = safe_upper(strategy_context)
     if context == tradingview_payload_contract.CHRIS_IA_CONTEXT:
         return list(CHRIS_IA_CONTEXT_FIELDS)
-    fields = list(REQUIRED_CONTEXT_FIELDS)
     if context == tradingview_payload_contract.OPTIONS_UNDERLYING_CONTEXT:
-        fields.extend(field for field in OPTIONS_CONTEXT_FIELDS if field not in fields)
+        return [
+            "vwap",
+            "breakout_direction",
+            "adx",
+            "atr",
+            "volume_relative",
+            *OPTIONS_CONTEXT_FIELDS,
+        ]
+    fields = list(REQUIRED_CONTEXT_FIELDS)
     return fields
 
 

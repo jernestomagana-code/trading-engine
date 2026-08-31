@@ -17,6 +17,28 @@ OPERATOR_GUIDE = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 
 
 class ConsoleServiceAndUxTests(unittest.TestCase):
+    def test_remote_refresh_prioritizes_live_futures_evidence(self):
+        endpoints = {
+            "operator": "/operator",
+            "executive": "/executive",
+            "rankings": "/rankings",
+            "signal_events": "/signals",
+            "futures_daily": "/futures",
+            "webhook_status": "/webhook",
+            "learning": "/learning",
+        }
+
+        phases = console.remote_refresh_phases(endpoints)
+
+        self.assertEqual(
+            [key for key, _ in phases[0]],
+            ["operator", "signal_events", "futures_daily", "webhook_status"],
+        )
+        self.assertEqual(
+            {key for key, _ in phases[1]},
+            {"executive", "rankings", "learning"},
+        )
+
     def test_unified_opportunity_center_prioritizes_ready_before_forming_and_waiting(self):
         operator = {
             "ok": True,

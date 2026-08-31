@@ -1779,6 +1779,15 @@ def console_v31_payloads(prefer_cache: bool = False) -> dict[str, dict[str, Any]
         return {key: future.result() for key, future in futures.items()}
 
 
+def remote_refresh_phases(endpoints: dict[str, str]) -> list[list[tuple[str, str]]]:
+    """Return refresh phases with live trading evidence first."""
+    critical_keys = ["operator", "signal_events", "futures_daily", "webhook_status"]
+    return [
+        [(key, endpoints[key]) for key in critical_keys if key in endpoints],
+        [(key, path) for key, path in endpoints.items() if key not in critical_keys],
+    ]
+
+
 def start_remote_refresh_job() -> str:
     """Refresh console sources gradually while exposing truthful progress."""
     label = "Actualización remota de consola"
@@ -1808,18 +1817,39 @@ def start_remote_refresh_job() -> str:
     def worker() -> None:
         results: dict[str, Any] = {}
         try:
-            for index, (key, path) in enumerate(endpoints.items(), start=1):
-                with WEB_JOBS_LOCK:
-                    WEB_JOBS[job_id]["progress"] = {
-                        "completed": index - 1,
-                        "total": len(endpoints),
-                        "current": key,
+            # Live market evidence must never wait behind slow historical or
+            # learning endpoints. Refresh the four operator-critical sources
+            # concurrently first, then refresh the supporting panels in a
+            # second bounded phase. This keeps the UI truthful even when one
+            # non-critical endpoint reaches its timeout.
+            phases = remote_refresh_phases(endpoints)
+            completed = 0
+            for phase in phases:
+                if not phase:
+                    continue
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(phase))) as executor:
+                    pending = {
+                        executor.submit(
+                            fetch_remote_json,
+                            path,
+                            max(REMOTE_VERIFY_TIMEOUT_SECONDS, 30.0),
+                            False,
+                        ): key
+                        for key, path in phase
                     }
-                results[key] = fetch_remote_json(
-                    path,
-                    timeout=max(REMOTE_VERIFY_TIMEOUT_SECONDS, 30.0),
-                    prefer_cache=False,
-                )
+                    for future in concurrent.futures.as_completed(pending):
+                        key = pending[future]
+                        try:
+                            results[key] = future.result()
+                        except Exception as exc:
+                            results[key] = {"ok": False, "error": str(exc), "data": {}}
+                        completed += 1
+                        with WEB_JOBS_LOCK:
+                            WEB_JOBS[job_id]["progress"] = {
+                                "completed": completed,
+                                "total": len(endpoints),
+                                "current": key,
+                            }
             live_ok = [key for key, value in results.items() if value.get("ok") and not value.get("cached")]
             stale = [key for key, value in results.items() if value.get("cached")]
             failed = [key for key, value in results.items() if not value.get("ok")]

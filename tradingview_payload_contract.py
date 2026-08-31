@@ -33,10 +33,8 @@ REQUIRED_FIELDS = [
 CONTEXT_REQUIRED_FIELDS = {
     OPTIONS_UNDERLYING_CONTEXT: [
         "rsi",
-        "rsi_state",
-        "trend_state",
-        "market_regime",
         "underlying_signal",
+        "volatility_state",
     ],
     CHRIS_IA_CONTEXT: [
         "event",
@@ -55,6 +53,21 @@ CONTEXT_REQUIRED_FIELDS = {
     ],
 }
 CONTEXT_BASE_REQUIRED_FIELDS = {
+    # The compact SPY/QQQ/VIX indicator is confirmation evidence, not an
+    # executable entry payload.  Require the market measurements it actually
+    # owns and keep account/session/risk fields on the downstream decision
+    # engine, where they are sourced authoritatively.
+    OPTIONS_UNDERLYING_CONTEXT: [
+        "ticker",
+        "timeframe",
+        "strategy_context",
+        "price",
+        "vwap",
+        "breakout_direction",
+        "adx",
+        "atr",
+        "volume_relative",
+    ],
     CHRIS_IA_CONTEXT: [
         "ticker",
         "timeframe",

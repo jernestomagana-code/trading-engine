@@ -279,6 +279,10 @@ La apertura crea, sólo cuando no existe uno, un contexto premercado **automáti
 
 El bloque distingue actividad de oportunidad. **Recibidos hoy** confirma que el enlace funcionó; **Aceptados hoy** excluye lo enviado a cuarentena; **WATCH** significa radar sin entrada; **snapshots** son pulsos de sesión; **Entradas hoy** cuenta candidatos ENTRY aunque ya hayan vencido; y **Motor diario** confirma que fueron incorporados a la evaluación. Si recibió futuros pero el motor procesó cero, muestra **PIPELINE_MISMATCH**: es una incidencia técnica, no una sesión sin oportunidades. Sólo una ENTRY o RISK todavía vigente se eleva como tarjeta principal; los WATCH no deben saturar la bandeja del operador.
 
+Al pulsar **Actualizar pantalla**, la consola consulta primero operador, ledger de señales, informe diario de futuros y salud del webhook. Los paneles históricos se actualizan después. Así una fuente secundaria lenta no puede dejar el bloque de futuros mostrando ceros del día anterior.
+
+Las alertas compactas de QQQ, SPY y VIX aportan confirmación técnica del subyacente: precio, VWAP, dirección, ADX, ATR, volumen relativo, RSI, señal y estado de volatilidad. No necesitan duplicar sesión, cuenta, capacidad ni riesgo de cartera; esos controles se incorporan posteriormente desde las fuentes autoritativas del motor. La ausencia de cualquiera de los campos técnicos compactos sí mantiene el evento en cuarentena.
+
 ### Severidades
 
 | Severidad | Interpretación |

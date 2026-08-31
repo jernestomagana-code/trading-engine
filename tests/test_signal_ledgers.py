@@ -246,6 +246,44 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(events[0]["market_regime"], "RISK_ON")
         self.assertEqual(events[0]["missing_context_fields"], [])
 
+    def test_options_underlying_compact_payload_is_accepted_without_execution_context(self):
+        payload = {
+            "source": "TRADINGVIEW",
+            "strategy_context": "OPTIONS_UNDERLYING_CONFIRMATION",
+            "event": "TECH_CONFIRM",
+            "event_code": "QQQ_TECH_CONFIRM_SHORT_15M",
+            "ticker": "QQQ",
+            "timeframe": "15",
+            "breakout_direction": "SHORT",
+            "price": 714.79,
+            "logical_stop": 716.19,
+            "logical_target": 711.99,
+            "adx": 37.52,
+            "atr": 1.40,
+            "rsi": 44.68,
+            "volume_relative": 0.57,
+            "vwap": 714.61,
+            "underlying_signal": "TECH_CONFIRM_SHORT",
+            "volatility_state": "NORMAL",
+            "action": "ALERT_ONLY",
+            "execution_authorized": False,
+            "not_order_instruction": True,
+        }
+
+        validation = tradingview_payload_contract.validate_payload(payload, allow_placeholders=False)
+        event = tradingview_signal_ledger.normalize_signal_event(
+            payload,
+            raw_text=json.dumps(payload),
+            endpoint="/technical_snapshot",
+        )
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["missing_fields"], [])
+        self.assertNotIn("session_state", validation["required_fields"])
+        self.assertTrue(event["accepted_for_engine"])
+        self.assertEqual(event["missing_context_fields"], [])
+        self.assertEqual(event["alert_contract_status"], "ACCEPTED")
+
     def test_tradingview_ledger_quarantines_legacy_payload_without_event_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "signals.json"
