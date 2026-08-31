@@ -212,7 +212,7 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertTrue(first["accepted_for_engine"])
         self.assertEqual(events[0]["candidate_source"], "TRADINGVIEW_ALERT")
-        self.assertEqual(events[0]["payload_contract_version"], "tradingview_signal_payload_v2")
+        self.assertEqual(events[0]["payload_contract_version"], "tradingview_signal_payload_v2_1_compact_options")
         self.assertEqual(events[0]["alert_contract_status"], "ACCEPTED")
         self.assertEqual(events[0]["event_code"], "MNQ_ORB_BREAKOUT_LONG_5M")
         self.assertTrue(events[0]["payload_validation"]["valid"])

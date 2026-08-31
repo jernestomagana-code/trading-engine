@@ -5388,6 +5388,10 @@ def health():
         "read_auth_required": REQUIRE_READ_AUTH,
         "read_access_token_configured": bool(READ_ACCESS_TOKEN),
         "operational_visible_health": tradingview_visible_health,
+        "tradingview_payload_contract_version": (
+            shared_tradingview_signal_ledger.tradingview_payload_contract.PAYLOAD_CONTRACT_VERSION
+        ),
+        "options_underlying_compact_payload_supported": True,
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
         "total_recent_signals_loaded": len(signals),
         "tickers_in_memory": list(trade_store.keys()),

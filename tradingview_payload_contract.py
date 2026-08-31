@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2"
+PAYLOAD_CONTRACT_VERSION = "tradingview_signal_payload_v2_1_compact_options"
 OPTIONS_UNDERLYING_CONTEXT = "OPTIONS_UNDERLYING_CONFIRMATION"
 CHRIS_IA_CONTEXT = "CHRIS_IA_REVERSAL_PRO"
 REQUIRED_FIELDS = [
