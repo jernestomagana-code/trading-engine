@@ -77,7 +77,10 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
             "ibkr": {"chain_has_rsp": True, "chain_is_fresh": True},
         }
 
-        items = console.build_unified_opportunity_items(operator, rsp, candidates)
+        items = console.build_unified_opportunity_items(
+            operator, rsp, candidates, risk_payload={"alerts": []},
+            account_capacity={"available_capacity": 50000, "capacity_source": "available_funds"},
+        )
 
         self.assertEqual(items[0]["type"], "futures")
         self.assertEqual(items[0]["state"], "ready")
@@ -104,6 +107,53 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Invalida / riesgo", html)
         self.assertIn("Objetivo", html)
         self.assertIn("Falta / bloqueo", html)
+        self.assertIn("Capital / margen requerido", html)
+        self.assertIn("Capacidad disponible", html)
+        self.assertIn("Capacidad después", html)
+        self.assertIn("Impacto de riesgo", html)
+
+    def test_unified_opportunity_financial_projection_blocks_insufficient_capacity(self):
+        operator = {"ok": True, "data": {"active_alerts": [{
+            "ticker": "NVDA",
+            "state": "ENTRY_READY",
+            "severity": "ACTION",
+            "strategy": "CASH_SECURED_PUT",
+            "selected_contract": {"strike": 200, "bid": 1.0},
+        }]}}
+        candidates = {"candidates": [{"ticker": "NVDA", "canslim_passes": True, "canslim_score": 88}]}
+
+        items = console.build_unified_opportunity_items(
+            operator,
+            {"strategy_recommendation": {"status": "WAIT_DATA"}},
+            candidates,
+            risk_payload={"alerts": []},
+            account_capacity={"available_capacity": 7000, "capacity_source": "available_funds"},
+        )
+        nvda = next(item for item in items if item["type"] == "canslim" and item["ticker"] == "NVDA")
+
+        self.assertEqual(nvda["capital_required"], 19900)
+        self.assertEqual(nvda["state"], "blocked")
+        self.assertEqual(nvda["state_label"], "Bloqueada por capacidad")
+        self.assertIn("insuficiente", nvda["capacity_after_label"])
+
+    def test_unified_opportunity_global_data_risk_downgrades_ready_entry(self):
+        operator = {"ok": True, "data": {"active_alerts": [{
+            "ticker": "MNQ1!", "strategy": "INTRADAY_INDEX_FUTURES", "state": "ENTRY_READY",
+            "severity": "ACTION", "entry_price": 20000, "stop_loss": 19980,
+        }]}}
+
+        items = console.build_unified_opportunity_items(
+            operator,
+            {"strategy_recommendation": {"status": "WAIT_DATA"}},
+            {"candidates": []},
+            risk_payload={"alerts": [{"severity": "HIGH", "rule": "ACCOUNT_DATA_NOT_READY"}]},
+            account_capacity={"available_capacity": 25000},
+        )
+        future = next(item for item in items if item["type"] == "futures")
+
+        self.assertEqual(future["state"], "blocked")
+        self.assertEqual(future["state_label"], "Bloqueada por riesgo")
+        self.assertIn("Bloqueo global activo", future["risk_impact"])
 
     def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
         rsp = {

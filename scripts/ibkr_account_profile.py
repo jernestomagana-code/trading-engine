@@ -5937,10 +5937,19 @@ def build_unified_opportunity_items(
     operator_payload: dict[str, Any],
     rsp_payload: dict[str, Any],
     candidates_payload: dict[str, Any] | None = None,
+    risk_payload: dict[str, Any] | None = None,
+    account_capacity: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize the three opportunity engines into one operator-first queue."""
     candidates_payload = candidates_payload if isinstance(candidates_payload, dict) else load_json_file(RUNTIME / "canslim_candidates_latest.json")
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    account_capacity = account_capacity if isinstance(account_capacity, dict) else console_account_capacity(operator_payload, {})
+    available_capacity = console_float_or_none(account_capacity.get("available_capacity"))
+    risk_payload = risk_payload if isinstance(risk_payload, dict) else load_json_file(PORTFOLIO_RISK_PATH)
+    risk_alerts = [item for item in (risk_payload.get("alerts") or []) if isinstance(item, dict)]
+    risk_classes = [portfolio_risk_decision_classification(item) for item in risk_alerts]
+    global_risk_blocks = sum(item["key"] == "BLOCK" for item in risk_classes)
+    global_risk_reviews = sum(item["key"] == "REVIEW" for item in risk_classes)
     active_alerts = [
         item for item in (data.get("active_alerts") or [])
         if isinstance(item, dict) and not is_handled_alert(item)
@@ -5994,6 +6003,9 @@ def build_unified_opportunity_items(
             "metric_label": "Calidad",
             "blocker": friendly_operator_state(blocker, "Sin bloqueo informado"),
             "freshness": friendly_age(alert.get("received_at") or alert.get("generated_at") or alert.get("created_at")),
+            "capital_required": console_float_or_none(
+                alert.get("margin_required") or alert.get("estimated_margin_required") or alert.get("initial_margin_required")
+            ),
         })
 
     if not any(item["type"] == "futures" for item in items):
@@ -6025,6 +6037,9 @@ def build_unified_opportunity_items(
                 "metric_label": "Calidad",
                 "blocker": friendly_operator_state(latest.get("main_blocker") or latest.get("confirmation_gate_status"), "Sin ENTRY vigente"),
                 "freshness": friendly_age(latest.get("received_at") or latest.get("generated_at") or intraday.get("updated_at")),
+                "capital_required": console_float_or_none(
+                    latest.get("margin_required") or latest.get("estimated_margin_required") or latest.get("initial_margin_required")
+                ),
             })
         else:
             intraday_status = str(intraday.get("status") or "").upper()
@@ -6045,6 +6060,7 @@ def build_unified_opportunity_items(
                 "metric_label": "Calidad",
                 "blocker": "Revisar telemetría de futuros" if failed else "Ninguna señal alcanzó ENTRY_READY",
                 "freshness": friendly_age(intraday.get("updated_at") or daily.get("generated_at")),
+                "capital_required": None,
             })
 
     canslim_rows = build_canslim_operational_rows(operator_payload, candidates_payload)
@@ -6054,6 +6070,7 @@ def build_unified_opportunity_items(
         state_key = "ready" if stage_key == "ready" else ("blocked" if stage_key == "blocked" else "forming")
         state_label = "Entrada lista" if state_key == "ready" else ("Bloqueada" if state_key == "blocked" else "Preparándose")
         rank = 0 if state_key == "ready" else (3 if state_key == "blocked" else 1)
+        final_alert = final_by_ticker.get(ticker) or {}
         items.append({
             "type": "canslim",
             "type_label": "CANSLIM",
@@ -6070,6 +6087,7 @@ def build_unified_opportunity_items(
             "metric_label": "Score CANSLIM",
             "blocker": candidate.get("blocker") or candidate.get("missing_data") or "Sin bloqueo informado",
             "freshness": candidate.get("freshness") or friendly_age(candidates_payload.get("generated_at")),
+            "capital_required": console_alert_capital_required(final_alert) if final_alert else None,
         })
 
     recommendation = rsp_payload.get("strategy_recommendation") if isinstance(rsp_payload.get("strategy_recommendation"), dict) else {}
@@ -6087,6 +6105,13 @@ def build_unified_opportunity_items(
     rsp_trigger = rsp_candidate.get("strike") or recommendation.get("strike")
     rsp_breakeven = rsp_candidate.get("breakeven") or recommendation.get("breakeven")
     rsp_max_gain = rsp_candidate.get("max_gain") or rsp_candidate.get("max_profit") or recommendation.get("max_gain") or recommendation.get("max_profit")
+    rsp_capital = console_float_or_none(
+        rsp_candidate.get("decision_capital_required")
+        or rsp_candidate.get("ibkr_initial_margin_required")
+        or rsp_candidate.get("capital_required")
+        or recommendation.get("decision_capital_required")
+        or recommendation.get("capital_required")
+    )
     items.append({
         "type": "rsp",
         "type_label": "RSP",
@@ -6103,7 +6128,38 @@ def build_unified_opportunity_items(
         "metric_label": "Score RSP",
         "blocker": friendly_operator_state(rsp_blockers[0], "Sin bloqueo; revisar estructura y capacidad") if rsp_blockers else "Sin bloqueo; revisar estructura y capacidad",
         "freshness": friendly_age((rsp_payload.get("ibkr") or {}).get("chain_coverage_generated_at") or rsp_payload.get("generated_at")),
+        "capital_required": rsp_capital,
     })
+
+    for item in items:
+        required = console_float_or_none(item.get("capital_required"))
+        if required is None:
+            item["capital_label"] = "N/D · falta margen o capital requerido"
+            item["capacity_after_label"] = "N/D"
+        elif available_capacity is None:
+            item["capital_label"] = compact_money(required)
+            item["capacity_after_label"] = "N/D · actualiza IBKR"
+        else:
+            remaining = available_capacity - required
+            item["capital_label"] = compact_money(required)
+            item["capacity_after_label"] = compact_money(max(remaining, 0.0)) + (
+                " · insuficiente" if remaining < 0 else " · proyección"
+            )
+            if remaining < 0 and item["state"] == "ready":
+                item["state"], item["state_label"], item["rank"] = "blocked", "Bloqueada por capacidad", 3
+                item["action"] = "No entrar; falta capacidad financiera"
+        if global_risk_blocks:
+            item["risk_impact"] = "Bloqueo global activo; resolver riesgo antes de una entrada nueva."
+            if item["state"] == "ready":
+                item["state"], item["state_label"], item["rank"] = "blocked", "Bloqueada por riesgo", 3
+                item["action"] = "No entrar; resolver y reevaluar riesgo"
+        elif global_risk_reviews:
+            item["risk_impact"] = "Revisión global requerida antes de aumentar exposición."
+        elif required is not None and available_capacity not in [None, 0] and required / available_capacity > 0.25:
+            item["risk_impact"] = "Consumiría más de 25% de la capacidad; revisar tamaño y concentración."
+        else:
+            item["risk_impact"] = "Sin bloqueo global; concentración posterior N/D hasta definir tamaño/ticket."
+        item["available_capacity_label"] = compact_money(available_capacity)
     return sorted(items, key=lambda item: (item["rank"], -float(item.get("quality") or 0.0), item["type"], item["ticker"]))
 
 
@@ -6128,6 +6184,12 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             <span>Objetivo<strong>{target_value}</strong></span>
             <span>Falta / bloqueo<strong>{blocker}</strong></span>
           </div>
+          <div class="opportunity-viability">
+            <span>Capital / margen requerido<strong>{capital}</strong></span>
+            <span>Capacidad disponible<strong>{available_capacity}</strong></span>
+            <span>Capacidad después<strong>{capacity_after}</strong></span>
+            <span>Impacto de riesgo<strong>{risk_impact}</strong></span>
+          </div>
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
@@ -6144,6 +6206,10 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             invalidation=html_escape(item.get("invalidation") or "Pendiente"),
             target_value=html_escape(item.get("target") or "Pendiente"),
             blocker=html_escape(item.get("blocker") or "Sin bloqueo informado"),
+            capital=html_escape(item.get("capital_label") or "N/D"),
+            available_capacity=html_escape(item.get("available_capacity_label") or "N/D"),
+            capacity_after=html_escape(item.get("capacity_after_label") or "N/D"),
+            risk_impact=html_escape(item.get("risk_impact") or "N/D"),
             target="canslim-radar" if item["type"] == "canslim" else ("alertas" if item["type"] == "futures" else "coberturas-rsp"),
         )
 
@@ -9923,6 +9989,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-facts {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding-top:9px; border-top:1px solid var(--line); }}
           .opportunity-facts span {{ min-width:0; color:var(--muted); font-size:.72rem; text-transform:uppercase; }}
           .opportunity-facts strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.82rem; text-transform:none; }}
+          .opportunity-viability {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin-top:9px; padding:9px; border:1px solid #b9d8cb; border-radius:8px; background:#f4fbf7; }}
+          .opportunity-viability span {{ min-width:0; color:var(--muted); font-size:.68rem; font-weight:850; text-transform:uppercase; }}
+          .opportunity-viability strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.78rem; line-height:1.3; text-transform:none; }}
           .opportunity-card > a {{ display:inline-block; margin-top:10px; color:var(--accent-strong); font-weight:850; }}
           .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
           .canslim-list {{ display:grid; gap:8px; }}
@@ -10093,7 +10162,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
-          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
+          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
