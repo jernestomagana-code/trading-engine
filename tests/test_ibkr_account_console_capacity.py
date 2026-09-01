@@ -1039,6 +1039,31 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Apertura y mercado", html)
         self.assertIn("1 requieren revisión", html)
 
+    def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
+        item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(account_console, "DAILY_TASK_JOURNAL_PATH", Path(tmp) / "daily_tasks.json"):
+            initial = account_console.daily_task_view([item])
+            task = initial["visible"][0]
+            account_console.record_daily_task_action(task["task_id"], task["task_fingerprint"], "REVIEW", task["title"])
+            reviewing = account_console.daily_task_view([item])
+            self.assertEqual(reviewing["visible"][0]["task_state"], "REVIEWING")
+
+            account_console.record_daily_task_action(task["task_id"], task["task_fingerprint"], "POSTPONE", task["title"])
+            postponed = account_console.daily_task_view([item])
+            self.assertEqual(postponed["visible"], [])
+            self.assertEqual(postponed["postponed_count"], 1)
+
+            changed = {**item, "detail": "Concentración aumentó a 90%"}
+            reopened = account_console.daily_task_view([changed])
+            self.assertEqual(reopened["visible"][0]["task_state"], "NEW")
+            self.assertEqual(reopened["postponed_count"], 0)
+
+            changed_task = reopened["visible"][0]
+            account_console.record_daily_task_action(changed_task["task_id"], changed_task["task_fingerprint"], "DONE", changed_task["title"])
+            attended = account_console.daily_task_view([changed])
+            self.assertEqual(attended["visible"], [])
+            self.assertEqual(attended["attended_count"], 1)
+
     def test_unified_local_console_renders_v31_manual_review_surfaces(self):
         payloads = {
             "executive": {

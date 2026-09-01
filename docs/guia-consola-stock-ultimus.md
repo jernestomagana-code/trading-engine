@@ -191,6 +191,8 @@ La consola recuerda la última vista elegida después de una actualización. Los
 
 La franja inmediatamente inferior resume las cinco preguntas de la jornada: **riesgo de cartera**, **oportunidades nuevas**, **posiciones abiertas**, **estado operativo** y **apertura/mercado**. Los primeros cuatro bloques funcionan también como accesos directos a la sección donde se atiende cada tema. Una oportunidad sólo se cuenta como lista cuando el motor la llevó a `ENTRY_READY`; las que todavía se están formando se muestran por separado.
 
+Cada prioridad de **Hoy** incluye cuatro controles cotidianos: **Abrir detalle** lleva al bloque que explica la situación; **Revisar** conserva la tarjeta visible con estado *En revisión*; **Posponer 1 h** la oculta temporalmente y la devuelve automáticamente; **Marcar atendido** la retira de la cola. Si después cambia la recomendación, el riesgo o el motivo, la tarea reaparece como nueva aunque anteriormente se hubiera pospuesto o atendido. Estos controles sólo organizan el trabajo: no ejecutan órdenes ni alteran las compuertas del motor.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import html
 import json
 import os
@@ -17,7 +18,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 REMOTE_REFRESH_STATUS_PATH = RUNTIME / "stock_ultimus_console_remote_refresh_latest.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
+DAILY_TASK_JOURNAL_PATH = RUNTIME / "daily_operator_task_journal.json"
 POSITION_MANAGEMENT_JOURNAL_PATH = RUNTIME / "active_position_management_journal.json"
 POSITION_CONTEXTS_PATH = RUNTIME / "active_position_contexts.json"
 GAMMA_CONTEXTS_PATH = RUNTIME / "gamma_contexts.json"
@@ -2861,6 +2863,82 @@ def build_unified_pending_items(
     return sorted(items, key=lambda item: rank.get(item.get("level") or "watch", 3))
 
 
+def daily_task_identity(item: dict[str, Any]) -> tuple[str, str]:
+    key_source = "|".join(str(item.get(field) or "") for field in ("area", "title", "href"))
+    fingerprint_source = "|".join(str(item.get(field) or "") for field in ("area", "title", "detail", "href", "when", "level"))
+    task_id = "TASK-" + hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:16]
+    fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+    return task_id, fingerprint
+
+
+def load_daily_task_journal() -> dict[str, Any]:
+    payload = load_json_file(DAILY_TASK_JOURNAL_PATH)
+    tasks = payload.get("tasks") if isinstance(payload.get("tasks"), dict) else {}
+    return {"journal_version": "daily_operator_task_journal_v1", "tasks": tasks}
+
+
+def daily_task_view(items: list[dict[str, Any]], now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    journal = load_daily_task_journal()
+    records = journal.get("tasks") if isinstance(journal.get("tasks"), dict) else {}
+    visible: list[dict[str, Any]] = []
+    postponed_count = 0
+    attended_count = 0
+    for raw_item in items:
+        item = dict(raw_item)
+        task_id, fingerprint = daily_task_identity(item)
+        record = records.get(task_id) if isinstance(records.get(task_id), dict) else {}
+        state = str(record.get("state") or "NEW").upper()
+        if record.get("fingerprint") != fingerprint:
+            state = "NEW"
+        if state == "DONE":
+            attended_count += 1
+            continue
+        if state == "POSTPONED":
+            postponed_until = parse_iso_datetime(record.get("postponed_until"))
+            if postponed_until and postponed_until > now:
+                postponed_count += 1
+                continue
+            state = "NEW"
+        item.update({"task_id": task_id, "task_fingerprint": fingerprint, "task_state": state})
+        visible.append(item)
+    rank = {"critical": 0, "high": 1, "watch": 2}
+    state_rank = {"NEW": 0, "REVIEWING": 1}
+    visible.sort(key=lambda item: (rank.get(str(item.get("level") or "watch"), 3), state_rank.get(str(item.get("task_state") or "NEW"), 2)))
+    return {"visible": visible, "postponed_count": postponed_count, "attended_count": attended_count, "total_count": len(items)}
+
+
+def record_daily_task_action(task_id: str, fingerprint: str, action: str, title: str = "") -> dict[str, Any]:
+    task_id = str(task_id or "").strip()
+    fingerprint = str(fingerprint or "").strip()
+    action = str(action or "").strip().upper()
+    if not task_id.startswith("TASK-") or not fingerprint or action not in {"REVIEW", "POSTPONE", "DONE"}:
+        raise ValueError("Acción o identidad de tarea inválida.")
+    journal = load_daily_task_journal()
+    tasks = journal.get("tasks") if isinstance(journal.get("tasks"), dict) else {}
+    state = {"REVIEW": "REVIEWING", "POSTPONE": "POSTPONED", "DONE": "DONE"}[action]
+    record = {
+        "task_id": task_id,
+        "fingerprint": fingerprint,
+        "title": str(title or "")[:180],
+        "state": state,
+        "updated_at": now_iso(),
+        "postponed_until": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat() if action == "POSTPONE" else None,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+    tasks[task_id] = record
+    bounded = dict(list(tasks.items())[-1000:])
+    write_json_file(DAILY_TASK_JOURNAL_PATH, {
+        "journal_version": "daily_operator_task_journal_v1",
+        "updated_at": now_iso(),
+        "tasks": bounded,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    })
+    return record
+
+
 def render_command_center(
     active: dict[str, Any],
     snapshot: dict[str, Any],
@@ -2871,7 +2949,9 @@ def render_command_center(
     rsp_payload: dict[str, Any],
 ) -> str:
     health = console_health(active, snapshot, operator_payload)
-    pending = build_unified_pending_items(operator_payload, position_payload, risk_payload, rsp_payload)
+    pending_raw = build_unified_pending_items(operator_payload, position_payload, risk_payload, rsp_payload)
+    task_view = daily_task_view(pending_raw)
+    pending = task_view["visible"]
     opportunities = build_unified_opportunity_items(operator_payload, rsp_payload)
     ready_opportunities = [item for item in opportunities if item.get("state") == "ready"]
     forming_opportunities = [item for item in opportunities if item.get("state") == "forming"]
@@ -2885,6 +2965,12 @@ def render_command_center(
     elif pending:
         level, title = "amber", pending[0]["title"]
         summary = pending[0]["detail"]
+    elif pending_raw and task_view.get("postponed_count"):
+        level, title = "blue", "Sin acciones inmediatas"
+        summary = "Hay {} prioridad(es) pospuesta(s); reaparecerán automáticamente. Los riesgos subyacentes siguen visibles en Cartera.".format(task_view.get("postponed_count"))
+    elif pending_raw and task_view.get("attended_count"):
+        level, title = "green", "Revisión diaria al día"
+        summary = "Las prioridades actuales ya fueron revisadas. Esto no elimina el riesgo subyacente; continúa visible en su sección y reaparecerá si cambia."
     else:
         level, title = "green", "Todo listo para monitorear"
         summary = "No hay acciones prioritarias. Mantén el monitoreo y espera señales válidas."
@@ -2905,16 +2991,24 @@ def render_command_center(
 
     def render_task(item: dict[str, str], index: int) -> str:
         return (
-            '<a class="operator-task task-{level}" href="{href}"><span>{index}</span>'
+            '<article class="operator-task task-{level} state-{task_state}"><span>{index}</span>'
             '<div><small>{area}</small><strong>{title}</strong><p>{detail}</p></div>'
-            '<b>{when} · Revisar →</b></a>'.format(
+            '<div class="daily-task-actions"><em>{state_label}</em><a href="{href}">Abrir detalle</a>'
+            '<form method="post" action="/daily-task-action"><input type="hidden" name="task_id" value="{task_id}">'
+            '<input type="hidden" name="task_fingerprint" value="{task_fingerprint}"><input type="hidden" name="task_title" value="{title}">'
+            '<button name="task_action" value="REVIEW" class="secondary">Revisar</button>'
+            '<button name="task_action" value="POSTPONE" class="secondary">Posponer 1 h</button>'
+            '<button name="task_action" value="DONE">Marcar atendido</button></form></div></article>'.format(
                 level=html_escape(item.get("level") or "watch"),
                 href=html_escape(item.get("href") or "#hoy"),
                 index=index,
                 area=html_escape(item.get("area") or "Pendiente"),
                 title=html_escape(item.get("title") or "Revisión pendiente"),
                 detail=html_escape(item.get("detail") or ""),
-                when=html_escape(item.get("when") or "Revisar hoy"),
+                task_id=html_escape(item.get("task_id") or ""),
+                task_fingerprint=html_escape(item.get("task_fingerprint") or ""),
+                task_state=html_escape(str(item.get("task_state") or "NEW").lower()),
+                state_label=html_escape("En revisión" if item.get("task_state") == "REVIEWING" else item.get("when") or "Nueva"),
             )
         )
 
@@ -2956,7 +3050,7 @@ def render_command_center(
         <div><span>Apertura y mercado</span><strong>{opening} · {market}</strong><small>{operator_state}</small></div>
       </div>
       <div id="pendientes" class="pending-queue">
-        <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} pendiente(s) en total · primero riesgo, después gestión y oportunidades.</span></div>
+        <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} visible(s) · {postponed_count} pospuesta(s) · {attended_count} atendida(s). Primero riesgo, después gestión y oportunidades.</span></div>
         {tasks}
         {remaining_tasks}
       </div>
@@ -2990,6 +3084,8 @@ def render_command_center(
         tasks="".join(task_rows),
         remaining_tasks=remaining_tasks,
         pending_count=html_escape(len(pending)),
+        postponed_count=html_escape(task_view.get("postponed_count") or 0),
+        attended_count=html_escape(task_view.get("attended_count") or 0),
     )
 
 
@@ -4025,7 +4121,6 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
           .muted {{ color:var(--muted); line-height:1.45; }}
           pre {{ background:#111827; color:#e5e7eb; border-radius:14px; padding:14px; overflow:auto; font-size:12px; }}
           @media (max-width: 900px) {{ .layout {{ grid-template-columns:1fr; }} h1 {{ font-size:2.3rem; }} }}
-          @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} }}
         </style>
       </head>
       <body>
@@ -9129,6 +9224,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .operator-task small {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
           .operator-task strong {{ margin-top:2px; }} .operator-task p {{ color:var(--muted); font-size:.84rem; margin-top:2px; line-height:1.3; }}
           .operator-task > b {{ color:var(--accent-strong); font-size:.82rem; white-space:nowrap; }}
+          .operator-task.state-reviewing {{ background:#f4f8ff; }}
+          .daily-task-actions {{ display:grid; justify-items:end; gap:6px; min-width:235px; }}
+          .daily-task-actions em {{ color:var(--accent-strong); font-size:.78rem; font-style:normal; font-weight:900; }}
+          .daily-task-actions > a {{ color:var(--accent-strong); font-size:.82rem; font-weight:900; }}
+          .daily-task-actions form {{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px; }}
+          .daily-task-actions button {{ padding:6px 8px; font-size:.76rem; }}
+          @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} .daily-task-actions {{ grid-column:2; justify-items:start; min-width:0; }} .daily-task-actions form {{ justify-content:flex-start; }} }}
           .remaining-priorities {{ margin-top:12px; }}
           .remaining-priorities > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
           .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}
@@ -10560,6 +10662,22 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     "Pregunta consultada contra el motor. Decision support solamente.",
                     question_answer=answer,
                 )
+            elif self.path == "/daily-task-action":
+                try:
+                    record = record_daily_task_action(
+                        (params.get("task_id") or [""])[0],
+                        (params.get("task_fingerprint") or [""])[0],
+                        (params.get("task_action") or [""])[0],
+                        (params.get("task_title") or [""])[0],
+                    )
+                    messages = {
+                        "REVIEWING": "Prioridad marcada en revisión; seguirá visible.",
+                        "POSTPONED": "Prioridad pospuesta una hora; reaparecerá automáticamente.",
+                        "DONE": "Prioridad marcada atendida; reaparecerá si cambia la recomendación.",
+                    }
+                    self.send_html(messages.get(record.get("state"), "Estado de prioridad actualizado."))
+                except Exception as exc:
+                    self.send_html("No pude actualizar la prioridad: {}".format(str(exc)[:160]), status=400)
             elif self.path == "/manual-review-event":
                 status_value = (params.get("status") or ["REVIEWING"])[0]
                 reason = (params.get("reason") or [""])[0].strip()
