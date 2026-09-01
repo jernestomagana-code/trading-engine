@@ -1047,6 +1047,10 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Cierre diario", html)
         self.assertIn("Riesgos altos/críticos abiertos", html)
         self.assertIn("Próxima apertura estimada", html)
+        self.assertIn("Apertura guiada", html)
+        self.assertIn("1 · Actualizar primero", html)
+        self.assertIn("2 · Retomar", html)
+        self.assertIn("3 · Nuevas posiciones", html)
 
     def test_daily_task_timing_distinguishes_now_before_entry_and_wait(self):
         now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
@@ -1080,6 +1084,20 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(summary["resume_title"], "Revisar concentración")
         self.assertEqual(summary["status"], "RIESGO ABIERTO")
         self.assertIn("CDMX", summary["next_open"])
+
+    def test_guided_opening_blocks_stale_open_and_reviews_high_risk(self):
+        now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+        task_view = {"visible": [{"title": "Revisar concentración"}]}
+        risk = {"alerts": [{"severity": "HIGH", "lifecycle_status": "OPEN"}]}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(account_console, "DAILY_TASK_JOURNAL_PATH", Path(tmp) / "daily_tasks.json"):
+            blocked = account_console.guided_opening_summary(task_view, risk, {}, {"level": "green"}, now)
+            ready_reports = {"daily_open": {"status": "OK", "generated_at": "2026-09-03T13:30:00+00:00", "coberturas_rsp": {"ok": True}}}
+            review = account_console.guided_opening_summary(task_view, risk, ready_reports, {"level": "green"}, now)
+        self.assertEqual(blocked["gate_label"], "NO ABRIR POSICIONES")
+        self.assertIn("apertura no vigente", blocked["gate_detail"])
+        self.assertEqual(review["update_label"], "Datos de apertura listos")
+        self.assertEqual(review["resume_label"], "Revisar concentración")
+        self.assertEqual(review["gate_label"], "REVISAR ANTES DE ABRIR")
 
     def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
         item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}

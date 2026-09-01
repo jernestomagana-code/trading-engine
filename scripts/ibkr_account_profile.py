@@ -2996,6 +2996,97 @@ def daily_close_summary(
     }
 
 
+def guided_opening_summary(
+    task_view: dict[str, Any],
+    risk_payload: dict[str, Any],
+    reports: dict[str, dict[str, Any]],
+    health: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    local_tz = ZoneInfo("America/Mexico_City")
+    today = now.astimezone(local_tz).date()
+    daily = reports.get("daily_open") if isinstance(reports.get("daily_open"), dict) else {}
+    daily_at = parse_iso_datetime(daily.get("generated_at"))
+    daily_is_today = bool(daily_at and daily_at.astimezone(local_tz).date() == today)
+    daily_status = effective_daily_open_status(daily) if daily else "SIN APERTURA"
+    bad_daily_statuses = {"ACTION_REQUIRED", "REVIEW_REQUIRED", "BLOCKED", "FAILED", "ERROR", "SIN APERTURA"}
+    rsp = daily.get("coberturas_rsp") if isinstance(daily.get("coberturas_rsp"), dict) else {}
+    if not daily_is_today:
+        update_label = "Ejecutar Apertura diaria"
+        update_detail = "La jornada todavía no tiene una apertura vigente."
+    elif daily_status in bad_daily_statuses:
+        update_label = "Resolver pendientes de apertura"
+        update_detail = friendly_operator_state(daily_status)
+    elif not rsp.get("ok"):
+        update_label = "Actualizar lectura RSP"
+        update_detail = "La apertura existe, pero RSP quedó pendiente."
+    else:
+        update_label = "Datos de apertura listos"
+        update_detail = "Cuenta, motor y RSP tienen lectura de hoy."
+
+    journal = load_daily_task_journal()
+    records = journal.get("tasks") if isinstance(journal.get("tasks"), dict) else {}
+    prior_records: list[tuple[Any, dict[str, Any]]] = []
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+        updated_at = parse_iso_datetime(record.get("updated_at"))
+        if updated_at and updated_at.astimezone(local_tz).date() < today and str(record.get("state") or "").upper() in {"REVIEWING", "POSTPONED"}:
+            prior_records.append((updated_at, record))
+    prior_records.sort(key=lambda pair: pair[0], reverse=True)
+    visible = task_view.get("visible") if isinstance(task_view.get("visible"), list) else []
+    if prior_records:
+        resume_label = str(prior_records[0][1].get("title") or "Retomar prioridad anterior")
+        resume_detail = "Pendiente conservado del cierre anterior."
+    elif visible:
+        resume_label = str(visible[0].get("title") or "Revisar primera prioridad")
+        resume_detail = "Es la prioridad vigente más alta."
+    else:
+        resume_label = "Sin pendiente anterior"
+        resume_detail = "Esperar nueva evidencia del motor."
+
+    risk_alerts = risk_payload.get("alerts") if isinstance(risk_payload.get("alerts"), list) else []
+    open_critical = 0
+    open_high = 0
+    for alert in risk_alerts:
+        if not isinstance(alert, dict) or str(alert.get("operational_status") or alert.get("lifecycle_status") or "OPEN").upper() != "OPEN":
+            continue
+        severity = str(alert.get("severity") or "").upper()
+        open_critical += int(severity == "CRITICAL")
+        open_high += int(severity == "HIGH")
+    structural_blockers = []
+    if health.get("level") == "red":
+        structural_blockers.append("conexión/producción")
+    if not daily_is_today or daily_status in bad_daily_statuses:
+        structural_blockers.append("apertura no vigente")
+    if open_critical:
+        structural_blockers.append("riesgo crítico abierto")
+    if structural_blockers:
+        gate_label = "NO ABRIR POSICIONES"
+        gate_class = "blocked"
+        gate_detail = "Resolver primero: {}.".format(", ".join(structural_blockers))
+    elif open_high:
+        gate_label = "REVISAR ANTES DE ABRIR"
+        gate_class = "review"
+        gate_detail = "Hay {} riesgo(s) alto(s) vigente(s); revisarlos antes de aumentar exposición.".format(open_high)
+    else:
+        gate_label = "DISPONIBLE PARA EVALUAR"
+        gate_class = "ready"
+        gate_detail = "Sin bloqueo estructural visible; cada entrada aún debe superar sus propias compuertas."
+    return {
+        "update_label": update_label,
+        "update_detail": update_detail,
+        "resume_label": resume_label,
+        "resume_detail": resume_detail,
+        "gate_label": gate_label,
+        "gate_class": gate_class,
+        "gate_detail": gate_detail,
+        "execution_authorized": False,
+        "not_order_instruction": True,
+    }
+
+
 def load_daily_task_journal() -> dict[str, Any]:
     payload = load_json_file(DAILY_TASK_JOURNAL_PATH)
     tasks = payload.get("tasks") if isinstance(payload.get("tasks"), dict) else {}
@@ -3171,11 +3262,18 @@ def render_command_center(
         operational_label = "Datos guardados"
         operational_detail = "Actualizar antes de aumentar riesgo"
     close_summary = daily_close_summary(task_view, risk_payload)
+    opening_guide = guided_opening_summary(task_view, risk_payload, reports, health)
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
         <div><p class="eyebrow">Qué debes hacer ahora</p><h2>{title}</h2><p>{summary}</p></div>
         <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
+      </div>
+      <div class="guided-opening">
+        <div class="guided-opening-title"><p class="eyebrow">Apertura guiada</p><strong>Tres comprobaciones antes de decidir</strong></div>
+        <div><span>1 · Actualizar primero</span><strong>{guide_update}</strong><small>{guide_update_detail}</small></div>
+        <div><span>2 · Retomar</span><strong>{guide_resume}</strong><small>{guide_resume_detail}</small></div>
+        <div class="opening-gate gate-{gate_class}"><span>3 · Nuevas posiciones</span><strong>{gate_label}</strong><small>{gate_detail}</small></div>
       </div>
       <div class="command-facts">
         <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
@@ -3238,6 +3336,13 @@ def render_command_center(
         visible_pending=html_escape(close_summary.get("visible_pending_count") or 0),
         resume_title=html_escape(close_summary.get("resume_title") or "Ejecutar Apertura diaria"),
         next_open=html_escape(close_summary.get("next_open") or "Próxima sesión"),
+        guide_update=html_escape(opening_guide.get("update_label") or "Ejecutar Apertura diaria"),
+        guide_update_detail=html_escape(opening_guide.get("update_detail") or "Validar datos de hoy"),
+        guide_resume=html_escape(opening_guide.get("resume_label") or "Sin pendiente anterior"),
+        guide_resume_detail=html_escape(opening_guide.get("resume_detail") or "Esperar nueva evidencia"),
+        gate_class=html_escape(opening_guide.get("gate_class") or "blocked"),
+        gate_label=html_escape(opening_guide.get("gate_label") or "NO ABRIR POSICIONES"),
+        gate_detail=html_escape(opening_guide.get("gate_detail") or "Completar validaciones primero"),
     )
 
 
@@ -9353,6 +9458,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .command-head p {{ margin:0; color:var(--muted); line-height:1.4; }}
           .opening-status {{ border-left:1px solid var(--line); padding-left:18px; }}
           .opening-status span,.opening-status strong,.opening-status small {{ display:block; }}
+          .guided-opening {{ display:grid; grid-template-columns:minmax(150px,.45fr) repeat(3,minmax(0,1fr)); border-bottom:1px solid var(--line); background:#fbfdfb; }}
+          .guided-opening > div {{ padding:12px 14px; border-right:1px solid var(--line); min-width:0; }}
+          .guided-opening > div:last-child {{ border-right:0; }}
+          .guided-opening span,.guided-opening strong,.guided-opening small {{ display:block; overflow-wrap:anywhere; }}
+          .guided-opening span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:900; }}
+          .guided-opening strong {{ margin:4px 0; line-height:1.2; }}
+          .guided-opening small {{ color:var(--muted); line-height:1.25; }}
+          .guided-opening-title {{ background:#f1f7f3; }}
+          .opening-gate {{ border-top:4px solid #64748b; }}
+          .opening-gate.gate-blocked {{ border-top-color:#b42318; background:#fff7f6; }}
+          .opening-gate.gate-review {{ border-top-color:#d97706; background:#fffaf0; }}
+          .opening-gate.gate-ready {{ border-top-color:#16a34a; background:#f3fbf6; }}
           .opening-status span {{ color:var(--muted); text-transform:uppercase; font-size:.7rem; font-weight:900; }}
           .opening-status strong {{ margin:5px 0 3px; font-size:1.1rem; }}
           .opening-status small {{ color:var(--muted); }}
@@ -9400,6 +9517,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .daily-resume span {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
           .daily-resume strong {{ margin:3px 0; line-height:1.25; }}
           @media (max-width:900px) {{ .daily-close {{ grid-template-columns:1fr; }} .daily-resume {{ border-left:0; border-top:3px solid var(--accent); padding:10px 0 0; }} }}
+          @media (max-width:900px) {{ .guided-opening {{ grid-template-columns:1fr; }} .guided-opening > div {{ border-right:0; border-bottom:1px solid var(--line); }} .guided-opening > div:last-child {{ border-bottom:0; }} }}
           @media (max-width:620px) {{ .daily-close-facts {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
           .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}
           .empty-state span {{ color:var(--muted); }}

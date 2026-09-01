@@ -199,6 +199,8 @@ La etiqueta temporal distingue **Actuar ahora**, **Revisar hoy**, **Antes de abr
 
 Al final de **Hoy**, **Cierre diario** se construye automáticamente con el diario de tareas y el riesgo vigente. Resume cuántas prioridades se revisaron, cuáles siguen pospuestas, cuántos riesgos altos o críticos permanecen abiertos y cuál es la primera tarea que debe retomarse. También muestra la próxima apertura estimada en horario CDMX. No exige captura manual y no confunde *revisado* con *riesgo resuelto*.
 
+Al comienzo del Centro del día, **Apertura guiada** convierte esos estados en tres comprobaciones: **Actualizar primero** confirma si la apertura y RSP pertenecen a la jornada; **Retomar** recupera un pendiente del cierre anterior o la prioridad vigente más alta; **Nuevas posiciones** muestra `NO ABRIR POSICIONES`, `REVISAR ANTES DE ABRIR` o `DISPONIBLE PARA EVALUAR`. *Disponible* sólo elimina el bloqueo general: cada oportunidad aún debe superar su técnica, liquidez, capacidad, riesgo y revisión manual.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;
