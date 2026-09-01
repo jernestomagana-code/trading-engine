@@ -1029,7 +1029,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             {"ok": True, "data": {"status": "WAIT_MARKET", "active_alerts": []}},
             {"daily_open": {"status": "OK", "generated_at": account_console.now_iso(), "coberturas_rsp": {"ok": True}}},
             {"positions": [], "positions_found": 2, "positions_requiring_review": 1},
-            {"alerts": [], "alert_counts": {"critical": 0, "high": 0, "watch": 1}},
+            {"alerts": [{"severity": "HIGH", "title": "Concentración elevada", "recommended_action": "Revisar exposición antes de abrir otra posición."}], "alert_counts": {"critical": 0, "high": 1, "watch": 1}},
             {"ibkr": {"chain_has_rsp": True}, "blockers": [], "candidate_count": 2},
         )
         self.assertIn("Riesgo de cartera", html)
@@ -1038,6 +1038,10 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Estado operativo", html)
         self.assertIn("Apertura y mercado", html)
         self.assertIn("1 requieren revisión", html)
+        self.assertIn("Por qué importa ahora", html)
+        self.assertIn("Recomendación", html)
+        self.assertIn("Si no la atiendes", html)
+        self.assertIn("Revisar exposición antes de abrir otra posición.", html)
 
     def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
         item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}

@@ -2865,10 +2865,37 @@ def build_unified_pending_items(
 
 def daily_task_identity(item: dict[str, Any]) -> tuple[str, str]:
     key_source = "|".join(str(item.get(field) or "") for field in ("area", "title", "href"))
-    fingerprint_source = "|".join(str(item.get(field) or "") for field in ("area", "title", "detail", "href", "when", "level"))
+    fingerprint_source = "|".join(str(item.get(field) or "") for field in ("area", "title", "detail", "why_now", "recommendation", "consequence", "href", "when", "level"))
     task_id = "TASK-" + hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:16]
     fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
     return task_id, fingerprint
+
+
+def enrich_daily_task_brief(raw_item: dict[str, Any]) -> dict[str, Any]:
+    item = dict(raw_item)
+    area = str(item.get("area") or "Pendiente")
+    level = str(item.get("level") or "watch").lower()
+    detail = str(item.get("detail") or "Revisión manual requerida.")
+    when = str(item.get("when") or "Revisar hoy")
+    if area == "Riesgo":
+        why_now = "Existe una alerta {} vigente que condiciona la capacidad de asumir riesgo nuevo.".format("crítica" if level == "critical" else "alta")
+        consequence = "Podrías aumentar una exposición que el motor ya considera sensible antes de confirmar su impacto."
+    elif area == "Posiciones":
+        why_now = "Una posición abierta alcanzó un punto de gestión o necesita datos actuales para sostener la recomendación."
+        consequence = "La ventana de ajuste puede cambiar o la posición puede permanecer sin una decisión de riesgo documentada."
+    elif area == "Oportunidad":
+        why_now = "La oportunidad superó las compuertas actuales y tiene una ventana de revisión limitada."
+        consequence = "La señal puede vencer; después deberá esperarse un gatillo nuevo en lugar de perseguir el precio."
+    elif area == "RSP":
+        why_now = "La lectura de RSP requiere completar o revisar un dato que afecta la estrategia de ingreso o cobertura."
+        consequence = "La comparación de strikes, primas o capacidad puede quedar desactualizada y no debe usarse para decidir."
+    else:
+        why_now = "El motor detectó una condición que necesita revisión del operador {}.".format(when.lower())
+        consequence = "El pendiente seguirá abierto y puede limitar la siguiente recomendación del motor."
+    item.setdefault("why_now", why_now)
+    item.setdefault("recommendation", detail)
+    item.setdefault("consequence", consequence)
+    return item
 
 
 def load_daily_task_journal() -> dict[str, Any]:
@@ -2885,7 +2912,7 @@ def daily_task_view(items: list[dict[str, Any]], now: datetime | None = None) ->
     postponed_count = 0
     attended_count = 0
     for raw_item in items:
-        item = dict(raw_item)
+        item = enrich_daily_task_brief(raw_item)
         task_id, fingerprint = daily_task_identity(item)
         record = records.get(task_id) if isinstance(records.get(task_id), dict) else {}
         state = str(record.get("state") or "NEW").upper()
@@ -2992,7 +3019,10 @@ def render_command_center(
     def render_task(item: dict[str, str], index: int) -> str:
         return (
             '<article class="operator-task task-{level} state-{task_state}"><span>{index}</span>'
-            '<div><small>{area}</small><strong>{title}</strong><p>{detail}</p></div>'
+            '<div class="daily-task-brief"><small>{area}</small><strong>{title}</strong>'
+            '<dl><div><dt>Por qué importa ahora</dt><dd>{why_now}</dd></div>'
+            '<div><dt>Recomendación</dt><dd>{recommendation}</dd></div>'
+            '<div><dt>Si no la atiendes</dt><dd>{consequence}</dd></div></dl></div>'
             '<div class="daily-task-actions"><em>{state_label}</em><a href="{href}">Abrir detalle</a>'
             '<form method="post" action="/daily-task-action"><input type="hidden" name="task_id" value="{task_id}">'
             '<input type="hidden" name="task_fingerprint" value="{task_fingerprint}"><input type="hidden" name="task_title" value="{title}">'
@@ -3004,7 +3034,9 @@ def render_command_center(
                 index=index,
                 area=html_escape(item.get("area") or "Pendiente"),
                 title=html_escape(item.get("title") or "Revisión pendiente"),
-                detail=html_escape(item.get("detail") or ""),
+                why_now=html_escape(item.get("why_now") or "Revisión requerida ahora."),
+                recommendation=html_escape(item.get("recommendation") or item.get("detail") or "Abrir el detalle y validar."),
+                consequence=html_escape(item.get("consequence") or "El pendiente seguirá abierto."),
                 task_id=html_escape(item.get("task_id") or ""),
                 task_fingerprint=html_escape(item.get("task_fingerprint") or ""),
                 task_state=html_escape(str(item.get("task_state") or "NEW").lower()),
@@ -9223,6 +9255,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .operator-task small,.operator-task strong,.operator-task p {{ display:block; margin:0; }}
           .operator-task small {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
           .operator-task strong {{ margin-top:2px; }} .operator-task p {{ color:var(--muted); font-size:.84rem; margin-top:2px; line-height:1.3; }}
+          .daily-task-brief dl {{ display:grid; gap:5px; margin:9px 0 0; }}
+          .daily-task-brief dl > div {{ display:grid; grid-template-columns:130px minmax(0,1fr); gap:8px; align-items:start; }}
+          .daily-task-brief dt {{ color:var(--muted); font-size:.7rem; font-weight:900; text-transform:uppercase; }}
+          .daily-task-brief dd {{ margin:0; color:var(--ink); font-size:.82rem; line-height:1.3; }}
           .operator-task > b {{ color:var(--accent-strong); font-size:.82rem; white-space:nowrap; }}
           .operator-task.state-reviewing {{ background:#f4f8ff; }}
           .daily-task-actions {{ display:grid; justify-items:end; gap:6px; min-width:235px; }}
@@ -9230,7 +9266,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .daily-task-actions > a {{ color:var(--accent-strong); font-size:.82rem; font-weight:900; }}
           .daily-task-actions form {{ display:flex; flex-wrap:wrap; justify-content:flex-end; gap:5px; }}
           .daily-task-actions button {{ padding:6px 8px; font-size:.76rem; }}
-          @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} .daily-task-actions {{ grid-column:2; justify-items:start; min-width:0; }} .daily-task-actions form {{ justify-content:flex-start; }} }}
+          @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} .daily-task-actions {{ grid-column:2; justify-items:start; min-width:0; }} .daily-task-actions form {{ justify-content:flex-start; }} .daily-task-brief dl > div {{ grid-template-columns:1fr; gap:2px; }} }}
           .remaining-priorities {{ margin-top:12px; }}
           .remaining-priorities > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
           .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}

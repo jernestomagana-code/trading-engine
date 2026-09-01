@@ -193,6 +193,8 @@ La franja inmediatamente inferior resume las cinco preguntas de la jornada: **ri
 
 Cada prioridad de **Hoy** incluye cuatro controles cotidianos: **Abrir detalle** lleva al bloque que explica la situación; **Revisar** conserva la tarjeta visible con estado *En revisión*; **Posponer 1 h** la oculta temporalmente y la devuelve automáticamente; **Marcar atendido** la retira de la cola. Si después cambia la recomendación, el riesgo o el motivo, la tarea reaparece como nueva aunque anteriormente se hubiera pospuesto o atendido. Estos controles sólo organizan el trabajo: no ejecutan órdenes ni alteran las compuertas del motor.
 
+Antes de esos controles, cada tarjeta traduce la evidencia en tres respuestas: **Por qué importa ahora** explica qué activó la prioridad; **Recomendación** conserva la acción concreta calculada por el motor; **Si no la atiendes** describe la consecuencia operativa de esperar. La consecuencia es una advertencia de gestión, no una predicción garantizada del mercado.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;
