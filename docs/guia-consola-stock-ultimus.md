@@ -189,6 +189,8 @@ La consola recuerda la última vista elegida después de una actualización. Los
 
 **Hoy** combina en una sola verdad el estado de conexión, riesgo consolidado, posiciones, RSP, alertas y última apertura. El encabezado responde primero **qué debes hacer ahora**. Debajo sólo aparecen las tres prioridades más importantes; si existen más, quedan dentro de **Ver los otros pendientes**.
 
+La franja inmediatamente inferior resume las cinco preguntas de la jornada: **riesgo de cartera**, **oportunidades nuevas**, **posiciones abiertas**, **estado operativo** y **apertura/mercado**. Los primeros cuatro bloques funcionan también como accesos directos a la sección donde se atiende cada tema. Una oportunidad sólo se cuenta como lista cuando el motor la llevó a `ENTRY_READY`; las que todavía se están formando se muestran por separado.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;

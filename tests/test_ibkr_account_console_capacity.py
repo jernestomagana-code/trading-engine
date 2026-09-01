@@ -1022,6 +1022,23 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Diagnostico completo", diagnostic)
         self.assertIn("Revisar sistema", diagnostic)
 
+    def test_command_center_summarizes_daily_work_in_five_questions(self):
+        html = account_console.render_command_center(
+            {"account_scope": "primary", "account_alias": "primary"},
+            {"available": True, "generated_at": account_console.now_iso()},
+            {"ok": True, "data": {"status": "WAIT_MARKET", "active_alerts": []}},
+            {"daily_open": {"status": "OK", "generated_at": account_console.now_iso(), "coberturas_rsp": {"ok": True}}},
+            {"positions": [], "positions_found": 2, "positions_requiring_review": 1},
+            {"alerts": [], "alert_counts": {"critical": 0, "high": 0, "watch": 1}},
+            {"ibkr": {"chain_has_rsp": True}, "blockers": [], "candidate_count": 2},
+        )
+        self.assertIn("Riesgo de cartera", html)
+        self.assertIn("Oportunidades nuevas", html)
+        self.assertIn("Posiciones abiertas", html)
+        self.assertIn("Estado operativo", html)
+        self.assertIn("Apertura y mercado", html)
+        self.assertIn("1 requieren revisión", html)
+
     def test_unified_local_console_renders_v31_manual_review_surfaces(self):
         payloads = {
             "executive": {

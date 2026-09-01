@@ -2872,6 +2872,9 @@ def render_command_center(
 ) -> str:
     health = console_health(active, snapshot, operator_payload)
     pending = build_unified_pending_items(operator_payload, position_payload, risk_payload, rsp_payload)
+    opportunities = build_unified_opportunity_items(operator_payload, rsp_payload)
+    ready_opportunities = [item for item in opportunities if item.get("state") == "ready"]
+    forming_opportunities = [item for item in opportunities if item.get("state") == "forming"]
     running = blocking_web_jobs()
     if health.get("level") == "red":
         level, title = "red", "La consola necesita conexión"
@@ -2928,6 +2931,17 @@ def render_command_center(
         )
 
     risk_counts = risk_payload.get("alert_counts") if isinstance(risk_payload.get("alert_counts"), dict) else {}
+    operational_label = "Disponible"
+    operational_detail = "Motor listo para monitorear"
+    if health.get("level") == "red":
+        operational_label = "Resolver conexión"
+        operational_detail = "No usar decisiones hasta recuperar las fuentes"
+    elif running:
+        operational_label = "Actualizando"
+        operational_detail = "Un proceso está trabajando en segundo plano"
+    elif health.get("stale_cache"):
+        operational_label = "Datos guardados"
+        operational_detail = "Actualizar antes de aumentar riesgo"
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
@@ -2935,10 +2949,11 @@ def render_command_center(
         <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
       </div>
       <div class="command-facts">
-        <div><span>Riesgo</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></div>
-        <div><span>Posiciones</span><strong>{positions}</strong><small>{reviews} requieren revisión</small></div>
-        <div><span>RSP</span><strong>{rsp_status}</strong><small>{rsp_candidates} candidato(s) válidos 7–14 DTE</small></div>
-        <div><span>Mercado</span><strong>{market}</strong><small>{operator_state}</small></div>
+        <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
+        <a href="#opportunity-center"><span>Oportunidades nuevas</span><strong>{ready_opportunities} lista(s)</strong><small>{forming_opportunities} preparándose · RSP {rsp_status}</small></a>
+        <a href="#posiciones"><span>Posiciones abiertas</span><strong>{positions}</strong><small>{reviews} requieren revisión</small></a>
+        <a href="#view-configuracion"><span>Estado operativo</span><strong>{operational_label}</strong><small>{operational_detail}</small></a>
+        <div><span>Apertura y mercado</span><strong>{opening} · {market}</strong><small>{operator_state}</small></div>
       </div>
       <div id="pendientes" class="pending-queue">
         <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} pendiente(s) en total · primero riesgo, después gestión y oportunidades.</span></div>
@@ -2956,6 +2971,8 @@ def render_command_center(
         critical=html_escape(risk_counts.get("critical") or 0),
         high=html_escape(risk_counts.get("high") or 0),
         watch=html_escape(risk_counts.get("watch") or 0),
+        ready_opportunities=html_escape(len(ready_opportunities)),
+        forming_opportunities=html_escape(len(forming_opportunities)),
         positions=html_escape(position_payload.get("positions_found") or 0),
         reviews=html_escape(position_payload.get("positions_requiring_review") or 0),
         rsp_status=html_escape(
@@ -2966,6 +2983,8 @@ def render_command_center(
             else "Revisar"
         ),
         rsp_candidates=html_escape(rsp_payload.get("candidate_count") or 0),
+        operational_label=html_escape(operational_label),
+        operational_detail=html_escape(operational_detail),
         market=html_escape("Abierto" if is_us_market_session_now() else "Cerrado"),
         operator_state=html_escape(friendly_operator_state((operator_payload.get("data") or {}).get("status"))),
         tasks="".join(task_rows),
@@ -4006,6 +4025,7 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
           .muted {{ color:var(--muted); line-height:1.45; }}
           pre {{ background:#111827; color:#e5e7eb; border-radius:14px; padding:14px; overflow:auto; font-size:12px; }}
           @media (max-width: 900px) {{ .layout {{ grid-template-columns:1fr; }} h1 {{ font-size:2.3rem; }} }}
+          @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} }}
         </style>
       </head>
       <body>
@@ -9089,9 +9109,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opening-status span {{ color:var(--muted); text-transform:uppercase; font-size:.7rem; font-weight:900; }}
           .opening-status strong {{ margin:5px 0 3px; font-size:1.1rem; }}
           .opening-status small {{ color:var(--muted); }}
-          .command-facts,.position-overview {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; border-bottom:1px solid var(--line); }}
-          .command-facts > div,.position-overview > div {{ padding:14px 16px; border-right:1px solid var(--line); min-width:0; }}
-          .command-facts > div:last-child,.position-overview > div:last-child {{ border-right:0; }}
+          .command-facts {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0; border-bottom:1px solid var(--line); }}
+          .position-overview {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; border-bottom:1px solid var(--line); }}
+          .command-facts > div,.command-facts > a,.position-overview > div {{ padding:14px 16px; border-right:1px solid var(--line); min-width:0; }}
+          .command-facts > a {{ color:var(--ink); text-decoration:none; transition:background .15s ease; }}
+          .command-facts > a:hover {{ background:#f4f8f3; }}
+          .command-facts > :last-child,.position-overview > div:last-child {{ border-right:0; }}
           .command-facts span,.command-facts strong,.command-facts small,.position-overview span,.position-overview strong,.position-overview small {{ display:block; overflow-wrap:anywhere; }}
           .command-facts span,.position-overview span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:850; }}
           .command-facts strong,.position-overview strong {{ font-size:1.05rem; margin:4px 0; }}
