@@ -1290,6 +1290,9 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn('action="/notification-preview"', html)
         self.assertIn('action="/notification-test-email"', html)
         self.assertIn('action="/notification-test-push"', html)
+        self.assertIn('action="/macos-notification-test"', html)
+        self.assertIn('action="/macos-notification-toggle"', html)
+        self.assertIn("riesgos HIGH/CRITICAL", html)
         self.assertIn("No autoriza ordenes", html)
 
     def test_remote_chris_ia_futures_feed_is_counted_and_promotes_fresh_entry(self):

@@ -728,3 +728,12 @@ Abrir TWS → Abrir consola → Ejecutar apertura diaria → Esperar DONE
 → Revisar Oportunidades → Registrar lo realizado
 → Ejecutar manualmente en TWS sólo si tu revisión lo aprueba
 ```
+# Popups de escritorio en macOS
+
+En **Configuración → Notificaciones y popups de esta Mac** se puede comprobar, activar o desactivar el aviso emergente local. El monitor revisa cada 15 segundos y sólo muestra eventos nuevos:
+
+- entradas validadas de futuros y oportunidades `ENTRY_READY` (incluye CANSLIM/RSP cuando el motor las aprueba);
+- riesgos de cartera nuevos con severidad `HIGH` o `CRITICAL`;
+- incidencias operativas que requieren una acción concreta.
+
+No muestra `WATCH`, `PREPARE`, snapshots, esperas normales ni resúmenes. La instalación registra primero una línea base, de modo que los eventos históricos no aparecen como nuevos. El popup es soporte de decisión: no envía ni autoriza órdenes.

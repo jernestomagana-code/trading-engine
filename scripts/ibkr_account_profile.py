@@ -91,6 +91,9 @@ MARKET_OPEN_READINESS_PATH = RUNTIME / "market_open_readiness_latest.json"
 POST_OPEN_MONITOR_PATH = RUNTIME / "post_open_monitor_latest.json"
 OPERATOR_NOTIFY_PATH = RUNTIME / "v32_operator_notify_latest.json"
 ENVIRONMENT_AUTH_PATH = RUNTIME / "environment_auth_check_latest.json"
+MACOS_NOTIFICATION_CONFIG_PATH = RUNTIME / "macos_notification_config.json"
+MACOS_NOTIFICATION_STATUS_PATH = RUNTIME / "macos_notification_status.json"
+MACOS_NOTIFICATION_LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.stockultimus.macos-notifications.plist"
 OPERATIONAL_EDGE_PATH = RUNTIME / "v32_operational_edge_latest.json"
 DAILY_OPEN_CHECKLIST_PATH = RUNTIME / "daily_open_checklist_latest.json"
 OPERATOR_GUIDE_PATH = ROOT / "docs" / "guia-consola-stock-ultimus.md"
@@ -4439,16 +4442,37 @@ def render_console_actions(active: dict[str, Any], snapshot: dict[str, Any], ope
 
 
 def render_notification_test_panel() -> str:
+    settings = load_json_file(MACOS_NOTIFICATION_CONFIG_PATH)
+    status = load_json_file(MACOS_NOTIFICATION_STATUS_PATH)
+    enabled = settings.get("enabled", True) is not False
+    installed = MACOS_NOTIFICATION_LAUNCH_AGENT_PATH.exists()
+    state_label = "ACTIVOS" if enabled and installed else "INACTIVOS"
+    state_class = "ok" if enabled and installed else "watch"
+    last_check = str(status.get("checked_at") or "Sin comprobación todavía")
+    last_result = str(status.get("status") or "PENDIENTE")
+    new_count = int(status.get("new_notification_count") or 0)
+    error_text = "; ".join(str(value) for value in status.get("errors", []) if value) or "Sin errores"
+    toggle_action = "disable" if enabled else "enable"
+    toggle_label = "Desactivar popups" if enabled else "Activar popups"
     return """
     <details class="panel support-details">
-      <summary>Prueba de notificaciones</summary>
+      <summary>Prueba de notificaciones y popups de esta Mac</summary>
       <div class="section-head">
-        <h2>Prueba de notificaciones</h2>
-        <p>Valida canales externos sin generar senales ni ordenes. Preview no envia; prueba forzada envia un resumen operativo.</p>
+        <h2>Notificaciones y popups</h2>
+        <p>El celular recibe sólo ENTRY. Esta Mac también puede mostrar ENTRY, riesgos HIGH/CRITICAL e incidencias accionables. WATCH, PREPARE y resúmenes se silencian.</p>
       </div>
+      <div class="status-grid">
+        <article><span>Popups Mac</span><strong class="{state_class}">{state_label}</strong></article>
+        <article><span>Servicio permanente</span><strong>{installed}</strong></article>
+        <article><span>Última revisión</span><strong>{last_check}</strong></article>
+        <article><span>Resultado</span><strong>{last_result} · nuevos {new_count}</strong></article>
+      </div>
+      <p class="muted">Diagnóstico: {error_text}</p>
       <div class="hero-actions">
+        <form method="post" action="/macos-notification-test" data-busy="Probando popup local"><button>Probar popup en esta Mac</button></form>
+        <form method="post" action="/macos-notification-toggle" data-busy="Actualizando popups"><input type="hidden" name="notification_action" value="{toggle_action}"><button class="secondary">{toggle_label}</button></form>
         <form method="post" action="/notification-preview" data-busy="Leyendo preview notificaciones" data-busy-detail="Consulta email/Pushover en modo preview. No envia.">
-          <button>Preview alertas</button>
+          <button class="secondary">Preview móvil/email</button>
         </form>
         <form method="post" action="/notification-test-email" data-busy="Enviando email de prueba" data-busy-detail="Envio forzado de resumen operativo. No autoriza ordenes.">
           <button class="secondary">Enviar email prueba</button>
@@ -4459,7 +4483,11 @@ def render_notification_test_panel() -> str:
         <span>Usa estas pruebas si no ves alertas en correo o movil.</span>
       </div>
     </details>
-    """
+    """.format(
+        state_class=state_class, state_label=state_label, installed="INSTALADO" if installed else "NO INSTALADO",
+        last_check=html_escape(last_check), last_result=html_escape(last_result), new_count=new_count,
+        error_text=html_escape(error_text), toggle_action=toggle_action, toggle_label=toggle_label,
+    )
 
 
 def compact_contract_value(value: Any, suffix: str = "") -> str:
@@ -10447,6 +10475,26 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                         "execution_authorized": False,
                     }, indent=2, sort_keys=True),
                 })
+            elif self.path == "/macos-notification-test":
+                job_id = start_web_job(
+                    active_profile().get("account_alias") or "",
+                    [sys.executable, "scripts/run_macos_notifications.py", "--test"],
+                    "Probar popup de esta Mac",
+                )
+                self.send_html("Prueba local iniciada. Debe aparecer un popup que dice que no es una señal.", job_id=job_id)
+            elif self.path == "/macos-notification-toggle":
+                action = (params.get("notification_action") or ["enable"])[0]
+                settings = load_json_file(MACOS_NOTIFICATION_CONFIG_PATH)
+                settings.update({
+                    "enabled": action != "disable",
+                    "entry_enabled": settings.get("entry_enabled", True),
+                    "risk_enabled": settings.get("risk_enabled", True),
+                    "operational_enabled": settings.get("operational_enabled", True),
+                    "sound_enabled": settings.get("sound_enabled", True),
+                    "updated_at": now_iso(),
+                })
+                write_json_file(MACOS_NOTIFICATION_CONFIG_PATH, settings)
+                self.send_html("Popups de esta Mac {}.".format("activados" if settings["enabled"] else "desactivados"))
             elif self.path == "/notification-test-email":
                 result = post_remote_json("/v32_operator_daily_summary_email?force=true", {}, timeout=max(45, REMOTE_VERIFY_TIMEOUT_SECONDS))
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
