@@ -2898,6 +2898,45 @@ def enrich_daily_task_brief(raw_item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def next_us_market_open(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    ny = now.astimezone(ZoneInfo("America/New_York"))
+    candidate = ny.replace(hour=9, minute=30, second=0, microsecond=0)
+    if ny.weekday() >= 5 or ny >= candidate:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def daily_task_timing(item: dict[str, Any], now: datetime | None = None) -> dict[str, str]:
+    now = now or datetime.now(timezone.utc)
+    area = str(item.get("area") or "")
+    level = str(item.get("level") or "watch").lower()
+    when = str(item.get("when") or "").lower()
+    if level == "critical" or "ahora" in when or area == "Oportunidad":
+        label = "Actuar ahora"
+        next_review = now + timedelta(minutes=15)
+        review_reason = "Confirmar decisión o registrar que fue revisada"
+    elif "actualizar datos" in when or area in {"Riesgo", "RSP"}:
+        label = "Antes de abrir posición"
+        return {"timing_label": label, "next_review_label": "Antes de la próxima entrada", "review_reason": "No aumentar riesgo con este pendiente abierto"}
+    elif "revisar hoy" in when:
+        label = "Revisar hoy"
+        next_review = now + timedelta(hours=1) if is_us_market_session_now() else next_us_market_open(now)
+        review_reason = "Verificar si cambió la recomendación"
+    else:
+        label = "Esperar"
+        next_review = next_us_market_open(now)
+        review_reason = "Reconsultar cuando llegue nueva evidencia"
+    local_review = next_review.astimezone(ZoneInfo("America/Mexico_City"))
+    return {
+        "timing_label": label,
+        "next_review_label": local_review.strftime("%a %H:%M CDMX"),
+        "review_reason": review_reason,
+    }
+
+
 def load_daily_task_journal() -> dict[str, Any]:
     payload = load_json_file(DAILY_TASK_JOURNAL_PATH)
     tasks = payload.get("tasks") if isinstance(payload.get("tasks"), dict) else {}
@@ -2913,6 +2952,7 @@ def daily_task_view(items: list[dict[str, Any]], now: datetime | None = None) ->
     attended_count = 0
     for raw_item in items:
         item = enrich_daily_task_brief(raw_item)
+        item.update(daily_task_timing(item, now))
         task_id, fingerprint = daily_task_identity(item)
         record = records.get(task_id) if isinstance(records.get(task_id), dict) else {}
         state = str(record.get("state") or "NEW").upper()
@@ -3022,7 +3062,8 @@ def render_command_center(
             '<div class="daily-task-brief"><small>{area}</small><strong>{title}</strong>'
             '<dl><div><dt>Por qué importa ahora</dt><dd>{why_now}</dd></div>'
             '<div><dt>Recomendación</dt><dd>{recommendation}</dd></div>'
-            '<div><dt>Si no la atiendes</dt><dd>{consequence}</dd></div></dl></div>'
+            '<div><dt>Si no la atiendes</dt><dd>{consequence}</dd></div>'
+            '<div><dt>Próxima revisión</dt><dd><b>{next_review}</b> · {review_reason}</dd></div></dl></div>'
             '<div class="daily-task-actions"><em>{state_label}</em><a href="{href}">Abrir detalle</a>'
             '<form method="post" action="/daily-task-action"><input type="hidden" name="task_id" value="{task_id}">'
             '<input type="hidden" name="task_fingerprint" value="{task_fingerprint}"><input type="hidden" name="task_title" value="{title}">'
@@ -3037,10 +3078,12 @@ def render_command_center(
                 why_now=html_escape(item.get("why_now") or "Revisión requerida ahora."),
                 recommendation=html_escape(item.get("recommendation") or item.get("detail") or "Abrir el detalle y validar."),
                 consequence=html_escape(item.get("consequence") or "El pendiente seguirá abierto."),
+                next_review=html_escape(item.get("next_review_label") or "Revisar hoy"),
+                review_reason=html_escape(item.get("review_reason") or "Verificar cambios"),
                 task_id=html_escape(item.get("task_id") or ""),
                 task_fingerprint=html_escape(item.get("task_fingerprint") or ""),
                 task_state=html_escape(str(item.get("task_state") or "NEW").lower()),
-                state_label=html_escape("En revisión" if item.get("task_state") == "REVIEWING" else item.get("when") or "Nueva"),
+                state_label=html_escape("En revisión" if item.get("task_state") == "REVIEWING" else item.get("timing_label") or item.get("when") or "Nueva"),
             )
         )
 

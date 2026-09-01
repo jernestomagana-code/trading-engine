@@ -195,6 +195,8 @@ Cada prioridad de **Hoy** incluye cuatro controles cotidianos: **Abrir detalle**
 
 Antes de esos controles, cada tarjeta traduce la evidencia en tres respuestas: **Por qué importa ahora** explica qué activó la prioridad; **Recomendación** conserva la acción concreta calculada por el motor; **Si no la atiendes** describe la consecuencia operativa de esperar. La consecuencia es una advertencia de gestión, no una predicción garantizada del mercado.
 
+La etiqueta temporal distingue **Actuar ahora**, **Revisar hoy**, **Antes de abrir posición** y **Esperar**. **Próxima revisión** muestra la siguiente hora de control en horario de Ciudad de México, o indica explícitamente que debe revisarse antes de la próxima entrada. Es un recordatorio operativo: no representa una orden, vencimiento garantizado ni autorización para operar.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;

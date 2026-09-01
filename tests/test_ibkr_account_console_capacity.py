@@ -1042,6 +1042,20 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Recomendación", html)
         self.assertIn("Si no la atiendes", html)
         self.assertIn("Revisar exposición antes de abrir otra posición.", html)
+        self.assertIn("Antes de abrir posición", html)
+        self.assertIn("Próxima revisión", html)
+
+    def test_daily_task_timing_distinguishes_now_before_entry_and_wait(self):
+        now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+        urgent = account_console.daily_task_timing({"level": "critical", "area": "Riesgo", "when": "Resolver ahora"}, now)
+        before_entry = account_console.daily_task_timing({"level": "high", "area": "Riesgo", "when": "Revisar hoy"}, now)
+        waiting = account_console.daily_task_timing({"level": "watch", "area": "Sistema", "when": "Esperar"}, now)
+        self.assertEqual(urgent["timing_label"], "Actuar ahora")
+        self.assertIn("08:15 CDMX", urgent["next_review_label"])
+        self.assertEqual(before_entry["timing_label"], "Antes de abrir posición")
+        self.assertEqual(before_entry["next_review_label"], "Antes de la próxima entrada")
+        self.assertEqual(waiting["timing_label"], "Esperar")
+        self.assertIn("CDMX", waiting["next_review_label"])
 
     def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
         item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}
