@@ -537,6 +537,8 @@ Para opciones cortas, el motor reconcilia primero la estructura. Acciones largas
 
 La consola muestra primero las tres alertas principales; las demás están en **Ver alertas adicionales**.
 
+La vista **Riesgo de cartera** traduce además cada alerta a una consecuencia operativa: **Bloquea nuevas posiciones**, **Revisar antes de aumentar riesgo** o **Sólo vigilancia**. El resumen separa esa compuerta de la **capacidad financiera actual** reportada por IBKR. Corregir una validación puede devolver esa capacidad a evaluación, pero no aumenta el saldo ni garantiza que una oportunidad sea operable; margen, tamaño y las demás compuertas todavía se validan por operación. Cuando no existe una lectura vigente de IBKR, la capacidad posterior se muestra como `N/D` en lugar de estimarse.
+
 ### Acciones de ciclo de vida
 
 - **Confirmar que lo revisé:** reconoce la alerta durante cuatro horas; no elimina el riesgo.

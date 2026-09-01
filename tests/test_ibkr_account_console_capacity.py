@@ -406,6 +406,42 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertTrue(state["risk_review"])
         self.assertEqual(state["risk_label"], "revisar")
 
+    def test_portfolio_risk_panel_separates_blocks_reviews_and_watch_capacity(self):
+        payload = {
+            "status": "ACTION_REQUIRED",
+            "decision_support": "REVIEW_RISK",
+            "risk_score": 71,
+            "alert_counts": {"critical": 0, "high": 2, "watch": 1},
+            "alerts": [
+                {"alert_id": "a1", "severity": "HIGH", "rule": "ACCOUNT_DATA_NOT_READY", "title": "Datos pendientes"},
+                {"alert_id": "a2", "severity": "HIGH", "rule": "ACCOUNT_NAV_CONCENTRATION", "title": "Concentración elevada"},
+                {"alert_id": "a3", "severity": "WATCH", "rule": "SHORT_OPTION_PRESENT", "title": "Vigilar opción"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            capacity_path = Path(tmp) / "capacity.json"
+            capacity_path.write_text(json.dumps({
+                "available": True,
+                "available_capacity": 20570.57,
+                "available_funds": 20570.57,
+                "capacity_source": "available_funds",
+            }))
+            with patch.object(account_console, "ACCOUNT_CAPACITY_PATH", capacity_path), patch.object(
+                account_console, "active_control_tower_account", return_value={}
+            ), patch.object(
+                account_console, "active_profile", return_value={}
+            ):
+                html = account_console.render_portfolio_risk_panel({}, {}, payload)
+
+        self.assertIn("Bloquea nuevas posiciones", html)
+        self.assertIn("Revisar antes de aumentar riesgo", html)
+        self.assertIn("Sólo vigilancia", html)
+        self.assertIn("$20,570.57", html)
+        self.assertIn("resolver la alerta no aumenta el saldo", html)
+        self.assertEqual(account_console.portfolio_risk_decision_classification(payload["alerts"][0])["key"], "BLOCK")
+        self.assertEqual(account_console.portfolio_risk_decision_classification(payload["alerts"][1])["key"], "REVIEW")
+        self.assertEqual(account_console.portfolio_risk_decision_classification(payload["alerts"][2])["key"], "WATCH")
+
     def test_selected_vs_published_infers_local_account_when_remote_omits_account_fields(self):
         active = {"account_scope": "remanente", "account_alias": "remanente"}
         snapshot = {"available": True, "account_scope": "", "account_alias": ""}

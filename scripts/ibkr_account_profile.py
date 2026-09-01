@@ -8089,6 +8089,47 @@ def _tower_percent(value: Any) -> str:
     return "N/D" if parsed is None else "{:.1f}%".format(parsed * 100)
 
 
+def portfolio_risk_decision_classification(alert: dict[str, Any]) -> dict[str, str]:
+    """Translate a technical alert into its effect on a new-position decision."""
+    severity = str(alert.get("severity") or "WATCH").upper()
+    rule = str(alert.get("rule") or "").upper()
+    metric = str(alert.get("metric") or "").upper()
+    text = " ".join([
+        rule,
+        metric,
+        str(alert.get("title") or "").upper(),
+        str(alert.get("message") or "").upper(),
+    ])
+    data_block_terms = (
+        "DATA_NOT_READY", "DATA_STALE", "METRICS_MISSING", "POLICY_INVALID",
+        "NAV_INVALID", "SNAPSHOT_MISSING", "CAPACITY_NOT_REFRESHED",
+    )
+    hard_risk_terms = (
+        "MARGIN_CRITICAL", "LIQUIDITY_CRITICAL", "EXCESS_LIQUIDITY_CRITICAL",
+        "LOSS_LIMIT", "RISK_LIMIT", "NO_NEW_RISK",
+    )
+    if severity == "CRITICAL" or any(term in text for term in data_block_terms + hard_risk_terms):
+        return {
+            "key": "BLOCK",
+            "label": "Bloquea nuevas posiciones",
+            "badge_class": "risk",
+            "effect": "No abras riesgo nuevo hasta corregir y reevaluar esta alerta.",
+        }
+    if severity in {"HIGH", "RISK", "ACTION"}:
+        return {
+            "key": "REVIEW",
+            "label": "Revisar antes de aumentar riesgo",
+            "badge_class": "warn",
+            "effect": "La capacidad financiera existe, pero requiere decisión de riesgo antes de usarla.",
+        }
+    return {
+        "key": "WATCH",
+        "label": "Sólo vigilancia",
+        "badge_class": "info",
+        "effect": "No bloquea por sí sola una oportunidad que cumpla las demás compuertas.",
+    }
+
+
 def render_portfolio_risk_panel(
     profiles: dict[str, Any],
     active: dict[str, Any],
@@ -8096,8 +8137,29 @@ def render_portfolio_risk_panel(
 ) -> str:
     payload = payload if isinstance(payload, dict) else load_portfolio_risk(profiles, active)
     counts = payload.get("alert_counts") if isinstance(payload.get("alert_counts"), dict) else {}
+    visible_alerts = [item for item in (payload.get("alerts") or []) if isinstance(item, dict)]
+    classifications = [portfolio_risk_decision_classification(item) for item in visible_alerts]
+    block_count = sum(item["key"] == "BLOCK" for item in classifications)
+    review_count = sum(item["key"] == "REVIEW" for item in classifications)
+    watch_count = sum(item["key"] == "WATCH" for item in classifications)
+    capacity = console_account_capacity({}, {})
+    capacity_value = capacity.get("available_capacity")
+    capacity_label = compact_money(capacity_value) if capacity.get("available") else "N/D"
+    if block_count:
+        capacity_use = "Bloqueada para riesgo nuevo"
+        capacity_after = (
+            f"Hasta {capacity_label} vuelve a evaluación al corregir y reevaluar; resolver la alerta no aumenta el saldo."
+            if capacity.get("available") else
+            "Primero actualiza IBKR; no hay cifra fiable que liberar."
+        )
+    elif review_count:
+        capacity_use = "Disponible con revisión previa"
+        capacity_after = f"{capacity_label} permanece como referencia; la revisión no crea fondos adicionales."
+    else:
+        capacity_use = "Disponible para evaluar oportunidades" if capacity.get("available") else "Pendiente de actualizar IBKR"
+        capacity_after = f"{capacity_label} sujeto a margen, tamaño y compuertas de cada operación." if capacity.get("available") else "N/D"
     alert_rows = []
-    for alert in (payload.get("alerts") or [])[:10]:
+    for alert in visible_alerts[:10]:
         if not isinstance(alert, dict):
             continue
         metric = str(alert.get("metric") or "")
@@ -8107,6 +8169,7 @@ def render_portfolio_risk_panel(
         value_label = _tower_percent(value) if ratio_metric else ("N/D" if value is None else str(value))
         threshold_label = _tower_percent(threshold) if ratio_metric else ("N/D" if threshold is None else str(threshold))
         operational_status = str(alert.get("operational_status") or "OPEN").upper()
+        classification = portfolio_risk_decision_classification(alert)
         alert_id = str(alert.get("alert_id") or "")
         if operational_status == "OPEN":
             lifecycle_actions = """
@@ -8130,10 +8193,12 @@ def render_portfolio_risk_panel(
             """
             <article class="risk-alert severity-{severity_class}">
               <div class="risk-alert-title"><strong>{severity}</strong><span>{account} · {operational_status}</span></div>
+              <p><span class="badge {badge_class}">{decision_label}</span></p>
               <h3>{title}</h3>
               <p>{message}</p>
               <details class="technical-details"><summary>Ver cálculo</summary><p class="muted">Métrica: {metric} · valor {value} · límite {threshold}</p></details>
               <p><strong>Siguiente paso:</strong> {action}</p>
+              <p><strong>Efecto operativo:</strong> {decision_effect}</p>
               {lifecycle_actions}
             </article>
             """.format(
@@ -8141,12 +8206,15 @@ def render_portfolio_risk_panel(
                 severity=html_escape(alert.get("severity") or "WATCH"),
                 account=html_escape(alert.get("account_alias") or alert.get("scope") or "SISTEMA"),
                 operational_status=html_escape(operational_status),
+                badge_class=html_escape(classification["badge_class"]),
+                decision_label=html_escape(classification["label"]),
                 title=html_escape(alert.get("title") or alert.get("rule") or "Alerta de riesgo"),
                 message=html_escape(alert.get("message") or ""),
                 metric=html_escape(metric or "N/D"),
                 value=html_escape(value_label),
                 threshold=html_escape(threshold_label),
                 action=html_escape(alert.get("recommended_action") or "Revisión manual."),
+                decision_effect=html_escape(classification["effect"]),
                 lifecycle_actions=lifecycle_actions,
             )
         )
@@ -8182,6 +8250,13 @@ def render_portfolio_risk_panel(
         <div><span>Altas</span><strong>{high}</strong></div>
         <div><span>Vigilancia</span><strong>{watch}</strong></div>
       </div>
+      <div class="control-facts risk-decision-summary">
+        <div><span>Bloquean nuevas posiciones</span><strong>{block_count}</strong></div>
+        <div><span>Revisión antes de aumentar riesgo</span><strong>{review_count}</strong></div>
+        <div><span>Sólo vigilancia</span><strong>{watch_count}</strong></div>
+        <div><span>Capacidad financiera actual</span><strong>{capacity}</strong><small>{capacity_source}</small></div>
+      </div>
+      <div class="callout"><strong>Uso de capacidad:</strong> {capacity_use}<br><span>{capacity_after}</span></div>
       <p class="muted">Las alertas están ordenadas por severidad. La consola explica y registra; cualquier ajuste de cartera sigue siendo manual.</p>
       <div class="risk-alert-list">{alerts}</div>
       <div class="actions">{action}</div>
@@ -8195,6 +8270,13 @@ def render_portfolio_risk_panel(
         critical=html_escape(counts.get("critical") or 0),
         high=html_escape(counts.get("high") or 0),
         watch=html_escape(counts.get("watch") or 0),
+        block_count=html_escape(block_count),
+        review_count=html_escape(review_count),
+        watch_count=html_escape(watch_count),
+        capacity=html_escape(capacity_label),
+        capacity_source=html_escape("fuente: " + str(capacity.get("capacity_source") or "N/D")),
+        capacity_use=html_escape(capacity_use),
+        capacity_after=html_escape(capacity_after),
         policy=html_escape(payload.get("policy_version") or "unknown"),
         alerts=alerts_html,
         action=action,
