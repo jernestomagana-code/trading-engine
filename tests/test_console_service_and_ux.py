@@ -178,6 +178,53 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Referencia; no reserva fondos ni envía una orden.", html)
         self.assertNotIn("placeOrder", html)
 
+    def test_position_recommendation_link_requires_more_than_ticker_when_contract_exists(self):
+        position = {
+            "ticker": "NVDA", "strategy": "CASH_SECURED_PUT", "sec_type": "OPT",
+            "strike": 200, "expiration": "20261016", "right": "P",
+        }
+        exact_operator = {"data": {"active_alerts": [{
+            "ticker": "NVDA", "strategy": "CASH_SECURED_PUT", "alert_id": "entry-1",
+            "selected_contract": {"strike": 200, "expiration": "20261016", "right": "P"},
+            "entry_price": 2.5, "stop_loss": 188, "target_1": 1.25,
+        }]}}
+        ticker_only_operator = {"data": {"active_alerts": [{"ticker": "NVDA", "alert_id": "other"}]}}
+
+        exact = console.position_recommendation_match(position, exact_operator, {})
+        ticker_only = console.position_recommendation_match(position, ticker_only_operator, {})
+
+        self.assertEqual(exact["status"], "LINKED")
+        self.assertEqual(exact["confidence"], "ALTA")
+        self.assertEqual(exact["recommendation_id"], "entry-1")
+        self.assertEqual(exact["invalidation"], 188)
+        self.assertEqual(ticker_only["status"], "CANDIDATE_ONLY")
+
+    def test_position_card_shows_automatic_post_entry_followup_plan(self):
+        position = {
+            "position_id": "NVDA-P200", "ticker": "NVDA", "strategy": "CASH_SECURED_PUT",
+            "sec_type": "OPT", "position_size": -1, "strike": 200, "dte": 30,
+            "average_cost": 2.4, "management_action": "NO_ACTION_RECOMMENDED", "exit_state": "MONITOR",
+            "technical": {"support": 188, "resistance": 220}, "management_alternatives": {"alternatives": []},
+        }
+        match = {
+            "status": "LINKED", "label": "Recomendación vinculada", "confidence": "ALTA",
+            "source": "Stock Ultimus", "evidence": ["mismo ticker", "mismo strike"],
+            "recommendation_id": "entry-1", "entry": 2.5, "invalidation": 188,
+            "target_1": 1.25, "target_2": 0.5,
+        }
+
+        html = console.render_position_management_card(
+            position, queue_meta={"key": "maintain", "label": "Mantener", "checkpoint": "Próxima apertura"},
+            recommendation_match=match,
+        )
+
+        self.assertIn("Recomendación vinculada", html)
+        self.assertIn("Entrada detectada en IBKR", html)
+        self.assertIn("Entrada de la recomendación", html)
+        self.assertIn("Invalidación / stop", html)
+        self.assertIn("TP1 1.25 · TP2 0.5", html)
+        self.assertIn("Próxima apertura", html)
+
     def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
         rsp = {
             "blockers": ["RSP_NO_RECOMMENDATION_ELIGIBLE_CANDIDATES"],

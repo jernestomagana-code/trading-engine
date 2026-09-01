@@ -6947,6 +6947,90 @@ def friendly_position_reason(text: str) -> str:
     return replacements.get(text, text)
 
 
+def position_recommendation_match(
+    position: dict[str, Any],
+    operator_payload: dict[str, Any] | None = None,
+    rsp_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Find the best current recommendation evidence for an IBKR position."""
+    operator_payload = operator_payload if isinstance(operator_payload, dict) else {}
+    rsp_payload = rsp_payload if isinstance(rsp_payload, dict) else {}
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    candidates = [
+        {**item, "_source": "Stock Ultimus"}
+        for field in ("active_alerts", "diagnostic_alerts")
+        for item in (data.get(field) or [])
+        if isinstance(item, dict)
+    ]
+    rsp_recommendation = rsp_payload.get("strategy_recommendation") if isinstance(rsp_payload.get("strategy_recommendation"), dict) else {}
+    rsp_candidate = rsp_recommendation.get("selected_candidate") if isinstance(rsp_recommendation.get("selected_candidate"), dict) else {}
+    if rsp_recommendation:
+        candidates.append({
+            **rsp_recommendation,
+            **rsp_candidate,
+            "ticker": "RSP",
+            "_source": "Motor RSP",
+            "strategy": rsp_recommendation.get("recommended_strategy") or rsp_recommendation.get("strategy"),
+        })
+
+    ticker = str(position.get("ticker") or "").upper().replace("1!", "")
+    strategy = str(position.get("strategy") or "").upper()
+    sec_type = str(position.get("sec_type") or "").upper()
+    strike = console_float_or_none(position.get("strike"))
+    expiration = str(position.get("expiration") or position.get("expiry") or "").replace("-", "")
+    right = str(position.get("right") or "").upper()[:1]
+    scored = []
+    for candidate in candidates:
+        candidate_ticker = str(candidate.get("ticker") or candidate.get("symbol") or "").upper().replace("1!", "")
+        if not ticker or candidate_ticker != ticker:
+            continue
+        contract = candidate.get("selected_contract") if isinstance(candidate.get("selected_contract"), dict) else {}
+        score = 40
+        evidence = ["mismo ticker"]
+        candidate_strategy = str(candidate.get("strategy") or contract.get("strategy") or "").upper()
+        candidate_strike = console_float_or_none(contract.get("strike") or candidate.get("strike"))
+        candidate_expiration = str(contract.get("expiration") or candidate.get("expiration") or "").replace("-", "")
+        candidate_right = str(contract.get("right") or candidate.get("right") or "").upper()[:1]
+        if sec_type in {"FUT", "CONTFUT"} and ("FUTURE" in candidate_strategy or candidate_ticker in FUTURES_TICKERS):
+            score += 25
+            evidence.append("misma familia de futuro")
+        if strategy and candidate_strategy and (strategy == candidate_strategy or strategy in candidate_strategy or candidate_strategy in strategy):
+            score += 20
+            evidence.append("misma estrategia")
+        if strike is not None and candidate_strike is not None and abs(strike - candidate_strike) < 0.001:
+            score += 25
+            evidence.append("mismo strike")
+        if expiration and candidate_expiration and expiration == candidate_expiration:
+            score += 15
+            evidence.append("mismo vencimiento")
+        if right and candidate_right and right == candidate_right:
+            score += 10
+            evidence.append("mismo lado")
+        scored.append((score, candidate, evidence))
+    if not scored:
+        return {"status": "NO_MATCH", "label": "Sin recomendación vinculable", "confidence": "N/D"}
+    score, candidate, evidence = max(scored, key=lambda row: row[0])
+    confidence = "ALTA" if score >= 80 else "MEDIA" if score >= 60 else "BAJA"
+    status = "LINKED" if score >= 60 else "CANDIDATE_ONLY"
+    technical = candidate.get("technical") if isinstance(candidate.get("technical"), dict) else {}
+    return {
+        "status": status,
+        "label": "Recomendación vinculada" if status == "LINKED" else "Coincidencia candidata; no confirmada",
+        "confidence": confidence,
+        "score": score,
+        "source": candidate.get("_source") or "Stock Ultimus",
+        "evidence": evidence,
+        "recommendation_id": candidate.get("alert_id") or candidate.get("decision_id") or candidate.get("id") or "N/D",
+        "recommended_at": candidate.get("received_at") or candidate.get("generated_at") or candidate.get("created_at"),
+        "entry": candidate.get("entry_price") or candidate.get("trigger_price") or candidate.get("price"),
+        "invalidation": candidate.get("invalidation_level") or candidate.get("stop_loss") or candidate.get("stop_price") or candidate.get("stop") or technical.get("support"),
+        "target_1": candidate.get("target_1") or candidate.get("target1") or candidate.get("tp1") or candidate.get("target"),
+        "target_2": candidate.get("target_2") or candidate.get("target2") or candidate.get("tp2"),
+        "not_order_instruction": True,
+        "execution_authorized": False,
+    }
+
+
 def render_position_alternatives(item: dict[str, Any]) -> str:
     payload = item.get("management_alternatives") if isinstance(item.get("management_alternatives"), dict) else {}
     alternatives = payload.get("alternatives") if isinstance(payload.get("alternatives"), list) else []
@@ -7268,6 +7352,7 @@ def render_position_management_card(
     acknowledged_event: dict[str, Any] | None = None,
     related_stock: dict[str, Any] | None = None,
     queue_meta: dict[str, Any] | None = None,
+    recommendation_match: dict[str, Any] | None = None,
 ) -> str:
     technical = item.get("technical") if isinstance(item.get("technical"), dict) else {}
     thesis = item.get("thesis") if isinstance(item.get("thesis"), dict) else {}
@@ -7296,6 +7381,55 @@ def render_position_management_card(
     queue_meta = queue_meta if isinstance(queue_meta, dict) else position_action_queue_metadata(item, bool(acknowledged_event))
     management_fingerprint = shared_position_management_journal.management_fingerprint(item)
     action_upper = str(item.get("management_action") or "").upper()
+    recommendation_match = recommendation_match if isinstance(recommendation_match, dict) else {"status": "NO_MATCH", "label": "Sin recomendación vinculable"}
+    linked = recommendation_match.get("status") == "LINKED"
+    candidate_only = recommendation_match.get("status") == "CANDIDATE_ONLY"
+    actual_entry = (
+        item.get("entry_price") or item.get("average_cost") or item.get("avg_cost")
+        or item.get("cost_basis") or item.get("entry_credit")
+    )
+    plan_invalidation = recommendation_match.get("invalidation") or thesis.get("invalidation_level") or technical.get("support")
+    plan_target_1 = recommendation_match.get("target_1") or thesis.get("target") or technical.get("resistance")
+    plan_target_2 = recommendation_match.get("target_2")
+    plan_status_class = "linked" if linked else "candidate" if candidate_only else "unlinked"
+    plan_status_note = (
+        "Coincidencia automática por {}.".format(", ".join(recommendation_match.get("evidence") or []))
+        if linked else
+        "Existe una señal del mismo ticker, pero falta evidencia de contrato o estrategia para atribuirla."
+        if candidate_only else
+        "IBKR confirmó la posición, pero no hay una recomendación vigente suficientemente identificable."
+    )
+    followup_plan = """
+      <div class="position-followup-plan followup-{status_class}">
+        <div class="position-followup-head"><b>{label}</b><span>Confianza {confidence}</span></div>
+        <p>{status_note}</p>
+        <div class="position-followup-grid">
+          <span>Entrada detectada en IBKR<strong>{actual_entry}</strong></span>
+          <span>Entrada de la recomendación<strong>{recommended_entry}</strong></span>
+          <span>Invalidación / stop<strong>{invalidation}</strong></span>
+          <span>Objetivos<strong>{targets}</strong></span>
+          <span>Próxima revisión<strong>{next_review}</strong></span>
+          <span>Origen<strong>{source}</strong></span>
+        </div>
+        <small>ID {recommendation_id} · {recommended_at}. El vínculo no confirma que la ejecución siguiera exactamente la señal.</small>
+      </div>
+    """.format(
+        status_class=html_escape(plan_status_class),
+        label=html_escape(recommendation_match.get("label") or "Plan posterior a la entrada"),
+        confidence=html_escape(recommendation_match.get("confidence") or "N/D"),
+        status_note=html_escape(plan_status_note),
+        actual_entry=html_escape(compact_contract_value(actual_entry) if actual_entry is not None else "N/D · IBKR no entregó costo base"),
+        recommended_entry=html_escape(compact_contract_value(recommendation_match.get("entry")) if recommendation_match.get("entry") is not None else "N/D"),
+        invalidation=html_escape(compact_contract_value(plan_invalidation) if plan_invalidation is not None else "N/D · requiere nivel técnico"),
+        targets=html_escape("TP1 {} · TP2 {}".format(
+            compact_contract_value(plan_target_1) if plan_target_1 is not None else "N/D",
+            compact_contract_value(plan_target_2) if plan_target_2 is not None else "N/D",
+        )),
+        next_review=html_escape(queue_meta.get("checkpoint") or "Próxima apertura diaria"),
+        source=html_escape(recommendation_match.get("source") or "Plan actual del motor"),
+        recommendation_id=html_escape(recommendation_match.get("recommendation_id") or "N/D"),
+        recommended_at=html_escape(friendly_age(recommendation_match.get("recommended_at")) if recommendation_match.get("recommended_at") else "sin fecha de recomendación"),
+    )
     if acknowledged_event:
         review_control = '<div class="position-review-confirmed"><b>Revisión registrada</b><span>Volverá a pendientes sólo si cambia la posición o la recomendación.</span></div>'
     elif action_upper == "REFRESH_DATA":
@@ -7376,6 +7510,7 @@ def render_position_management_card(
         <div><span>Por qué ahora</span><strong>{why_now}</strong></div>
         <div><span>Qué haría cambiar el plan</span><strong>{change_trigger}</strong></div>
       </div>
+      {followup_plan}
       {structure}
       {alternatives}
       {related_stock}
@@ -7457,6 +7592,7 @@ def render_position_management_card(
         state=position_badge(item.get("exit_state")),
         contract=html_escape(" · ".join(friendly_operator_state(bit) if str(bit).upper() in FRIENDLY_OPERATOR_STATES else str(bit) for bit in contract_bits if bit not in [None, ""])),
         structure=structure_html,
+        followup_plan=followup_plan,
         capture=html_escape(str(item.get("premium_capture_pct") if item.get("premium_capture_pct") is not None else "pendiente")),
         pnl=html_escape(str(item.get("unrealized_pl") if item.get("unrealized_pl") is not None else "pendiente")),
         weight=html_escape(str(item.get("portfolio_weight_pct") if item.get("portfolio_weight_pct") is not None else "pendiente")),
@@ -7551,6 +7687,8 @@ def render_active_positions_panel(
     v31_payloads: dict[str, dict[str, Any]],
     active: dict[str, Any],
     payload: dict[str, Any] | None = None,
+    operator_payload: dict[str, Any] | None = None,
+    rsp_payload: dict[str, Any] | None = None,
 ) -> str:
     payload = payload if isinstance(payload, dict) else console_active_position_management(snapshot, v31_payloads)
     journal_summary = shared_position_management_journal.summary(POSITION_MANAGEMENT_JOURNAL_PATH)
@@ -7617,6 +7755,7 @@ def render_active_positions_panel(
                 fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
                 if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
                 meta,
+                position_recommendation_match(item, operator_payload, rsp_payload),
             )
             for meta, item, acknowledged_event in queue_rows
             if meta.get("key") != "completed"
@@ -7628,6 +7767,7 @@ def render_active_positions_panel(
                 fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
                 if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
                 meta,
+                position_recommendation_match(item, operator_payload, rsp_payload),
             )
             for meta, item, acknowledged_event in queue_rows
             if meta.get("key") == "completed"
@@ -9762,6 +9902,15 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .position-decision-brief span,.position-decision-brief strong {{ display:block; }}
           .position-decision-brief span {{ color:var(--muted); font-size:.68rem; text-transform:uppercase; font-weight:850; }}
           .position-decision-brief strong {{ margin-top:4px; font-size:.82rem; line-height:1.35; }}
+          .position-followup-plan {{ display:grid; gap:8px; margin:10px 0; padding:11px; border:1px solid #bfd7ff; border-left:5px solid #2563eb; border-radius:8px; background:#f7fbff; }}
+          .position-followup-plan.followup-unlinked {{ border-color:var(--line); border-left-color:#64748b; background:var(--soft); }}
+          .position-followup-plan.followup-candidate {{ border-color:#f2c47c; border-left-color:#d97706; background:#fff8e8; }}
+          .position-followup-head {{ display:flex; justify-content:space-between; gap:10px; }}
+          .position-followup-head span {{ color:var(--muted); font-size:.72rem; font-weight:850; }}
+          .position-followup-plan p,.position-followup-plan small {{ margin:0; color:var(--muted); font-size:.75rem; line-height:1.35; }}
+          .position-followup-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }}
+          .position-followup-grid span {{ min-width:0; padding:7px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--muted); font-size:.66rem; text-transform:uppercase; }}
+          .position-followup-grid strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.76rem; line-height:1.3; text-transform:none; }}
           .position-completed {{ margin-top:14px; border:1px solid var(--line); border-radius:10px; background:#f8fafc; }}
           .position-completed > summary {{ cursor:pointer; padding:12px 14px; font-weight:850; color:var(--muted); }}
           .position-completed > .position-list {{ padding:0 10px 10px; }}
@@ -10210,6 +10359,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
+          @media (max-width:620px) {{ .position-followup-grid {{ grid-template-columns:1fr; }} }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
@@ -10577,7 +10727,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         profile_cards=render_profile_cards(profiles, active),
         alerts=render_operator_alerts(operator_payload, snapshot, reports),
         alert_open=" open" if any(alert_operator_visibility(alert) in {"HIGH_PROBABILITY", "RADAR"} and not is_handled_alert(alert) for alert in ((operator_payload.get("data") or {}).get("active_alerts") or []) if isinstance(alert, dict)) else "",
-        active_positions=render_active_positions_panel(snapshot, v31_payloads, active, position_payload),
+        active_positions=render_active_positions_panel(
+            snapshot, v31_payloads, active, position_payload,
+            operator_payload=operator_payload, rsp_payload=rsp_payload,
+        ),
         v31_learning=render_v31_learning_panel(v31_payloads),
         canslim_radar=canslim_radar,
         opportunity_center=opportunity_center,
