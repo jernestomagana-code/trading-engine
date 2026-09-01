@@ -2909,6 +2909,12 @@ def next_us_market_open(now: datetime | None = None) -> datetime:
     return candidate.astimezone(timezone.utc)
 
 
+def cdmx_review_time(value: datetime) -> str:
+    local_value = value.astimezone(ZoneInfo("America/Mexico_City"))
+    weekdays = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+    return "{} {} CDMX".format(weekdays[local_value.weekday()], local_value.strftime("%H:%M"))
+
+
 def daily_task_timing(item: dict[str, Any], now: datetime | None = None) -> dict[str, str]:
     now = now or datetime.now(timezone.utc)
     area = str(item.get("area") or "")
@@ -2929,11 +2935,64 @@ def daily_task_timing(item: dict[str, Any], now: datetime | None = None) -> dict
         label = "Esperar"
         next_review = next_us_market_open(now)
         review_reason = "Reconsultar cuando llegue nueva evidencia"
-    local_review = next_review.astimezone(ZoneInfo("America/Mexico_City"))
     return {
         "timing_label": label,
-        "next_review_label": local_review.strftime("%a %H:%M CDMX"),
+        "next_review_label": cdmx_review_time(next_review),
         "review_reason": review_reason,
+    }
+
+
+def daily_close_summary(
+    task_view: dict[str, Any],
+    risk_payload: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    local_date = now.astimezone(ZoneInfo("America/Mexico_City")).date()
+    journal = load_daily_task_journal()
+    records = journal.get("tasks") if isinstance(journal.get("tasks"), dict) else {}
+    reviewed_today = 0
+    postponed_active = 0
+    postponed_titles: list[str] = []
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+        updated_at = parse_iso_datetime(record.get("updated_at"))
+        if not updated_at or updated_at.astimezone(ZoneInfo("America/Mexico_City")).date() != local_date:
+            continue
+        state = str(record.get("state") or "").upper()
+        if state in {"REVIEWING", "DONE"}:
+            reviewed_today += 1
+        elif state == "POSTPONED":
+            postponed_until = parse_iso_datetime(record.get("postponed_until"))
+            if postponed_until and postponed_until > now:
+                postponed_active += 1
+                if record.get("title"):
+                    postponed_titles.append(str(record.get("title")))
+    risk_alerts = risk_payload.get("alerts") if isinstance(risk_payload.get("alerts"), list) else []
+    open_risks = [
+        alert for alert in risk_alerts
+        if isinstance(alert, dict)
+        and str(alert.get("severity") or "").upper() in {"CRITICAL", "HIGH"}
+        and str(alert.get("operational_status") or alert.get("lifecycle_status") or "OPEN").upper() == "OPEN"
+    ]
+    visible = task_view.get("visible") if isinstance(task_view.get("visible"), list) else []
+    if visible:
+        resume_title = str(visible[0].get("title") or "Revisar la primera prioridad visible")
+    elif postponed_titles:
+        resume_title = postponed_titles[0]
+    else:
+        resume_title = "Ejecutar Apertura diaria y revisar nuevas señales"
+    return {
+        "reviewed_today": reviewed_today,
+        "postponed_active": postponed_active,
+        "open_risk_count": len(open_risks),
+        "visible_pending_count": len(visible),
+        "resume_title": resume_title,
+        "next_open": cdmx_review_time(next_us_market_open(now)),
+        "status": "RIESGO ABIERTO" if open_risks else "PENDIENTES" if visible or postponed_active else "AL DÍA",
+        "execution_authorized": False,
+        "not_order_instruction": True,
     }
 
 
@@ -3111,6 +3170,7 @@ def render_command_center(
     elif health.get("stale_cache"):
         operational_label = "Datos guardados"
         operational_detail = "Actualizar antes de aumentar riesgo"
+    close_summary = daily_close_summary(task_view, risk_payload)
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
@@ -3128,6 +3188,16 @@ def render_command_center(
         <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} visible(s) · {postponed_count} pospuesta(s) · {attended_count} atendida(s). Primero riesgo, después gestión y oportunidades.</span></div>
         {tasks}
         {remaining_tasks}
+      </div>
+      <div class="daily-close">
+        <div><p class="eyebrow">Cierre diario</p><h3>{close_status}</h3><small>Resumen automático del trabajo registrado hoy.</small></div>
+        <div class="daily-close-facts">
+          <span>Revisadas hoy<strong>{reviewed_today}</strong></span>
+          <span>Pospuestas activas<strong>{postponed_active}</strong></span>
+          <span>Riesgos altos/críticos abiertos<strong>{open_risks}</strong></span>
+          <span>Pendientes visibles<strong>{visible_pending}</strong></span>
+        </div>
+        <div class="daily-resume"><span>Retomar</span><strong>{resume_title}</strong><small>Próxima apertura estimada: {next_open}</small></div>
       </div>
     </section>
     """.format(
@@ -3161,6 +3231,13 @@ def render_command_center(
         pending_count=html_escape(len(pending)),
         postponed_count=html_escape(task_view.get("postponed_count") or 0),
         attended_count=html_escape(task_view.get("attended_count") or 0),
+        close_status=html_escape(close_summary.get("status") or "AL DÍA"),
+        reviewed_today=html_escape(close_summary.get("reviewed_today") or 0),
+        postponed_active=html_escape(close_summary.get("postponed_active") or 0),
+        open_risks=html_escape(close_summary.get("open_risk_count") or 0),
+        visible_pending=html_escape(close_summary.get("visible_pending_count") or 0),
+        resume_title=html_escape(close_summary.get("resume_title") or "Ejecutar Apertura diaria"),
+        next_open=html_escape(close_summary.get("next_open") or "Próxima sesión"),
     )
 
 
@@ -9312,6 +9389,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           @media (max-width:820px) {{ .command-facts > :nth-child(even) {{ border-right:0; }} .command-facts > :nth-child(-n+4) {{ border-bottom:1px solid var(--line); }} .daily-task-actions {{ grid-column:2; justify-items:start; min-width:0; }} .daily-task-actions form {{ justify-content:flex-start; }} .daily-task-brief dl > div {{ grid-template-columns:1fr; gap:2px; }} }}
           .remaining-priorities {{ margin-top:12px; }}
           .remaining-priorities > summary {{ cursor:pointer; color:var(--accent-strong); font-weight:850; padding:8px 2px; }}
+          .daily-close {{ display:grid; grid-template-columns:minmax(150px,.45fr) minmax(360px,1fr) minmax(220px,.65fr); gap:16px; align-items:center; border-top:1px solid var(--line); padding:16px 20px; background:#f7faf7; }}
+          .daily-close h3,.daily-close p {{ margin:0; }}
+          .daily-close small {{ color:var(--muted); }}
+          .daily-close-facts {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }}
+          .daily-close-facts span {{ border:1px solid var(--line); border-radius:8px; padding:8px; background:white; color:var(--muted); font-size:.68rem; line-height:1.2; }}
+          .daily-close-facts strong {{ display:block; color:var(--ink); font-size:1.05rem; margin-top:4px; }}
+          .daily-resume {{ border-left:3px solid var(--accent); padding-left:12px; }}
+          .daily-resume span,.daily-resume strong,.daily-resume small {{ display:block; }}
+          .daily-resume span {{ color:var(--muted); text-transform:uppercase; font-size:.68rem; font-weight:900; }}
+          .daily-resume strong {{ margin:3px 0; line-height:1.25; }}
+          @media (max-width:900px) {{ .daily-close {{ grid-template-columns:1fr; }} .daily-resume {{ border-left:0; border-top:3px solid var(--accent); padding:10px 0 0; }} }}
+          @media (max-width:620px) {{ .daily-close-facts {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
           .empty-state {{ display:flex; justify-content:space-between; gap:12px; border:1px solid #86d5aa; border-radius:10px; padding:14px; background:#f3fbf6; }}
           .empty-state span {{ color:var(--muted); }}
           .secondary-workspace {{ margin-top:14px; }}

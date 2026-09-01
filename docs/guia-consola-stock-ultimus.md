@@ -197,6 +197,8 @@ Antes de esos controles, cada tarjeta traduce la evidencia en tres respuestas: *
 
 La etiqueta temporal distingue **Actuar ahora**, **Revisar hoy**, **Antes de abrir posición** y **Esperar**. **Próxima revisión** muestra la siguiente hora de control en horario de Ciudad de México, o indica explícitamente que debe revisarse antes de la próxima entrada. Es un recordatorio operativo: no representa una orden, vencimiento garantizado ni autorización para operar.
 
+Al final de **Hoy**, **Cierre diario** se construye automáticamente con el diario de tareas y el riesgo vigente. Resume cuántas prioridades se revisaron, cuáles siguen pospuestas, cuántos riesgos altos o críticos permanecen abiertos y cuál es la primera tarea que debe retomarse. También muestra la próxima apertura estimada en horario CDMX. No exige captura manual y no confunde *revisado* con *riesgo resuelto*.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;

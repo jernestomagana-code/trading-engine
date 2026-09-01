@@ -1044,6 +1044,9 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Revisar exposición antes de abrir otra posición.", html)
         self.assertIn("Antes de abrir posición", html)
         self.assertIn("Próxima revisión", html)
+        self.assertIn("Cierre diario", html)
+        self.assertIn("Riesgos altos/críticos abiertos", html)
+        self.assertIn("Próxima apertura estimada", html)
 
     def test_daily_task_timing_distinguishes_now_before_entry_and_wait(self):
         now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
@@ -1056,6 +1059,27 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertEqual(before_entry["next_review_label"], "Antes de la próxima entrada")
         self.assertEqual(waiting["timing_label"], "Esperar")
         self.assertIn("CDMX", waiting["next_review_label"])
+
+    def test_daily_close_summarizes_reviewed_postponed_risk_and_resume(self):
+        now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(account_console, "DAILY_TASK_JOURNAL_PATH", Path(tmp) / "daily_tasks.json"):
+            account_console.write_json_file(account_console.DAILY_TASK_JOURNAL_PATH, {
+                "tasks": {
+                    "TASK-done": {"state": "DONE", "updated_at": "2026-09-03T13:00:00+00:00", "title": "Revisada"},
+                    "TASK-later": {"state": "POSTPONED", "updated_at": "2026-09-03T13:30:00+00:00", "postponed_until": "2026-09-03T15:00:00+00:00", "title": "Retomar RSP"},
+                }
+            })
+            summary = account_console.daily_close_summary(
+                {"visible": [{"title": "Revisar concentración"}]},
+                {"alerts": [{"severity": "HIGH", "lifecycle_status": "OPEN"}]},
+                now,
+            )
+        self.assertEqual(summary["reviewed_today"], 1)
+        self.assertEqual(summary["postponed_active"], 1)
+        self.assertEqual(summary["open_risk_count"], 1)
+        self.assertEqual(summary["resume_title"], "Revisar concentración")
+        self.assertEqual(summary["status"], "RIESGO ABIERTO")
+        self.assertIn("CDMX", summary["next_open"])
 
     def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
         item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}
