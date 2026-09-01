@@ -1095,9 +1095,25 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             review = account_console.guided_opening_summary(task_view, risk, ready_reports, {"level": "green"}, now)
         self.assertEqual(blocked["gate_label"], "NO ABRIR POSICIONES")
         self.assertIn("apertura no vigente", blocked["gate_detail"])
+        self.assertEqual(blocked["action_type"], "form")
+        self.assertEqual(blocked["action_path"], "/daily-open")
         self.assertEqual(review["update_label"], "Datos de apertura listos")
         self.assertEqual(review["resume_label"], "Revisar concentración")
         self.assertEqual(review["gate_label"], "REVISAR ANTES DE ABRIR")
+        self.assertEqual(review["action_label"], "Revisar riesgo")
+        self.assertEqual(review["action_path"], "#riesgo")
+
+    def test_guided_opening_routes_connection_and_ready_state(self):
+        now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+        reports = {"daily_open": {"status": "OK", "generated_at": "2026-09-03T13:30:00+00:00", "coberturas_rsp": {"ok": True}}}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(account_console, "DAILY_TASK_JOURNAL_PATH", Path(tmp) / "daily_tasks.json"):
+            connection = account_console.guided_opening_summary({"visible": []}, {"alerts": []}, reports, {"level": "red"}, now)
+            ready = account_console.guided_opening_summary({"visible": []}, {"alerts": []}, reports, {"level": "green"}, now)
+        self.assertEqual(connection["action_path"], "#view-configuracion")
+        self.assertEqual(connection["action_label"], "Abrir Configuración")
+        self.assertEqual(ready["gate_label"], "DISPONIBLE PARA EVALUAR")
+        self.assertEqual(ready["action_path"], "#opportunity-center")
+        self.assertEqual(ready["action_label"], "Ver oportunidades")
 
     def test_daily_task_journal_reviews_postpones_and_reopens_changed_work(self):
         item = {"level": "high", "area": "Riesgo", "title": "Revisar concentración", "detail": "Concentración 80%", "href": "#riesgo", "when": "Revisar hoy"}

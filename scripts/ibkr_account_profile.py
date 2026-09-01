@@ -3074,6 +3074,16 @@ def guided_opening_summary(
         gate_label = "DISPONIBLE PARA EVALUAR"
         gate_class = "ready"
         gate_detail = "Sin bloqueo estructural visible; cada entrada aún debe superar sus propias compuertas."
+    if health.get("level") == "red":
+        action_type, action_path, action_label = "link", "#view-configuracion", "Abrir Configuración"
+    elif not daily_is_today or daily_status in bad_daily_statuses:
+        action_type, action_path, action_label = "form", "/daily-open", "Ejecutar Apertura diaria"
+    elif open_critical or open_high:
+        action_type, action_path, action_label = "link", "#riesgo", "Revisar riesgo"
+    elif not rsp.get("ok"):
+        action_type, action_path, action_label = "link", "#coberturas-rsp", "Abrir RSP"
+    else:
+        action_type, action_path, action_label = "link", "#opportunity-center", "Ver oportunidades"
     return {
         "update_label": update_label,
         "update_detail": update_detail,
@@ -3082,6 +3092,9 @@ def guided_opening_summary(
         "gate_label": gate_label,
         "gate_class": gate_class,
         "gate_detail": gate_detail,
+        "action_type": action_type,
+        "action_path": action_path,
+        "action_label": action_label,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -3263,6 +3276,16 @@ def render_command_center(
         operational_detail = "Actualizar antes de aumentar riesgo"
     close_summary = daily_close_summary(task_view, risk_payload)
     opening_guide = guided_opening_summary(task_view, risk_payload, reports, health)
+    if opening_guide.get("action_type") == "form":
+        opening_action = '<form method="post" action="{path}" data-busy="Actualizando apertura guiada" data-busy-detail="Ejecuta la apertura diaria; no autoriza órdenes."><button>{label}</button></form>'.format(
+            path=html_escape(opening_guide.get("action_path") or "/daily-open"),
+            label=html_escape(opening_guide.get("action_label") or "Ejecutar Apertura diaria"),
+        )
+    else:
+        opening_action = '<a class="button-link" href="{path}">{label}</a>'.format(
+            path=html_escape(opening_guide.get("action_path") or "#view-configuracion"),
+            label=html_escape(opening_guide.get("action_label") or "Resolver bloqueo"),
+        )
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
@@ -3273,7 +3296,7 @@ def render_command_center(
         <div class="guided-opening-title"><p class="eyebrow">Apertura guiada</p><strong>Tres comprobaciones antes de decidir</strong></div>
         <div><span>1 · Actualizar primero</span><strong>{guide_update}</strong><small>{guide_update_detail}</small></div>
         <div><span>2 · Retomar</span><strong>{guide_resume}</strong><small>{guide_resume_detail}</small></div>
-        <div class="opening-gate gate-{gate_class}"><span>3 · Nuevas posiciones</span><strong>{gate_label}</strong><small>{gate_detail}</small></div>
+        <div class="opening-gate gate-{gate_class}"><span>3 · Nuevas posiciones</span><strong>{gate_label}</strong><small>{gate_detail}</small>{opening_action}</div>
       </div>
       <div class="command-facts">
         <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
@@ -3343,6 +3366,7 @@ def render_command_center(
         gate_class=html_escape(opening_guide.get("gate_class") or "blocked"),
         gate_label=html_escape(opening_guide.get("gate_label") or "NO ABRIR POSICIONES"),
         gate_detail=html_escape(opening_guide.get("gate_detail") or "Completar validaciones primero"),
+        opening_action=opening_action,
     )
 
 
@@ -9470,6 +9494,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opening-gate.gate-blocked {{ border-top-color:#b42318; background:#fff7f6; }}
           .opening-gate.gate-review {{ border-top-color:#d97706; background:#fffaf0; }}
           .opening-gate.gate-ready {{ border-top-color:#16a34a; background:#f3fbf6; }}
+          .opening-gate form {{ margin:9px 0 0; }}
+          .opening-gate button,.opening-gate .button-link {{ display:inline-block; margin-top:9px; padding:8px 10px; font-size:.8rem; }}
           .opening-status span {{ color:var(--muted); text-transform:uppercase; font-size:.7rem; font-weight:900; }}
           .opening-status strong {{ margin:5px 0 3px; font-size:1.1rem; }}
           .opening-status small {{ color:var(--muted); }}
@@ -10124,7 +10150,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             const targetViews = {{
               hoy:"hoy", pendientes:"hoy",
               riesgo:"cartera", posiciones:"cartera", cartera:"cartera", "analisis-cartera":"cartera",
-              "coberturas-rsp":"oportunidades", alertas:"oportunidades", oportunidades:"oportunidades",
+              "coberturas-rsp":"oportunidades", "opportunity-center":"oportunidades", alertas:"oportunidades", oportunidades:"oportunidades",
               analisis:"historial", resultados:"historial", historial:"historial",
               herramientas:"configuracion", configuracion:"configuracion"
             }};

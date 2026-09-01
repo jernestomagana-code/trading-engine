@@ -201,6 +201,8 @@ Al final de **Hoy**, **Cierre diario** se construye automáticamente con el diar
 
 Al comienzo del Centro del día, **Apertura guiada** convierte esos estados en tres comprobaciones: **Actualizar primero** confirma si la apertura y RSP pertenecen a la jornada; **Retomar** recupera un pendiente del cierre anterior o la prioridad vigente más alta; **Nuevas posiciones** muestra `NO ABRIR POSICIONES`, `REVISAR ANTES DE ABRIR` o `DISPONIBLE PARA EVALUAR`. *Disponible* sólo elimina el bloqueo general: cada oportunidad aún debe superar su técnica, liquidez, capacidad, riesgo y revisión manual.
 
+La compuerta incluye una sola acción contextual: **Ejecutar Apertura diaria** cuando faltan datos vigentes; **Revisar riesgo** para alertas altas/críticas; **Abrir Configuración** ante fallas estructurales; **Abrir RSP** si únicamente falta esa lectura; o **Ver oportunidades** cuando la evaluación general está disponible. El botón resuelve o abre el lugar correcto, pero nunca coloca órdenes.
+
 **Tus tres prioridades** muestra el inicio de una cola unificada. Cada elemento indica área, motivo y enlace **Revisar**; los demás quedan dentro de **Ver los otros pendientes**. El orden es:
 
 1. riesgo crítico o alto;
