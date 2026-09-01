@@ -111,6 +111,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Capacidad disponible", html)
         self.assertIn("Capacidad después", html)
         self.assertIn("Impacto de riesgo", html)
+        self.assertIn("Simulador", html)
 
     def test_unified_opportunity_financial_projection_blocks_insufficient_capacity(self):
         operator = {"ok": True, "data": {"active_alerts": [{
@@ -154,6 +155,28 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(future["state"], "blocked")
         self.assertEqual(future["state_label"], "Bloqueada por riesgo")
         self.assertIn("Bloqueo global activo", future["risk_impact"])
+
+    def test_opportunity_simulator_renders_real_unit_inputs_without_order_action(self):
+        item = {
+            "type": "canslim", "type_label": "CANSLIM", "ticker": "NVDA",
+            "state": "ready", "state_label": "Entrada lista", "rank": 0,
+            "quality": 90, "metric_label": "Score", "freshness": "ahora",
+            "recommendation": "Revisar", "action": "Validar ticket", "trigger": "200",
+            "invalidation": "190", "target": "220", "blocker": "Ninguno",
+            "capital_label": "$5,000.00", "available_capacity_label": "$20,000.00",
+            "capacity_after_label": "$15,000.00 · proyección", "risk_impact": "Sin bloqueo",
+            "simulator_available": True, "simulator_unit_label": "contrato", "simulator_max": 10,
+            "simulator_capital": 5000, "simulator_capacity": 20000,
+        }
+        with patch.object(console, "build_unified_opportunity_items", return_value=[item]):
+            html = console.render_unified_opportunity_center({}, {})
+
+        self.assertIn("Simulador previo", html)
+        self.assertIn('data-unit-capital="5000"', html)
+        self.assertIn('data-capacity="20000"', html)
+        self.assertIn("Cantidad de contratos", html)
+        self.assertIn("Referencia; no reserva fondos ni envía una orden.", html)
+        self.assertNotIn("placeOrder", html)
 
     def test_rsp_fresh_evaluated_wait_is_not_a_refresh_pending_item(self):
         rsp = {

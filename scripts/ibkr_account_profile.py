@@ -6160,6 +6160,11 @@ def build_unified_opportunity_items(
         else:
             item["risk_impact"] = "Sin bloqueo global; concentración posterior N/D hasta definir tamaño/ticket."
         item["available_capacity_label"] = compact_money(available_capacity)
+        item["simulator_available"] = required is not None and available_capacity is not None
+        item["simulator_unit_label"] = "ciclo" if item["type"] == "rsp" else "contrato"
+        item["simulator_max"] = 3 if item["type"] == "rsp" else 10
+        item["simulator_capital"] = required
+        item["simulator_capacity"] = available_capacity
     return sorted(items, key=lambda item: (item["rank"], -float(item.get("quality") or 0.0), item["type"], item["ticker"]))
 
 
@@ -6172,6 +6177,35 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
         quality = float(item.get("quality") or 0.0)
         metric_label = str(item.get("metric_label") or "Calidad")
         quality_label = metric_label + " no disponible" if quality <= 0 else "{} {:.0f}/100".format(metric_label, quality)
+        simulator = (
+            """
+            <div class="opportunity-simulator" data-opportunity-simulator data-unit-capital="{unit_capital}" data-capacity="{capacity}">
+              <div><span>Simulador previo</span><small>Referencia; no reserva fondos ni envía una orden.</small></div>
+              <label>Cantidad de {unit_label}s<input type="number" min="1" max="{max_units}" step="1" value="1" inputmode="numeric" data-simulator-quantity></label>
+              <div class="simulator-results">
+                <span>Capital total<strong data-simulator-total>{capital}</strong></span>
+                <span>Capacidad restante<strong data-simulator-remaining>{remaining}</strong></span>
+                <span>Uso de capacidad<strong data-simulator-use>{use}</strong></span>
+                <span>Lectura<strong data-simulator-status>{status}</strong></span>
+              </div>
+              <p>Concentración posterior: N/D hasta conocer tamaño, exposición y ticket definitivos.</p>
+            </div>
+            """.format(
+                unit_capital=html_escape(item.get("simulator_capital")),
+                capacity=html_escape(item.get("simulator_capacity")),
+                unit_label=html_escape(item.get("simulator_unit_label") or "unidad"),
+                max_units=html_escape(item.get("simulator_max") or 10),
+                capital=html_escape(item.get("capital_label") or "N/D"),
+                remaining=html_escape(item.get("capacity_after_label") or "N/D"),
+                use=html_escape(compact_percent(
+                    (float(item.get("simulator_capital")) / float(item.get("simulator_capacity"))) * 100
+                    if item.get("simulator_capacity") not in [None, 0] else None
+                )),
+                status="Viable por capacidad" if float(item.get("simulator_capital") or 0) <= float(item.get("simulator_capacity") or 0) else "Capacidad insuficiente",
+            )
+            if item.get("simulator_available") else
+            '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>'
+        )
         return """
         <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}">
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
@@ -6190,6 +6224,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             <span>Capacidad después<strong>{capacity_after}</strong></span>
             <span>Impacto de riesgo<strong>{risk_impact}</strong></span>
           </div>
+          {simulator}
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
@@ -6210,6 +6245,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             available_capacity=html_escape(item.get("available_capacity_label") or "N/D"),
             capacity_after=html_escape(item.get("capacity_after_label") or "N/D"),
             risk_impact=html_escape(item.get("risk_impact") or "N/D"),
+            simulator=simulator,
             target="canslim-radar" if item["type"] == "canslim" else ("alertas" if item["type"] == "futures" else "coberturas-rsp"),
         )
 
@@ -9992,6 +10028,18 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-viability {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin-top:9px; padding:9px; border:1px solid #b9d8cb; border-radius:8px; background:#f4fbf7; }}
           .opportunity-viability span {{ min-width:0; color:var(--muted); font-size:.68rem; font-weight:850; text-transform:uppercase; }}
           .opportunity-viability strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.78rem; line-height:1.3; text-transform:none; }}
+          .opportunity-simulator {{ display:grid; gap:8px; margin-top:9px; padding:10px; border:1px solid #c4b5fd; border-radius:8px; background:#faf5ff; }}
+          .opportunity-simulator > div:first-child {{ display:flex; justify-content:space-between; gap:8px; align-items:baseline; }}
+          .opportunity-simulator > div:first-child span {{ font-weight:900; }}
+          .opportunity-simulator small,.opportunity-simulator p,.opportunity-simulator > span {{ color:var(--muted); font-size:.7rem; }}
+          .opportunity-simulator p {{ margin:0; }}
+          .opportunity-simulator label {{ display:flex; justify-content:space-between; gap:10px; align-items:center; font-size:.75rem; font-weight:850; }}
+          .opportunity-simulator input {{ width:84px; min-height:36px; padding:6px 8px; }}
+          .simulator-results {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }}
+          .simulator-results span {{ padding:7px; border:1px solid #ddd6fe; border-radius:6px; background:#fff; color:var(--muted); font-size:.66rem; text-transform:uppercase; }}
+          .simulator-results strong {{ display:block; margin-top:2px; color:var(--ink); font-size:.76rem; text-transform:none; }}
+          .opportunity-simulator.simulator-unavailable {{ border-color:var(--line); background:var(--soft); }}
+          .opportunity-simulator.simulator-risk {{ border-color:#f2a7a0; background:#fff7f6; }}
           .opportunity-card > a {{ display:inline-block; margin-top:10px; color:var(--accent-strong); font-weight:850; }}
           .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
           .canslim-list {{ display:grid; gap:8px; }}
@@ -10162,7 +10210,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .busy-box span {{ color:var(--muted); margin-top:8px; }}
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
-          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
+          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
@@ -10359,6 +10407,33 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 if (show) visible += 1;
               }});
               if (opportunityEmpty) opportunityEmpty.hidden = visible !== 0;
+            }}));
+
+            const money = new Intl.NumberFormat("en-US", {{style:"currency", currency:"USD"}});
+            document.querySelectorAll("[data-opportunity-simulator]").forEach((simulator) => {{
+              const input = simulator.querySelector("[data-simulator-quantity]");
+              if (!input) return;
+              const unitCapital = Number(simulator.dataset.unitCapital);
+              const capacity = Number(simulator.dataset.capacity);
+              const totalNode = simulator.querySelector("[data-simulator-total]");
+              const remainingNode = simulator.querySelector("[data-simulator-remaining]");
+              const useNode = simulator.querySelector("[data-simulator-use]");
+              const statusNode = simulator.querySelector("[data-simulator-status]");
+              const update = () => {{
+                const maximum = Math.max(1, Number(input.max) || 10);
+                const quantity = Math.min(maximum, Math.max(1, Math.floor(Number(input.value) || 1)));
+                input.value = String(quantity);
+                const total = unitCapital * quantity;
+                const remaining = capacity - total;
+                if (totalNode) totalNode.textContent = money.format(total);
+                if (remainingNode) remainingNode.textContent = money.format(Math.max(remaining, 0)) + (remaining < 0 ? " · insuficiente" : " · proyección");
+                if (useNode) useNode.textContent = capacity > 0 ? `${{((total / capacity) * 100).toFixed(2)}}%` : "N/D";
+                if (statusNode) statusNode.textContent = remaining < 0 ? "Capacidad insuficiente" : total / capacity > .25 ? "Viable; revisar tamaño" : "Viable por capacidad";
+                simulator.classList.toggle("simulator-risk", remaining < 0 || (capacity > 0 && total / capacity > .25));
+              }};
+              input.addEventListener("input", update);
+              input.addEventListener("change", update);
+              update();
             }}));
           }})();
 
