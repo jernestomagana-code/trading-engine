@@ -154,6 +154,58 @@
         "WAIT_TECHNICAL"
       ],
       "recommendation_text": "Filtro de calidad fundamental y liderazgo; puede bloquear opciones sobre acciones si falla."
+    },
+    {
+      "id": "CANSLIM_EARNINGS_VOLATILITY_HARVEST",
+      "aliases": ["EARNINGS_VOLATILITY_HARVEST", "EARNINGS_IV_CRUSH"],
+      "status": "RESEARCH_ONLY",
+      "asset_class": "OPTIONS",
+      "market_regime": ["EARNINGS_EVENT_PREMIUM"],
+      "technical_required": true,
+      "canslim_required": true,
+      "fundamental_required": true,
+      "account_context_required": true,
+      "option_contract_required": true,
+      "ready_conditions": {
+        "maximum_state": "PAPER_ELIGIBLE",
+        "earnings_date_confirmed": true,
+        "defined_risk_or_cash_secured": true
+      },
+      "primary_blockers": [
+        "RESEARCH_ONLY",
+        "EARNINGS_DATE_UNCONFIRMED",
+        "EVENT_VOLATILITY_PREMIUM_INSUFFICIENT",
+        "HISTORICAL_EARNINGS_SAMPLE_INSUFFICIENT",
+        "WAIT_OPTIONS_DATA",
+        "STRESS_LOSS_EXCEEDS_BUDGET"
+      ],
+      "recommendation_text": "Investigar venta de volatilidad de earnings exclusivamente en candidatos CANSLIM, con put asegurada o estructura de riesgo definido; nunca autoriza un strangle descubierto por defecto."
+    },
+    {
+      "id": "SPY_RSP_LONG_DATED_PUTWRITE",
+      "aliases": ["LONG_DATED_PUTWRITE", "SPY_LONG_DATED_PUT", "RSP_LONG_DATED_PUT"],
+      "status": "RESEARCH_ONLY",
+      "asset_class": "OPTIONS",
+      "market_regime": ["INDEX_VOLATILITY_RISK_PREMIUM"],
+      "technical_required": true,
+      "canslim_required": false,
+      "fundamental_required": false,
+      "account_context_required": true,
+      "option_contract_required": true,
+      "ready_conditions": {
+        "maximum_state": "PAPER_ELIGIBLE",
+        "allowed_tickers": ["SPY", "RSP"],
+        "cash_secured_or_stress_margin_required": true
+      },
+      "primary_blockers": [
+        "RESEARCH_ONLY",
+        "VOLATILITY_RISK_PREMIUM_INSUFFICIENT",
+        "WAIT_OPTIONS_DATA",
+        "STRESS_HISTORY_INCOMPLETE",
+        "STRESS_MARGIN_UNAVAILABLE",
+        "AGGREGATE_SPY_RSP_EXPOSURE_TOO_HIGH"
+      ],
+      "recommendation_text": "Comparar puts SPY/RSP de 120, 150 y 180 DTE mediante backtest con stress y costos; permanece en research/paper hasta demostrar robustez fuera de muestra."
     }
   ],
   "research_loop": {

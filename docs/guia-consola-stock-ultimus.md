@@ -598,6 +598,10 @@ Muestra automatizaciones locales de riesgo, outbox, digest, acciones humanas y s
 
 Esta sección sirve para evaluar si las decisiones y alertas realmente funcionan con evidencia acumulada.
 
+### Estrategias nuevas en investigación
+
+Las estrategias **Volatilidad de earnings CANSLIM** y **Put de largo plazo SPY/RSP** están registradas como `RESEARCH_ONLY`. En esta primera etapa no aparecen como entradas operables ni pueden generar `ENTRY_READY`: se comparan parámetros, muestra, periodos adversos y resultados fuera de muestra. Sólo podrán pasar a `PAPER_ELIGIBLE` si cumplen la puerta documentada en `docs/premium-strategy-research-v1.md`; paper trading tampoco equivale a autorización de operación.
+
 Al entrar a **Historial**, la primera tarjeta es la **Conclusión del motor**. Debe leerse en este orden:
 
 1. **Conclusión:** indica si ya existe evidencia suficiente para revisar parámetros o si todavía conviene mantenerlos sin cambios.

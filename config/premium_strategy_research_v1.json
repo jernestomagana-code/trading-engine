@@ -1,0 +1,52 @@
+{
+  "config_version": "premium_strategy_research_v1",
+  "mode": "RESEARCH_PAPER_ONLY",
+  "not_order_instruction": true,
+  "execution_authorized": false,
+  "maximum_state": "PAPER_ELIGIBLE",
+  "earnings_volatility_harvest": {
+    "strategy_id": "CANSLIM_EARNINGS_VOLATILITY_HARVEST",
+    "allowed_structures": ["CASH_SECURED_PUT", "DEFINED_RISK_CONDOR"],
+    "entry_days_before_earnings": [1, 2, 3],
+    "expiration_days_after_earnings": [7, 14, 21],
+    "put_delta_grid": [0.10, 0.12, 0.15],
+    "call_delta_grid": [0.08, 0.10, 0.12],
+    "minimum_canslim_coverage_pct": 85.0,
+    "minimum_iv_percentile": 70.0,
+    "minimum_iv_rank": 50.0,
+    "minimum_event_move_ratio": 1.15,
+    "minimum_iv_to_realized_ratio": 1.15,
+    "maximum_bid_ask_spread_pct": 10.0,
+    "minimum_open_interest": 500,
+    "maximum_stress_loss_pct_of_account": 2.0,
+    "profit_target_pct": [35.0, 50.0],
+    "maximum_exit_sessions_after_event": 2,
+    "uncovered_short_call_allowed": false,
+    "ratio_short_strangle_allowed": false
+  },
+  "long_dated_putwrite": {
+    "strategy_id": "SPY_RSP_LONG_DATED_PUTWRITE",
+    "allowed_tickers": ["SPY", "RSP"],
+    "dte_grid": [120, 150, 180],
+    "delta_grid": [0.10, 0.12, 0.14, 0.15, 0.20],
+    "minimum_iv_percentile": 50.0,
+    "minimum_iv_to_realized_ratio": 1.15,
+    "minimum_iv_minus_realized_points": 3.0,
+    "maximum_bid_ask_spread_pct": 8.0,
+    "minimum_open_interest": 500,
+    "maximum_cycle_capacity_pct": 30.0,
+    "maximum_aggregate_spy_rsp_exposure_pct": 40.0,
+    "profit_target_pct": [50.0, 60.0],
+    "review_dte": [75, 60],
+    "cash_secured_or_stress_margin_required": true
+  },
+  "promotion_gate": {
+    "minimum_closed_trades": 40,
+    "minimum_out_of_sample_trades": 15,
+    "minimum_distinct_years": 3,
+    "minimum_regimes": ["BULL", "BEAR", "HIGH_VOL"],
+    "required_stress_periods": ["2008", "2011", "2015_2016", "2018", "2020", "2022"],
+    "minimum_profit_factor": 1.20,
+    "maximum_drawdown_pct": 25.0
+  }
+}
