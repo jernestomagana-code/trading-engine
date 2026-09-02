@@ -42,14 +42,14 @@ class PremiumStrategyDataTests(unittest.TestCase):
             earnings = report["strategies"]["CANSLIM_EARNINGS_VOLATILITY_HARVEST"]
             long_dated = report["strategies"]["SPY_RSP_LONG_DATED_PUTWRITE"]
             self.assertNotIn("CANSLIM_FULL_COVERAGE", earnings["missing"])
-            self.assertIn("CONFIRMED_EARNINGS_CALENDAR", earnings["missing"])
+            self.assertIn("EARNINGS_CALENDAR", earnings["missing"])
             self.assertIn("SPY_RSP_120_150_180_DTE_OBSERVATIONS", long_dated["missing"])
             self.assertIn("LIQUID_LONG_DATED_GRID_INCOMPLETE", long_dated["missing"])
             self.assertFalse(report["execution_authorized"])
 
-    def test_confirmed_earnings_record_requires_confirmation(self):
+    def test_scheduled_earnings_record_accepts_explicit_estimated_status(self):
         record = {"ticker": "AAPL", "earnings_date": "2026-10-20", "event_timing": "AMC", "confirmed": False, "source": "TEST", "observed_at": "2026-09-02T00:00:00Z"}
-        self.assertIn("confirmed_true", data.validate_record(record, "earnings_event"))
+        self.assertEqual(data.validate_record(record, "earnings_event"), [])
 
     def test_capture_preserves_only_complete_live_quotes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,7 +80,7 @@ class PremiumStrategyDataTests(unittest.TestCase):
 
     def test_daily_open_ibkr_research_collector_is_non_blocking(self):
         args = type("Args", (), {"skip_premium_research": False, "ibkr_host": "127.0.0.1", "ibkr_port": 7496, "premium_research_timeout": 150})()
-        with mock.patch.object(daily_open_checklist, "run_command", return_value={"ok": False, "error": "WSH_UNAVAILABLE"}):
+        with mock.patch.object(daily_open_checklist, "run_command", return_value={"ok": False, "error": "IBKR_UNAVAILABLE"}):
             result = daily_open_checklist.collect_premium_research_ibkr(args)
         self.assertFalse(result["ok"])
         self.assertTrue(result["non_blocking"])

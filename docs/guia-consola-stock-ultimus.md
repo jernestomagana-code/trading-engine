@@ -602,6 +602,8 @@ Esta sección sirve para evaluar si las decisiones y alertas realmente funcionan
 
 Las estrategias **Volatilidad de earnings CANSLIM** y **Put de largo plazo SPY/RSP** están registradas como `RESEARCH_ONLY`. En esta primera etapa no aparecen como entradas operables ni pueden generar `ENTRY_READY`: se comparan parámetros, muestra, periodos adversos y resultados fuera de muestra. Sólo podrán pasar a `PAPER_ELIGIBLE` si cumplen la puerta documentada en `docs/premium-strategy-research-v1.md`; paper trading tampoco equivale a autorización de operación.
 
+El calendario de earnings CANSLIM se actualiza gratuitamente con Alpha Vantage durante la apertura diaria, incluso si TWS está cerrado. Una fecha detectada puede aparecer como **estimada** hasta corroborarse en TradingView o en relaciones con inversionistas. Wall Street Horizon es un respaldo opcional: no contratarlo no genera un bloqueo. Si la consola solicita configuración, sólo falta guardar una clave gratuita de Alpha Vantage; la clave no se publica ni se muestra.
+
 Al entrar a **Historial**, la primera tarjeta es la **Conclusión del motor**. Debe leerse en este orden:
 
 1. **Conclusión:** indica si ya existe evidencia suficiente para revisar parámetros o si todavía conviene mantenerlos sin cambios.

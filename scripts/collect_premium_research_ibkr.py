@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect WSH earnings and long-dated SPY/RSP option evidence read-only."""
+"""Collect IBKR option evidence; paid WSH earnings are optional."""
 
 from __future__ import annotations
 

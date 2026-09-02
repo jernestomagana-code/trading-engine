@@ -12,7 +12,7 @@ import math
 import os
 import tempfile
 import statistics
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -72,8 +72,8 @@ def validate_record(record: dict[str, Any], record_type: str) -> list[str]:
     if required is None:
         raise ValueError(f"unknown premium research record type {record_type}")
     missing = sorted(field for field in required if record.get(field) in (None, ""))
-    if record_type == "earnings_event" and record.get("confirmed") is not True:
-        missing.append("confirmed_true")
+    if record_type == "earnings_event" and not isinstance(record.get("confirmed"), bool):
+        missing.append("confirmed_boolean")
     if record_type == "option_observation":
         for field in ("dte", "strike", "bid", "ask", "delta", "iv", "underlying_price"):
             if _number(record.get(field)) is None:
@@ -259,13 +259,18 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
         and (_number(row.get("delta_distance")) or 999) <= 0.03
     }
     confirmed_events = [row for row in earnings_rows if row.get("confirmed") is True]
-    wsh_status = _load_json(runtime_dir / "premium_research_wsh_status.json", {})
+    today_text = date.today().isoformat()
+    scheduled_events = [
+        row for row in earnings_rows
+        if str(row.get("earnings_date") or "") >= today_text
+    ]
+    provider_status = _load_json(runtime_dir / "premium_research_earnings_provider_status.json", {})
 
     earnings_missing = []
     if not canslim_full:
         earnings_missing.append("CANSLIM_FULL_COVERAGE")
-    if not confirmed_events:
-        earnings_missing.append("CONFIRMED_EARNINGS_CALENDAR")
+    if not scheduled_events:
+        earnings_missing.append("EARNINGS_CALENDAR")
     if not option_history:
         earnings_missing.append("PROSPECTIVE_OPTION_HISTORY")
     if not expired_history:
@@ -297,8 +302,10 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
             "live_option_rows": len(live_rows),
             "live_fully_quoted_rows": len(quoted_rows),
             "confirmed_earnings_events": len(confirmed_events),
-            "earnings_calendar_provider": "IBKR_WSH" if wsh_status.get("metadata_available") else "UNAVAILABLE",
-            "earnings_calendar_blocker": wsh_status.get("blocker"),
+            "scheduled_earnings_events": len(scheduled_events),
+            "earnings_calendar_provider": provider_status.get("provider") or "UNAVAILABLE",
+            "earnings_calendar_configured": provider_status.get("configured") is True,
+            "earnings_calendar_status": provider_status.get("status") or "NOT_COLLECTED",
             "prospective_option_observations": len(option_history),
             "underlying_price_observations": len(underlying_history),
             "long_dated_spy_rsp_observations": len(long_dated_rows),

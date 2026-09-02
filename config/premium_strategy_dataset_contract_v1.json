@@ -5,7 +5,8 @@
     "earnings_event": {
       "required": ["ticker", "earnings_date", "event_timing", "confirmed", "source", "observed_at"],
       "event_timing_values": ["BMO", "AMC", "DURING_MARKET", "UNKNOWN"],
-      "confirmed_must_be": true
+      "confirmed_values": [true, false],
+      "note": "Fechas gratuitas programadas pueden ser estimadas; confirmación se exige antes de cualquier uso operativo."
     },
     "option_observation": {
       "required": ["ticker", "observed_at", "expiration", "dte", "right", "strike", "bid", "ask", "delta", "iv", "underlying_price", "source"],

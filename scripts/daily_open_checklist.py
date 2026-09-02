@@ -510,7 +510,7 @@ def collect_premium_research_ibkr(args: argparse.Namespace) -> dict[str, Any]:
         [
             sys.executable, "scripts/collect_premium_research_ibkr.py",
             "--host", str(args.ibkr_host), "--port", str(args.ibkr_port),
-            "--runtime-dir", str(RUNTIME), "--wait-seconds", "5", "--timeout", "12",
+            "--runtime-dir", str(RUNTIME), "--wait-seconds", "5", "--timeout", "12", "--skip-earnings",
         ],
         timeout=int(getattr(args, "premium_research_timeout", 150)),
         env=os.environ.copy(),
@@ -518,6 +518,19 @@ def collect_premium_research_ibkr(args: argparse.Namespace) -> dict[str, Any]:
     result["non_blocking"] = True
     result["not_order_instruction"] = True
     result["execution_authorized"] = False
+    return result
+
+
+def collect_free_earnings_calendar(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "skip_premium_research", False):
+        return {"name": "collect_free_earnings_calendar", "ok": True, "skipped": True, "non_blocking": True}
+    result = run_command(
+        "collect_free_earnings_calendar",
+        [sys.executable, "scripts/collect_free_earnings_calendar.py", "--runtime-dir", str(RUNTIME)],
+        timeout=35,
+        env=os.environ.copy(),
+    )
+    result.update({"non_blocking": True, "not_order_instruction": True, "execution_authorized": False})
     return result
 
 
@@ -752,6 +765,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["rsp_refresh_step"] = refresh_rsp_bridge(args, ingest_token)
         report["coberturas_rsp"] = coberturas_rsp_summary()
+        report["premium_research_earnings_step"] = collect_free_earnings_calendar(args)
         report["premium_research_ibkr_step"] = collect_premium_research_ibkr(args) if ibkr_open else {
             "name": "collect_premium_research_ibkr", "ok": False, "non_blocking": True, "error": "IBKR_PORT_CLOSED"
         }

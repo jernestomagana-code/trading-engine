@@ -9147,13 +9147,15 @@ def render_premium_strategy_research_summary() -> str:
     strategies = payload.get("strategies") if isinstance(payload.get("strategies"), dict) else {}
     earnings = strategies.get("CANSLIM_EARNINGS_VOLATILITY_HARVEST") or {}
     long_dated = strategies.get("SPY_RSP_LONG_DATED_PUTWRITE") or {}
-    wsh_blocker = summary.get("earnings_calendar_blocker")
+    provider = summary.get("earnings_calendar_provider")
+    configured = summary.get("earnings_calendar_configured") is True
+    scheduled = summary.get("scheduled_earnings_events") or 0
     earnings_detail = (
-        "Falta activar Wall Street Horizon Enchilada Pro en IBKR."
-        if wsh_blocker == "WSH_SUBSCRIPTION_OR_METADATA_UNAVAILABLE"
-        else "Falta confirmar y acumular el calendario de earnings."
-        if (earnings.get("missing") or [])
-        else "Datos suficientes para iniciar backtest research-only."
+        "Configura una clave gratuita de Alpha Vantage; WSH es opcional y no bloquea."
+        if not configured
+        else f"Calendario gratuito activo: {scheduled} fecha(s) programada(s); las estimadas se confirman antes de operar."
+        if scheduled
+        else "Calendario gratuito activo; no hay earnings CANSLIM en la ventana actual."
     )
     return """
     <section class="panel premium-research-summary">
@@ -9163,7 +9165,7 @@ def render_premium_strategy_research_summary() -> str:
       </div>
       <div class="history-scoreboard">
         <div><span>CANSLIM completos</span><strong>{canslim}</strong></div>
-        <div><span>Eventos earnings confirmados</span><strong>{events}</strong></div>
+        <div><span>Fechas earnings detectadas</span><strong>{scheduled}</strong></div>
         <div><span>Cotizaciones prospectivas</span><strong>{quotes}</strong></div>
         <div><span>Horizontes líquidos SPY/RSP</span><strong>{liquid}/6</strong></div>
         <div><span>Historia vencida importada</span><strong>{expired}</strong></div>
@@ -9176,7 +9178,7 @@ def render_premium_strategy_research_summary() -> str:
     </section>
     """.format(
         canslim=html_escape(summary.get("canslim_full_coverage") or 0),
-        events=html_escape(summary.get("confirmed_earnings_events") or 0),
+        scheduled=html_escape(scheduled),
         quotes=html_escape(summary.get("prospective_option_observations") or 0),
         liquid=html_escape(summary.get("liquid_long_dated_grid_cells") or 0),
         expired=html_escape(summary.get("expired_option_backfill_rows") or 0),
