@@ -1,0 +1,28 @@
+{
+  "dataset_version": "premium_strategy_dataset_v1",
+  "mode": "RESEARCH_PAPER_ONLY",
+  "records": {
+    "earnings_event": {
+      "required": ["ticker", "earnings_date", "event_timing", "confirmed", "source", "observed_at"],
+      "event_timing_values": ["BMO", "AMC", "DURING_MARKET", "UNKNOWN"],
+      "confirmed_must_be": true
+    },
+    "option_observation": {
+      "required": ["ticker", "observed_at", "expiration", "dte", "right", "strike", "bid", "ask", "delta", "iv", "underlying_price", "source"],
+      "right_values": ["P", "C"]
+    },
+    "underlying_observation": {
+      "required": ["ticker", "observed_at", "close", "source"]
+    }
+  },
+  "stores": {
+    "earnings_events": "runtime/premium_research_earnings_events.jsonl",
+    "prospective_options": "runtime/premium_research_option_observations.jsonl",
+    "underlying_prices": "runtime/premium_research_underlying_observations.jsonl",
+    "historical_expired_options": "runtime/premium_research_expired_option_backfill.jsonl",
+    "readiness": "runtime/premium_strategy_data_readiness_latest.json"
+  },
+  "sensitive_account_fields_allowed": false,
+  "not_order_instruction": true,
+  "execution_authorized": false
+}

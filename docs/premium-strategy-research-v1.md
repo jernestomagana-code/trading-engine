@@ -38,3 +38,11 @@ Los resultados aportados inicialmente son evidencia útil para formular la hipó
 - `PAPER_ELIGIBLE`: superó la puerta estadística y de estrés; aún requiere autorización separada para cualquier fase posterior.
 
 El evaluador fija siempre `execution_authorized: false`, `not_order_instruction: true` y `maximum_state: PAPER_ELIGIBLE`.
+
+## 5. Cobertura de datos — etapa 2
+
+El archivo `runtime/premium_strategy_data_readiness_latest.json` indica, sin ocultar faltantes, si existe evidencia suficiente. La captura prospectiva conserva únicamente cotizaciones IBKR que ya contienen bid, ask, delta, IV, vencimiento, strike y subyacente; descarta filas incompletas y no consulta ni opera la cuenta.
+
+Se mantienen almacenes separados para calendario de earnings confirmado, precios del subyacente, cotizaciones prospectivas e importación histórica de opciones vencidas. Esta separación evita mezclar precios actuales con backfills y permite auditar el origen de cada observación.
+
+IBKR aporta cadenas y cotizaciones vivas, pero el backtest de periodos vencidos exige una fuente histórica licenciada o una exportación verificable. Hasta incorporar esa historia, el reporte debe permanecer en `DATA_COLLECTION_REQUIRED` aunque las cotizaciones del día estén completas.

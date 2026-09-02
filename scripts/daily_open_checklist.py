@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 import foundation_health
 import operational_evidence_gate
 import coberturas_engine
+import premium_strategy_data
 
 RUNTIME = ROOT / "runtime"
 DEFAULT_BASE_URL = "https://trading-engine-p097.onrender.com"
@@ -473,6 +474,32 @@ def build_canslim_candidates(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def capture_premium_research_data() -> dict[str, Any]:
+    """Non-blocking prospective research capture from the refreshed Runtime."""
+    try:
+        capture = premium_strategy_data.capture_runtime_observations(RUNTIME)
+        readiness = premium_strategy_data.write_readiness(RUNTIME)
+        return {
+            "name": "capture_premium_research_data",
+            "ok": True,
+            "non_blocking": True,
+            "capture": capture,
+            "readiness": readiness,
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+    except Exception as exc:
+        return {
+            "name": "capture_premium_research_data",
+            "ok": False,
+            "non_blocking": True,
+            "error": exc.__class__.__name__,
+            "detail": str(exc)[:300],
+            "not_order_instruction": True,
+            "execution_authorized": False,
+        }
+
+
 def publish_runtime(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
@@ -704,6 +731,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["rsp_refresh_step"] = refresh_rsp_bridge(args, ingest_token)
         report["coberturas_rsp"] = coberturas_rsp_summary()
+        report["premium_research_data_step"] = capture_premium_research_data()
 
     if args.publish:
         if not ingest_token:
