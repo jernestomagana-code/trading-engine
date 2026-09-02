@@ -57,6 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-canslim", action="store_true", help="Skip the free CANSLIM candidate builder before refresh.")
     parser.add_argument("--refresh-sec-canslim", action="store_true", help="Refresh SEC companyfacts cache during CANSLIM build.")
     parser.add_argument("--canslim-timeout", type=int, default=int(os.getenv("CANSLIM_BUILDER_TIMEOUT", "120")))
+    parser.add_argument("--premium-research-timeout", type=int, default=int(os.getenv("PREMIUM_RESEARCH_TIMEOUT", "150")))
+    parser.add_argument("--skip-premium-research", action="store_true", help="Skip earnings/long-dated research capture.")
     parser.add_argument("--publish", action="store_true", help="Publish runtime snapshot after refresh/check.")
     parser.add_argument("--allow-stale-publish", action="store_true", help="Pass --allow-stale to the publisher.")
     parser.add_argument("--full-bridge", action="store_true", help="Do not enable DAILY_RADAR_FAST for the bridge.")
@@ -500,6 +502,25 @@ def capture_premium_research_data() -> dict[str, Any]:
         }
 
 
+def collect_premium_research_ibkr(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "skip_premium_research", False):
+        return {"name": "collect_premium_research_ibkr", "ok": True, "skipped": True, "non_blocking": True}
+    result = run_command(
+        "collect_premium_research_ibkr",
+        [
+            sys.executable, "scripts/collect_premium_research_ibkr.py",
+            "--host", str(args.ibkr_host), "--port", str(args.ibkr_port),
+            "--runtime-dir", str(RUNTIME), "--wait-seconds", "5", "--timeout", "12",
+        ],
+        timeout=int(getattr(args, "premium_research_timeout", 150)),
+        env=os.environ.copy(),
+    )
+    result["non_blocking"] = True
+    result["not_order_instruction"] = True
+    result["execution_authorized"] = False
+    return result
+
+
 def publish_runtime(args: argparse.Namespace, ingest_token: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["TRADING_ENGINE_INGEST_TOKEN"] = ingest_token
@@ -731,6 +752,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         else:
             report["rsp_refresh_step"] = refresh_rsp_bridge(args, ingest_token)
         report["coberturas_rsp"] = coberturas_rsp_summary()
+        report["premium_research_ibkr_step"] = collect_premium_research_ibkr(args) if ibkr_open else {
+            "name": "collect_premium_research_ibkr", "ok": False, "non_blocking": True, "error": "IBKR_PORT_CLOSED"
+        }
         report["premium_research_data_step"] = capture_premium_research_data()
 
     if args.publish:

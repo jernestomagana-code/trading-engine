@@ -9,6 +9,7 @@
     },
     "option_observation": {
       "required": ["ticker", "observed_at", "expiration", "dte", "right", "strike", "bid", "ask", "delta", "iv", "underlying_price", "source"],
+      "research_dimensions": ["target_dte", "target_delta"],
       "right_values": ["P", "C"]
     },
     "underlying_observation": {

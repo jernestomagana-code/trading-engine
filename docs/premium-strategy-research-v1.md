@@ -46,3 +46,9 @@ El archivo `runtime/premium_strategy_data_readiness_latest.json` indica, sin ocu
 Se mantienen almacenes separados para calendario de earnings confirmado, precios del subyacente, cotizaciones prospectivas e importación histórica de opciones vencidas. Esta separación evita mezclar precios actuales con backfills y permite auditar el origen de cada observación.
 
 IBKR aporta cadenas y cotizaciones vivas, pero el backtest de periodos vencidos exige una fuente histórica licenciada o una exportación verificable. Hasta incorporar esa historia, el reporte debe permanecer en `DATA_COLLECTION_REQUIRED` aunque las cotizaciones del día estén completas.
+
+El calendario automático utiliza Wall Street Horizon de IBKR. Requiere la suscripción **Enchilada Pro** en la cuenta; si IBKR no entrega sus metadatos, el colector registra `WSH_SUBSCRIPTION_OR_METADATA_UNAVAILABLE` y no repite consultas inútiles. La rejilla SPY/RSP sólo se considera completa cuando cada combinación de activo y horizonte tiene al menos un contrato con interés abierto mínimo 500, spread máximo 8% y delta suficientemente cercana al objetivo.
+
+Referencia operativa: [IBKR — Wall Street Horizon Event Calendar](https://interactivebrokers.github.io/tws-api/fundamentals.html) y [filtros WSH](https://interactivebrokers.github.io/tws-api/wshe_filters.html). IBKR exige pedir metadatos antes de eventos y no permite consultas WSH simultáneas; el colector respeta ambas restricciones.
+
+La historia externa puede recibirse en CSV, JSON o JSONL mediante `scripts/import_premium_research_history.py`. Cada fila debe declarar una fuente identificable y superar el contrato de campos antes de entrar al almacén. Los datos rechazados no se mezclan con la muestra; tampoco se aceptan identificadores de cuenta.

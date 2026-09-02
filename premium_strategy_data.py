@@ -241,9 +241,25 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
     long_dated_rows = [
         row for row in option_history
         if str(row.get("ticker") or "").upper() in {"SPY", "RSP"}
-        and (_number(row.get("dte")) or 0) in {120, 150, 180}
+        and (_number(row.get("target_dte")) or _number(row.get("dte")) or 0) in {120, 150, 180}
     ]
+    def row_spread_pct(row: dict[str, Any]) -> float:
+        explicit = _number(row.get("spread_pct"))
+        if explicit is not None:
+            return explicit
+        bid, ask = _number(row.get("bid")), _number(row.get("ask"))
+        mid = ((bid + ask) / 2) if bid is not None and ask is not None else 0
+        return ((ask - bid) / mid * 100) if mid > 0 and ask >= bid else 999
+
+    liquid_cells = {
+        (str(row.get("ticker") or "").upper(), int(_number(row.get("target_dte")) or 0))
+        for row in long_dated_rows
+        if (_number(row.get("open_interest")) or 0) >= 500
+        and row_spread_pct(row) <= 8
+        and (_number(row.get("delta_distance")) or 999) <= 0.03
+    }
     confirmed_events = [row for row in earnings_rows if row.get("confirmed") is True]
+    wsh_status = _load_json(runtime_dir / "premium_research_wsh_status.json", {})
 
     earnings_missing = []
     if not canslim_full:
@@ -258,8 +274,16 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
     long_missing = []
     if not long_dated_rows:
         long_missing.append("SPY_RSP_120_150_180_DTE_OBSERVATIONS")
+    if len(liquid_cells) < 6:
+        long_missing.append("LIQUID_LONG_DATED_GRID_INCOMPLETE")
     if not expired_history:
         long_missing.append("HISTORICAL_EXPIRED_OPTION_BACKFILL")
+    if not long_dated_rows:
+        long_next_action = "Ejecutar captura IBKR de 120/150/180 DTE e importar historia licenciada."
+    elif len(liquid_cells) < 6:
+        long_next_action = "Seguir acumulando cotizaciones; varios horizontes no tienen todavía liquidez suficiente. Importar historia licenciada."
+    else:
+        long_next_action = "Importar historia licenciada y ejecutar backtest research-only." if not expired_history else "Ejecutar backtest research-only."
 
     return {
         "report_version": REPORT_VERSION,
@@ -273,9 +297,12 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
             "live_option_rows": len(live_rows),
             "live_fully_quoted_rows": len(quoted_rows),
             "confirmed_earnings_events": len(confirmed_events),
+            "earnings_calendar_provider": "IBKR_WSH" if wsh_status.get("metadata_available") else "UNAVAILABLE",
+            "earnings_calendar_blocker": wsh_status.get("blocker"),
             "prospective_option_observations": len(option_history),
             "underlying_price_observations": len(underlying_history),
             "long_dated_spy_rsp_observations": len(long_dated_rows),
+            "liquid_long_dated_grid_cells": len(liquid_cells),
             "expired_option_backfill_rows": len(expired_history),
         },
         "strategies": {
@@ -287,7 +314,7 @@ def build_readiness(runtime_dir: Path, generated_at: str | None = None) -> dict[
             "SPY_RSP_LONG_DATED_PUTWRITE": {
                 "data_state": "DATA_READY_FOR_BACKTEST" if not long_missing else "DATA_COLLECTION_REQUIRED",
                 "missing": long_missing,
-                "next_action": "Ampliar captura IBKR a 120/150/180 DTE e importar historia licenciada." if long_missing else "Ejecutar backtest research-only.",
+                "next_action": long_next_action,
             },
         },
         "not_order_instruction": True,

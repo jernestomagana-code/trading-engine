@@ -44,6 +44,7 @@ class PremiumStrategyDataTests(unittest.TestCase):
             self.assertNotIn("CANSLIM_FULL_COVERAGE", earnings["missing"])
             self.assertIn("CONFIRMED_EARNINGS_CALENDAR", earnings["missing"])
             self.assertIn("SPY_RSP_120_150_180_DTE_OBSERVATIONS", long_dated["missing"])
+            self.assertIn("LIQUID_LONG_DATED_GRID_INCOMPLETE", long_dated["missing"])
             self.assertFalse(report["execution_authorized"])
 
     def test_confirmed_earnings_record_requires_confirmation(self):
@@ -73,6 +74,14 @@ class PremiumStrategyDataTests(unittest.TestCase):
             daily_open_checklist.premium_strategy_data, "capture_runtime_observations", side_effect=RuntimeError("test")
         ):
             result = daily_open_checklist.capture_premium_research_data()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["non_blocking"])
+        self.assertFalse(result["execution_authorized"])
+
+    def test_daily_open_ibkr_research_collector_is_non_blocking(self):
+        args = type("Args", (), {"skip_premium_research": False, "ibkr_host": "127.0.0.1", "ibkr_port": 7496, "premium_research_timeout": 150})()
+        with mock.patch.object(daily_open_checklist, "run_command", return_value={"ok": False, "error": "WSH_UNAVAILABLE"}):
+            result = daily_open_checklist.collect_premium_research_ibkr(args)
         self.assertFalse(result["ok"])
         self.assertTrue(result["non_blocking"])
         self.assertFalse(result["execution_authorized"])

@@ -9141,6 +9141,52 @@ def render_history_learning_summary() -> str:
     )
 
 
+def render_premium_strategy_research_summary() -> str:
+    payload = load_json_file(RUNTIME / "premium_strategy_data_readiness_latest.json")
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    strategies = payload.get("strategies") if isinstance(payload.get("strategies"), dict) else {}
+    earnings = strategies.get("CANSLIM_EARNINGS_VOLATILITY_HARVEST") or {}
+    long_dated = strategies.get("SPY_RSP_LONG_DATED_PUTWRITE") or {}
+    wsh_blocker = summary.get("earnings_calendar_blocker")
+    earnings_detail = (
+        "Falta activar Wall Street Horizon Enchilada Pro en IBKR."
+        if wsh_blocker == "WSH_SUBSCRIPTION_OR_METADATA_UNAVAILABLE"
+        else "Falta confirmar y acumular el calendario de earnings."
+        if (earnings.get("missing") or [])
+        else "Datos suficientes para iniciar backtest research-only."
+    )
+    return """
+    <section class="panel premium-research-summary">
+      <div class="section-head">
+        <div><p class="eyebrow">Nuevas estrategias en investigación</p><h2>Datos acumulados y faltantes</h2><p>Ninguna de estas estrategias puede generar una entrada operable.</p></div>
+        <strong>RESEARCH ONLY</strong>
+      </div>
+      <div class="history-scoreboard">
+        <div><span>CANSLIM completos</span><strong>{canslim}</strong></div>
+        <div><span>Eventos earnings confirmados</span><strong>{events}</strong></div>
+        <div><span>Cotizaciones prospectivas</span><strong>{quotes}</strong></div>
+        <div><span>Horizontes líquidos SPY/RSP</span><strong>{liquid}/6</strong></div>
+        <div><span>Historia vencida importada</span><strong>{expired}</strong></div>
+      </div>
+      <div class="history-strategy-grid">
+        <div class="history-strategy-card"><strong>Earnings CANSLIM</strong><span>{earnings_state}</span><small>{earnings_detail}</small></div>
+        <div class="history-strategy-card"><strong>Put largo SPY/RSP</strong><span>{long_state}</span><small>{long_detail}</small></div>
+      </div>
+      <p class="muted">Máximo permitido actualmente: PAPER_ELIGIBLE. Historial faltante no se interpreta como resultado cero.</p>
+    </section>
+    """.format(
+        canslim=html_escape(summary.get("canslim_full_coverage") or 0),
+        events=html_escape(summary.get("confirmed_earnings_events") or 0),
+        quotes=html_escape(summary.get("prospective_option_observations") or 0),
+        liquid=html_escape(summary.get("liquid_long_dated_grid_cells") or 0),
+        expired=html_escape(summary.get("expired_option_backfill_rows") or 0),
+        earnings_state=html_escape(earnings.get("data_state") or "SIN PRIMER DIAGNÓSTICO"),
+        earnings_detail=html_escape(earnings_detail),
+        long_state=html_escape(long_dated.get("data_state") or "SIN PRIMER DIAGNÓSTICO"),
+        long_detail=html_escape(long_dated.get("next_action") or "Ejecutar primera captura IBKR."),
+    )
+
+
 def load_alert_effectiveness() -> dict[str, Any]:
     return shared_alert_effectiveness.build_from_runtime(RUNTIME)
 
@@ -10425,6 +10471,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <section id="view-historial" class="console-view" data-console-view="historial">
             <div class="view-intro"><div><p class="eyebrow">Historial</p><h2>Resultados y aprendizaje</h2></div><p>Consulta decisiones previas, efectividad, reportes y evolución del motor.</p></div>
             {history_learning_summary}
+            {premium_strategy_research_summary}
             <details id="analisis" class="panel operator-workspace">
               <summary><span>Detalle e informes técnicos<small>Seguimiento, tablas, efectividad y reportes ejecutivos.</small></span></summary>
               <div class="workspace-body">
@@ -10717,6 +10764,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
         history_learning_summary=render_history_learning_summary(),
+        premium_strategy_research_summary=render_premium_strategy_research_summary(),
         alert_effectiveness=render_alert_effectiveness_panel(),
         executive_report=render_executive_report_panel(),
         preventive_maintenance=render_preventive_maintenance_panel(),
