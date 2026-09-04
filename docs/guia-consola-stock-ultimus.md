@@ -283,7 +283,9 @@ La recomendación prioritaria muestra:
 - demora TradingView→servidor y señal→celular cuando existen timestamps confiables;
 - estado del envío móvil.
 
-Si **Entrada máxima** dice **No calculada; no perseguir precio**, la señal sólo debe revisarse cerca del disparo original. No se inventa una tolerancia. Una confirmación técnica aprobada todavía debe superar riesgo, cartera y vigencia antes de aparecer como **Entrada lista**.
+Si **Entrada máxima** dice **No calculada; no perseguir precio**, falta definir un límite: no debe asumirse que existe una entrada validada. No se inventa una tolerancia. Una confirmación técnica aprobada todavía debe superar riesgo, cartera y vigencia antes de aparecer como **Entrada lista**.
+
+**Verificar precio actual** significa que la señal sigue vigente, pero la consola no dispone de una cotización comprobable del mismo instrumento, de hasta 30 segundos, junto con stop, objetivo y límite de entrada coherentes. No equivale a una nueva falla técnica ni a una orden de entrada. Revisa el instrumento y precio en TWS; el precio original de la alerta no es una cotización en vivo. Cuando hay cotización válida, el control descarta de oportunidades un precio que ya excede el límite de persecución o la invalidación. La comprobación no certifica que el stop no se haya tocado anteriormente. La conexión automática de cotizaciones independientes a este control sigue pendiente de validación.
 
 La configuración productiva de TradingView contiene **5 alertas consolidadas**:
 `MNQ1!` y `MES1!` en 1 minuto con confirmación técnica cerrada de 5 minutos; `QQQ` y `SPY` en 15 minutos; `VIX` en diario;

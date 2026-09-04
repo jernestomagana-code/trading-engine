@@ -5820,6 +5820,12 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
             stage_key, stage, rank = "expired", "Caducada", 8
         elif lifecycle.get("lifecycle_state") == "STALE":
             stage_key, stage, rank = "late", "Fuera de ventana", 7
+        price_check = shared_alert_lifecycle.futures_entry_price_check(event)
+        if lifecycle.get("lifecycle_state") == "LIVE":
+            if price_check["status"] in {"INVALIDATED", "DO_NOT_CHASE"}:
+                stage_key, stage, rank = "blocked", "Fuera de precio", 4
+            elif stage_key == "ready" and price_check["status"] != "WITHIN_LIMIT":
+                stage_key, stage, rank = "verify_price", "Verificar precio actual", 1
         entry = console_float_or_none(event.get("entry_price") if event.get("entry_price") is not None else event.get("price"))
         stop = console_float_or_none(event.get("stop_price") if event.get("stop_price") is not None else event.get("logical_stop"))
         tp1 = console_float_or_none(event.get("tp1_price") if event.get("tp1_price") is not None else event.get("logical_target"))
@@ -5832,7 +5838,9 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
         confirmations = [str(item) for item in (event.get("confirmation_reasons") or [])]
         conflicts = [str(item) for item in (event.get("confirmation_conflicts") or [])]
         blocker = event.get("main_blocker") or ""
-        if stage_key == "ready":
+        if stage_key == "verify_price" or (stage_key == "blocked" and price_check["status"] in {"INVALIDATED", "DO_NOT_CHASE"}):
+            recommendation = price_check["reason"]
+        elif stage_key == "ready":
             recommendation = "Revisar ahora niveles, contratos, margen y ticket en TWS; la consola no coloca la orden."
         elif stage_key == "confirmed":
             recommendation = "La técnica pasó; falta la compuerta final de riesgo/cartera antes de considerarla entrada."
@@ -5857,7 +5865,8 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
             "reference_levels_provisional": event.get("reference_levels_provisional") is True,
             "lifecycle_state": lifecycle.get("lifecycle_state"), "ttl_minutes": lifecycle.get("ttl_minutes"),
             "expires_at": lifecycle.get("expires_at"),
-            "live_opportunity": lifecycle.get("lifecycle_state") == "LIVE" and stage_key in {"ready", "confirmed", "detected", "watch"},
+            "price_valid_until": price_check.get("price_valid_until") if stage_key == "ready" else None,
+            "live_opportunity": lifecycle.get("lifecycle_state") == "LIVE" and stage_key in {"ready", "verify_price", "confirmed", "detected", "watch"},
         })
     return sorted(rows, key=lambda row: (row["rank"], -(row["quality"] or 0.0), str(row["received_at"])), reverse=False)
 
@@ -5882,8 +5891,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     if primary:
         rr_label = "N/D" if primary["rr"] is None else "{:.2f}R".format(primary["rr"])
         primary_html = """
-        <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}">
-          <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · TTL {ttl} min</b></div>
+        <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}">
+          <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · Vigencia máxima {ttl} min</b></div>
           <p class="futures-recommendation">{recommendation}</p>
           <div class="futures-levels">
             <span>Disparo<strong>{entry}</strong></span><span>Entrada máxima<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
@@ -5892,7 +5901,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
           <div class="futures-decision-grid"><span>Por qué<strong>{why}</strong></span><span>Bloqueo<strong>{blocker}</strong></span><span>Latencia<strong>{latency}</strong></span><span>Celular<strong>{mobile}</strong></span></div>{estimate}
         </article>
         """.format(
-            expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
+            price_valid_until=html_escape(primary.get("price_valid_until") or ""), expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
             recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
             max_entry=html_escape(compact_contract_value(primary["max_entry"]) if primary["max_entry"] is not None else "No calculada; no perseguir precio"),
             stop=html_escape(compact_contract_value(primary["stop"])), tp1=html_escape(compact_contract_value(primary["tp1"])), tp2=html_escape(compact_contract_value(primary["tp2"])), rr=html_escape(rr_label),
@@ -5996,10 +6005,15 @@ def build_unified_opportunity_items(
             continue
         raw_state = alert.get("state") or alert.get("signal_actionability") or alert.get("confirmation_gate_status")
         state_key, state_label, rank = normalized_state(raw_state, alert.get("severity"))
+        price_check = shared_alert_lifecycle.futures_entry_price_check(alert)
+        if price_check["status"] in {"INVALIDATED", "DO_NOT_CHASE"}:
+            continue
+        if state_key == "ready" and price_check["status"] != "WITHIN_LIMIT":
+            state_key, state_label, rank = "forming", "Verificar precio actual", 1
         trigger = alert.get("entry_price") or alert.get("trigger_price") or alert.get("price")
         stop = alert.get("stop_loss") or alert.get("stop_price") or alert.get("stop")
-        target_1 = alert.get("target_1") or alert.get("target1") or alert.get("tp1")
-        target_2 = alert.get("target_2") or alert.get("target2") or alert.get("tp2")
+        target_1 = alert.get("tp1_price") or alert.get("target_1") or alert.get("target1") or alert.get("tp1") or alert.get("logical_target")
+        target_2 = alert.get("tp2_price") or alert.get("target_2") or alert.get("target2") or alert.get("tp2")
         blocker = alert.get("main_blocker") or alert.get("decision_explanation") or alert_reason_plain(alert)
         items.append({
             "type": "futures",
@@ -6009,7 +6023,7 @@ def build_unified_opportunity_items(
             "state_label": state_label,
             "rank": rank,
             "recommendation": alert_review_guidance(alert),
-            "action": "Revisar entrada" if state_key == "ready" else "Esperar nueva confirmación",
+            "action": "Revisar entrada" if state_key == "ready" else price_check["reason"],
             "trigger": compact_contract_value(trigger) if trigger is not None else "Sin gatillo vigente",
             "invalidation": "Stop {}".format(compact_contract_value(stop)) if stop is not None else "Stop pendiente; no entrar",
             "target": "TP1 {} · TP2 {}".format(compact_contract_value(target_1), compact_contract_value(target_2)) if target_1 is not None or target_2 is not None else "Objetivos pendientes",
@@ -6021,6 +6035,7 @@ def build_unified_opportunity_items(
                 alert.get("margin_required") or alert.get("estimated_margin_required") or alert.get("initial_margin_required")
             ),
             "expires_at": lifecycle.get("expires_at"), "ttl_minutes": lifecycle.get("ttl_minutes"),
+            "price_valid_until": price_check.get("price_valid_until"),
         })
 
     if not any(item["type"] == "futures" for item in items):
@@ -6028,24 +6043,28 @@ def build_unified_opportunity_items(
         daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
         latest = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
         latest_lifecycle = shared_alert_lifecycle.alert_lifecycle_state(latest) if latest else {}
-        if latest and latest_lifecycle.get("lifecycle_state") == "LIVE":
+        latest_price_check = shared_alert_lifecycle.futures_entry_price_check(latest)
+        if latest and latest_lifecycle.get("lifecycle_state") == "LIVE" and latest_price_check["status"] not in {"INVALIDATED", "DO_NOT_CHASE"}:
             state_key, state_label, rank = normalized_state(
-                latest.get("signal_actionability") or latest.get("confirmation_gate_status") or "WAIT",
+                latest.get("state") or latest.get("final_state") or latest.get("signal_actionability") or latest.get("confirmation_gate_status") or "WAIT",
                 latest.get("severity"),
             )
             trigger = latest.get("entry_price") or latest.get("price")
+            if state_key == "ready" and latest_price_check["status"] != "WITHIN_LIMIT":
+                state_key, state_label, rank = "forming", "Verificar precio actual", 1
             stop = latest.get("stop_loss") or latest.get("stop_price") or latest.get("stop")
-            target_1 = latest.get("target_1") or latest.get("target1") or latest.get("tp1")
-            target_2 = latest.get("target_2") or latest.get("target2") or latest.get("tp2")
+            target_1 = latest.get("tp1_price") or latest.get("target_1") or latest.get("target1") or latest.get("tp1") or latest.get("logical_target")
+            target_2 = latest.get("tp2_price") or latest.get("target_2") or latest.get("target2") or latest.get("tp2")
             items.append({
                 "type": "futures",
+                "price_valid_until": latest_price_check.get("price_valid_until"),
                 "type_label": "Futuros",
                 "ticker": str(latest.get("ticker") or "MNQ / MES").upper(),
                 "state": state_key,
                 "state_label": state_label,
                 "rank": rank,
                 "recommendation": latest.get("decision_explanation") or "La última señal no permanece operable; esperar una nueva confirmación.",
-                "action": "Revisar entrada" if state_key == "ready" else "Esperar nueva confirmación",
+                "action": "Revisar entrada" if state_key == "ready" else latest_price_check["reason"],
                 "trigger": compact_contract_value(trigger) if trigger is not None else "Sin gatillo vigente",
                 "invalidation": "Stop {}".format(compact_contract_value(stop)) if stop is not None else "Stop pendiente; no entrar",
                 "target": "TP1 {} · TP2 {}".format(compact_contract_value(target_1), compact_contract_value(target_2)) if target_1 is not None or target_2 is not None else "Objetivos pendientes",
@@ -6203,7 +6222,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>'
         )
         return """
-        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}">
+        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}">
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
           <div class="opportunity-identity"><strong>{ticker}</strong><small>{quality} · {freshness}</small></div>
           <p>{recommendation}</p>
@@ -6224,7 +6243,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
-            expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
+            price_valid_until=html_escape(item.get("price_valid_until") or ""), expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
             type=html_escape(item["type"]),
             type_label=html_escape(item["type_label"]),
             state_label=html_escape(item["state_label"]),
@@ -10596,6 +10615,17 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             const opportunityCards = Array.from(document.querySelectorAll("[data-opportunity-card]"));
             const opportunityEmpty = document.getElementById("opportunity-filter-empty");
             const expireFutures = () => {{
+              document.querySelectorAll("[data-price-valid-until]").forEach((card) => {{
+                const deadline = Date.parse(card.dataset.priceValidUntil || "");
+                if (!Number.isFinite(deadline) || Date.now() < deadline) return;
+                if (!card.classList.contains("opportunity-ready") && !card.classList.contains("futures-ready")) return;
+                card.classList.replace("opportunity-ready", "opportunity-forming");
+                card.classList.replace("futures-ready", "futures-verify_price");
+                const badge = card.querySelector(".opportunity-card-head b, .futures-primary-head b");
+                const action = card.querySelector(".opportunity-action strong, .futures-recommendation");
+                if (badge) badge.textContent = "Verificar precio actual";
+                if (action) action.textContent = "Cotización fuera de vigencia; actualizar antes de entrar.";
+              }});
               document.querySelectorAll("[data-futures-expires-at]").forEach((card) => {{
                 const deadline = Date.parse(card.dataset.futuresExpiresAt || "");
                 if (Number.isFinite(deadline) && Date.now() >= deadline) {{

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from math import isfinite
 
 
 ALERT_LIFECYCLE_VERSION = "alert_lifecycle_policy_v1"
@@ -161,6 +162,36 @@ def has_ibkr_fill_details(alert: dict[str, Any]) -> bool:
         or alert.get("contracts")
     )
     return fill_price is not None and fill_price > 0 and fill_quantity is not None and fill_quantity > 0
+
+
+def futures_entry_price_check(alert: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Validate an explicit current quote, never reuse the original trigger as a quote."""
+    now = now or datetime.now(timezone.utc)
+    price = _number(alert.get("current_price"))
+    quoted_at = _parse_datetime(alert.get("quote_timestamp"))
+    direction = _upper(alert.get("direction") or alert.get("breakout_direction"), "")
+    limit = _number(alert.get("max_entry_price") or alert.get("entry_max_price") or alert.get("entry_limit_price"))
+    stop = _number(alert.get("stop_price") or alert.get("stop_loss") or alert.get("logical_stop"))
+    target = _number(alert.get("tp1_price") or alert.get("target_1") or alert.get("logical_target"))
+    symbol = _upper(alert.get("ticker") or alert.get("symbol"), "")
+    quote_symbol = _upper(alert.get("quote_symbol"), "")
+    result = {"status": "UNVERIFIED", "reason": "Falta cotización vigente del mismo instrumento y límite de entrada.", "current_price": price, "max_entry_price": limit}
+    if price is None or not isfinite(price) or price <= 0 or quoted_at is None or not symbol or quote_symbol != symbol:
+        return result
+    age = (now - quoted_at).total_seconds()
+    if age < -5 or age > 30:
+        return {**result, "reason": "Cotización fuera de vigencia; actualizar antes de entrar."}
+    if direction not in {"LONG", "SHORT"} or limit is None or stop is None or target is None:
+        return result
+    if not all(isfinite(value) and value > 0 for value in (limit, stop, target)):
+        return result
+    if (direction == "LONG" and not stop < limit < target) or (direction == "SHORT" and not target < limit < stop):
+        return {**result, "reason": "Niveles inconsistentes; revisar entrada, stop y objetivo."}
+    if (direction == "LONG" and price <= stop) or (direction == "SHORT" and price >= stop):
+        return {**result, "status": "INVALIDATED", "reason": "El precio actual alcanzó la invalidación; esperar otra señal."}
+    if (direction == "LONG" and price > limit) or (direction == "SHORT" and price < limit):
+        return {**result, "status": "DO_NOT_CHASE", "reason": "El precio superó el límite de entrada; no perseguir."}
+    return {**result, "status": "WITHIN_LIMIT", "price_valid_until": (quoted_at + timedelta(seconds=30)).isoformat(), "reason": "Cotización reciente dentro del límite; aún requiere revisión de riesgo y ticket."}
 
 
 def alert_lifecycle_state(alert: dict[str, Any], *, now: datetime | str | None = None) -> dict[str, Any]:

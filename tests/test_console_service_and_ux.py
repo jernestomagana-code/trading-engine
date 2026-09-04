@@ -51,6 +51,8 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
                         "state": "ENTRY_READY",
                         "severity": "ACTION",
                         "entry_price": 20100,
+                        "direction": "LONG", "current_price": 20100, "max_entry_price": 20105,
+                        "quote_symbol": "MNQ1!", "quote_timestamp": console.now_iso(),
                         "stop_loss": 20070,
                         "target_1": 20130,
                         "target_2": 20160,
@@ -157,6 +159,8 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         operator = {"ok": True, "data": {"active_alerts": [{
             "ticker": "MNQ1!", "strategy": "INTRADAY_INDEX_FUTURES", "state": "ENTRY_READY",
             "severity": "ACTION", "entry_price": 20000, "stop_loss": 19980,
+            "direction": "LONG", "current_price": 20000, "max_entry_price": 20005,
+            "tp1_price": 20030, "quote_symbol": "MNQ1!", "quote_timestamp": console.now_iso(),
             "received_at": console.now_iso(),
         }]}}
 
