@@ -65,6 +65,7 @@ payload(ev, evCode, direction, setupStage, setupType, priority, missing, quality
      pair("strategy_context", "INTRADAY_INDEX_FUTURES") + "," +
      pair("strategy_version", "FAST_V2_2") + "," +
      pair("ticker", syminfo.ticker) + "," +
+     pair("current_contract", na(syminfo.current_contract) or syminfo.current_contract == "" ? syminfo.tickerid : syminfo.current_contract) + "," +
      pair("timeframe", "1m") + "," +
      pair("context_timeframe", "5m") + "," +
      pair("event", ev) + "," +

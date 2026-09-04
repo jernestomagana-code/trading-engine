@@ -182,7 +182,7 @@ def futures_entry_price_check(alert: dict[str, Any], *, now: datetime | None = N
     if age < -5 or age > 30:
         return {**result, "reason": "Cotización fuera de vigencia; actualizar antes de entrar."}
     if direction not in {"LONG", "SHORT"} or limit is None or stop is None or target is None:
-        return result
+        return {**result, "reason": "Cotización vigente disponible; falta límite de entrada, stop, objetivo o dirección."}
     if not all(isfinite(value) and value > 0 for value in (limit, stop, target)):
         return result
     if (direction == "LONG" and not stop < limit < target) or (direction == "SHORT" and not target < limit < stop):

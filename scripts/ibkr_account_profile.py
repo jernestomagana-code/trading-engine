@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import alert_lifecycle as shared_alert_lifecycle
+import futures_live_quotes
 import alert_effectiveness as shared_alert_effectiveness
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
@@ -2021,6 +2022,8 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "alert_id": event_id,
             "event_id": event_id,
             "ticker": event.get("ticker") or raw.get("ticker") or "FUTURES",
+            "current_contract": event.get("current_contract") or raw.get("current_contract"),
+            "max_entry_price": processed.get("max_entry_price") or raw.get("max_entry_price"),
             "strategy": strategy,
             "severity": "RISK" if kind == "RISK" else "WATCH" if watch_only else "ACTION",
             "state": "RISK_BLOCKED" if kind == "RISK" else "ENTRY_READY" if processed_final_state == "ENTRY_READY" else "MANUAL_REVIEW",
@@ -5857,6 +5860,7 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
             why = "{} confirmación(es) a favor y {} conflicto(s).".format(len(confirmations), len(conflicts))
         rows.append({
             "ticker": ticker, "event": kind, "direction": direction, "stage_key": stage_key, "stage": stage, "rank": rank,
+            "signal_key": str(event.get("event_id") or event.get("alert_id") or ticker + "|" + str(received_at)),
             "entry": entry, "max_entry": max_entry, "stop": stop, "tp1": tp1, "tp2": tp2, "rr": rr,
             "quality": console_float_or_none(event.get("confirmation_quality_score") or event.get("score") or event.get("setup_validity_pct")),
             "confirmations": confirmations, "conflicts": conflicts, "why": str(why), "blocker": friendly_operator_state(blocker, "Sin bloqueo explícito"),
@@ -5891,7 +5895,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     if primary:
         rr_label = "N/D" if primary["rr"] is None else "{:.2f}R".format(primary["rr"])
         primary_html = """
-        <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}">
+        <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
           <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · Vigencia máxima {ttl} min</b></div>
           <p class="futures-recommendation">{recommendation}</p>
           <div class="futures-levels">
@@ -5901,7 +5905,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
           <div class="futures-decision-grid"><span>Por qué<strong>{why}</strong></span><span>Bloqueo<strong>{blocker}</strong></span><span>Latencia<strong>{latency}</strong></span><span>Celular<strong>{mobile}</strong></span></div>{estimate}
         </article>
         """.format(
-            price_valid_until=html_escape(primary.get("price_valid_until") or ""), expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
+            signal_key=html_escape(primary.get("signal_key") or ""), price_valid_until=html_escape(primary.get("price_valid_until") or ""), expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
             recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
             max_entry=html_escape(compact_contract_value(primary["max_entry"]) if primary["max_entry"] is not None else "No calculada; no perseguir precio"),
             stop=html_escape(compact_contract_value(primary["stop"])), tp1=html_escape(compact_contract_value(primary["tp1"])), tp2=html_escape(compact_contract_value(primary["tp2"])), rr=html_escape(rr_label),
@@ -6036,6 +6040,7 @@ def build_unified_opportunity_items(
             ),
             "expires_at": lifecycle.get("expires_at"), "ttl_minutes": lifecycle.get("ttl_minutes"),
             "price_valid_until": price_check.get("price_valid_until"),
+            "signal_key": str(alert.get("event_id") or alert.get("alert_id") or str(alert.get("ticker") or alert.get("symbol") or "FUTUROS").upper() + "|" + str(alert.get("received_at") or alert.get("generated_at") or "")),
         })
 
     if not any(item["type"] == "futures" for item in items):
@@ -6058,6 +6063,7 @@ def build_unified_opportunity_items(
             items.append({
                 "type": "futures",
                 "price_valid_until": latest_price_check.get("price_valid_until"),
+                "signal_key": str(latest.get("event_id") or latest.get("alert_id") or str(latest.get("ticker") or latest.get("symbol") or "FUTUROS").upper() + "|" + str(latest.get("received_at") or latest.get("generated_at") or "")),
                 "type_label": "Futuros",
                 "ticker": str(latest.get("ticker") or "MNQ / MES").upper(),
                 "state": state_key,
@@ -6222,7 +6228,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>'
         )
         return """
-        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}">
+        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
           <div class="opportunity-identity"><strong>{ticker}</strong><small>{quality} · {freshness}</small></div>
           <p>{recommendation}</p>
@@ -6243,7 +6249,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
-            price_valid_until=html_escape(item.get("price_valid_until") or ""), expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
+            signal_key=html_escape(item.get("signal_key") or ""), price_valid_until=html_escape(item.get("price_valid_until") or ""), expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
             type=html_escape(item["type"]),
             type_label=html_escape(item["type_label"]),
             state_label=html_escape(item["state_label"]),
@@ -9766,6 +9772,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     v31_payloads = console_v31_payloads(prefer_cache=prefer_cache)
     operator_payload = merge_remote_futures_into_operator(operator_payload, v31_payloads)
     operator_payload = merge_local_canslim_context(operator_payload)
+    operator_payload = futures_live_quotes.enrich_operator(operator_payload)
     reports = merge_remote_tradingview_report(console_reports(), v31_payloads)
     position_payload = console_active_position_management(snapshot, v31_payloads)
     risk_payload = load_portfolio_risk(profiles, active)
@@ -10647,6 +10654,34 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             }};
             expireFutures();
             window.setInterval(expireFutures, 1000);
+            let quotesBusy = false;
+            const refreshFuturesPrices = async () => {{
+              const cards = Array.from(document.querySelectorAll("[data-futures-signal-key]")).filter((card) => card.dataset.futuresSignalKey && card.dataset.expired !== "true");
+              if (quotesBusy || document.hidden || !cards.length) return;
+              quotesBusy = true;
+              try {{
+                const response = await fetch("/futures-live-prices", {{signal: AbortSignal.timeout(8000)}});
+                if (!response.ok) return;
+                const payload = await response.json();
+                if (!Array.isArray(payload.items)) return;
+                cards.forEach((card) => {{
+                  const item = payload.items.find((item) => item.signal_key === card.dataset.futuresSignalKey);
+                  if (!item) {{ card.hidden = true; card.dataset.expired = "true"; return; }}
+                  const prefix = card.hasAttribute("data-opportunity-card") ? "opportunity-" : "futures-";
+                  Array.from(card.classList).filter((value) => value.startsWith(prefix) && ["ready", "forming", "verify_price", "blocked", "confirmed", "detected", "watch"].includes(value.slice(prefix.length))).forEach((value) => card.classList.remove(value));
+                  card.classList.add(prefix + item.state);
+                  card.dataset.priceValidUntil = item.price_valid_until || "";
+                  const badge = card.querySelector(".opportunity-card-head b, .futures-primary-head b");
+                  const action = card.querySelector(".opportunity-action strong, .futures-recommendation");
+                  if (badge) badge.textContent = item.state_label;
+                  if (action) action.textContent = item.action;
+                }});
+                expireFutures();
+              }} catch (_) {{ /* The existing 30-second expiry remains authoritative. */ }}
+              finally {{ quotesBusy = false; }}
+            }};
+            window.setInterval(refreshFuturesPrices, 5000);
+            refreshFuturesPrices();
             opportunityFilters.forEach((button) => button.addEventListener("click", () => {{
               const selected = button.dataset.opportunityFilter || "all";
               let visible = 0;
@@ -10684,7 +10719,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               input.addEventListener("input", update);
               input.addEventListener("change", update);
               update();
-            }}));
+            }});
           }})();
 
           (() => {{
@@ -10886,6 +10921,12 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         params = parse_qs(parsed.query)
+        if path == "/futures-live-prices":
+            operator = merge_remote_futures_into_operator(console_operator_payload(prefer_cache=True), console_v31_payloads(prefer_cache=True))
+            operator = futures_live_quotes.enrich_operator(operator)
+            items = build_unified_opportunity_items(operator, {})
+            self.send_json({"items": [item for item in items if item["type"] == "futures"]})
+            return
         if path == "/job-status":
             job_id = (params.get("id") or [""])[0]
             job = web_job(job_id)

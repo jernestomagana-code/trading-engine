@@ -24,3 +24,12 @@ Validación de esta entrega: 656 pruebas automáticas satisfactorias. No modific
 Pendiente dentro de etapas 1–2: conectar una fuente independiente de cotizaciones actuales al control (no está verificado el suministro de esos campos en producción), comprobar su comportamiento con señales reales y completar evaluación visual de escritorio/móvil. El control verifica el precio observado, no demuestra que el stop no haya sido tocado antes. No se han implementado todavía las etapas 3–6. Siguiente trabajo: resolver la fuente de cotizaciones sin mezclar USTEC.F con MNQ ni índices con contratos distintos.
 
 No cambiar criterios de entrada ni habilitar estrategias RESEARCH_ONLY como parte del rediseño visual. No confundir comprobaciones técnicas satisfactorias con validación de rentabilidad.
+
+## Conexión y revisión visual — 4 de septiembre, siguiente entrega
+
+- Implementada consulta automática en segundo plano a TWS, sólo lectura, para contratos MNQ/MES identificados por mes y año. Cache limitada y consulta de pantalla cada 5 segundos mientras existan tarjetas vigentes. Usa ask para LONG y bid para SHORT; rechaza datos congelados/demorados y contratos ambiguos.
+- Prueba real satisfactoria de compra/venta de MNQU2026 y MESU2026 en TWS. Esto valida la fuente, no una entrada ni la rentabilidad.
+- Pine FAST v2.2 conserva versión y reglas; se agrega únicamente `current_contract` para identificar el vencimiento que TradingView utiliza. Falta actualizar/recrear las dos alertas existentes en TradingView y verificar recepción de ese campo en producción. No se ha hecho desde la aplicación de TradingView.
+- Descubierto y corregido un error de sintaxis JavaScript que impedía ejecutar la navegación y temporizadores. Añadida prueba de sintaxis con Node. Verificado cambio de pestañas en navegador de escritorio.
+- Las señales actuales tampoco suministran `max_entry_price`. No se inventó una tolerancia ni se modificó la generación de entradas. Cotización disponible con límite faltante sigue siendo revisión, no entrada validada. Falta acordar/proporcionar ese límite.
+- Pendiente: revisión móvil (el navegador disponible no expone cambio de tamaño), recepción real del identificador desde las dos alertas y prueba integral de entrada con límite explícito. No cerrar etapas 1–2 ni iniciar etapas 3–6 como si estuvieran terminadas.

@@ -13,6 +13,7 @@ class TradingViewFastFuturesPineTests(unittest.TestCase):
 
     def test_fast_payload_contains_required_futures_context(self):
         string_fields = (
+            "current_contract",
             "session_state",
             "major_event_window",
             "risk_daily_status",
