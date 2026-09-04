@@ -6,6 +6,14 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 ## Cambios operativos de agosto de 2026
 
+### Primera etapa de reingeniería — septiembre de 2026
+
+**Hoy** prioriza la decisión principal, las posiciones por atender y las entradas vigentes. El detalle de preparación queda plegado en **Estado de apertura y preparación**. **Actividad** es el nuevo nombre de Historial; **Más** abre Configuración y soporte. Cartera, Oportunidades y Ayuda conservan su propósito.
+
+Las entradas `ENTRY_READY` de futuros tienen una vigencia máxima de **3 minutos** desde su marca de origen disponible; el contexto de vigilancia tiene hasta **10 minutos**. Una señal envejecida sale del centro de oportunidades y no se recupera como entrada desde “última señal”. La actividad histórica permanece disponible para diagnóstico, identificada como no operable. Estos tiempos no garantizan que el precio siga siendo válido: deben verificarse stop, objetivos y cotización antes de actuar.
+
+Esta primera etapa no completa la reingeniería: quedan el rediseño de Cartera, los carriles por estrategia y la revisión integral de automatización diaria.
+
 - La cabecera separa ahora conexión, frescura y riesgo: **IBKR conectado** no
   implica que la evaluación siga vigente. Si riesgo marca la cuenta como
   vencida, la misma cabecera cambia a **Actualizar datos**, muestra **Datos por

@@ -3289,24 +3289,24 @@ def render_command_center(
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
-        <div><p class="eyebrow">Qué debes hacer ahora</p><h2>{title}</h2><p>{summary}</p></div>
+        <div><p class="eyebrow">Decisión principal</p><h2>{title}</h2><p>{summary}</p></div>
         <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
       </div>
-      <div class="guided-opening">
+      <details class="daily-operations-summary"><summary>Estado de apertura y preparación</summary><div class="guided-opening">
         <div class="guided-opening-title"><p class="eyebrow">Apertura guiada</p><strong>Tres comprobaciones antes de decidir</strong></div>
         <div><span>1 · Actualizar primero</span><strong>{guide_update}</strong><small>{guide_update_detail}</small></div>
         <div><span>2 · Retomar</span><strong>{guide_resume}</strong><small>{guide_resume_detail}</small></div>
         <div class="opening-gate gate-{gate_class}"><span>3 · Nuevas posiciones</span><strong>{gate_label}</strong><small>{gate_detail}</small>{opening_action}</div>
-      </div>
+      </div></details>
       <div class="command-facts">
         <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
-        <a href="#opportunity-center"><span>Oportunidades nuevas</span><strong>{ready_opportunities} lista(s)</strong><small>{forming_opportunities} preparándose · RSP {rsp_status}</small></a>
-        <a href="#posiciones"><span>Posiciones abiertas</span><strong>{positions}</strong><small>{reviews} requieren revisión</small></a>
+        <a href="#posiciones"><span>Posiciones por atender</span><strong>{reviews}</strong><small>{positions} posiciones abiertas</small></a>
+        <a href="#opportunity-center"><span>Entradas vigentes</span><strong data-live-ready-count>{ready_opportunities}</strong><small>{forming_opportunities} cerca de confirmación</small></a>
         <a href="#view-configuracion"><span>Estado operativo</span><strong>{operational_label}</strong><small>{operational_detail}</small></a>
         <div><span>Apertura y mercado</span><strong>{opening} · {market}</strong><small>{operator_state}</small></div>
       </div>
       <div id="pendientes" class="pending-queue">
-        <div class="queue-head"><h3>Tus tres prioridades</h3><span>{pending_count} visible(s) · {postponed_count} pospuesta(s) · {attended_count} atendida(s). Primero riesgo, después gestión y oportunidades.</span></div>
+        <div class="queue-head"><h3>Qué requiere tu decisión</h3><span>Máximo tres prioridades: riesgo, posiciones y después entradas.</span></div>
         {tasks}
         {remaining_tasks}
       </div>
@@ -5814,7 +5814,12 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
         if key in seen:
             continue
         seen.add(key)
+        lifecycle = shared_alert_lifecycle.alert_lifecycle_state(event)
         stage_key, stage, rank = futures_operational_stage(event)
+        if lifecycle.get("lifecycle_state") in {"EXPIRED", "CLOSED"}:
+            stage_key, stage, rank = "expired", "Caducada", 8
+        elif lifecycle.get("lifecycle_state") == "STALE":
+            stage_key, stage, rank = "late", "Fuera de ventana", 7
         entry = console_float_or_none(event.get("entry_price") if event.get("entry_price") is not None else event.get("price"))
         stop = console_float_or_none(event.get("stop_price") if event.get("stop_price") is not None else event.get("logical_stop"))
         tp1 = console_float_or_none(event.get("tp1_price") if event.get("tp1_price") is not None else event.get("logical_target"))
@@ -5850,11 +5855,14 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
             "recommendation": recommendation, "latency": futures_latency_summary(event), "received_at": received_at,
             "mobile": event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {},
             "reference_levels_provisional": event.get("reference_levels_provisional") is True,
+            "lifecycle_state": lifecycle.get("lifecycle_state"), "ttl_minutes": lifecycle.get("ttl_minutes"),
+            "expires_at": lifecycle.get("expires_at"),
+            "live_opportunity": lifecycle.get("lifecycle_state") == "LIVE" and stage_key in {"ready", "confirmed", "detected", "watch"},
         })
     return sorted(rows, key=lambda row: (row["rank"], -(row["quality"] or 0.0), str(row["received_at"])), reverse=False)
 
 
-def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]] | None = None) -> str:
+def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operator_payload: dict[str, Any], reports: dict[str, dict[str, Any]] | None = None, *, include_history: bool = True, history_only: bool = False) -> str:
     reports = reports if isinstance(reports, dict) else {}
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
@@ -5862,7 +5870,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     latest_quarantined = daily.get("latest_quarantined") if isinstance(daily.get("latest_quarantined"), dict) else {}
     tradingview = reports.get("tradingview") or {}
     rows = build_futures_operational_rows(futures_alerts, daily)
-    primary = rows[0] if rows else None
+    live_rows = [row for row in rows if row.get("live_opportunity")]
+    primary = live_rows[0] if live_rows else None
     funnel = {
         "detected": int(daily.get("received") or 0), "accepted": int(daily.get("accepted") or 0),
         "confirmed": int(daily.get("confirmation_passed") or 0), "ready": int(daily.get("entry_ready") or 0),
@@ -5873,8 +5882,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     if primary:
         rr_label = "N/D" if primary["rr"] is None else "{:.2f}R".format(primary["rr"])
         primary_html = """
-        <article class="futures-primary futures-{stage_key}">
-          <div class="futures-primary-head"><div><p class="eyebrow">Recomendación prioritaria</p><h3>{ticker} · {direction}</h3></div><b>{stage}</b></div>
+        <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}">
+          <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · TTL {ttl} min</b></div>
           <p class="futures-recommendation">{recommendation}</p>
           <div class="futures-levels">
             <span>Disparo<strong>{entry}</strong></span><span>Entrada máxima<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
@@ -5883,11 +5892,11 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
           <div class="futures-decision-grid"><span>Por qué<strong>{why}</strong></span><span>Bloqueo<strong>{blocker}</strong></span><span>Latencia<strong>{latency}</strong></span><span>Celular<strong>{mobile}</strong></span></div>{estimate}
         </article>
         """.format(
-            stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
+            expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
             recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
             max_entry=html_escape(compact_contract_value(primary["max_entry"]) if primary["max_entry"] is not None else "No calculada; no perseguir precio"),
             stop=html_escape(compact_contract_value(primary["stop"])), tp1=html_escape(compact_contract_value(primary["tp1"])), tp2=html_escape(compact_contract_value(primary["tp2"])), rr=html_escape(rr_label),
-            why=html_escape(primary["why"]), blocker=html_escape(primary["blocker"]), latency=html_escape(primary["latency"]["label"]), mobile=html_escape(primary["latency"]["mobile_status"]),
+            why=html_escape(primary["why"]), blocker=html_escape(primary["blocker"]), latency=html_escape(primary["latency"]["label"]), mobile=html_escape(primary["latency"]["mobile_status"]), ttl=html_escape(primary.get("ttl_minutes") or 0),
             estimate='<p class="futures-health-line">Stop y targets estimados por ATR; confirmar precio y riesgo antes de decidir.</p>' if primary["reference_levels_provisional"] else "",
         )
     body = """
@@ -5900,7 +5909,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
     """.format(primary=primary_html, received=html_escape(tradingview.get("total_received_required_event_count", 0)), required=html_escape(tradingview.get("total_required_logical_event_count", tradingview.get("total_required_alert_count", 0))), processed=html_escape(daily.get("processed_total", 0)), **{key: html_escape(value) for key, value in funnel.items()})
     status = intraday.get("message") or "Radar de futuros en monitoreo."
     recent_rows = []
-    for event in rows:
+    for event in rows[:10]:
         recent_rows.append(
             '<li class="futures-event event-{klass}"><span>{time}</span><strong>{ticker} · {stage}</strong><small>Disparo {price} · {latency} · {why}</small></li>'.format(
                 klass=html_escape(event["stage_key"]), time=html_escape(friendly_age(event.get("received_at"))), ticker=html_escape(event["ticker"]), stage=html_escape(event["stage"]),
@@ -5918,8 +5927,10 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
                 if latest_quarantined.get("missing_fields") else "Motivo: " + ", ".join(str(item) for item in (latest_quarantined.get("reasons") or [])[:3])
             ),
         )
-    if recent_rows:
-        body += '<details class="futures-history" open><summary>Historial operativo de futuros ({})</summary>{}<ol>{}</ol></details>'.format(
+    if history_only:
+        body = ""
+    if recent_rows and include_history:
+        body += '<details class="futures-history"><summary>Actividad reciente y señales caducadas ({})</summary>{}<p class="muted">Se conserva para auditoría; no representa una oportunidad vigente.</p><ol>{}</ol></details>'.format(
             len(recent_rows), quarantine_summary, "".join(recent_rows)
         )
     return """
@@ -5980,6 +5991,9 @@ def build_unified_opportunity_items(
     for alert in active_alerts:
         if not is_intraday_futures_alert(alert):
             continue
+        lifecycle = shared_alert_lifecycle.alert_lifecycle_state(alert)
+        if lifecycle.get("lifecycle_state") != "LIVE":
+            continue
         raw_state = alert.get("state") or alert.get("signal_actionability") or alert.get("confirmation_gate_status")
         state_key, state_label, rank = normalized_state(raw_state, alert.get("severity"))
         trigger = alert.get("entry_price") or alert.get("trigger_price") or alert.get("price")
@@ -6006,13 +6020,15 @@ def build_unified_opportunity_items(
             "capital_required": console_float_or_none(
                 alert.get("margin_required") or alert.get("estimated_margin_required") or alert.get("initial_margin_required")
             ),
+            "expires_at": lifecycle.get("expires_at"), "ttl_minutes": lifecycle.get("ttl_minutes"),
         })
 
     if not any(item["type"] == "futures" for item in items):
         intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
         daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
         latest = daily.get("latest_signal") if isinstance(daily.get("latest_signal"), dict) else {}
-        if latest:
+        latest_lifecycle = shared_alert_lifecycle.alert_lifecycle_state(latest) if latest else {}
+        if latest and latest_lifecycle.get("lifecycle_state") == "LIVE":
             state_key, state_label, rank = normalized_state(
                 latest.get("signal_actionability") or latest.get("confirmation_gate_status") or "WAIT",
                 latest.get("severity"),
@@ -6040,27 +6056,7 @@ def build_unified_opportunity_items(
                 "capital_required": console_float_or_none(
                     latest.get("margin_required") or latest.get("estimated_margin_required") or latest.get("initial_margin_required")
                 ),
-            })
-        else:
-            intraday_status = str(intraday.get("status") or "").upper()
-            failed = intraday_status in {"ERROR", "FAILED", "NO_DATA", "STALE"}
-            items.append({
-                "type": "futures",
-                "type_label": "Futuros",
-                "ticker": "MNQ / MES",
-                "state": "blocked" if failed else "waiting",
-                "state_label": "Bloqueada" if failed else "Esperar",
-                "rank": 3 if failed else 2,
-                "recommendation": intraday.get("message") or "Sin señal vigente; mantener el monitoreo de MNQ y MES.",
-                "action": "Esperar nueva señal",
-                "trigger": "Sin gatillo vigente",
-                "invalidation": "No aplica sin señal",
-                "target": "No aplica sin señal",
-                "quality": 0.0,
-                "metric_label": "Calidad",
-                "blocker": "Revisar telemetría de futuros" if failed else "Ninguna señal alcanzó ENTRY_READY",
-                "freshness": friendly_age(intraday.get("updated_at") or daily.get("generated_at")),
-                "capital_required": None,
+                "expires_at": latest_lifecycle.get("expires_at"), "ttl_minutes": latest_lifecycle.get("ttl_minutes"),
             })
 
     canslim_rows = build_canslim_operational_rows(operator_payload, candidates_payload)
@@ -6207,7 +6203,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>'
         )
         return """
-        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}">
+        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}">
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
           <div class="opportunity-identity"><strong>{ticker}</strong><small>{quality} · {freshness}</small></div>
           <p>{recommendation}</p>
@@ -6228,7 +6224,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
-            state=html_escape(item["state"]),
+            expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
             type=html_escape(item["type"]),
             type_label=html_escape(item["type_label"]),
             state_label=html_escape(item["state_label"]),
@@ -6252,8 +6248,8 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
     return """
     <section id="opportunity-center" class="panel opportunity-center">
       <div class="section-head">
-        <div><p class="eyebrow">Centro de oportunidades</p><h2>Qué está listo, qué se está formando y qué falta</h2></div>
-        <p>Una sola cola para CANSLIM, futuros y RSP. Se ordena primero por posibilidad real de acción.</p>
+        <div><p class="eyebrow">Oportunidades vigentes</p><h2>Entrar, prepararse o esperar</h2></div>
+        <p>Sólo futuros dentro de su ventana útil. Las señales caducadas pasan a Actividad automáticamente.</p>
       </div>
       <div class="opportunity-status-strip">
         <div class="status-ready"><span>Entradas listas</span><strong>{ready}</strong></div>
@@ -6646,7 +6642,7 @@ def render_operator_alerts(operator_payload: dict[str, Any], snapshot: dict[str,
         alerts=alert_html,
         diagnostic_alerts=render_diagnostic_alert_list(diagnostic_alerts),
         closed_alerts=closed_html,
-        intraday_alerts=render_intraday_futures_alerts(futures_alerts, operator_payload, reports),
+        intraday_alerts=render_intraday_futures_alerts(futures_alerts, operator_payload, reports, include_history=False),
     )
 
 
@@ -10195,6 +10191,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .operator-alerts-panel {{ border-left:6px solid #d97706; }}
           .canslim-panel {{ border-left:6px solid #2563eb; }}
           .opportunity-center {{ border-left:6px solid var(--accent-strong); background:#f8fcfa; }}
+          .daily-operations-summary {{ border-bottom:1px solid var(--line); background:#fbfdfb; }}
+          .daily-operations-summary > summary {{ cursor:pointer; padding:9px 14px; color:var(--muted); font-size:.76rem; font-weight:850; }}
           .opportunity-status-strip {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; margin:12px 0; }}
           .opportunity-status-strip > div {{ padding:11px 13px; border-right:1px solid var(--line); }}
           .opportunity-status-strip > div:last-child {{ border-right:0; }}
@@ -10428,8 +10426,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             <a href="#view-hoy" data-console-view-link="hoy">Hoy</a>
             <a href="#view-cartera" data-console-view-link="cartera">Cartera</a>
             <a href="#view-oportunidades" data-console-view-link="oportunidades">Oportunidades</a>
-            <a href="#view-historial" data-console-view-link="historial">Historial</a>
-            <a href="#view-configuracion" data-console-view-link="configuracion">Configuración</a>
+            <a href="#view-historial" data-console-view-link="historial">Actividad</a>
+            <a href="#view-configuracion" data-console-view-link="configuracion">Más</a>
             <a href="/guide">Ayuda</a>
           </nav>
           <section id="view-hoy" class="console-view" data-console-view="hoy">
@@ -10460,18 +10458,19 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           </section>
 
           <section id="view-oportunidades" class="console-view" data-console-view="oportunidades">
-            <div class="view-intro"><div><p class="eyebrow">Oportunidades</p><h2>CANSLIM, futuros, alertas y RSP</h2></div><p>Sigue el embudo desde candidato hasta decisión final; una alerta nunca ejecuta una orden.</p></div>
+            <div class="view-intro"><div><p class="eyebrow">Oportunidades</p><h2>Entradas vigentes por estrategia</h2></div><p>Los futuros duran minutos; CANSLIM y prima tienen horizontes propios. No se confunden señales caducadas con entradas.</p></div>
             {opportunity_center}
             {canslim_radar}
             <details id="alertas" class="panel operator-workspace secondary-workspace" open>
-              <summary><span>Futuros y alertas de entrada<small>Actividad de hoy, señales operables y motivos de descarte.</small></span></summary>
+              <summary><span>Monitor de futuros<small>Señales vigentes arriba; actividad y descartes permanecen plegados.</small></span></summary>
               <div class="workspace-body">{alerts}</div>
             </details>
             {coberturas}
           </section>
 
           <section id="view-historial" class="console-view" data-console-view="historial">
-            <div class="view-intro"><div><p class="eyebrow">Historial</p><h2>Resultados y aprendizaje</h2></div><p>Consulta decisiones previas, efectividad, reportes y evolución del motor.</p></div>
+            <div class="view-intro"><div><p class="eyebrow">Actividad</p><h2>Decisiones, señales vencidas y aprendizaje</h2></div><p>Aquí vive lo ocurrido. Nada de esta sección se presenta como oportunidad vigente.</p></div>
+            {futures_activity}
             {history_learning_summary}
             {premium_strategy_research_summary}
             <details id="analisis" class="panel operator-workspace">
@@ -10596,12 +10595,34 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             const opportunityFilters = Array.from(document.querySelectorAll("[data-opportunity-filter]"));
             const opportunityCards = Array.from(document.querySelectorAll("[data-opportunity-card]"));
             const opportunityEmpty = document.getElementById("opportunity-filter-empty");
+            const expireFutures = () => {{
+              document.querySelectorAll("[data-futures-expires-at]").forEach((card) => {{
+                const deadline = Date.parse(card.dataset.futuresExpiresAt || "");
+                if (Number.isFinite(deadline) && Date.now() >= deadline) {{
+                  card.hidden = true;
+                  card.dataset.expired = "true";
+                }}
+              }});
+              const current = opportunityCards.filter((card) => card.dataset.expired !== "true");
+              ["ready", "forming", "waiting", "blocked"].forEach((state) => {{
+                const count = current.filter((card) => card.classList.contains("opportunity-" + state)).length;
+                document.querySelectorAll(".opportunity-status-strip .status-" + state + " strong").forEach((node) => node.textContent = String(count));
+                if (state === "ready") document.querySelectorAll("[data-live-ready-count]").forEach((node) => node.textContent = String(count));
+              }});
+              opportunityFilters.forEach((button) => {{
+                const kind = button.dataset.opportunityFilter || "all";
+                const count = kind === "all" ? current.length : current.filter((card) => card.dataset.opportunityType === kind).length;
+                button.textContent = button.textContent.replace(/\(\d+\)/, "(" + count + ")");
+              }});
+            }};
+            expireFutures();
+            window.setInterval(expireFutures, 1000);
             opportunityFilters.forEach((button) => button.addEventListener("click", () => {{
               const selected = button.dataset.opportunityFilter || "all";
               let visible = 0;
               opportunityFilters.forEach((item) => item.classList.toggle("active", item === button));
               opportunityCards.forEach((card) => {{
-                const show = selected === "all" || card.dataset.opportunityType === selected;
+                const show = card.dataset.expired !== "true" && (selected === "all" || card.dataset.opportunityType === selected);
                 card.hidden = !show;
                 if (show) visible += 1;
               }});
@@ -10752,6 +10773,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         configuration_overview=render_configuration_overview(profiles, active, snapshot, operator_payload, reports),
         health=render_console_health(active, snapshot, operator_payload, reports),
         active_process=render_active_process_panel(),
+        futures_activity=render_intraday_futures_alerts([item for item in (operator_payload.get("data") or {}).get("active_alerts", []) if isinstance(item, dict) and is_intraday_futures_alert(item)], operator_payload, reports, history_only=True),
         today=render_today_panel(active, snapshot, operator_payload, reports),
         command_center=render_command_center(active, snapshot, operator_payload, reports, position_payload, risk_payload, rsp_payload),
         modules=render_module_health(active, snapshot, operator_payload, reports),

@@ -12,6 +12,17 @@ import alert_lifecycle
 
 
 class AlertLifecycleTests(unittest.TestCase):
+    def test_future_without_timestamp_is_not_live(self):
+        state = alert_lifecycle.alert_lifecycle_state({"ticker": "MNQ1!", "state": "ENTRY_READY"})
+        self.assertEqual(state["lifecycle_state"], "UNKNOWN")
+        self.assertFalse(state["paper_tracking_allowed"])
+
+    def test_continuous_futures_symbol_is_intraday(self):
+        alert = {"ticker": "MNQ1!", "state": "ENTRY_READY", "received_at": "2026-07-11T14:00:00+00:00"}
+        lifecycle = alert_lifecycle.alert_lifecycle_state(alert, now=datetime(2026, 7, 11, 14, 2, tzinfo=timezone.utc))
+        self.assertEqual(lifecycle["ttl_minutes"], 3)
+        self.assertEqual(lifecycle["lifecycle_state"], "LIVE")
+
     def test_intraday_futures_expires_after_fast_ttl(self):
         alert = {
             "ticker": "MNQ",
@@ -26,7 +37,7 @@ class AlertLifecycleTests(unittest.TestCase):
             now=datetime(2026, 7, 11, 14, 31, tzinfo=timezone.utc),
         )
 
-        self.assertEqual(lifecycle["ttl_minutes"], 30)
+        self.assertEqual(lifecycle["ttl_minutes"], 3)
         self.assertEqual(lifecycle["lifecycle_state"], "EXPIRED")
         self.assertFalse(lifecycle["performance_eligible"])
 

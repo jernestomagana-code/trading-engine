@@ -46,6 +46,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
                 "active_alerts": [
                     {
                         "ticker": "MNQ1!",
+                        "received_at": console.now_iso(),
                         "strategy": "INTRADAY_INDEX_FUTURES",
                         "state": "ENTRY_READY",
                         "severity": "ACTION",
@@ -113,6 +114,21 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Impacto de riesgo", html)
         self.assertIn("Simulador", html)
 
+    def test_expired_futures_never_return_to_live_opportunities(self):
+        operator = {"ok": True, "data": {"active_alerts": [{
+            "ticker": "MNQ1!", "strategy": "INTRADAY_INDEX_FUTURES", "state": "ENTRY_READY",
+            "received_at": "2020-01-01T14:00:00+00:00", "entry_price": 20000,
+            "stop_loss": 19980, "target_1": 20030,
+        }], "intraday_futures": {"daily_summary": {"latest_signal": {
+            "ticker": "MES1!", "state": "ENTRY_READY", "received_at": "2020-01-01T14:00:00+00:00"
+        }}}}}
+        items = console.build_unified_opportunity_items(
+            operator, {"strategy_recommendation": {"status": "WAIT_DATA"}},
+            {"candidates": []}, risk_payload={"alerts": []},
+            account_capacity={"available_capacity": 25000},
+        )
+        self.assertFalse(any(item["type"] == "futures" for item in items))
+
     def test_unified_opportunity_financial_projection_blocks_insufficient_capacity(self):
         operator = {"ok": True, "data": {"active_alerts": [{
             "ticker": "NVDA",
@@ -141,6 +157,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         operator = {"ok": True, "data": {"active_alerts": [{
             "ticker": "MNQ1!", "strategy": "INTRADAY_INDEX_FUTURES", "state": "ENTRY_READY",
             "severity": "ACTION", "entry_price": 20000, "stop_loss": 19980,
+            "received_at": console.now_iso(),
         }]}}
 
         items = console.build_unified_opportunity_items(
@@ -315,7 +332,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('{configuration_overview}', source)
         self.assertIn('href="/guide">Ayuda</a>', source)
         self.assertIn('class="panel command-center command-{level}"', source)
-        self.assertIn('Tus tres prioridades', source)
+        self.assertIn('Qué requiere tu decisión', source)
         self.assertIn('id="position-search"', source)
         self.assertIn('data-position-card', source)
         self.assertIn('"Ultima apertura"', source)
@@ -326,7 +343,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("1 · Universo", source)
         self.assertIn("5 · Entrada lista", source)
         self.assertIn("la lista se ordena por cercanía a una decisión", source)
-        self.assertIn("Historial operativo de futuros", source)
+        self.assertIn("Actividad reciente y señales caducadas", source)
         self.assertIn('<details id="alertas" class="panel operator-workspace secondary-workspace" open>', source)
         risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
         positions_index = source.index('<div id="posiciones">{active_positions}</div>')
@@ -352,6 +369,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
                         "latest_signal": {
                             "event": "ENTRY",
                             "ticker": "USTEC.F",
+                            "received_at": console.now_iso(),
                             "direction": "LONG",
                             "entry_price": 28486.13,
                             "stop_price": 28435.92,
@@ -386,7 +404,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
 
         self.assertIn("Entrada máxima", html)
         self.assertIn("No calculada; no perseguir precio", html)
-        self.assertIn("Historial operativo de futuros", html)
+        self.assertIn("Actividad reciente y señales caducadas", html)
         self.assertIn("Última señal en cuarentena", html)
         self.assertIn("session_state", html)
 

@@ -26,7 +26,8 @@ CLOSED_OPERATOR_STATUSES = {
 PAPER_OPERATOR_STATUSES = {"PAPER_TRACKED"}
 REAL_OPERATOR_STATUSES = {"IBKR_APPLIED"}
 
-INTRADAY_FUTURES_TTL_MINUTES = 30
+INTRADAY_FUTURES_TTL_MINUTES = 10
+INTRADAY_FUTURES_ENTRY_TTL_MINUTES = 3
 OPTIONS_ACTION_TTL_MINUTES = 390
 WAIT_CONTEXT_TTL_MINUTES = 1440
 
@@ -67,9 +68,11 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 def _first_datetime(alert: dict[str, Any]) -> datetime | None:
     for key in (
+        "signal_timestamp",
+        "signal_time",
         "alert_created_at",
-        "generated_at",
         "received_at",
+        "generated_at",
         "timestamp",
         "updated_at",
         "created_at",
@@ -96,7 +99,10 @@ def _strategy_or_symbol_is_intraday_futures(alert: dict[str, Any]) -> bool:
     ticker = _upper(alert.get("ticker") or alert.get("symbol"), "")
     if "FUTURES" in strategy or "INTRADAY_INDEX" in strategy:
         return True
-    return ticker in {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}
+    roots = {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}
+    if ticker in roots | {"USTEC.F", "US500F"}:
+        return True
+    return any(ticker.startswith(root) and all(character.isdigit() or character in {"!", "."} for character in ticker[len(root):]) for root in roots)
 
 
 def _state(alert: dict[str, Any]) -> str:
@@ -111,6 +117,10 @@ def alert_ttl_minutes(alert: dict[str, Any]) -> int:
     alert = alert if isinstance(alert, dict) else {}
     state = _state(alert)
     if _strategy_or_symbol_is_intraday_futures(alert):
+        # ENTRY_READY is intentionally short lived. Context may remain visible
+        # for diagnosis, but an old trigger must never remain an opportunity.
+        if state == "ENTRY_READY":
+            return INTRADAY_FUTURES_ENTRY_TTL_MINUTES
         return INTRADAY_FUTURES_TTL_MINUTES
     if state in ACTIONABLE_STATES:
         return OPTIONS_ACTION_TTL_MINUTES
@@ -177,6 +187,8 @@ def alert_lifecycle_state(alert: dict[str, Any], *, now: datetime | str | None =
     stale_by_time = age_minutes is not None and ttl > 0 and age_minutes > min(ttl * 0.75, 240)
     if closed_by_operator:
         lifecycle_state = "CLOSED"
+    elif _strategy_or_symbol_is_intraday_futures(alert) and created_at is None:
+        lifecycle_state = "UNKNOWN"
     elif expired_by_time or ttl == 0:
         lifecycle_state = "EXPIRED"
     elif stale_by_time:
