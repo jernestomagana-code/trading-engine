@@ -170,9 +170,11 @@ def futures_entry_price_check(alert: dict[str, Any], *, now: datetime | None = N
     price = _number(alert.get("current_price"))
     quoted_at = _parse_datetime(alert.get("quote_timestamp"))
     direction = _upper(alert.get("direction") or alert.get("breakout_direction"), "")
-    limit = _number(alert.get("max_entry_price") or alert.get("entry_max_price") or alert.get("entry_limit_price"))
+    limit = _number(alert.get("entry_limit_price") or alert.get("max_entry_price") or alert.get("entry_max_price"))
     stop = _number(alert.get("stop_price") or alert.get("stop_loss") or alert.get("logical_stop"))
     target = _number(alert.get("tp1_price") or alert.get("target_1") or alert.get("logical_target"))
+    target_2 = _number(alert.get("tp2_price") or alert.get("target_2"))
+    minimum_rr = _number(alert.get("minimum_reward_risk"))
     symbol = _upper(alert.get("ticker") or alert.get("symbol"), "")
     quote_symbol = _upper(alert.get("quote_symbol"), "")
     result = {"status": "UNVERIFIED", "reason": "Falta cotización vigente del mismo instrumento y límite de entrada.", "current_price": price, "max_entry_price": limit}
@@ -187,6 +189,13 @@ def futures_entry_price_check(alert: dict[str, Any], *, now: datetime | None = N
         return result
     if (direction == "LONG" and not stop < limit < target) or (direction == "SHORT" and not target < limit < stop):
         return {**result, "reason": "Niveles inconsistentes; revisar entrada, stop y objetivo."}
+    if minimum_rr is not None:
+        if target_2 is None or minimum_rr <= 0:
+            return {**result, "reason": "Falta el segundo objetivo requerido para validar beneficio/riesgo."}
+        risk = limit - stop if direction == "LONG" else stop - limit
+        reward = target_2 - limit if direction == "LONG" else limit - target_2
+        if risk <= 0 or reward / risk + 1e-9 < minimum_rr:
+            return {**result, "reason": "El límite no conserva el beneficio/riesgo mínimo declarado."}
     if (direction == "LONG" and price <= stop) or (direction == "SHORT" and price >= stop):
         return {**result, "status": "INVALIDATED", "reason": "El precio actual alcanzó la invalidación; esperar otra señal."}
     if (direction == "LONG" and price > limit) or (direction == "SHORT" and price < limit):

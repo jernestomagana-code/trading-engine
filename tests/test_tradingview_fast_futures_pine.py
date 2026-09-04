@@ -23,6 +23,9 @@ class TradingViewFastFuturesPineTests(unittest.TestCase):
             self.assertIn(f'pair("{field}"', self.pine)
         for field in numeric_fields:
             self.assertIn(f'numpair("{field}"', self.pine)
+        self.assertIn('numpair("entry_limit_price"', self.pine)
+        self.assertIn('numpair("minimum_reward_risk", 1.50)', self.pine)
+        self.assertIn("atr5 * 0.20", self.pine)
 
     def test_fast_alert_emits_silent_session_heartbeat(self):
         self.assertIn('payload("SESSION_SNAPSHOT"', self.pine)

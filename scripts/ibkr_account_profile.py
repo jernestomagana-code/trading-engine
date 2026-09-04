@@ -2023,7 +2023,7 @@ def merge_remote_futures_into_operator(operator_payload: dict[str, Any], payload
             "event_id": event_id,
             "ticker": event.get("ticker") or raw.get("ticker") or "FUTURES",
             "current_contract": event.get("current_contract") or raw.get("current_contract"),
-            "max_entry_price": processed.get("max_entry_price") or raw.get("max_entry_price"),
+            "entry_limit_price": processed.get("entry_limit_price") or raw.get("entry_limit_price"),
             "strategy": strategy,
             "severity": "RISK" if kind == "RISK" else "WATCH" if watch_only else "ACTION",
             "state": "RISK_BLOCKED" if kind == "RISK" else "ENTRY_READY" if processed_final_state == "ENTRY_READY" else "MANUAL_REVIEW",
@@ -5837,7 +5837,7 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
         if rr is None and entry is not None and stop is not None and tp1 is not None and abs(entry - stop) > 0:
             rr = abs(tp1 - entry) / abs(entry - stop)
         direction = str(event.get("direction") or event.get("breakout_direction") or "N/D").upper()
-        max_entry = event.get("max_entry_price") or event.get("entry_max_price") or event.get("entry_limit_price")
+        max_entry = event.get("entry_limit_price") or event.get("max_entry_price") or event.get("entry_max_price")
         confirmations = [str(item) for item in (event.get("confirmation_reasons") or [])]
         conflicts = [str(item) for item in (event.get("confirmation_conflicts") or [])]
         blocker = event.get("main_blocker") or ""
@@ -5899,7 +5899,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
           <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · Vigencia máxima {ttl} min</b></div>
           <p class="futures-recommendation">{recommendation}</p>
           <div class="futures-levels">
-            <span>Disparo<strong>{entry}</strong></span><span>Entrada máxima<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
+            <span>Disparo<strong>{entry}</strong></span><span>Límite de entrada<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
             <span>Target 1<strong>{tp1}</strong></span><span>Target 2<strong>{tp2}</strong></span><span>Riesgo/beneficio<strong>{rr}</strong></span>
           </div>
           <div class="futures-decision-grid"><span>Por qué<strong>{why}</strong></span><span>Bloqueo<strong>{blocker}</strong></span><span>Latencia<strong>{latency}</strong></span><span>Celular<strong>{mobile}</strong></span></div>{estimate}
@@ -10590,6 +10590,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               if (remember) {{ try {{ localStorage.setItem("stockUltimusConsoleView", selected); }} catch (_) {{}} }}
             }};
             showView(initialView, false);
+            window.addEventListener("hashchange", () => {{
+              const target = window.location.hash.replace(/^#(?:view-)?/, "");
+              showView(targetViews[target] || "hoy", false);
+            }});
             viewLinks.forEach((link) => link.addEventListener("click", () => showView(link.dataset.consoleViewLink)));
             document.addEventListener("click", (event) => {{
               const anchor = event.target.closest('a[href^="#"]');

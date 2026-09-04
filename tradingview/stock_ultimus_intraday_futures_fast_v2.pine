@@ -84,6 +84,9 @@ payload(ev, evCode, direction, setupStage, setupType, priority, missing, quality
      numpair("premarket_low", pmLow) + "," +
      numpair("price", close) + "," +
      numpair("entry_price", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : entryPrice) + "," +
+     // 0.20 ATR preserves at least 1.5R to target 2 (original plan: stop 1 ATR, T2 2 ATR).
+     numpair("entry_limit_price", ev == "PREPARE" or ev == "SETUP_INVALIDATED" ? na : direction == "LONG" ? entryPrice + atr5 * 0.20 : direction == "SHORT" ? entryPrice - atr5 * 0.20 : na) + "," +
+     numpair("minimum_reward_risk", 1.50) + "," +
      numpair("trigger_price", triggerPrice) + "," +
      numpair("bars_armed", barsArmed) + "," +
      numpair("vwap", vwap5) + "," +

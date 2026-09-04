@@ -43,6 +43,17 @@ class FuturesEntryPriceTests(unittest.TestCase):
         self.assertEqual(items(chased), [])
         self.assertFalse(console.build_futures_operational_rows([chased], {})[0]["live_opportunity"])
 
+    def test_declared_minimum_reward_risk_is_independently_checked(self):
+        now = datetime(2026, 9, 4, 15, tzinfo=timezone.utc)
+        valid = dict(ticker="MNQ1!", quote_symbol="MNQ1!", quote_timestamp=now.isoformat(),
+                     direction="LONG", current_price=101, entry_limit_price=102, stop_price=95,
+                     tp1_price=110, tp2_price=116, minimum_reward_risk=1.5)
+        self.assertEqual(futures_entry_price_check(valid, now=now)["status"], "WITHIN_LIMIT")
+        invalid = {**valid, "entry_limit_price": 105, "tp2_price": 110}
+        result = futures_entry_price_check(invalid, now=now)
+        self.assertEqual(result["status"], "UNVERIFIED")
+        self.assertIn("beneficio/riesgo", result["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

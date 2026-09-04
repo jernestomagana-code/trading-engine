@@ -1639,6 +1639,8 @@ def row_to_intraday_futures_alert_event(row):
         "tp1_price",
         "tp2_price",
         "rr_ratio",
+        "entry_limit_price",
+        "minimum_reward_risk",
         "event_code",
         "event",
         "direction_code",

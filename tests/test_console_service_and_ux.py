@@ -406,7 +406,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
 
         html = console.render_intraday_futures_alerts([], operator)
 
-        self.assertIn("Entrada máxima", html)
+        self.assertIn("Límite de entrada", html)
         self.assertIn("No calculada; no perseguir precio", html)
         self.assertIn("Actividad reciente y señales caducadas", html)
         self.assertIn("Última señal en cuarentena", html)
