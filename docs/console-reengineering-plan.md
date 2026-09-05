@@ -34,3 +34,16 @@ No cambiar criterios de entrada ni habilitar estrategias RESEARCH_ONLY como part
 - Límite definido con la política ya existente: el Pine envía una tolerancia máxima de 0,20 ATR desde el disparo, preservando al menos 1,5R bruto al segundo objetivo del plan original (stop 1 ATR, T2 2 ATR). El servidor vuelve a validar matemáticamente el mínimo declarado. No cambia la generación de señales.
 - Revisión responsive automatizada a 390 px y 1280 px: cinco vistas navegables, una sola visible, sin desbordamiento horizontal ni errores de navegador. Capturas revisadas para Hoy y Oportunidades. Corregido además el botón Atrás/Adelante del navegador.
 - Pendiente: recepción real del identificador y del límite desde las dos alertas recreadas en TradingView, seguida por una prueba integral alerta→cotización→clasificación. El navegador aislado disponible no comparte la sesión de TradingView del usuario. No cerrar etapas 1–2 ni iniciar etapas 3–6 como si estuvieran terminadas.
+
+## Etapa 3 — centro diario de gestión por posición
+
+Implementado el 4 de septiembre de 2026:
+
+- Cartera abre con una única «Primera decisión de cartera», tomada de la misma cola priorizada del motor; no crea ni modifica recomendaciones.
+- La prioridad muestra ticker, acción principal, motivo y momento de revisión, con acceso directo a la posición correspondiente.
+- Las posiciones se ordenan en Actuar ahora, Revisar hoy, Mantener y Actualizar datos.
+- Filtros operativos y búsqueda por ticker trabajan juntos; el operador puede aislar cada cola sin recorrer todas las tarjetas.
+- Cada posición conserva recomendación principal, motivo, condición que cambiaría el plan, vínculo con la entrada detectada, estructura económica, alternativas y confirmación de revisión.
+- La vista móvil apila la prioridad y mantiene accesibles los controles sin desbordamiento.
+
+Validación: 661 pruebas automáticas satisfactorias. La etapa 3 queda implementada; falta comprobarla visualmente con la cartera real instalada. Las etapas 4–6 permanecen pendientes.

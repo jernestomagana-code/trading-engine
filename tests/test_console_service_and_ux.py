@@ -339,6 +339,11 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('Qué requiere tu decisión', source)
         self.assertIn('id="position-search"', source)
         self.assertIn('data-position-card', source)
+        self.assertIn('Primera decisión de cartera', source)
+        self.assertIn('data-position-focus=', source)
+        for position_filter in ("all", "act", "review", "maintain", "data"):
+            self.assertIn(f'data-position-filter="{position_filter}"', source)
+        self.assertIn('const applyPositionFilters', source)
         self.assertIn('"Ultima apertura"', source)
         self.assertIn('"RSP OK"', source)
         self.assertIn("Ver {len(secondary_alerts)} alertas adicionales", source)

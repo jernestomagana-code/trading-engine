@@ -4405,6 +4405,7 @@ def render_coberturas_rsp_page(message: str = "") -> bytes:
           .muted {{ color:var(--muted); line-height:1.45; }}
           pre {{ background:#111827; color:#e5e7eb; border-radius:14px; padding:14px; overflow:auto; font-size:12px; }}
           @media (max-width: 900px) {{ .layout {{ grid-template-columns:1fr; }} h1 {{ font-size:2.3rem; }} }}
+          @media (max-width:820px) {{ .position-top-focus {{ grid-template-columns:1fr; }} .position-top-focus-next {{ padding:12px 0 0; border-left:0; border-top:1px solid var(--line); }} }}
         </style>
       </head>
       <body>
@@ -7768,6 +7769,37 @@ def render_active_positions_panel(
         key: sum(1 for meta, _, _ in queue_rows if meta.get("key") == key)
         for key in ("act", "review", "maintain", "data", "completed")
     }
+    top_queue_row = next((row for row in queue_rows if row[0].get("key") != "completed"), None)
+    if top_queue_row:
+        top_meta, top_item, _ = top_queue_row
+        top_focus = """
+        <div class="position-top-focus focus-{priority}">
+          <div>
+            <span>Primera decisión de cartera</span>
+            <h3>{ticker} · {action}</h3>
+            <p>{why}</p>
+          </div>
+          <div class="position-top-focus-next">
+            <span>Resolver o revisar</span>
+            <strong>{checkpoint}</strong>
+            <button type="button" data-position-focus="{ticker_raw}">Abrir esta posición</button>
+          </div>
+        </div>
+        """.format(
+            priority=html_escape(top_meta.get("key") or "review"),
+            ticker=html_escape(top_item.get("ticker") or "UNKNOWN"),
+            ticker_raw=html_escape(top_item.get("ticker") or ""),
+            action=html_escape(friendly_operator_state(top_item.get("management_action"))),
+            why=html_escape(top_meta.get("why_now") or "Requiere revisión del operador."),
+            checkpoint=html_escape(top_meta.get("checkpoint") or "Próxima apertura diaria"),
+        )
+    else:
+        top_focus = """
+        <div class="position-top-focus focus-clear">
+          <div><span>Primera decisión de cartera</span><h3>Sin pendientes nuevas</h3><p>Todas las posiciones visibles ya fueron revisadas con la lectura actual.</p></div>
+          <div class="position-top-focus-next"><span>Siguiente control</span><strong>Cuando cambien datos, riesgo o recomendación</strong></div>
+        </div>
+        """
     if positions:
         pending_cards = "".join(
             render_position_management_card(
@@ -7858,11 +7890,19 @@ def render_active_positions_panel(
         <div class="queue-count queue-maintain"><span>Mantener</span><strong>{maintain_count}</strong><small>sin cambio recomendado</small></div>
         <div class="queue-count queue-data"><span>Actualizar datos</span><strong>{data_count}</strong><small>{freshness} · {age}</small></div>
       </div>
+      {top_focus}
       <div class="sr-only"><strong>{visible_count}</strong><small>{positions_found} instrumentos · {review_count} requieren revisión · Seguimiento {pending_followup} pendiente(s)</small></div>
       <div class="position-explorer-tools">
         <label for="position-search">Buscar una posición</label>
         <input id="position-search" type="search" placeholder="Escribe un ticker, por ejemplo NFLX" autocomplete="off">
         <small id="position-search-status">Selecciona una posición para ver su recomendación y alternativas.</small>
+      </div>
+      <div class="position-queue-filters" role="group" aria-label="Filtrar posiciones por acción">
+        <button type="button" class="active" data-position-filter="all">Todas <span>{visible_count}</span></button>
+        <button type="button" data-position-filter="act">Actuar <span>{act_count}</span></button>
+        <button type="button" data-position-filter="review">Revisar <span>{today_count}</span></button>
+        <button type="button" data-position-filter="maintain">Mantener <span>{maintain_count}</span></button>
+        <button type="button" data-position-filter="data">Datos <span>{data_count}</span></button>
       </div>
       <div class="position-list" id="position-list">{cards}</div>
       <div id="position-search-empty" class="empty-state" hidden><strong>No encontré ese ticker</strong><span>Prueba con otro símbolo o actualiza IBKR.</span></div>
@@ -7888,6 +7928,7 @@ def render_active_positions_panel(
         today_count=html_escape(queue_counts.get("review", 0)),
         maintain_count=html_escape(queue_counts.get("maintain", 0)),
         data_count=html_escape(queue_counts.get("data", 0)),
+        top_focus=top_focus,
         cards=cards,
         alerts_html=alerts_html,
         alias=html_escape(alias),
@@ -9987,6 +10028,21 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .queue-count {{ border-top:4px solid transparent; }}
           .queue-count.queue-act {{ border-top-color:#b42318; }} .queue-count.queue-review {{ border-top-color:#d97706; }}
           .queue-count.queue-maintain {{ border-top-color:#16a34a; }} .queue-count.queue-data {{ border-top-color:#64748b; }}
+          .position-top-focus {{ display:grid; grid-template-columns:minmax(0,1.4fr) minmax(240px,.6fr); gap:16px; align-items:center; margin:14px 0; padding:16px; border:1px solid var(--line); border-left:6px solid #d97706; border-radius:10px; background:#fffdf6; }}
+          .position-top-focus.focus-act {{ border-left-color:#b42318; background:#fff8f5; }}
+          .position-top-focus.focus-maintain,.position-top-focus.focus-clear {{ border-left-color:#16845b; background:#f4fbf7; }}
+          .position-top-focus.focus-data {{ border-left-color:#64748b; background:#f8fafc; }}
+          .position-top-focus span,.position-top-focus strong {{ display:block; }}
+          .position-top-focus span {{ color:var(--muted); font-size:.72rem; text-transform:uppercase; font-weight:850; }}
+          .position-top-focus h3 {{ margin:4px 0; font-size:1.15rem; }}
+          .position-top-focus p {{ margin:0; color:var(--muted); }}
+          .position-top-focus-next {{ padding-left:16px; border-left:1px solid var(--line); }}
+          .position-top-focus-next strong {{ margin:5px 0 10px; }}
+          .position-top-focus-next button {{ width:100%; }}
+          .position-queue-filters {{ display:flex; flex-wrap:wrap; gap:7px; margin:0 0 12px; }}
+          .position-queue-filters button {{ padding:7px 10px; border:1px solid var(--line); background:#fff; color:var(--ink); }}
+          .position-queue-filters button.active {{ border-color:var(--accent); background:#eef8f3; color:var(--accent-strong); }}
+          .position-queue-filters span {{ display:inline-block; min-width:20px; margin-left:5px; padding:1px 6px; border-radius:999px; background:rgba(0,0,0,.06); }}
           .position-card[open] .position-card-open {{ font-size:0; }}
           .position-card[open] .position-card-open::before {{ content:"Cerrar"; font-size:.8rem; }}
           .position-card-body {{ padding:14px 16px 16px; }}
@@ -10609,18 +10665,37 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             const cards = Array.from(document.querySelectorAll("[data-position-card]"));
             const empty = document.getElementById("position-search-empty");
             const status = document.getElementById("position-search-status");
-            if (search && cards.length) search.addEventListener("input", () => {{
+            const positionFilters = Array.from(document.querySelectorAll("[data-position-filter]"));
+            let activePositionFilter = "all";
+            const applyPositionFilters = () => {{
               const query = search.value.trim().toUpperCase();
               let visible = 0;
               cards.forEach((card) => {{
-                const matches = !query || (card.dataset.ticker || "").includes(query);
+                const matchesTicker = !query || (card.dataset.ticker || "").includes(query);
+                const matchesQueue = activePositionFilter === "all" || card.dataset.priority === activePositionFilter;
+                const matches = matchesTicker && matchesQueue;
                 card.hidden = !matches;
                 if (matches) visible += 1;
               }});
               if (empty) empty.hidden = visible !== 0;
-              if (status) status.textContent = query ? `${{visible}} posición(es) coinciden con ${{query}}.` : "Selecciona una posición para ver su recomendación y alternativas.";
+              if (status) status.textContent = query || activePositionFilter !== "all" ? `${{visible}} posición(es) en esta vista.` : "Selecciona una posición para ver su recomendación y alternativas.";
               if (query && visible === 1) cards.find((card) => !card.hidden)?.setAttribute("open", "");
-            }});
+            }};
+            if (search && cards.length) search.addEventListener("input", applyPositionFilters);
+            positionFilters.forEach((button) => button.addEventListener("click", () => {{
+              activePositionFilter = button.dataset.positionFilter || "all";
+              positionFilters.forEach((candidate) => candidate.classList.toggle("active", candidate === button));
+              applyPositionFilters();
+            }}));
+            document.querySelectorAll("[data-position-focus]").forEach((button) => button.addEventListener("click", () => {{
+              const ticker = button.dataset.positionFocus || "";
+              activePositionFilter = "all";
+              positionFilters.forEach((candidate) => candidate.classList.toggle("active", candidate.dataset.positionFilter === "all"));
+              if (search) search.value = ticker;
+              applyPositionFilters();
+              const card = cards.find((candidate) => !candidate.hidden);
+              if (card) {{ card.setAttribute("open", ""); card.scrollIntoView({{behavior:"smooth", block:"start"}}); }}
+            }}));
 
             const opportunityFilters = Array.from(document.querySelectorAll("[data-opportunity-filter]"));
             const opportunityCards = Array.from(document.querySelectorAll("[data-opportunity-card]"));
