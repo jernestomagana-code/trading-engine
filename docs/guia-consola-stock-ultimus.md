@@ -12,6 +12,8 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 El desplegable **Mi rutina diaria** resume el uso recomendado en cuatro pasos: leer Hoy, proteger primero la cartera, evaluar únicamente oportunidades realmente listas y cerrar revisando Actividad. Está pensado para que un usuario nuevo no necesite conocer la arquitectura técnica.
 
+**Modo foco** se activa desde la navegación superior y conserva sólo la decisión principal y las lecturas esenciales de Hoy. La preferencia queda guardada en este Mac hasta pulsar **Salir de foco**. En **Actividad**, los expedientes por ticker conectan la última recomendación con la posición detectada en IBKR, su gestión y el resultado disponible. La vinculación por posición es automática; los precios y cantidades exactos de ejecución sólo se consideran confirmados cuando proceden del broker o fueron registrados expresamente.
+
 Las entradas `ENTRY_READY` de futuros tienen una vigencia máxima de **3 minutos** desde su marca de origen disponible; el contexto de vigilancia tiene hasta **10 minutos**. Una señal envejecida sale del centro de oportunidades y no se recupera como entrada desde “última señal”. La actividad histórica permanece disponible para diagnóstico, identificada como no operable. Estos tiempos no garantizan que el precio siga siendo válido: deben verificarse stop, objetivos y cotización antes de actuar.
 
 Esta primera etapa no completa la reingeniería: quedan el rediseño de Cartera, los carriles por estrategia y la revisión integral de automatización diaria.

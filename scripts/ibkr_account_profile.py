@@ -58,6 +58,7 @@ WEB_LAST_RESULT_PATH = RUNTIME / "ibkr_account_profile_web_last_result.json"
 REMOTE_CACHE_PATH = RUNTIME / "stock_ultimus_console_remote_cache.json"
 REMOTE_REFRESH_STATUS_PATH = RUNTIME / "stock_ultimus_console_remote_refresh_latest.json"
 OPERATOR_EVENTS_PATH = RUNTIME / "v32_operator_events.json"
+CONSOLE_USAGE_PATH = RUNTIME / "console_usage_validation.json"
 DAILY_TASK_JOURNAL_PATH = RUNTIME / "daily_operator_task_journal.json"
 POSITION_MANAGEMENT_JOURNAL_PATH = RUNTIME / "active_position_management_journal.json"
 POSITION_CONTEXTS_PATH = RUNTIME / "active_position_contexts.json"
@@ -1277,6 +1278,35 @@ def load_operator_events() -> list[dict[str, Any]]:
 def save_operator_events(events: list[dict[str, Any]]) -> None:
     RUNTIME.mkdir(exist_ok=True)
     OPERATOR_EVENTS_PATH.write_text(json.dumps((events or [])[-10000:], indent=2, sort_keys=True) + "\n")
+
+
+def record_console_usage(event: str, view: str = "") -> dict[str, Any]:
+    """Store anonymous local UI evidence; never account, order, or position data."""
+    allowed_events = {"PAGE_VIEW", "VIEW_CHANGE", "FOCUS_ON", "FOCUS_OFF"}
+    allowed_views = {"", "hoy", "cartera", "oportunidades", "historial", "configuracion", "guide"}
+    event = str(event or "").upper()
+    view = str(view or "").lower()
+    if event not in allowed_events or view not in allowed_views:
+        return {"ok": False, "error": "INVALID_USAGE_EVENT"}
+    payload = load_json_file(CONSOLE_USAGE_PATH)
+    rows = [row for row in (payload.get("events") or []) if isinstance(row, dict)]
+    recorded_at = now_iso()
+    rows.append({
+        "event": event, "view": view, "recorded_at": recorded_at,
+        "session_date": datetime.now(timezone.utc).astimezone(ZoneInfo("America/Mexico_City")).date().isoformat(),
+    })
+    rows = rows[-2000:]
+    session_dates = sorted({
+        str(row.get("session_date") or row.get("recorded_at") or "")[:10]
+        for row in rows if row.get("session_date") or row.get("recorded_at")
+    })
+    saved = {
+        "version": "console_usage_validation_v1", "updated_at": now_iso(),
+        "events": rows, "session_dates": session_dates,
+        "execution_authorized": False, "not_order_instruction": True,
+    }
+    write_json_file(CONSOLE_USAGE_PATH, saved)
+    return {"ok": True, "event_count": len(rows), "session_count": len(session_dates)}
 
 
 def local_operator_alert_id(payload: dict[str, Any]) -> str:
@@ -9396,6 +9426,103 @@ def render_history_learning_summary() -> str:
     )
 
 
+def json_rows(path: Path, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        payload = []
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        for key in keys:
+            if isinstance(payload.get(key), list):
+                return [row for row in payload[key] if isinstance(row, dict)]
+    return []
+
+
+def build_trade_casefiles(position_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Link recommendations, broker-detected positions, management, and outcomes."""
+    decisions = json_rows(DECISION_JOURNAL_PATH, ("decisions",))
+    outcomes = json_rows(OUTCOME_JOURNAL_PATH, ("outcomes",))
+    events = load_operator_events()
+    positions = [row for row in (position_payload.get("positions") or []) if isinstance(row, dict)]
+    tickers = {str(row.get("ticker") or "").upper() for row in decisions + outcomes + events + positions}
+    casefiles = []
+    for ticker in sorted(ticker for ticker in tickers if ticker):
+        decision = next((row for row in reversed(decisions) if str(row.get("ticker") or "").upper() == ticker), {})
+        event = next((row for row in reversed(events) if str(row.get("ticker") or "").upper() == ticker), {})
+        outcome = next((row for row in reversed(outcomes) if str(row.get("ticker") or "").upper() == ticker), {})
+        current = [row for row in positions if str(row.get("ticker") or "").upper() == ticker]
+        applied = str(event.get("action") or "").upper() == "MARK_IBKR_APPLIED"
+        outcome_state = str(outcome.get("status") or outcome.get("outcome") or "").upper()
+        if outcome and outcome_state not in {"", "PENDING", "OPEN", "NOT_EVALUATED"}:
+            phase, phase_label = "closed", "Resultado registrado"
+        elif current:
+            phase, phase_label = "open", "Posición detectada en IBKR"
+        elif applied:
+            phase, phase_label = "executed", "Ejecución informada; esperando posición"
+        elif decision:
+            phase, phase_label = "decision", "Decisión registrada"
+        else:
+            continue
+        linked = bool(decision and (current or applied or outcome))
+        casefiles.append({
+            "ticker": ticker, "phase": phase, "phase_label": phase_label,
+            "strategy": decision.get("strategy") or event.get("strategy") or outcome.get("strategy") or "Sin estrategia vinculada",
+            "decision": decision.get("final_state") or decision.get("decision") or "Sin recomendación vinculada",
+            "execution": "Detectada automáticamente por posición" if current else "Registrada por operador" if applied else "No detectada",
+            "management": friendly_operator_state(current[0].get("management_action")) if current else "No hay posición abierta",
+            "outcome": outcome.get("outcome") or outcome.get("status") or "Pendiente",
+            "linked": linked,
+            "updated_at": outcome.get("recorded_at") or event.get("recorded_at") or decision.get("recorded_at") or decision.get("generated_at"),
+        })
+    rank = {"open": 0, "executed": 1, "decision": 2, "closed": 3}
+    return sorted(casefiles, key=lambda row: (rank.get(row["phase"], 9), row["ticker"]))
+
+
+def render_trade_casefiles(position_payload: dict[str, Any]) -> str:
+    files = build_trade_casefiles(position_payload)
+    cards = []
+    for item in files[:12]:
+        cards.append("""
+        <details class="trade-casefile case-{phase}">
+          <summary><strong>{ticker}</strong><span>{phase_label}</span><small>{strategy}</small></summary>
+          <div class="casefile-flow">
+            <span>1 · Decisión<strong>{decision}</strong></span>
+            <span>2 · Ejecución<strong>{execution}</strong></span>
+            <span>3 · Gestión<strong>{management}</strong></span>
+            <span>4 · Resultado<strong>{outcome}</strong></span>
+          </div>
+          <p>{linkage} · actualizado {updated}</p>
+        </details>
+        """.format(
+            **{key: html_escape(value) for key, value in item.items() if key != "linked"},
+            linkage="Expediente vinculado" if item["linked"] else "Vínculo todavía incompleto",
+            updated=html_escape(friendly_age(item.get("updated_at"))),
+        ))
+    return """
+    <section id="trade-casefiles" class="panel trade-casefiles">
+      <div class="section-head"><div><p class="eyebrow">Ciclo completo de operaciones</p><h2>De la recomendación al resultado</h2></div><p>La aparición de una posición en IBKR vincula automáticamente el ticker; los fills exactos requieren confirmación del broker.</p></div>
+      <div class="trade-casefile-list">{cards}</div>
+    </section>
+    """.format(cards="".join(cards) or '<div class="empty-state"><strong>Sin expedientes todavía</strong><span>Se crearán al registrar decisiones o detectar posiciones.</span></div>')
+
+
+def render_usage_validation_panel() -> str:
+    payload = load_json_file(CONSOLE_USAGE_PATH)
+    events = [row for row in (payload.get("events") or []) if isinstance(row, dict)]
+    sessions = len(set(payload.get("session_dates") or []))
+    view_counts = {view: sum(row.get("event") == "VIEW_CHANGE" and row.get("view") == view for row in events) for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion")}
+    most_used = max(view_counts, key=view_counts.get) if events else "Sin muestra"
+    return """
+    <section class="panel usage-validation">
+      <div class="section-head"><div><p class="eyebrow">Validación de experiencia real</p><h2>{sessions}/5 sesiones observadas</h2><p>{guidance}</p></div><strong>{status}</strong></div>
+      <div class="control-facts"><div><span>Eventos locales</span><strong>{events}</strong></div><div><span>Vista más utilizada</span><strong>{most_used}</strong></div><div><span>Meta inicial</span><strong>5–10 sesiones</strong></div></div>
+      <p class="muted">Sólo registra vista, modo foco y hora en este Mac. No guarda cuentas, posiciones, precios ni órdenes.</p>
+    </section>
+    """.format(sessions=sessions, events=len(events), most_used=html_escape(most_used.title()), status="MUESTRA INICIAL" if sessions < 5 else "LISTA PARA REVISIÓN", guidance="Usa la consola normalmente; todavía no conviene eliminar secciones por uso." if sessions < 5 else "Ya existe muestra suficiente para revisar clics y simplificar otra vez.")
+
+
 def render_premium_strategy_research_summary() -> str:
     payload = load_json_file(RUNTIME / "premium_strategy_data_readiness_latest.json")
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -10280,6 +10407,15 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .history-scoreboard span,.history-strategy-card span,.history-strategy-card small {{ display:block; color:var(--muted); }}
           .history-scoreboard strong {{ display:block; margin-top:4px; font-size:1.12rem; }}
           .history-strategy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }}
+          .trade-casefile-list {{ display:grid; gap:8px; }}
+          .trade-casefile {{ border:1px solid var(--line); border-left:5px solid #64748b; border-radius:8px; background:#fff; }}
+          .trade-casefile.case-open {{ border-left-color:#047857; }} .trade-casefile.case-executed {{ border-left-color:#2563eb; }} .trade-casefile.case-closed {{ border-left-color:#7c3aed; }}
+          .trade-casefile > summary {{ display:grid; grid-template-columns:90px minmax(0,1fr) minmax(0,1fr); gap:10px; padding:11px; cursor:pointer; }}
+          .trade-casefile > summary span,.trade-casefile > summary small {{ color:var(--muted); }}
+          .casefile-flow {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-top:1px solid var(--line); }}
+          .casefile-flow span {{ min-width:0; padding:10px; color:var(--muted); font-size:.68rem; text-transform:uppercase; border-right:1px solid var(--line); }} .casefile-flow span:last-child {{ border-right:0; }}
+          .casefile-flow strong {{ display:block; margin-top:3px; color:var(--ink); font-size:.76rem; text-transform:none; overflow-wrap:anywhere; }}
+          .trade-casefile > p {{ margin:0; padding:8px 10px; color:var(--muted); font-size:.72rem; border-top:1px solid var(--line); }}
           .history-strategy-card {{ border:1px solid var(--line); border-radius:10px; padding:11px; }}
           .history-strategy-card small {{ margin-top:6px; font-weight:750; color:var(--accent-strong); }}
           .setup-steps {{ display:grid; gap:8px; margin-top:12px; }}
@@ -10309,6 +10445,10 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .top-quick-actions span {{ color:var(--muted); font-size:.8rem; }}
           .operator-nav {{ position:sticky; top:8px; z-index:10; display:flex; gap:6px; align-items:center; overflow-x:auto; margin:0 0 14px; padding:7px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.96); box-shadow:0 8px 24px rgba(17,24,39,.10); backdrop-filter:blur(10px); }}
           .operator-nav a {{ flex:0 0 auto; color:var(--ink); text-decoration:none; font-size:.84rem; font-weight:850; border-radius:7px; padding:8px 10px; }}
+          .operator-nav button {{ width:auto; margin-left:auto; padding:8px 11px; border-radius:7px; background:#334155; }}
+          body.focus-mode .automation-cycle,body.focus-mode .daily-routine,body.focus-mode .daily-close,body.focus-mode .remaining-priorities {{ display:none; }}
+          body.focus-mode .operator-task ~ .operator-task {{ display:none; }}
+          body.focus-mode .command-center {{ box-shadow:0 12px 34px rgba(15,95,80,.16); }}
           .operator-nav a:hover,.operator-nav a:focus-visible {{ color:var(--accent-strong); background:#eaf6f2; outline:none; }}
           .operator-nav a[aria-current="page"] {{ color:white; background:var(--accent-strong); }}
           .console-view {{ min-width:0; }}
@@ -10699,7 +10839,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .position-followup-grid {{ grid-template-columns:1fr; }} }}
-          @media (max-width:820px) {{ .automation-cycle,.automation-cycle-facts {{ grid-template-columns:1fr; }} .daily-routine ol {{ grid-template-columns:1fr; }} .daily-routine li {{ border-right:0; border-bottom:1px solid var(--line); }} }}
+          @media (max-width:820px) {{ .automation-cycle,.automation-cycle-facts {{ grid-template-columns:1fr; }} .daily-routine ol,.casefile-flow {{ grid-template-columns:1fr; }} .daily-routine li,.casefile-flow span {{ border-right:0; border-bottom:1px solid var(--line); }} .trade-casefile > summary {{ grid-template-columns:1fr; }} }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(even) {{ border-right:0; }} .opportunity-status-strip > div:last-child {{ grid-column:1/-1; border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
@@ -10723,6 +10863,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             <a href="#view-historial" data-console-view-link="historial">Actividad</a>
             <a href="#view-configuracion" data-console-view-link="configuracion">Más</a>
             <a href="/guide">Ayuda</a>
+            <button type="button" data-focus-mode>Modo foco</button>
           </nav>
           <section id="view-hoy" class="console-view" data-console-view="hoy">
             {active_process}
@@ -10767,6 +10908,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <section id="view-historial" class="console-view" data-console-view="historial">
             <div class="view-intro"><div><p class="eyebrow">Actividad</p><h2>Decisiones, señales vencidas y aprendizaje</h2></div><p>Aquí vive lo ocurrido. Nada de esta sección se presenta como oportunidad vigente.</p></div>
             {history_learning_summary}
+            {usage_validation}
+            {trade_casefiles}
             {futures_activity}
             {premium_strategy_research_summary}
             <details id="analisis" class="panel operator-workspace">
@@ -10858,6 +11001,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 else link.removeAttribute("aria-current");
               }});
               if (remember) {{ try {{ localStorage.setItem("stockUltimusConsoleView", selected); }} catch (_) {{}} }}
+              if (remember) fetch("/usage-event", {{method:"POST", headers:{{"Content-Type":"application/x-www-form-urlencoded"}}, body:new URLSearchParams({{event:"VIEW_CHANGE", view:selected}}), keepalive:true}}).catch(() => {{}});
             }};
             showView(initialView, false);
             window.addEventListener("hashchange", () => {{
@@ -10865,6 +11009,17 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               showView(targetViews[target] || "hoy", false);
             }});
             viewLinks.forEach((link) => link.addEventListener("click", () => showView(link.dataset.consoleViewLink)));
+            const focusButton = document.querySelector("[data-focus-mode]");
+            const applyFocus = (enabled, record = false) => {{
+              document.body.classList.toggle("focus-mode", enabled);
+              if (focusButton) focusButton.textContent = enabled ? "Salir de foco" : "Modo foco";
+              try {{ localStorage.setItem("stockUltimusFocusMode", enabled ? "1" : "0"); }} catch (_) {{}}
+              if (record) fetch("/usage-event", {{method:"POST", headers:{{"Content-Type":"application/x-www-form-urlencoded"}}, body:new URLSearchParams({{event:enabled ? "FOCUS_ON" : "FOCUS_OFF", view:"hoy"}}), keepalive:true}}).catch(() => {{}});
+            }};
+            let focusEnabled = false;
+            try {{ focusEnabled = localStorage.getItem("stockUltimusFocusMode") === "1"; }} catch (_) {{}}
+            applyFocus(focusEnabled);
+            if (focusButton) focusButton.addEventListener("click", () => {{ focusEnabled = !focusEnabled; applyFocus(focusEnabled, true); showView("hoy"); }});
             document.addEventListener("click", (event) => {{
               const anchor = event.target.closest('a[href^="#"]');
               if (!anchor) return;
@@ -11148,6 +11303,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
         history_learning_summary=render_history_learning_summary(),
+        usage_validation=render_usage_validation_panel(),
+        trade_casefiles=render_trade_casefiles(position_payload),
         premium_strategy_research_summary=render_premium_strategy_research_summary(),
         alert_effectiveness=render_alert_effectiveness_panel(),
         executive_report=render_executive_report_panel(),
@@ -11331,7 +11488,13 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
             raw_body = self.rfile.read(length)
             params = parse_qs(raw_body.decode("utf-8"))
             alias = (params.get("alias") or [""])[0]
-            if self.path == "/setup":
+            if self.path == "/usage-event":
+                result = record_console_usage(
+                    (params.get("event") or [""])[0],
+                    (params.get("view") or [""])[0],
+                )
+                self.send_json(result, status=200 if result.get("ok") else 400)
+            elif self.path == "/setup":
                 args = argparse.Namespace(
                     alias=alias,
                     scope=(params.get("scope") or [""])[0],

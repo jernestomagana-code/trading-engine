@@ -61,6 +61,33 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(sorted(html.index(step) for step in steps), [html.index(step) for step in steps])
         self.assertIn("nunca envía una orden", html)
 
+    def test_trade_casefile_links_decision_to_detected_broker_position(self):
+        decisions = [{"ticker": "NFLX", "strategy": "COVERED_CALL", "final_state": "MANAGE", "recorded_at": "2026-09-05T10:00:00+00:00"}]
+        with patch.object(console, "json_rows", side_effect=[decisions, []]), patch.object(console, "load_operator_events", return_value=[]):
+            rows = console.build_trade_casefiles({"positions": [{"ticker": "NFLX", "management_action": "HOLD"}]})
+        self.assertEqual(rows[0]["phase"], "open")
+        self.assertTrue(rows[0]["linked"])
+        self.assertEqual(rows[0]["execution"], "Detectada automáticamente por posición")
+
+    def test_usage_telemetry_is_local_minimal_and_rejects_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(console, "CONSOLE_USAGE_PATH", Path(tmp) / "usage.json"):
+            result = console.record_console_usage("VIEW_CHANGE", "oportunidades")
+            rejected = console.record_console_usage("ORDER", "oportunidades")
+            payload = json.loads((Path(tmp) / "usage.json").read_text())
+        self.assertTrue(result["ok"])
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(set(payload["events"][0]), {"event", "view", "recorded_at", "session_date"})
+
+    def test_focus_mode_and_experience_validation_are_exposed(self):
+        source = CONSOLE_SOURCE.read_text()
+        self.assertIn("data-focus-mode", source)
+        self.assertIn("stockUltimusFocusMode", source)
+        self.assertIn('fetch("/usage-event"', source)
+        with patch.object(console, "load_json_file", return_value={"events": [], "session_dates": []}):
+            html = console.render_usage_validation_panel()
+        self.assertIn("0/5 sesiones observadas", html)
+        self.assertIn("No guarda cuentas, posiciones, precios ni órdenes", html)
+
     def test_activity_view_leads_with_learning_conclusion_before_expired_signals(self):
         source = CONSOLE_SOURCE.read_text()
         history = source.index('{history_learning_summary}', source.index('id="view-historial"'))

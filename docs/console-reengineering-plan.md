@@ -90,3 +90,12 @@ La reingeniería visual acordada en las etapas 1–6 queda implementada. La vali
 Validación final de código: 667 pruebas automáticas satisfactorias.
 
 Corrección posterior de auditoría cerrada con mercado cerrado: el panel ya lee el último sobre completo del programador (`DONE`/error) y no usa por sí sola la hora de modificación del log. Esto evita marcar como fallido un ciclo correcto cuyo archivo terminó de escribirse después de generar el reporte.
+
+## Fase posterior — operación ultrarrápida y validación de uso
+
+- Añadido **Modo foco** persistente: reduce Hoy a la decisión principal y sus cinco lecturas esenciales, ocultando preparación, rutina expandible y cierre mientras el operador necesita velocidad.
+- Añadidos expedientes automáticos por ticker en Actividad: decisión → ejecución detectada/informada → gestión → resultado. La aparición de una posición en IBKR crea el vínculo operativo; un fill exacto continúa requiriendo confirmación del broker.
+- Añadida telemetría mínima exclusivamente local: vista visitada, activación del modo foco y hora. No registra cuentas, posiciones, precios ni órdenes.
+- Actividad muestra avance hacia 5–10 sesiones reales y evita recomendar más simplificación antes de contar con una muestra de uso.
+
+Validación técnica: 670 pruebas automáticas satisfactorias; endpoint local de telemetría comprobado sin datos financieros y primera sesión de validación iniciada.
