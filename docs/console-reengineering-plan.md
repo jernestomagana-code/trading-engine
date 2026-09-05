@@ -47,3 +47,15 @@ Implementado el 4 de septiembre de 2026:
 - La vista móvil apila la prioridad y mantiene accesibles los controles sin desbordamiento.
 
 Validación: 661 pruebas automáticas satisfactorias. La etapa 3 queda implementada; falta comprobarla visualmente con la cartera real instalada. Las etapas 4–6 permanecen pendientes.
+
+## Etapa 4 — oportunidades separadas por estrategia
+
+Implementado el 4 de septiembre de 2026:
+
+- El centro de Oportunidades tiene filtros independientes para Futuros, CANSLIM, RSP, Earnings CANSLIM y puts SPY/RSP de 120–150 días.
+- Earnings y puts largos muestran su avance de datos, evidencia acumulada, faltantes y siguiente paso dentro del flujo diario.
+- Ambas estrategias nuevas permanecen inequívocamente como `RESEARCH_ONLY`: no pueden aparecer como entrada lista, usar simulador de capital, consumir capacidad ni generar una orden.
+- Historial conserva el detalle de investigación y ahora tiene un destino directo desde sus tarjetas.
+- La vista móvil acomoda el quinto estado «En investigación» sin mezclarlo con bloqueos operativos.
+
+La etapa 4 queda implementada a nivel de experiencia y seguridad. Convertir cualquiera de estas estrategias en operable requerirá una decisión posterior sustentada en muestra y validación; no forma parte de esta etapa. Las etapas 5–6 permanecen pendientes.

@@ -5964,8 +5964,9 @@ def build_unified_opportunity_items(
     candidates_payload: dict[str, Any] | None = None,
     risk_payload: dict[str, Any] | None = None,
     account_capacity: dict[str, Any] | None = None,
+    premium_payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Normalize the three opportunity engines into one operator-first queue."""
+    """Normalize live opportunity engines and research lanes into one queue."""
     candidates_payload = candidates_payload if isinstance(candidates_payload, dict) else load_json_file(RUNTIME / "canslim_candidates_latest.json")
     data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
     account_capacity = account_capacity if isinstance(account_capacity, dict) else console_account_capacity(operator_payload, {})
@@ -6153,7 +6154,56 @@ def build_unified_opportunity_items(
         "capital_required": rsp_capital,
     })
 
+    premium_payload = premium_payload if isinstance(premium_payload, dict) else load_json_file(
+        RUNTIME / "premium_strategy_data_readiness_latest.json"
+    )
+    premium_summary = premium_payload.get("summary") if isinstance(premium_payload.get("summary"), dict) else {}
+    premium_strategies = premium_payload.get("strategies") if isinstance(premium_payload.get("strategies"), dict) else {}
+    earnings = premium_strategies.get("CANSLIM_EARNINGS_VOLATILITY_HARVEST")
+    long_put = premium_strategies.get("SPY_RSP_LONG_DATED_PUTWRITE")
+    if isinstance(earnings, dict):
+        scheduled = int(premium_summary.get("scheduled_earnings_events") or 0)
+        observations = int(premium_summary.get("prospective_option_observations") or 0)
+        missing = [str(value) for value in (earnings.get("missing") or [])]
+        items.append({
+            "type": "earnings", "type_label": "Earnings CANSLIM", "ticker": "CANSLIM",
+            "state": "research", "state_label": "Sólo investigación", "rank": 4,
+            "research_only": True, "operability": "RESEARCH_ONLY",
+            "recommendation": "Vigilar expansión y caída de volatilidad alrededor de earnings; todavía no es una entrada operable.",
+            "action": earnings.get("next_action") or ("Confirmar fecha y acumular cotizaciones de opciones." if scheduled else "Esperar un earnings CANSLIM confirmado."),
+            "trigger": f"{scheduled} evento(s) programado(s)",
+            "invalidation": "No operar sin fecha confirmada, liquidez, IV relativa y riesgo definido",
+            "target": f"{observations} observación(es) prospectiva(s) acumulada(s)",
+            "quality": 0.0, "metric_label": "Evidencia",
+            "blocker": ", ".join(missing) if missing else "Validación histórica y prospectiva todavía incompleta",
+            "freshness": friendly_age(premium_payload.get("generated_at")), "capital_required": None,
+        })
+    if isinstance(long_put, dict):
+        liquid = int(premium_summary.get("liquid_long_dated_grid_cells") or 0)
+        expired = int(premium_summary.get("expired_option_backfill_rows") or 0)
+        missing = [str(value) for value in (long_put.get("missing") or [])]
+        items.append({
+            "type": "long_put", "type_label": "Put 120–150 días", "ticker": "SPY / RSP",
+            "state": "research", "state_label": "Sólo investigación", "rank": 4,
+            "research_only": True, "operability": "RESEARCH_ONLY",
+            "recommendation": "Evaluar venta de puts de largo plazo sólo cuando volatilidad, liquidez y retorno sobre capital sean favorables.",
+            "action": long_put.get("next_action") or "Acumular cadena, margen y resultados para validar el modelo.",
+            "trigger": f"{liquid}/6 horizontes líquidos observados",
+            "invalidation": "No operar sin margen real, liquidez suficiente y regla de gestión validada",
+            "target": f"{expired} resultado(s) histórico(s) importado(s)",
+            "quality": 0.0, "metric_label": "Evidencia",
+            "blocker": ", ".join(missing) if missing else "Muestra insuficiente para habilitar entradas",
+            "freshness": friendly_age(premium_payload.get("generated_at")), "capital_required": None,
+        })
+
     for item in items:
+        if item.get("research_only"):
+            item["capital_label"] = "No aplica mientras sea investigación"
+            item["capacity_after_label"] = "Sin impacto"
+            item["available_capacity_label"] = compact_money(available_capacity)
+            item["risk_impact"] = "No habilitada para operar; no consume capacidad ni genera órdenes."
+            item["simulator_available"] = False
+            continue
         required = console_float_or_none(item.get("capital_required"))
         if required is None:
             item["capital_label"] = "N/D · falta margen o capital requerido"
@@ -6192,8 +6242,8 @@ def build_unified_opportunity_items(
 
 def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payload: dict[str, Any]) -> str:
     items = build_unified_opportunity_items(operator_payload, rsp_payload)
-    counts = {key: sum(1 for item in items if item["state"] == key) for key in ("ready", "forming", "waiting", "blocked")}
-    type_counts = {key: sum(1 for item in items if item["type"] == key) for key in ("canslim", "futures", "rsp")}
+    counts = {key: sum(1 for item in items if item["state"] == key) for key in ("ready", "forming", "waiting", "blocked", "research")}
+    type_counts = {key: sum(1 for item in items if item["type"] == key) for key in ("canslim", "futures", "rsp", "earnings", "long_put")}
 
     def card(item: dict[str, Any]) -> str:
         quality = float(item.get("quality") or 0.0)
@@ -6226,7 +6276,8 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
                 status="Viable por capacidad" if float(item.get("simulator_capital") or 0) <= float(item.get("simulator_capacity") or 0) else "Capacidad insuficiente",
             )
             if item.get("simulator_available") else
-            '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>'
+            ('<div class="opportunity-research-gate"><strong>RESEARCH ONLY · no es entrada</strong><span>Este carril muestra avance y faltantes; no habilita operación, simulación ni orden.</span></div>' if item.get("research_only") else
+             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>')
         )
         return """
         <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
@@ -6268,7 +6319,9 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             capacity_after=html_escape(item.get("capacity_after_label") or "N/D"),
             risk_impact=html_escape(item.get("risk_impact") or "N/D"),
             simulator=simulator,
-            target="canslim-radar" if item["type"] == "canslim" else ("alertas" if item["type"] == "futures" else "coberturas-rsp"),
+            target=("canslim-radar" if item["type"] == "canslim" else
+                    "alertas" if item["type"] == "futures" else
+                    "coberturas-rsp" if item["type"] == "rsp" else "premium-research"),
         )
 
     return """
@@ -6282,19 +6335,22 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
         <div class="status-forming"><span>Preparándose</span><strong>{forming}</strong></div>
         <div class="status-waiting"><span>Esperar</span><strong>{waiting}</strong></div>
         <div class="status-blocked"><span>Bloqueadas</span><strong>{blocked}</strong></div>
+        <div class="status-research"><span>En investigación</span><strong>{research}</strong></div>
       </div>
       <div class="opportunity-filters" role="group" aria-label="Filtrar oportunidades">
         <button type="button" class="active" data-opportunity-filter="all">Todas ({total})</button>
         <button type="button" data-opportunity-filter="canslim">CANSLIM ({canslim})</button>
         <button type="button" data-opportunity-filter="futures">Futuros ({futures})</button>
         <button type="button" data-opportunity-filter="rsp">RSP ({rsp})</button>
+        <button type="button" data-opportunity-filter="earnings">Earnings ({earnings})</button>
+        <button type="button" data-opportunity-filter="long_put">Puts 120–150d ({long_put})</button>
       </div>
       <div class="opportunity-grid">{cards}</div>
       <div id="opportunity-filter-empty" class="empty-state" hidden><strong>Sin oportunidades en este filtro</strong><span>Esto puede ser una espera normal; revisa la frescura y los bloques detallados abajo.</span></div>
     </section>
     """.format(
-        ready=counts["ready"], forming=counts["forming"], waiting=counts["waiting"], blocked=counts["blocked"],
-        total=len(items), canslim=type_counts["canslim"], futures=type_counts["futures"], rsp=type_counts["rsp"],
+        ready=counts["ready"], forming=counts["forming"], waiting=counts["waiting"], blocked=counts["blocked"], research=counts["research"],
+        total=len(items), canslim=type_counts["canslim"], futures=type_counts["futures"], rsp=type_counts["rsp"], earnings=type_counts["earnings"], long_put=type_counts["long_put"],
         cards="".join(card(item) for item in items),
     )
 
@@ -9220,7 +9276,7 @@ def render_premium_strategy_research_summary() -> str:
         else "Calendario gratuito activo; no hay earnings CANSLIM en la ventana actual."
     )
     return """
-    <section class="panel premium-research-summary">
+    <section id="premium-research" class="panel premium-research-summary">
       <div class="section-head">
         <div><p class="eyebrow">Nuevas estrategias en investigación</p><h2>Datos acumulados y faltantes</h2><p>Ninguna de estas estrategias puede generar una entrada operable.</p></div>
         <strong>RESEARCH ONLY</strong>
@@ -10275,20 +10331,20 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-center {{ border-left:6px solid var(--accent-strong); background:#f8fcfa; }}
           .daily-operations-summary {{ border-bottom:1px solid var(--line); background:#fbfdfb; }}
           .daily-operations-summary > summary {{ cursor:pointer; padding:9px 14px; color:var(--muted); font-size:.76rem; font-weight:850; }}
-          .opportunity-status-strip {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; margin:12px 0; }}
+          .opportunity-status-strip {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; margin:12px 0; }}
           .opportunity-status-strip > div {{ padding:11px 13px; border-right:1px solid var(--line); }}
           .opportunity-status-strip > div:last-child {{ border-right:0; }}
           .opportunity-status-strip span,.opportunity-status-strip strong {{ display:block; }}
           .opportunity-status-strip span {{ color:var(--muted); font-size:.76rem; font-weight:800; text-transform:uppercase; }}
           .opportunity-status-strip strong {{ margin-top:3px; font-size:1.45rem; }}
-          .status-ready strong {{ color:#047857; }} .status-forming strong {{ color:#b45309; }} .status-waiting strong {{ color:#475569; }} .status-blocked strong {{ color:#b42318; }}
+          .status-ready strong {{ color:#047857; }} .status-forming strong {{ color:#b45309; }} .status-waiting strong {{ color:#475569; }} .status-blocked strong {{ color:#b42318; }} .status-research strong {{ color:#6d28d9; }}
           .opportunity-filters {{ display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }}
           .opportunity-filters button {{ width:auto; padding:8px 12px; border:1px solid var(--line); background:#fff; color:var(--ink); }}
           .opportunity-filters button.active {{ color:#fff; background:var(--accent-strong); border-color:var(--accent-strong); }}
           .opportunity-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }}
           .opportunity-card {{ min-width:0; border:1px solid var(--line); border-left:5px solid #64748b; border-radius:10px; padding:12px; background:#fff; }}
           .opportunity-card[hidden] {{ display:none; }}
-          .opportunity-ready {{ border-left-color:#047857; }} .opportunity-forming {{ border-left-color:#d97706; }} .opportunity-waiting {{ border-left-color:#64748b; }} .opportunity-blocked {{ border-left-color:#b42318; }}
+          .opportunity-ready {{ border-left-color:#047857; }} .opportunity-forming {{ border-left-color:#d97706; }} .opportunity-waiting {{ border-left-color:#64748b; }} .opportunity-blocked {{ border-left-color:#b42318; }} .opportunity-research {{ border-left-color:#7c3aed; background:#fcfaff; }}
           .opportunity-card-head,.opportunity-identity {{ display:flex; justify-content:space-between; gap:10px; }}
           .opportunity-card-head span {{ color:var(--muted); font-size:.75rem; font-weight:900; text-transform:uppercase; }}
           .opportunity-card-head b {{ font-size:.8rem; }}
@@ -10317,6 +10373,9 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .simulator-results strong {{ display:block; margin-top:2px; color:var(--ink); font-size:.76rem; text-transform:none; }}
           .opportunity-simulator.simulator-unavailable {{ border-color:var(--line); background:var(--soft); }}
           .opportunity-simulator.simulator-risk {{ border-color:#f2a7a0; background:#fff7f6; }}
+          .opportunity-research-gate {{ display:grid; gap:4px; margin-top:9px; padding:10px; border:1px solid #c4b5fd; border-radius:8px; background:#f5f3ff; }}
+          .opportunity-research-gate strong {{ color:#5b21b6; font-size:.78rem; }}
+          .opportunity-research-gate span {{ color:var(--muted); font-size:.72rem; }}
           .opportunity-card > a {{ display:inline-block; margin-top:10px; color:var(--accent-strong); font-weight:850; }}
           .canslim-explanation {{ margin:12px 0; padding:10px 12px; border:1px solid #bfd7ff; border-radius:8px; background:#f7fbff; color:#174ea6; }}
           .canslim-list {{ display:grid; gap:8px; }}
@@ -10488,7 +10547,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .position-followup-grid {{ grid-template-columns:1fr; }} }}
-          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(2) {{ border-right:0; }} .opportunity-status-strip > div:nth-child(n+3) {{ border-bottom:0; }} }}
+          @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(even) {{ border-right:0; }} .opportunity-status-strip > div:last-child {{ grid-column:1/-1; border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
@@ -10630,7 +10689,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               hoy:"hoy", pendientes:"hoy",
               riesgo:"cartera", posiciones:"cartera", cartera:"cartera", "analisis-cartera":"cartera",
               "coberturas-rsp":"oportunidades", "opportunity-center":"oportunidades", alertas:"oportunidades", oportunidades:"oportunidades",
-              analisis:"historial", resultados:"historial", historial:"historial",
+              analisis:"historial", resultados:"historial", historial:"historial", "premium-research":"historial",
               herramientas:"configuracion", configuracion:"configuracion"
             }};
             const savedView = (() => {{ try {{ return localStorage.getItem("stockUltimusConsoleView"); }} catch (_) {{ return null; }} }})();
@@ -10720,7 +10779,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
                 }}
               }});
               const current = opportunityCards.filter((card) => card.dataset.expired !== "true");
-              ["ready", "forming", "waiting", "blocked"].forEach((state) => {{
+              ["ready", "forming", "waiting", "blocked", "research"].forEach((state) => {{
                 const count = current.filter((card) => card.classList.contains("opportunity-" + state)).length;
                 document.querySelectorAll(".opportunity-status-strip .status-" + state + " strong").forEach((node) => node.textContent = String(count));
                 if (state === "ready") document.querySelectorAll("[data-live-ready-count]").forEach((node) => node.textContent = String(count));

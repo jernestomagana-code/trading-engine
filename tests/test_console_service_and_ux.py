@@ -83,6 +83,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         items = console.build_unified_opportunity_items(
             operator, rsp, candidates, risk_payload={"alerts": []},
             account_capacity={"available_capacity": 50000, "capacity_source": "available_funds"},
+            premium_payload={},
         )
 
         self.assertEqual(items[0]["type"], "futures")
@@ -103,6 +104,8 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('data-opportunity-filter="canslim"', html)
         self.assertIn('data-opportunity-filter="futures"', html)
         self.assertIn('data-opportunity-filter="rsp"', html)
+        self.assertIn('data-opportunity-filter="earnings"', html)
+        self.assertIn('data-opportunity-filter="long_put"', html)
         self.assertIn("Entradas listas", html)
         self.assertIn("Preparándose", html)
         self.assertIn("Qué hacer ahora", html)
