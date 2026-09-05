@@ -1,28 +1,39 @@
 # Stock Ultimus Operational Pending Work Register
 
-Last reviewed: 2026-08-24.
+Last reviewed: 2026-09-05.
 
 This register tracks the open work from the TradingView alert and strategy
 review. It is decision-support only and never authorizes order execution.
+
+## Authoritative Current State
+
+- The required production set is five consolidated TradingView alerts: FAST
+  MNQ, FAST MES, Options QQQ, Options SPY, and Options VIX.
+- Chris IA remains installed as a visual confirmation panel, but its webhook
+  alerts are retired and it does not block operational readiness.
+- The current logical contract contains 20 event types. Twelve have already
+  been observed; futures have real end-to-end evidence, options are waiting for
+  the remaining natural market events, and quarantine is empty.
+- Console reengineering stages 1–6, Focus Mode, trade casefiles, and minimal
+  local usage validation are complete. Remaining items below are evidence or
+  live-market validation work unless explicitly identified as a code change.
 
 ## Closed In This Review
 
 - TradingView now uses one verified consolidated FAST v2.2 v23.0 alert for
   MNQ instead of six explicit alert slots. MES now has the equivalent verified
   consolidated alert; the superseded futures alerts remain paused. The current
-  four-alert operator set is documented in
+  five-alert operator set is documented in
   `docs/tradingview-production-active-alerts.md`.
 - Local validators and operator reports now separate active alerts from logical
   event coverage:
-  - Combined bundle: `total_production_active_alert_count=7` and
+  - Combined bundle: `total_production_active_alert_count=5` and
     `total_required_logical_event_count=20`.
-  - Chris IA remains supplemental for readiness: it is monitored in the same
-    report without blocking unrelated futures/options readiness when no Chris
-    IA entry has occurred.
-- TradingView alerts panel was visually verified on 2026-07-26 with all 7
-  consolidated alerts active. Each alert has the production webhook enabled and
-  direct TradingView `Notify in app` disabled so mobile delivery remains under
-  the Stock Ultimus `ENTRY`-only filter.
+  - Chris IA is visual and supplemental. Its retired alerts do not count toward
+    the five-alert production set and do not block futures/options readiness.
+- The earlier seven-alert configuration was superseded. The five current alerts
+  use the production webhook; direct TradingView `Notify in app` remains
+  disabled so mobile delivery stays under the Stock Ultimus `ENTRY`-only filter.
 - On 2026-08-11 the FAST v2 Pine was corrected and saved with the complete
   futures payload contract plus an hourly silent heartbeat. The active `MNQ1!`
   and `MES1!` alerts were edited and saved in TradingView to rebuild their Pine
@@ -37,8 +48,8 @@ review. It is decision-support only and never authorizes order execution.
   futures alerts from the new Pine snapshot and observing the next real event.
 - Chris IA v4.1 compiled and was installed on USTEC.F and US500F on 2026-08-20.
   Its panel explains the 5m signal, 15m confirmation, 60m trend, next trigger,
-  missing checks, and next step. One consolidated webhook alert is active on
-  each symbol; the two prior Chris alerts are paused.
+  missing checks, and next step. Its webhook alerts were subsequently retired;
+  the indicator remains available for visual confirmation only.
 - FAST v2.2 v23.0 is compiled and updated on the MNQ chart. TradingView now
   exposes `Any alert() function call`; `FAST_V2_2 MNQ CONSOLIDATED` is active
   with the production webhook and the six explicit alerts are paused. The
