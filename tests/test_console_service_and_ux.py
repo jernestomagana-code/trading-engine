@@ -4,6 +4,7 @@ import json
 import re
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,39 @@ OPERATOR_GUIDE = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 
 
 class ConsoleServiceAndUxTests(unittest.TestCase):
+    def test_automatic_cycle_distinguishes_installed_from_confirmed(self):
+        now = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
+        report = {"generated_at": "2026-09-04T16:35:00+00:00", "status": "READY"}
+        cycle = console.build_automation_cycle_status(
+            report, installed=True, now=now,
+            last_attempt_at=datetime(2026, 9, 4, 16, 35, tzinfo=timezone.utc),
+        )
+        self.assertEqual(cycle["state"], "ready")
+        self.assertEqual(cycle["label"], "Automatización confirmada")
+        self.assertIn("11:35 CDMX", cycle["next_run"])
+
+    def test_automatic_cycle_surfaces_attempt_without_new_report(self):
+        cycle = console.build_automation_cycle_status(
+            {"generated_at": "2026-09-04T14:35:00+00:00", "status": "READY"},
+            installed=True,
+            now=datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc),
+            last_attempt_at=datetime(2026, 9, 4, 16, 36, tzinfo=timezone.utc),
+        )
+        self.assertEqual(cycle["state"], "review")
+        self.assertIn("no existe un reporte posterior", cycle["detail"])
+
+    def test_automatic_cycle_panel_explains_attempt_is_not_confirmation(self):
+        with patch.object(console, "build_automation_cycle_status", return_value={
+            "state": "scheduled", "label": "Automatización activa", "detail": "Programada.",
+            "installed": True, "last_report": "hace 1 h", "last_status": "READY",
+            "last_attempt": "hace 1 h", "next_run": "lun 07 sep · 07:35 CDMX",
+            "schedule": "Días hábiles",
+        }):
+            html = console.render_automation_cycle_panel()
+        self.assertIn('id="automatic-cycle"', html)
+        self.assertIn("Intento no equivale a ciclo confirmado", html)
+        self.assertIn("Próxima ejecución", html)
+
     def test_remote_refresh_prioritizes_live_futures_evidence(self):
         endpoints = {
             "operator": "/operator",

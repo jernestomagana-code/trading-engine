@@ -59,3 +59,17 @@ Implementado el 4 de septiembre de 2026:
 - La vista móvil acomoda el quinto estado «En investigación» sin mezclarlo con bloqueos operativos.
 
 La etapa 4 queda implementada a nivel de experiencia y seguridad. Convertir cualquiera de estas estrategias en operable requerirá una decisión posterior sustentada en muestra y validación; no forma parte de esta etapa. Las etapas 5–6 permanecen pendientes.
+
+## Etapa 5 — apertura y ciclos automáticos verificables
+
+Implementado el 5 de septiembre de 2026:
+
+- Confirmada la instalación real en macOS de apertura/publicación automática cada hora de 07:35 a 13:35 CDMX en días hábiles, además de preflight, preparación de mercado, monitor postapertura y vigilancia del entorno.
+- Hoy muestra un bloque visible de Apertura automática con estado, último reporte confirmado, último intento del programador y próxima ejecución.
+- La consola distingue expresamente «intento» de «ciclo confirmado». Si macOS intentó ejecutar el trabajo y no apareció un reporte posterior, lo eleva a revisión en lugar de mostrar un falso estado correcto.
+- En mercado cerrado conserva la última evidencia y muestra la siguiente ejecución hábil sin exigir una apertura manual.
+- El botón manual permanece como recuperación cuando TWS estaba cerrado o el ciclo programado terminó con pendientes.
+
+La etapa 5 queda implementada. Falta la etapa 6: revisión integral de Actividad/aprendizaje, recorrido visual final y cierre de inconsistencias residuales.
+
+Validación: 665 pruebas automáticas satisfactorias y comprobación del panel servido por la consola permanente. En la lectura real del 5 de septiembre, el último intento del programador era posterior al último reporte confirmado; por diseño la consola lo mostró como revisión pendiente, no como éxito.

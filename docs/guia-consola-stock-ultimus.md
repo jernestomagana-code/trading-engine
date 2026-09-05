@@ -734,6 +734,8 @@ La navegación normal abre inmediatamente desde la última caché disponible, au
 
 En días de mercado, el servicio programado repite apertura/publicación aproximadamente cada hora entre 07:35 y 13:35 hora local. Esto mantiene la cuenta, CANSLIM, cadenas y ranking dentro de la ventana de frescura. El botón manual sigue disponible si TWS estaba cerrado o una actualización programada falló.
 
+En **Hoy**, el bloque **Apertura automática** permite comprobarlo sin revisar archivos técnicos. **Último reporte** es la evidencia de que la apertura terminó y dejó resultado; **Último intento del programador** sólo demuestra que macOS inició el trabajo. Si el intento es posterior al reporte, la consola solicita revisión porque no debe confundirse un proceso iniciado con uno completado. **Próxima ejecución** muestra el siguiente ciclo previsto en horario CDMX. En fin de semana o fuera de mercado es normal ver “Automatización activa” con la próxima sesión hábil.
+
 ### No aparecen oportunidades
 
 Puede ser correcto. Revisa si el mercado está cerrado, si faltan eventos reales de TradingView o si las oportunidades quedaron ocultas como diagnóstico por no superar las puertas de calidad. La ausencia de alerta es preferible a forzar una señal débil.

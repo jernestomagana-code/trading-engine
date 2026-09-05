@@ -99,6 +99,11 @@ MACOS_NOTIFICATION_STATUS_PATH = RUNTIME / "macos_notification_status.json"
 MACOS_NOTIFICATION_LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.stockultimus.macos-notifications.plist"
 OPERATIONAL_EDGE_PATH = RUNTIME / "v32_operational_edge_latest.json"
 DAILY_OPEN_CHECKLIST_PATH = RUNTIME / "daily_open_checklist_latest.json"
+DAILY_REFRESH_LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.stockultimus.daily-snapshot-refresh.plist"
+DAILY_REFRESH_LOG_PATHS = (
+    Path("/private/tmp/com.stockultimus.daily-snapshot-refresh.out"),
+    Path("/private/tmp/com.stockultimus.daily-snapshot-refresh.err"),
+)
 OPERATOR_GUIDE_PATH = ROOT / "docs" / "guia-consola-stock-ultimus.md"
 KEYCHAIN_SERVICE_PREFIX = "stock-ultimus-ibkr-account-"
 READ_KEYCHAIN_SERVICES = ("stock-ultimus-read-access-token", "stock-ultimus-read-access")
@@ -3101,6 +3106,86 @@ def guided_opening_summary(
         "execution_authorized": False,
         "not_order_instruction": True,
     }
+
+
+def next_automatic_opening(now: datetime | None = None) -> datetime:
+    """Return the next weekday hourly refresh in Mexico City time."""
+    local_tz = ZoneInfo("America/Mexico_City")
+    current = (now or datetime.now(timezone.utc)).astimezone(local_tz)
+    for day_offset in range(8):
+        day = (current + timedelta(days=day_offset)).date()
+        if day.weekday() >= 5:
+            continue
+        for hour in range(7, 14):
+            candidate = datetime(day.year, day.month, day.day, hour, 35, tzinfo=local_tz)
+            if candidate > current:
+                return candidate
+    return current + timedelta(days=1)
+
+
+def build_automation_cycle_status(
+    report: dict[str, Any] | None = None,
+    *,
+    installed: bool | None = None,
+    now: datetime | None = None,
+    last_attempt_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build user-facing evidence for the automatic daily refresh cycle."""
+    report = report if isinstance(report, dict) else load_json_file(DAILY_OPEN_CHECKLIST_PATH)
+    installed = DAILY_REFRESH_LAUNCH_AGENT_PATH.exists() if installed is None else installed
+    current = now or datetime.now(timezone.utc)
+    local_tz = ZoneInfo("America/Mexico_City")
+    report_at = parse_iso_datetime(report_generated_at(report)) if report else None
+    if last_attempt_at is None:
+        mtimes = []
+        for path in DAILY_REFRESH_LOG_PATHS:
+            try:
+                mtimes.append(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+            except OSError:
+                pass
+        last_attempt_at = max(mtimes) if mtimes else None
+    effective = effective_daily_open_status(report) if report else "SIN REPORTE"
+    good = effective in {"READY", "PASS", "OK", "EVIDENCE_COLLECTION_ONLY"}
+    today = current.astimezone(local_tz).date()
+    report_today = bool(report_at and report_at.astimezone(local_tz).date() == today)
+    market_day = current.astimezone(local_tz).weekday() < 5
+    attempt_after_report = bool(last_attempt_at and (not report_at or last_attempt_at > report_at + timedelta(seconds=60)))
+    if not installed:
+        state, label, detail = "blocked", "Automatización no instalada", "La apertura depende del botón manual."
+    elif attempt_after_report:
+        state, label, detail = "review", "Último ciclo requiere revisión", "El programador intentó ejecutarse, pero no existe un reporte posterior confirmado."
+    elif market_day and not report_today:
+        state, label, detail = "review", "Apertura de hoy no confirmada", "El servicio está activo, pero todavía no hay un reporte de la jornada."
+    elif report and not good:
+        state, label, detail = "review", "Última apertura con pendientes", friendly_operator_state(effective)
+    elif report_today and good:
+        state, label, detail = "ready", "Automatización confirmada", "La apertura programada dejó evidencia válida hoy."
+    else:
+        state, label, detail = "scheduled", "Automatización activa", "Mercado cerrado; se conserva la última evidencia y el próximo ciclo ya está programado."
+    next_run = next_automatic_opening(current)
+    return {
+        "state": state, "label": label, "detail": detail, "installed": installed,
+        "last_report": friendly_age(report_at) if report_at else "Sin ejecución confirmada",
+        "last_status": friendly_operator_state(effective),
+        "last_attempt": friendly_age(last_attempt_at) if last_attempt_at else "Sin intento registrado",
+        "next_run": next_run.strftime("%a %d %b · %H:%M CDMX"),
+        "schedule": "Días hábiles · cada hora de 07:35 a 13:35 CDMX",
+    }
+
+
+def render_automation_cycle_panel() -> str:
+    cycle = build_automation_cycle_status()
+    return """
+    <section id="automatic-cycle" class="automation-cycle automation-{state}">
+      <div><p class="eyebrow">Apertura automática</p><h3>{label}</h3><p>{detail}</p></div>
+      <div class="automation-cycle-facts">
+        <span>Último reporte<strong>{last_report}</strong><small>{last_status}</small></span>
+        <span>Último intento del programador<strong>{last_attempt}</strong><small>Intento no equivale a ciclo confirmado.</small></span>
+        <span>Próxima ejecución<strong>{next_run}</strong><small>{schedule}</small></span>
+      </div>
+      <small>El botón manual permanece como respaldo si TWS estaba cerrado o un ciclo termina con pendientes.</small>
+    </section>
+    """.format(**{key: html_escape(value) for key, value in cycle.items()})
 
 
 def load_daily_task_journal() -> dict[str, Any]:
@@ -10331,6 +10416,14 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .opportunity-center {{ border-left:6px solid var(--accent-strong); background:#f8fcfa; }}
           .daily-operations-summary {{ border-bottom:1px solid var(--line); background:#fbfdfb; }}
           .daily-operations-summary > summary {{ cursor:pointer; padding:9px 14px; color:var(--muted); font-size:.76rem; font-weight:850; }}
+          .automation-cycle {{ display:grid; grid-template-columns:minmax(220px,.7fr) minmax(0,1.3fr); gap:14px; margin:10px 0; padding:13px 15px; border:1px solid var(--line); border-left:6px solid #64748b; border-radius:10px; background:#fff; }}
+          .automation-cycle h3,.automation-cycle p {{ margin:3px 0; }}
+          .automation-cycle > small {{ grid-column:1/-1; color:var(--muted); }}
+          .automation-ready {{ border-left-color:#047857; background:#f6fcf8; }} .automation-scheduled {{ border-left-color:#2563eb; }} .automation-review {{ border-left-color:#d97706; background:#fffaf0; }} .automation-blocked {{ border-left-color:#b42318; background:#fff7f6; }}
+          .automation-cycle-facts {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }}
+          .automation-cycle-facts span {{ min-width:0; padding:8px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--muted); font-size:.68rem; font-weight:850; text-transform:uppercase; }}
+          .automation-cycle-facts strong,.automation-cycle-facts small {{ display:block; margin-top:3px; color:var(--ink); font-size:.76rem; line-height:1.25; text-transform:none; overflow-wrap:anywhere; }}
+          .automation-cycle-facts small {{ color:var(--muted); font-size:.67rem; font-weight:500; }}
           .opportunity-status-strip {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; margin:12px 0; }}
           .opportunity-status-strip > div {{ padding:11px 13px; border-right:1px solid var(--line); }}
           .opportunity-status-strip > div:last-child {{ border-right:0; }}
@@ -10547,6 +10640,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .position-followup-grid {{ grid-template-columns:1fr; }} }}
+          @media (max-width:820px) {{ .automation-cycle,.automation-cycle-facts {{ grid-template-columns:1fr; }} }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(even) {{ border-right:0; }} .opportunity-status-strip > div:last-child {{ grid-column:1/-1; border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
@@ -10574,6 +10668,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <section id="view-hoy" class="console-view" data-console-view="hoy">
             {active_process}
             {command_center}
+            {automation_cycle}
             {message}
             {job_panel}
           </section>
@@ -10979,6 +11074,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         futures_activity=render_intraday_futures_alerts([item for item in (operator_payload.get("data") or {}).get("active_alerts", []) if isinstance(item, dict) and is_intraday_futures_alert(item)], operator_payload, reports, history_only=True),
         today=render_today_panel(active, snapshot, operator_payload, reports),
         command_center=render_command_center(active, snapshot, operator_payload, reports, position_payload, risk_payload, rsp_payload),
+        automation_cycle=render_automation_cycle_panel(),
         modules=render_module_health(active, snapshot, operator_payload, reports),
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),
