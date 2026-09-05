@@ -3123,12 +3123,38 @@ def next_automatic_opening(now: datetime | None = None) -> datetime:
     return current + timedelta(days=1)
 
 
+def latest_daily_refresh_runner_result() -> dict[str, Any]:
+    """Read the last complete launchd runner envelope without trusting file mtime."""
+    path = DAILY_REFRESH_LOG_PATHS[0]
+    try:
+        text = path.read_text(errors="replace")[-250000:]
+    except OSError:
+        return {}
+    starts = [match.start() for match in re.finditer(r'(?m)^\{\s*\n\s*"completion"\s*:', text)]
+    for start in reversed(starts):
+        try:
+            payload = json.loads(text[start:])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        completion = payload.get("completion") if isinstance(payload.get("completion"), dict) else {}
+        finished = completion.get("finished_at") or payload.get("generated_at")
+        return {
+            "ok": completion.get("ok") is True and str(completion.get("status") or "").upper() == "DONE",
+            "status": completion.get("status") or "UNKNOWN",
+            "attempt_at": parse_iso_datetime(finished),
+        }
+    return {}
+
+
 def build_automation_cycle_status(
     report: dict[str, Any] | None = None,
     *,
     installed: bool | None = None,
     now: datetime | None = None,
     last_attempt_at: datetime | None = None,
+    last_attempt_ok: bool | None = None,
 ) -> dict[str, Any]:
     """Build user-facing evidence for the automatic daily refresh cycle."""
     report = report if isinstance(report, dict) else load_json_file(DAILY_OPEN_CHECKLIST_PATH)
@@ -3136,6 +3162,11 @@ def build_automation_cycle_status(
     current = now or datetime.now(timezone.utc)
     local_tz = ZoneInfo("America/Mexico_City")
     report_at = parse_iso_datetime(report_generated_at(report)) if report else None
+    runner_result = latest_daily_refresh_runner_result() if last_attempt_at is None or last_attempt_ok is None else {}
+    if last_attempt_at is None:
+        last_attempt_at = runner_result.get("attempt_at")
+    if last_attempt_ok is None and runner_result:
+        last_attempt_ok = runner_result.get("ok") is True
     if last_attempt_at is None:
         mtimes = []
         for path in DAILY_REFRESH_LOG_PATHS:
@@ -3149,7 +3180,11 @@ def build_automation_cycle_status(
     today = current.astimezone(local_tz).date()
     report_today = bool(report_at and report_at.astimezone(local_tz).date() == today)
     market_day = current.astimezone(local_tz).weekday() < 5
-    attempt_after_report = bool(last_attempt_at and (not report_at or last_attempt_at > report_at + timedelta(seconds=60)))
+    attempt_after_report = bool(
+        last_attempt_ok is not True
+        and last_attempt_at
+        and (not report_at or last_attempt_at > report_at + timedelta(seconds=60))
+    )
     if not installed:
         state, label, detail = "blocked", "Automatización no instalada", "La apertura depende del botón manual."
     elif attempt_after_report:
@@ -3168,6 +3203,7 @@ def build_automation_cycle_status(
         "last_report": friendly_age(report_at) if report_at else "Sin ejecución confirmada",
         "last_status": friendly_operator_state(effective),
         "last_attempt": friendly_age(last_attempt_at) if last_attempt_at else "Sin intento registrado",
+        "last_attempt_status": "Completado" if last_attempt_ok is True else "No confirmado",
         "next_run": next_run.strftime("%a %d %b · %H:%M CDMX"),
         "schedule": "Días hábiles · cada hora de 07:35 a 13:35 CDMX",
     }
@@ -3180,7 +3216,7 @@ def render_automation_cycle_panel() -> str:
       <div><p class="eyebrow">Apertura automática</p><h3>{label}</h3><p>{detail}</p></div>
       <div class="automation-cycle-facts">
         <span>Último reporte<strong>{last_report}</strong><small>{last_status}</small></span>
-        <span>Último intento del programador<strong>{last_attempt}</strong><small>Intento no equivale a ciclo confirmado.</small></span>
+        <span>Último intento del programador<strong>{last_attempt}</strong><small>{last_attempt_status} · el reporte sigue siendo la evidencia principal.</small></span>
         <span>Próxima ejecución<strong>{next_run}</strong><small>{schedule}</small></span>
       </div>
       <small>El botón manual permanece como respaldo si TWS estaba cerrado o un ciclo termina con pendientes.</small>

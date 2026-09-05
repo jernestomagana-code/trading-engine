@@ -24,6 +24,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         cycle = console.build_automation_cycle_status(
             report, installed=True, now=now,
             last_attempt_at=datetime(2026, 9, 4, 16, 35, tzinfo=timezone.utc),
+            last_attempt_ok=True,
         )
         self.assertEqual(cycle["state"], "ready")
         self.assertEqual(cycle["label"], "Automatización confirmada")
@@ -35,6 +36,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
             installed=True,
             now=datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc),
             last_attempt_at=datetime(2026, 9, 4, 16, 36, tzinfo=timezone.utc),
+            last_attempt_ok=False,
         )
         self.assertEqual(cycle["state"], "review")
         self.assertIn("no existe un reporte posterior", cycle["detail"])
@@ -43,12 +45,12 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         with patch.object(console, "build_automation_cycle_status", return_value={
             "state": "scheduled", "label": "Automatización activa", "detail": "Programada.",
             "installed": True, "last_report": "hace 1 h", "last_status": "READY",
-            "last_attempt": "hace 1 h", "next_run": "lun 07 sep · 07:35 CDMX",
+            "last_attempt": "hace 1 h", "last_attempt_status": "Completado", "next_run": "lun 07 sep · 07:35 CDMX",
             "schedule": "Días hábiles",
         }):
             html = console.render_automation_cycle_panel()
         self.assertIn('id="automatic-cycle"', html)
-        self.assertIn("Intento no equivale a ciclo confirmado", html)
+        self.assertIn("el reporte sigue siendo la evidencia principal", html)
         self.assertIn("Próxima ejecución", html)
 
     def test_daily_routine_is_short_ordered_and_safety_explicit(self):

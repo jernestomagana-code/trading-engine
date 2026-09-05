@@ -88,3 +88,5 @@ Implementado el 5 de septiembre de 2026:
 La reingeniería visual acordada en las etapas 1–6 queda implementada. La validación de funcionamiento económico y de alertas reales continúa siendo observación de mercado, no una tarea visual ni una garantía de rentabilidad.
 
 Validación final de código: 667 pruebas automáticas satisfactorias.
+
+Corrección posterior de auditoría cerrada con mercado cerrado: el panel ya lee el último sobre completo del programador (`DONE`/error) y no usa por sí sola la hora de modificación del log. Esto evita marcar como fallido un ciclo correcto cuyo archivo terminó de escribirse después de generar el reporte.
