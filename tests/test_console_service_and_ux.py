@@ -51,6 +51,20 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Intento no equivale a ciclo confirmado", html)
         self.assertIn("Próxima ejecución", html)
 
+    def test_daily_routine_is_short_ordered_and_safety_explicit(self):
+        html = console.render_daily_operator_routine()
+        self.assertIn('id="daily-routine"', html)
+        steps = ["1. Leer Hoy", "2. Proteger la cartera", "3. Evaluar oportunidades", "4. Cerrar y aprender"]
+        self.assertTrue(all(step in html for step in steps))
+        self.assertEqual(sorted(html.index(step) for step in steps), [html.index(step) for step in steps])
+        self.assertIn("nunca envía una orden", html)
+
+    def test_activity_view_leads_with_learning_conclusion_before_expired_signals(self):
+        source = CONSOLE_SOURCE.read_text()
+        history = source.index('{history_learning_summary}', source.index('id="view-historial"'))
+        futures = source.index('{futures_activity}', source.index('id="view-historial"'))
+        self.assertLess(history, futures)
+
     def test_remote_refresh_prioritizes_live_futures_evidence(self):
         endpoints = {
             "operator": "/operator",
@@ -151,7 +165,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Capacidad disponible", html)
         self.assertIn("Capacidad después", html)
         self.assertIn("Impacto de riesgo", html)
-        self.assertIn("Simulador", html)
+        self.assertNotIn("Simulador pendiente", html)
 
     def test_expired_futures_never_return_to_live_opportunities(self):
         operator = {"ok": True, "data": {"active_alerts": [{

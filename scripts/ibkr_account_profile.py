@@ -3188,6 +3188,22 @@ def render_automation_cycle_panel() -> str:
     """.format(**{key: html_escape(value) for key, value in cycle.items()})
 
 
+def render_daily_operator_routine() -> str:
+    """Small repeatable workflow for a new or returning operator."""
+    return """
+    <details id="daily-routine" class="daily-routine">
+      <summary>Mi rutina diaria · qué revisar y en qué orden</summary>
+      <ol>
+        <li><a href="#hoy"><strong>1. Leer Hoy</strong><span>Sigue la decisión principal y confirma que la apertura automática dejó reporte.</span></a></li>
+        <li><a href="#riesgo"><strong>2. Proteger la cartera</strong><span>Resuelve riesgos y posiciones marcadas para actuar antes de buscar entradas.</span></a></li>
+        <li><a href="#opportunity-center"><strong>3. Evaluar oportunidades</strong><span>Considera sólo Entrada lista; Preparándose, Esperar e Investigación no son entradas.</span></a></li>
+        <li><a href="#view-historial"><strong>4. Cerrar y aprender</strong><span>Confirma revisiones, señales vencidas y si existe muestra suficiente antes de cambiar reglas.</span></a></li>
+      </ol>
+      <p>La consola apoya la decisión; nunca envía una orden ni sustituye la revisión del broker.</p>
+    </details>
+    """
+
+
 def load_daily_task_journal() -> dict[str, Any]:
     payload = load_json_file(DAILY_TASK_JOURNAL_PATH)
     tasks = payload.get("tasks") if isinstance(payload.get("tasks"), dict) else {}
@@ -6317,7 +6333,7 @@ def build_unified_opportunity_items(
         else:
             item["risk_impact"] = "Sin bloqueo global; concentración posterior N/D hasta definir tamaño/ticket."
         item["available_capacity_label"] = compact_money(available_capacity)
-        item["simulator_available"] = required is not None and available_capacity is not None
+        item["simulator_available"] = item["state"] == "ready" and required is not None and available_capacity is not None
         item["simulator_unit_label"] = "ciclo" if item["type"] == "rsp" else "contrato"
         item["simulator_max"] = 3 if item["type"] == "rsp" else 10
         item["simulator_capital"] = required
@@ -6362,7 +6378,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             )
             if item.get("simulator_available") else
             ('<div class="opportunity-research-gate"><strong>RESEARCH ONLY · no es entrada</strong><span>Este carril muestra avance y faltantes; no habilita operación, simulación ni orden.</span></div>' if item.get("research_only") else
-             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>Falta capital/margen requerido o una lectura vigente de IBKR.</span></div>')
+             '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>La entrada está lista, pero falta capital/margen requerido o una lectura vigente de IBKR.</span></div>' if item.get("state") == "ready" else '')
         )
         return """
         <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
@@ -10424,6 +10440,13 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .automation-cycle-facts span {{ min-width:0; padding:8px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--muted); font-size:.68rem; font-weight:850; text-transform:uppercase; }}
           .automation-cycle-facts strong,.automation-cycle-facts small {{ display:block; margin-top:3px; color:var(--ink); font-size:.76rem; line-height:1.25; text-transform:none; overflow-wrap:anywhere; }}
           .automation-cycle-facts small {{ color:var(--muted); font-size:.67rem; font-weight:500; }}
+          .daily-routine {{ margin:10px 0; border:1px solid var(--line); border-radius:10px; background:#fff; }}
+          .daily-routine > summary {{ cursor:pointer; padding:11px 14px; color:var(--accent-strong); font-weight:900; }}
+          .daily-routine ol {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; margin:0; padding:0; list-style:none; border-top:1px solid var(--line); }}
+          .daily-routine li {{ min-width:0; border-right:1px solid var(--line); }} .daily-routine li:last-child {{ border-right:0; }}
+          .daily-routine a {{ display:block; height:100%; padding:11px; color:var(--ink); text-decoration:none; }} .daily-routine a:hover {{ background:#f4f8f3; }}
+          .daily-routine strong,.daily-routine span {{ display:block; }} .daily-routine span,.daily-routine > p {{ margin-top:4px; color:var(--muted); font-size:.74rem; line-height:1.35; }}
+          .daily-routine > p {{ margin:0; padding:9px 12px; border-top:1px solid var(--line); }}
           .opportunity-status-strip {{ display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; margin:12px 0; }}
           .opportunity-status-strip > div {{ padding:11px 13px; border-right:1px solid var(--line); }}
           .opportunity-status-strip > div:last-child {{ border-right:0; }}
@@ -10640,7 +10663,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           footer {{ margin-top:26px; color:var(--muted); font-size:.95rem; }}
           .sr-only {{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }}
           @media (max-width:620px) {{ .position-followup-grid {{ grid-template-columns:1fr; }} }}
-          @media (max-width:820px) {{ .automation-cycle,.automation-cycle-facts {{ grid-template-columns:1fr; }} }}
+          @media (max-width:820px) {{ .automation-cycle,.automation-cycle-facts {{ grid-template-columns:1fr; }} .daily-routine ol {{ grid-template-columns:1fr; }} .daily-routine li {{ border-right:0; border-bottom:1px solid var(--line); }} }}
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(even) {{ border-right:0; }} .opportunity-status-strip > div:last-child {{ grid-column:1/-1; border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
@@ -10669,6 +10692,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             {active_process}
             {command_center}
             {automation_cycle}
+            {daily_routine}
             {message}
             {job_panel}
           </section>
@@ -10706,8 +10730,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
 
           <section id="view-historial" class="console-view" data-console-view="historial">
             <div class="view-intro"><div><p class="eyebrow">Actividad</p><h2>Decisiones, señales vencidas y aprendizaje</h2></div><p>Aquí vive lo ocurrido. Nada de esta sección se presenta como oportunidad vigente.</p></div>
-            {futures_activity}
             {history_learning_summary}
+            {futures_activity}
             {premium_strategy_research_summary}
             <details id="analisis" class="panel operator-workspace">
               <summary><span>Detalle e informes técnicos<small>Seguimiento, tablas, efectividad y reportes ejecutivos.</small></span></summary>
@@ -11075,6 +11099,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         today=render_today_panel(active, snapshot, operator_payload, reports),
         command_center=render_command_center(active, snapshot, operator_payload, reports, position_payload, risk_payload, rsp_payload),
         automation_cycle=render_automation_cycle_panel(),
+        daily_routine=render_daily_operator_routine(),
         modules=render_module_health(active, snapshot, operator_payload, reports),
         market_mode=render_market_mode_panel(operator_payload, reports),
         timeline=render_timeline(snapshot, operator_payload, reports),

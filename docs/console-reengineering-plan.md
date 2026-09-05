@@ -73,3 +73,18 @@ Implementado el 5 de septiembre de 2026:
 La etapa 5 queda implementada. Falta la etapa 6: revisión integral de Actividad/aprendizaje, recorrido visual final y cierre de inconsistencias residuales.
 
 Validación: 665 pruebas automáticas satisfactorias y comprobación del panel servido por la consola permanente. En la lectura real del 5 de septiembre, el último intento del programador era posterior al último reporte confirmado; por diseño la consola lo mostró como revisión pendiente, no como éxito.
+
+## Etapa 6 — actividad, rutina y auditoría visual final
+
+Implementado el 5 de septiembre de 2026:
+
+- Auditoría estructural de la consola instalada: cinco vistas válidas, sin identificadores duplicados y sin enlaces internos rotos.
+- Actividad abre con la conclusión del aprendizaje y el tamaño de muestra antes de mostrar señales vencidas o informes técnicos.
+- Hoy incorpora «Mi rutina diaria» con cuatro pasos: leer Hoy, proteger la cartera, evaluar entradas realmente listas y cerrar/aprender.
+- La rutina enlaza directamente con cada zona y mantiene explícito que la consola nunca envía órdenes.
+- Revisión visual real en Safari de Hoy, Oportunidades y Actividad. La jerarquía, estados, filtros y estrategias de investigación se distinguen correctamente.
+- Corregido ruido residual: el simulador de capital sólo aparece para una oportunidad `ENTRY_READY`; una idea en preparación o espera ya no presenta controles prematuros de tamaño.
+
+La reingeniería visual acordada en las etapas 1–6 queda implementada. La validación de funcionamiento económico y de alertas reales continúa siendo observación de mercado, no una tarea visual ni una garantía de rentabilidad.
+
+Validación final de código: 667 pruebas automáticas satisfactorias.
