@@ -16,7 +16,10 @@ El desplegable **Mi rutina diaria** resume el uso recomendado en cuatro pasos: l
 
 Las entradas `ENTRY_READY` de futuros tienen una vigencia máxima de **3 minutos** desde su marca de origen disponible; el contexto de vigilancia tiene hasta **10 minutos**. Una señal envejecida sale del centro de oportunidades y no se recupera como entrada desde “última señal”. La actividad histórica permanece disponible para diagnóstico, identificada como no operable. Estos tiempos no garantizan que el precio siga siendo válido: deben verificarse stop, objetivos y cotización antes de actuar.
 
-Esta primera etapa no completa la reingeniería: quedan el rediseño de Cartera, los carriles por estrategia y la revisión integral de automatización diaria.
+La reingeniería planificada quedó completada: incluye el rediseño de Cartera,
+los carriles por estrategia, la automatización diaria verificable, Actividad,
+Modo foco y los expedientes de operación. Las mejoras posteriores se consideran
+validación de uso o evolución institucional, no etapas funcionales pendientes.
 
 - La cabecera separa ahora conexión, frescura y riesgo: **IBKR conectado** no
   implica que la evaluación siga vigente. Si riesgo marca la cuenta como
@@ -88,7 +91,7 @@ Fuentes de información
                          │
                          ▼
               Stock Ultimus Console
-  Hoy → Cartera → Oportunidades → Historial
+  Hoy → Cartera → Oportunidades → Actividad
               → Configuración → Ayuda
                          │
                          ▼
@@ -119,7 +122,11 @@ Si el acceso directo detecta una instalación antigua, código desactualizado o 
 2. Abre la consola.
 3. Mira primero el estado de conexión superior.
 4. Cuando tengas una nueva lectura de niveles/gamma, guárdala desde **Oportunidades → RSP → Actualizar lectura de mercado RSP**.
-5. Presiona **Ejecutar apertura diaria**. El ciclo actualiza primero el Control Tower y las posiciones de todas las cuentas, valida el contexto RSP guardado y consulta una cadena RSP independiente de 7–14 DTE.
+5. Comprueba en **Apertura automática** que el reporte de la jornada terminó. Si
+   TWS estaba cerrado o el ciclo programado falló, presiona **Ejecutar apertura
+   diaria** como recuperación. El ciclo actualiza primero el Control Tower y las
+   posiciones de todas las cuentas, valida el contexto RSP guardado y consulta
+   una cadena RSP independiente de 7–14 DTE.
 6. Espera a que el proceso muestre `DONE`. No vuelvas a presionar el botón mientras esté trabajando.
 7. Lee **Hoy**: presenta una sola acción principal y un máximo de tres prioridades visibles.
 8. Sigue el enlace **Revisar**. La consola abrirá automáticamente **Cartera** u **Oportunidades**, según corresponda.
@@ -191,11 +198,11 @@ La barra fija cambia entre cinco espacios de trabajo. Sólo se muestra uno a la 
 1. **Hoy:** acción principal, tres prioridades y estado de la apertura.
 2. **Cartera:** riesgo, capacidad y explorador de posiciones.
 3. **Oportunidades:** Radar CANSLIM, futuros, alertas de entrada y RSP.
-4. **Historial:** resultados, efectividad, reportes y aprendizaje.
+4. **Actividad:** decisiones, expedientes, resultados, efectividad y aprendizaje.
 5. **Configuración:** cuentas, conexiones, mantenimiento y diagnóstico.
 6. **Ayuda:** esta guía.
 
-La consola recuerda la última vista elegida después de una actualización. Los enlaces **Revisar** cambian de vista y llevan al bloque exacto. Las funciones avanzadas no desaparecieron: están plegadas dentro de **Cartera**, **Historial** o **Configuración**.
+La consola recuerda la última vista elegida después de una actualización. Los enlaces **Revisar** cambian de vista y llevan al bloque exacto. Las funciones avanzadas no desaparecieron: están plegadas dentro de **Cartera**, **Actividad** o **Configuración**.
 
 ## 7. Hoy y sus prioridades
 
@@ -242,7 +249,7 @@ actualizar la pantalla y usar las demás secciones. La indicación **Procesando*
 y la espera hasta `DONE` quedan reservadas para refrescos o checklists que sí
 deben terminar antes de repetir la misma acción.
 
-Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Historial.
+Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Mercado**. **Última apertura** informa si el ciclo técnico terminó; el avance de evidencia estadística permanece separado dentro de Actividad.
 
 ## 8. Alertas y diagnósticos
 
@@ -291,7 +298,7 @@ Si **Entrada máxima** dice **No calculada; no perseguir precio**, falta definir
 
 **Verificar precio actual** significa que la señal sigue vigente, pero falta una cotización comprobable del mismo instrumento, de hasta 30 segundos, o stop, objetivo y límite de entrada coherentes. Revisa el mensaje específico: puede haber cotización disponible y faltar solamente el límite. No equivale a una orden de entrada. El precio original de la alerta no es una cotización en vivo. Cuando hay cotización válida, el control descarta de oportunidades un precio que ya excede el límite de persecución o la invalidación. La comprobación no certifica que el stop no se haya tocado anteriormente.
 
-La consola consulta TWS automáticamente en segundo plano para MNQ/MES cuando la alerta identifica su contrato concreto. Usa precio vendedor para comprar y comprador para vender, sin aceptar cotizaciones demoradas o congeladas. Requiere TWS abierto y permisos de datos en tiempo real. Para continuos MNQ1!/MES1!, las alertas deben incluir `current_contract`; no se adivina el vencimiento. El Pine FAST v2.2 del proyecto incluye ese dato, pero su actualización en las alertas existentes sigue pendiente.
+La consola consulta TWS automáticamente en segundo plano para MNQ/MES cuando la alerta identifica su contrato concreto. Usa precio vendedor para comprar y comprador para vender, sin aceptar cotizaciones demoradas o congeladas. Requiere TWS abierto y permisos de datos en tiempo real. Para continuos MNQ1!/MES1!, las alertas incluyen `current_contract`; no se adivina el vencimiento. Si una futura edición del Pine cambia el payload, las alertas deben recrearse o actualizarse para capturar la nueva versión antes de considerarlas vigentes.
 
 El **límite de entrada** permite como máximo 0,20 ATR de variación desde el disparo en la dirección de la operación. No es un nuevo gatillo: conserva al menos 1,5 unidades de beneficio potencial al segundo objetivo por cada unidad de riesgo al stop, antes de comisiones y deslizamiento. Si el precio supera ese límite, la consola indica no perseguir; si permanece dentro, todavía deben pasar cartera, riesgo y tamaño. El servidor comprueba nuevamente el cálculo recibido.
 
@@ -622,7 +629,7 @@ Las estrategias **Volatilidad de earnings CANSLIM** y **Put de largo plazo SPY/R
 
 El calendario de earnings CANSLIM se actualiza gratuitamente con Alpha Vantage durante la apertura diaria, incluso si TWS está cerrado. Una fecha detectada puede aparecer como **estimada** hasta corroborarse en TradingView o en relaciones con inversionistas. Wall Street Horizon es un respaldo opcional: no contratarlo no genera un bloqueo. Si la consola solicita configuración, sólo falta guardar una clave gratuita de Alpha Vantage; la clave no se publica ni se muestra.
 
-Al entrar a **Historial**, la primera tarjeta es la **Conclusión del motor**. Debe leerse en este orden:
+Al entrar a **Actividad**, la primera tarjeta es la **Conclusión del motor**. Debe leerse en este orden:
 
 1. **Conclusión:** indica si ya existe evidencia suficiente para revisar parámetros o si todavía conviene mantenerlos sin cambios.
 2. **Marcador de evidencia:** muestra decisiones registradas, resultados completos frente al mínimo requerido, cobertura de decisiones, alertas resueltas y precisión verificable.
@@ -630,7 +637,7 @@ Al entrar a **Historial**, la primera tarjeta es la **Conclusión del motor**. D
 
 Los informes extensos quedan dentro de **Detalle e informes técnicos** para que la lectura cotidiana no se mezcle con diagnóstico avanzado.
 
-### Historial de decisiones y resultados
+### Historial de decisiones y resultados dentro de Actividad
 
 Relaciona decisiones con resultados, PnL y estrategia. **Actualizar seguimiento ahora** evalúa checkpoints y sincroniza diarios; no toca IBKR.
 
@@ -771,7 +778,8 @@ Lee primero el resumen amigable de la última acción. Abre el detalle técnico 
 Si sólo recuerdas una secuencia, usa ésta:
 
 ```text
-Abrir TWS → Abrir consola → Ejecutar apertura diaria → Esperar DONE
+Abrir TWS → Abrir consola → Confirmar Apertura automática
+→ Si falló, Ejecutar apertura diaria y esperar DONE
 → Leer Hoy → Seguir la prioridad principal → Revisar Cartera
 → Revisar Oportunidades → Registrar lo realizado
 → Ejecutar manualmente en TWS sólo si tu revisión lo aprueba
