@@ -61,12 +61,12 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertEqual(sorted(html.index(step) for step in steps), [html.index(step) for step in steps])
         self.assertIn("nunca envía una orden", html)
 
-    def test_trade_casefile_links_decision_to_detected_broker_position(self):
+    def test_trade_casefile_keeps_ticker_only_evidence_unlinked(self):
         decisions = [{"ticker": "NFLX", "strategy": "COVERED_CALL", "final_state": "MANAGE", "recorded_at": "2026-09-05T10:00:00+00:00"}]
         with patch.object(console, "json_rows", side_effect=[decisions, []]), patch.object(console, "load_operator_events", return_value=[]):
             rows = console.build_trade_casefiles({"positions": [{"ticker": "NFLX", "management_action": "HOLD"}]})
         self.assertEqual(rows[0]["phase"], "open")
-        self.assertTrue(rows[0]["linked"])
+        self.assertFalse(rows[0]["linked"])
         self.assertEqual(rows[0]["execution"], "Detectada automáticamente por posición")
 
     def test_usage_telemetry_is_local_minimal_and_rejects_unknown_fields(self):
@@ -76,20 +76,20 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
             payload = json.loads((Path(tmp) / "usage.json").read_text())
         self.assertTrue(result["ok"])
         self.assertFalse(rejected["ok"])
-        self.assertEqual(set(payload["events"][0]), {"event", "view", "recorded_at", "session_date"})
+        self.assertEqual(set(payload["events"][0]), {"event", "view", "recorded_at", "session_date", "session_id"})
 
     def test_focus_mode_and_experience_validation_are_exposed(self):
-        source = CONSOLE_SOURCE.read_text()
+        source = CONSOLE_SOURCE.read_text() + (ROOT / "scripts" / "console_ui.js").read_text()
         self.assertIn("data-focus-mode", source)
         self.assertIn("stockUltimusFocusMode", source)
         self.assertIn('fetch("/usage-event"', source)
         with patch.object(console, "load_json_file", return_value={"events": [], "session_dates": []}):
             html = console.render_usage_validation_panel()
-        self.assertIn("0/5 sesiones observadas", html)
+        self.assertIn("0 sesiones registradas", html)
         self.assertIn("No guarda cuentas, posiciones, precios ni órdenes", html)
 
     def test_activity_view_leads_with_learning_conclusion_before_expired_signals(self):
-        source = CONSOLE_SOURCE.read_text()
+        source = CONSOLE_SOURCE.read_text() + (ROOT / "scripts" / "console_ui.js").read_text()
         history = source.index('{history_learning_summary}', source.index('id="view-historial"'))
         futures = source.index('{futures_activity}', source.index('id="view-historial"'))
         self.assertLess(history, futures)
@@ -115,6 +115,12 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
             {key for key, _ in phases[1]},
             {"executive", "rankings", "learning"},
         )
+
+    def test_remote_console_uses_bounded_history_windows(self):
+        endpoints = console.remote_console_endpoints()
+        self.assertEqual(endpoints["signal_events"], "/v32_signal_events?limit=100")
+        self.assertEqual(endpoints["reviews"], "/v31_manual_reviews?limit=100")
+        self.assertEqual(endpoints["performance"], "/v32_strategy_performance?limit=200")
 
     def test_unified_opportunity_center_prioritizes_ready_before_forming_and_waiting(self):
         operator = {
@@ -368,7 +374,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         position_rows = [item for item in pending if item["area"] == "Posiciones"]
         self.assertEqual(len(risk_rows), 1)
         self.assertIn("3 alertas relacionadas", risk_rows[0]["detail"])
-        self.assertEqual(len(position_rows), 1)
+        self.assertEqual(len(position_rows), 2)
         self.assertIn("NFLX", position_rows[0]["title"])
         self.assertEqual(position_rows[0]["when"], "Resolver ahora")
 
@@ -399,7 +405,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("Stock Ultimus Console.command", command)
 
     def test_console_exposes_compact_operator_navigation(self):
-        source = CONSOLE_SOURCE.read_text()
+        source = CONSOLE_SOURCE.read_text() + (ROOT / "scripts" / "console_ui.js").read_text()
 
         self.assertIn('class="operator-nav"', source)
         for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion"):
@@ -434,7 +440,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn("la lista se ordena por cercanía a una decisión", source)
         self.assertIn("Actividad reciente y señales caducadas", source)
         self.assertIn('<details id="alertas" class="panel operator-workspace secondary-workspace" open>', source)
-        risk_index = source.index('<div id="riesgo">{portfolio_risk}</div>')
+        risk_index = source.index('<details id="riesgo"')
         positions_index = source.index('<div id="posiciones">{active_positions}</div>')
         rsp_index = source.index("            {coberturas}\n", positions_index)
         tools_index = source.index('<details id="herramientas" class="panel operator-workspace">')

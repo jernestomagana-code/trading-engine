@@ -51,7 +51,8 @@ class PremiumResearchConsoleTests(unittest.TestCase):
         self.assertIn("clave gratuita de Alpha Vantage", html)
         self.assertIn("WSH es opcional", html)
         self.assertIn("1/6", html)
-        self.assertIn("RESEARCH ONLY", html)
+        self.assertIn("Sólo investigación", html)
+        self.assertNotIn("DATA_COLLECTION_REQUIRED", html)
         self.assertNotIn("ENTRY_READY", html)
 
 

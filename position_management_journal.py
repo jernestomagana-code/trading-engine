@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from console_presentation import reviewed_today
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,7 @@ def record_event(
         "recorded_at": event.get("recorded_at") or now_iso(),
         "position_id": event.get("position_id"),
         "ticker": event.get("ticker"),
+        "account_alias": event.get("account_alias"),
         "strategy": event.get("strategy"),
         "recommended_action": event.get("recommended_action"),
         "recommended_state": event.get("recommended_state"),
@@ -97,6 +99,8 @@ def management_fingerprint(position: dict[str, Any]) -> str:
     call = recommendation.get("contract") if isinstance(recommendation.get("contract"), dict) else {}
     put = recommendation.get("put_contract") if isinstance(recommendation.get("put_contract"), dict) else {}
     stable = {
+        "account_alias": position.get("account_alias"),
+        "account_scope": position.get("account_scope"),
         "position_id": position.get("position_id"),
         "ticker": position.get("ticker"),
         "strategy": position.get("strategy"),
@@ -124,6 +128,11 @@ def acknowledged_position_reviews(
     events = load_journal(path).get("events") or []
     positions = management_payload.get("positions") if isinstance(management_payload.get("positions"), list) else []
     acknowledged: dict[str, dict[str, Any]] = {}
+    id_counts = {}
+    for item in positions:
+        if isinstance(item, dict) and item.get("position_id"):
+            key = str(item["position_id"])
+            id_counts[key] = id_counts.get(key, 0) + 1
     review_actions = {
         "REVIEW_COMPLETED",
         "NO_ACTION_TAKEN",
@@ -136,7 +145,7 @@ def acknowledged_position_reviews(
         if not isinstance(position, dict):
             continue
         position_id = str(position.get("position_id") or "")
-        if not position_id or str(position.get("management_action") or "").upper() == "REFRESH_DATA":
+        if not position_id or id_counts.get(position_id) != 1 or str(position.get("management_action") or "").upper() == "REFRESH_DATA":
             continue
         current_fingerprint = management_fingerprint(position)
         latest = next(
@@ -144,10 +153,11 @@ def acknowledged_position_reviews(
                 event for event in events
                 if isinstance(event, dict)
                 and str(event.get("position_id") or "") == position_id
+                and (not event.get("account_alias") or event.get("account_alias") == position.get("account_alias"))
             ),
             None,
         )
-        if not latest:
+        if not latest or not reviewed_today(latest.get("recorded_at")):
             continue
         if (
             str(latest.get("operator_action") or "").upper() in review_actions
@@ -184,25 +194,24 @@ def evaluate_against_management(
     journal = load_journal(path)
     events = journal.get("events") or []
     positions = management_payload.get("positions") if isinstance(management_payload.get("positions"), list) else []
-    by_id = {
-        str(item.get("position_id") or ""): item
-        for item in positions
-        if isinstance(item, dict) and item.get("position_id")
-    }
-    by_ticker = {
-        str(item.get("ticker") or "").upper(): item
-        for item in positions
-        if isinstance(item, dict) and item.get("ticker")
-    }
+    def match_position(event):
+        position_id = event.get("position_id")
+        if not position_id:
+            return None
+        matches = [item for item in positions if isinstance(item, dict)
+                   and str(item.get("position_id") or "") == str(position_id)
+                   and (not event.get("account_alias") or item.get("account_alias") == event["account_alias"])]
+        return matches[0] if len(matches) == 1 else None
     evaluated = []
     pending = []
     for event in events:
         if not isinstance(event, dict):
             continue
-        current = by_id.get(str(event.get("position_id") or "")) or by_ticker.get(str(event.get("ticker") or "").upper())
+        current = match_position(event)
         row = {
             "event_id": event.get("event_id"),
             "ticker": event.get("ticker"),
+            "account_alias": event.get("account_alias"),
             "strategy": event.get("strategy"),
             "operator_action": event.get("operator_action"),
             "recommended_action": event.get("recommended_action"),

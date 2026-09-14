@@ -12,7 +12,7 @@ Esta guía explica cómo quedó funcionando la consola, qué significa cada bloq
 
 El desplegable **Mi rutina diaria** resume el uso recomendado en cuatro pasos: leer Hoy, proteger primero la cartera, evaluar únicamente oportunidades realmente listas y cerrar revisando Actividad. Está pensado para que un usuario nuevo no necesite conocer la arquitectura técnica.
 
-**Modo foco** se activa desde la navegación superior y conserva sólo la decisión principal y las lecturas esenciales de Hoy. La preferencia queda guardada en este Mac hasta pulsar **Salir de foco**. En **Actividad**, los expedientes por ticker conectan la última recomendación con la posición detectada en IBKR, su gestión y el resultado disponible. La vinculación por posición es automática; los precios y cantidades exactos de ejecución sólo se consideran confirmados cuando proceden del broker o fueron registrados expresamente.
+**Modo foco** se activa desde la navegación superior y conserva sólo la decisión principal y las lecturas esenciales de Hoy. La preferencia queda guardada en este Mac hasta pulsar **Salir de foco**. En **Actividad**, los expedientes separan posiciones actuales, decisiones y resultados históricos. Sólo se vinculan registros con cuenta e identificador de operación o ciclo coincidentes; compartir ticker no confirma el vínculo. Un resultado antiguo no cierra una posición actual; los precios y cantidades exactos de ejecución sólo se consideran confirmados cuando proceden del broker o fueron registrados expresamente.
 
 Las entradas `ENTRY_READY` de futuros tienen una vigencia máxima de **3 minutos** desde su marca de origen disponible; el contexto de vigilancia tiene hasta **10 minutos**. Una señal envejecida sale del centro de oportunidades y no se recupera como entrada desde “última señal”. La actividad histórica permanece disponible para diagnóstico, identificada como no operable. Estos tiempos no garantizan que el precio siga siendo válido: deben verificarse stop, objetivos y cotización antes de actuar.
 
@@ -29,7 +29,7 @@ validación de uso o evolución institucional, no etapas funcionales pendientes.
   ventana, una sola vez por fecha de mercado. Actualiza resultados y futuros
   pendientes sin enviar resúmenes al celular ni autorizar órdenes.
 - **Actualizar pantalla** trabaja en segundo plano, consulta cada fuente de
-  forma gradual, muestra avance y recarga al terminar. Si alguna fuente usa
+  forma gradual, muestra avance y ofrece **Ver estado actualizado** al terminar. Si alguna fuente usa
   respaldo o falla, el resultado queda marcado como parcial en lugar de
   aparentar una actualización completa.
 - Las piernas de futuros de una misma cuenta y activo se agrupan como spread
@@ -184,7 +184,7 @@ Las acciones técnicas de conexión y publicación quedaron dentro de **Más opc
 | Botón | Para qué sirve | Qué no hace |
 |---|---|---|
 | Ejecutar apertura diaria | Ejecuta CANSLIM, actualiza primero las cuentas y posiciones del Control Tower, limita el barrido rápido general a 12 símbolos y evalúa dinámicamente hasta 8 subyacentes con opciones, refresca IBKR y RSP 7–14 DTE, publica, prepara contexto conservador de futuros, reconcilia señales y genera el reporte. | No autoriza órdenes ni da por validado el contexto macro. |
-| Actualizar pantalla | Relee producción, GPT y alertas gradualmente en segundo plano; muestra progreso y recarga al terminar. | No cambia cuenta ni consulta IBKR. Una fuente lenta puede quedar identificada como respaldo/parcial. |
+| Actualizar pantalla | Relee producción, GPT y alertas gradualmente en segundo plano; muestra progreso y ofrece **Ver estado actualizado** al terminar. | No cambia cuenta ni consulta IBKR. Una fuente lenta puede quedar identificada como respaldo/parcial. |
 | Validar cuenta activa | Dentro de **Más opciones**; prueba TWS/API y capacidad únicamente para la cuenta seleccionada. | No actualiza las demás cuentas ni reconcilia toda la cartera. |
 | Actualizar cuentas y posiciones IBKR | Dentro de **Cartera → Posiciones activas**; actualiza en modo read-only todas las cuentas, capacidad, posiciones, riesgo, estrés y factores. | No coloca órdenes ni hace el escaneo profundo de oportunidades de la apertura diaria. |
 | Alinear contexto publicado | Dentro de **Más opciones**; corrige la cuenta y el contexto que ve GPT. | No sustituye un refresh completo de opciones. |
@@ -210,11 +210,11 @@ La consola recuerda la última vista elegida después de una actualización. Los
 
 La franja inmediatamente inferior resume las cinco preguntas de la jornada: **riesgo de cartera**, **oportunidades nuevas**, **posiciones abiertas**, **estado operativo** y **apertura/mercado**. Los primeros cuatro bloques funcionan también como accesos directos a la sección donde se atiende cada tema. Una oportunidad sólo se cuenta como lista cuando el motor la llevó a `ENTRY_READY`; las que todavía se están formando se muestran por separado.
 
-Cada prioridad de **Hoy** incluye cuatro controles cotidianos: **Abrir detalle** lleva al bloque que explica la situación; **Revisar** conserva la tarjeta visible con estado *En revisión*; **Posponer 1 h** la oculta temporalmente y la devuelve automáticamente; **Marcar atendido** la retira de la cola. Si después cambia la recomendación, el riesgo o el motivo, la tarea reaparece como nueva aunque anteriormente se hubiera pospuesto o atendido. Estos controles sólo organizan el trabajo: no ejecutan órdenes ni alteran las compuertas del motor.
+Cada prioridad de **Hoy** incluye cuatro controles cotidianos: **Abrir detalle** lleva al bloque que explica la situación; **Revisar** conserva la tarjeta visible con estado *En revisión*; **Posponer 5, 15 o 60 min** fija la próxima revisión según el plazo mostrado en la tarjeta; **Revisado por hoy** registra que la revisaste durante la jornada de CDMX. La confirmación aparece en la misma vista y ofrece **Deshacer**. Usa **Ver estado actualizado** para recargar los datos. Al día siguiente, la revisión vuelve a quedar pendiente si la situación persiste. Si después cambia la recomendación, el riesgo o el motivo, la tarea reaparece como nueva aunque anteriormente se hubiera pospuesto o atendido. Estos controles sólo organizan el trabajo: no ejecutan órdenes ni alteran las compuertas del motor.
 
-Antes de esos controles, cada tarjeta traduce la evidencia en tres respuestas: **Por qué importa ahora** explica qué activó la prioridad; **Recomendación** conserva la acción concreta calculada por el motor; **Si no la atiendes** describe la consecuencia operativa de esperar. La consecuencia es una advertencia de gestión, no una predicción garantizada del mercado.
+Dentro de **Motivo y próxima revisión**, cada tarjeta traduce la evidencia en tres respuestas: **Por qué importa ahora** explica qué activó la prioridad; **Recomendación** conserva la acción concreta calculada por el motor; **Si no la atiendes** describe la consecuencia operativa de esperar. La consecuencia es una advertencia de gestión, no una predicción garantizada del mercado.
 
-La etiqueta temporal distingue **Actuar ahora**, **Revisar hoy**, **Antes de abrir posición** y **Esperar**. **Próxima revisión** muestra la siguiente hora de control en horario de Ciudad de México, o indica explícitamente que debe revisarse antes de la próxima entrada. Es un recordatorio operativo: no representa una orden, vencimiento garantizado ni autorización para operar.
+La etiqueta temporal distingue **Revisar ahora**, **Revisar hoy**, **Antes de abrir posición** y **Esperar**. **Próxima revisión** muestra la siguiente hora de control en horario de Ciudad de México, o indica explícitamente que debe revisarse antes de la próxima entrada. Es un recordatorio operativo: no representa una orden, vencimiento garantizado ni autorización para operar.
 
 Al final de **Hoy**, **Cierre diario** se construye automáticamente con el diario de tareas y el riesgo vigente. Resume cuántas prioridades se revisaron, cuáles siguen pospuestas, cuántos riesgos altos o críticos permanecen abiertos y cuál es la primera tarea que debe retomarse. También muestra la próxima apertura estimada en horario CDMX. No exige captura manual y no confunde *revisado* con *riesgo resuelto*.
 
@@ -229,7 +229,7 @@ La compuerta incluye una sola acción contextual: **Ejecutar Apertura diaria** c
 3. RSP con lectura/cadena/capacidad pendiente;
 4. alertas u oportunidades con calidad suficiente.
 
-La cola consolida incidencias repetidas que se resuelven con la misma acción. Por ejemplo, datos, NAV y métricas incompletas de varias cuentas aparecen como una sola prioridad **Actualizar datos de riesgo multicuenta**, indicando cuántas alertas agrupa. También combina varias patas del mismo ticker y reutiliza la clasificación de Cartera: **Actuar ahora**, **Revisar hoy** o **Actualizar datos**. Las preselecciones CANSLIM y señales en formación permanecen en Oportunidades; sólo una **Entrada lista** sube a Hoy. Así las tres filas no quedan ocupadas por diez versiones del mismo problema.
+La cola consolida incidencias repetidas que se resuelven con la misma acción. Por ejemplo, datos, NAV y métricas incompletas de varias cuentas aparecen como una sola prioridad **Actualizar datos de riesgo multicuenta**, indicando cuántas alertas agrupa. Las estructuras reconocidas agrupan sus patas; dos posiciones del mismo ticker en cuentas distintas conservan su identidad y su enlace de detalle. La cola reutiliza la clasificación de Cartera: **Revisar ahora**, **Revisar hoy** o **Actualizar datos**. Las preselecciones CANSLIM y señales en formación permanecen en Oportunidades; sólo una **Entrada lista** sube a Hoy. Así las tres filas no quedan ocupadas por diez versiones del mismo problema.
 
 | Modo | Significado | Conducta recomendada |
 |---|---|---|
@@ -255,7 +255,9 @@ Las cuatro lecturas rápidas muestran **Riesgo**, **Posiciones**, **RSP** y **Me
 
 Este panel permanece cerrado cuando no hay una señal operable. La consola separa:
 
-El **Centro de oportunidades** reúne primero CANSLIM, futuros y RSP en una sola cola y los clasifica como **Entrada lista**, **Preparándose**, **Esperar** o **Bloqueada**. Cada tarjeta presenta la recomendación prioritaria, entrada, invalidación, objetivos y el único bloqueo dominante. También compara el **capital o margen requerido** con la **capacidad disponible** de IBKR y muestra una **capacidad posterior proyectada**. Esa resta es una ayuda de decisión, no una reserva ni una confirmación de margen; el ticket final se valida en IBKR. Si el motor no conoce el margen, el tamaño o la estructura, muestra `N/D`. La tarjeta también advierte si existe un bloqueo global de riesgo, si hace falta revisión previa o si la concentración posterior no puede calcularse todavía.
+El **Centro de oportunidades** reúne primero CANSLIM, futuros y RSP en una sola cola y los clasifica como **Entrada lista**, **Preparándose**, **Esperar** o **Bloqueada**. Las tarjetas de evaluación muestran la recomendación, el bloqueo principal y, cuando corresponde, los niveles de entrada, invalidación y objetivos en su detalle. Las ideas de investigación muestran qué falta para avanzar, sin simular un ticket operativo. También compara el **capital o margen requerido** con la **capacidad disponible** de IBKR y muestra una **capacidad posterior proyectada**. Esa resta es una ayuda de decisión, no una reserva ni una confirmación de margen; el ticket final se valida en IBKR. Si el motor no conoce el margen, el tamaño o la estructura, muestra `N/D`. La tarjeta también advierte si existe un bloqueo global de riesgo, si hace falta revisión previa o si la concentración posterior no puede calcularse todavía.
+
+Para RSP, la capacidad procede exclusivamente de fondos disponibles de **retiro**, con actualización confirmada de hasta 30 minutos. Si falta esa evidencia, no se sustituye por fondos de otra cuenta. Los filtros de estrategia afectan también los bloques relacionados; los de estado permiten localizar oportunidades listas, en preparación o bloqueadas.
 
 Cuando existen capital unitario y capacidad vigentes, la tarjeta abre un **Simulador previo**. Cambia la cantidad de contratos —o ciclos para RSP— para recalcular capital total, capacidad restante y porcentaje utilizado. El color advierte insuficiencia o consumo superior al 25%. La simulación permanece en el navegador: no guarda una operación, no reserva fondos y no envía órdenes. Sus límites son deliberados (hasta diez contratos y hasta tres ciclos RSP); la concentración posterior continúa como `N/D` hasta que exista un tamaño y ticket definitivos. Si falta margen o capacidad, la consola muestra **Simulador pendiente**.
 
@@ -284,7 +286,7 @@ Que una alerta aparezca como operable significa **“revisar ahora”**, no “e
 
 ### Embudo operativo de futuros
 
-La sección de futuros ordena MNQ y MES como **Detectada → Aceptada → Confirmada → Entrada lista**. Las señales que no avanzan quedan separadas como **Vigilancia**, **Tardía**, **Bloqueada** o **Descartada por datos**. Los gatillos nativos `ORB_BREAKOUT`, `VWAP_RECLAIM` y `VWAP_REJECT` cuentan como entradas detectadas aunque el texto técnico no diga literalmente `ENTRY`.
+La sección de futuros distingue **Recibidas reporte**, **Aceptadas reporte**, **Confirmadas motor** y **Listas motor**. Los contadores proceden del reporte y del motor; no deben interpretarse como un único embudo con el mismo universo y momento de actualización. Las señales que no avanzan quedan separadas como **Vigilancia**, **Tardía**, **Bloqueada** o **Descartada por datos**. Los gatillos nativos `ORB_BREAKOUT`, `VWAP_RECLAIM` y `VWAP_REJECT` cuentan como entradas detectadas aunque el texto técnico no diga literalmente `ENTRY`.
 
 La recomendación prioritaria muestra:
 
@@ -398,12 +400,12 @@ En **IBKR aplicada**, escribe una nota, el precio real de fill y la cantidad. Un
 
 La vista **Cartera** funciona como una bandeja de decisiones, no como una lista indiferenciada. Arriba resume cuatro grupos y presenta las posiciones en este mismo orden:
 
-1. **Actuar ahora:** riesgo, asignación, defensa, reducción o cierre sensible al tiempo.
+1. **Revisar ahora:** riesgo, asignación, defensa, reducción o cierre sensible al tiempo.
 2. **Revisar hoy:** existe una decisión que necesita criterio humano, pero no una emergencia operativa.
 3. **Mantener:** la recomendación principal es no modificar la posición; esto también es una decisión explícita del motor.
 4. **Actualizar datos:** IBKR o la lectura técnica no permiten sostener todavía una recomendación operable.
 
-Las posiciones cuya lectura ya se marcó como revisada se mueven a **Revisiones completadas**. No regresan a la cola principal hasta que cambie la posición, su estructura o la recomendación.
+Las posiciones cuya lectura ya se marcó como revisada se mueven a **Revisiones completadas**. Regresan a la cola al cambiar de jornada en CDMX o antes si cambia la posición, su estructura o la recomendación.
 
 Escribe un ticker —por ejemplo `NFLX`— y, si existe una sola coincidencia, su tarjeta se abre automáticamente. Cada fila enseña ticker, estructura, recomendación principal y **Próximo control**. Al seleccionar **Ver gestión**, la primera franja responde tres preguntas: **qué hacer ahora**, **por qué ahora** y **qué haría cambiar el plan**. Los escenarios, formularios y diagnósticos permanecen como detalle secundario.
 
@@ -443,7 +445,7 @@ Los strikes, vencimiento, bid, ask, cantidad y ganador cambian con el precio, la
 
 La tarjeta destaca primero una sola **Recomendación del motor**, que también puede ser **Mantener y monitorear**. Explica por qué la priorizó, su confianza y el contrato preferido cuando aplica. Las demás rutas quedan dentro de **Ver otras posibilidades** para no confundir la acción principal con una lista de opciones equivalentes.
 
-Cuando termines de evaluar una posición que requiere decisión humana, presiona **Marcar revisión completada**. La consola guarda una huella de la posición, el estado y los contratos recomendados, y la elimina de la cola de prioridades. Volverá a aparecer si cambia la posición, la acción principal, la cantidad, el strike, el vencimiento o alguna pata de la estructura. Una posición marcada **Actualizar datos** no puede ocultarse sólo como revisada: usa **Ir a actualizar datos** y ejecuta **Actualizar cuentas y posiciones IBKR**; desaparecerá cuando el motor reciba la información necesaria.
+Cuando termines de evaluar una posición que requiere decisión humana, presiona **Marcar revisión completada**. La consola guarda una huella de la posición, el estado y los contratos recomendados, y la elimina de la cola de prioridades. Volverá a aparecer al cambiar de jornada en CDMX o antes si cambia la posición, la acción principal, la cantidad, el strike, el vencimiento o alguna pata de la estructura. Una posición marcada **Actualizar datos** no puede ocultarse sólo como revisada: usa **Ir a actualizar datos** y ejecuta **Actualizar cuentas y posiciones IBKR**; desaparecerá cuando el motor reciba la información necesaria.
 
 La apertura diaria incorpora automáticamente todos los símbolos encontrados en posiciones abiertas al escaneo de opciones. La última cadena no vacía de cada símbolo se conserva para gestión, evitando que un refresco posterior de otros tickers borre sus alternativas. “Lista para revisión” nunca significa orden autorizada: toda ejecución continúa siendo manual en el broker.
 
@@ -741,9 +743,9 @@ Son acciones distintas. Seleccionar una cuenta no equivale a refrescar sus datos
 
 Ejecuta un refresh de IBKR y espera a que termine. No tomes decisiones de contrato, capacidad o riesgo usando un snapshot marcado como viejo.
 
-La navegación normal abre inmediatamente desde la última caché disponible, aunque esté marcada como antigua; no espera a producción y por eso cambiar de bloque no debe dejar la consola “pegada”. **Actualizar pantalla** renueva los endpoints productivos uno por uno en segundo plano, informa cuántas fuentes lleva y recarga sólo al terminar. Las escrituras de caché son atómicas: varios refresh simultáneos no deben truncar el archivo ni perder endpoints. El resumen de la actualización distingue fuentes vivas, de respaldo y fallidas. Un dato marcado como respaldo viejo nunca confirma posiciones ni capacidad: cuando las tres cuentas están `READY`, la lectura local multicuenta de IBKR es la fuente autoritativa.
+La navegación normal abre inmediatamente desde la última caché disponible, aunque esté marcada como antigua; no espera a producción y por eso cambiar de bloque no debe dejar la consola “pegada”. **Actualizar pantalla** renueva los endpoints productivos uno por uno en segundo plano, informa cuántas fuentes lleva y ofrece **Ver estado actualizado** al terminar. Las escrituras de caché son atómicas: varios refresh simultáneos no deben truncar el archivo ni perder endpoints. El resumen de la actualización distingue fuentes vivas, de respaldo y fallidas. Un dato marcado como respaldo viejo nunca confirma posiciones ni capacidad: cuando las tres cuentas están `READY`, la lectura local multicuenta de IBKR es la fuente autoritativa.
 
-En días de mercado, el servicio programado repite apertura/publicación aproximadamente cada hora entre 07:35 y 13:35 hora local. Esto mantiene la cuenta, CANSLIM, cadenas y ranking dentro de la ventana de frescura. El botón manual sigue disponible si TWS estaba cerrado o una actualización programada falló.
+De lunes a viernes, el servicio programado repite apertura/publicación aproximadamente cada hora entre 07:35 y 13:35 hora local. Esto mantiene la cuenta, CANSLIM, cadenas y ranking dentro de la ventana de frescura. El botón manual sigue disponible si TWS estaba cerrado o una actualización programada falló.
 
 En **Hoy**, el bloque **Apertura automática** permite comprobarlo sin revisar archivos técnicos. **Último reporte** es la evidencia de que la apertura terminó y dejó resultado; **Último intento del programador** sólo demuestra que macOS inició el trabajo. Si el intento es posterior al reporte, la consola solicita revisión porque no debe confundirse un proceso iniciado con uno completado. **Próxima ejecución** muestra el siguiente ciclo previsto en horario CDMX. En fin de semana o fuera de mercado es normal ver “Automatización activa” con la próxima sesión hábil.
 
@@ -784,7 +786,7 @@ Abrir TWS → Abrir consola → Confirmar Apertura automática
 → Revisar Oportunidades → Registrar lo realizado
 → Ejecutar manualmente en TWS sólo si tu revisión lo aprueba
 ```
-# Popups de escritorio en macOS
+## 19. Popups de escritorio en macOS
 
 En **Configuración → Notificaciones y popups de esta Mac** se puede comprobar, activar o desactivar el aviso emergente local. El monitor revisa cada 15 segundos y sólo muestra eventos nuevos:
 
@@ -793,3 +795,53 @@ En **Configuración → Notificaciones y popups de esta Mac** se puede comprobar
 - incidencias operativas que requieren una acción concreta.
 
 No muestra `WATCH`, `PREPARE`, snapshots, esperas normales ni resúmenes. La instalación registra primero una línea base, de modo que los eventos históricos no aparecen como nuevos. El popup es soporte de decisión: no envía ni autoriza órdenes.
+
+
+## 20. Comprobar la experiencia de uso
+
+**Actividad reciente** muestra tareas, revisiones de posiciones y acciones registradas sobre alertas. Puedes filtrar por **Tareas**, **Posiciones** o **Alertas**, y usar **Desde mi última visita** o **Mostrar todas** para cambiar el período. Los expedientes se pueden filtrar por activo o cuenta, tipo y fecha. Una revisión o acción registrada no confirma una ejecución en el broker; una ejecución informada permanece pendiente de conciliación hasta contar con evidencia suficiente.
+
+También puede mostrar **Datos** cuando terminó una actualización completa o parcial y **Señales vencidas** de futuros. Una señal vencida se conserva como actividad y nunca vuelve a presentarse ahí como oportunidad vigente.
+
+Los expedientes abren por defecto en **Posiciones actuales** para evitar que el historial oculte lo que sigue abierto. Usa **Todos**, **Registros históricos**, **Decisiones**, **Ejecuciones por conciliar** o **Vínculos incompletos** cuando necesites ampliar el alcance.
+
+En **Validación de experiencia**, las sesiones se separan por 30 minutos de inactividad. Las acciones confirmadas y los errores son señales de funcionamiento, no una medida de comprensión ni de rendimiento financiero.
+
+Para comprobar que la consola resulta clara, recorre estas tareas y anota si pudiste terminarlas sin ayuda:
+
+1. En **Hoy**, identifica la siguiente revisión y explica con tus palabras por qué aparece primero.
+2. Abre su detalle y comprueba que corresponde al activo, cuenta y situación indicados.
+3. En **Cartera**, distingue el motivo de revisión del plan actual y encuentra qué dato podría cambiarlo.
+4. En **Oportunidades**, elige una estrategia y explica qué falta para que una idea avance. Comprueba a qué cuenta corresponde la capacidad.
+5. En **Actividad**, distingue una posición actual de un resultado histórico y localiza una revisión reciente.
+6. En móvil, cambia de vista y activa y desactiva **Modo foco** desde la barra de navegación; desplázala horizontalmente si el control queda fuera de pantalla.
+
+Registra por tarea: fecha, dispositivo, tiempo aproximado, terminada sin ayuda/sin terminar/con ayuda y la frase o control que generó confusión. No hacen falta importes, números de cuenta ni capturas con información financiera. La prueba de posponer, deshacer y recuperar una nota ante un error se realiza en el escenario aislado con datos ficticios.
+
+Considera prioritario corregir cualquier caso que abra la cuenta equivocada, confunda una idea con una entrada lista, pierda una nota o presente un resultado histórico como cierre actual. Repite la tarea afectada tras corregirla. Los tiempos sirven para comparar recorridos; no existe aún una meta validada ni sesiones observadas que permitan afirmar una mejora cuantitativa.
+
+**Horarios:** el indicador **Acciones** corresponde a la sesión regular de Nueva York, incluidos festivos y cierres anticipados documentados para 2026–2028. No describe el horario contractual de futuros. La hora de actualización automática del sistema es independiente del horario de negociación.
+
+
+### Horario del contrato de futuros
+
+La señal vigente de MNQ/MES muestra el horario del contrato concreto cuando IBKR lo entrega: **Abierto según horario IBKR**, **Cerrado según horario IBKR** o **Horario sin confirmar**. La consulta usa el vencimiento explícito de la señal, sin adivinar qué contrato corresponde a un símbolo continuo.
+
+El horario incluye los intervalos nocturnos, pausas y cierres que devuelve IBKR. Sólo se interpreta con zona horaria reconocida, fechas completas y una consulta de hasta 30 minutos. Fuera de las fechas recibidas, con datos vencidos o un formato ambiguo, se pide revisar el contrato en TWS. Puede existir horario confirmado aunque falte una cotización en vivo. Este indicador describe el calendario recibido; no confirma liquidez, ausencia de suspensiones ni que una señal sea una entrada válida.
+
+
+### Estados de RSP y antigüedad de los datos
+
+Una falta de capacidad, de datos de capital o de confirmación de margen aparece como **Bloqueada** en el Centro de oportunidades, aunque el reporte no incluya una lista adicional de bloqueos. **Acciones en cartera** forma parte de la gestión actual, incluso sin una call abierta.
+
+Una cadena **Disponible; revisar vigencia** existe en el reporte, pero no garantiza cotizaciones actuales. Los fondos del detalle se identifican como valores del reporte, cuya edad se muestra; esa fecha no confirma cuándo el broker actualizó el saldo. La capacidad operable del Centro de oportunidades mantiene su comprobación independiente de la cuenta retiro.
+
+
+### Expedientes con vínculo incompleto
+
+En **Actividad**, el filtro **Vínculos incompletos** reúne los registros que todavía no conectan una recomendación con su evidencia. Cada expediente explica si falta la cuenta, el identificador de operación o ciclo, o una recomendación/evidencia correspondiente. **Ejecuciones por conciliar** conserva las ejecuciones informadas por el operador que aún requieren conciliación.
+
+El identificador de una posición no se presenta como identificador de ciclo. Compartir símbolo no basta para unir registros. Las nuevas revisiones conservan el alias de cuenta; el seguimiento exige una posición identificada de forma única y, cuando está registrada, la misma cuenta. Un registro antiguo sin evidencia suficiente permanece sin asociar: no se convierte automáticamente en cierre ni en revisión de otra posición.
+
+
+La confirmación de revisión incluye la cuenta de la posición. Si dos posiciones comparten un identificador ambiguo, ambas permanecen visibles para revisión. Las confirmaciones guardadas antes de esta comprobación pueden requerir confirmarse nuevamente; el registro histórico se conserva.

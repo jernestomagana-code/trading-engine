@@ -58,12 +58,15 @@ def read_quote(identity):
         ib.RequestTimeout = 4
         ib.connect("127.0.0.1", int(os.getenv("IBKR_PORT", "7496")),
                    clientId=193, readonly=True, timeout=4)
-        contracts = ib.qualifyContracts(Future(identity["symbol"], identity["month"], "CME", currency="USD"))
+        details = ib.reqContractDetails(Future(identity["symbol"], identity["month"], "CME", currency="USD"))
+        contracts = [detail.contract for detail in details]
         if len(contracts) != 1:
             return {"quote_status": "CONTRACT_UNRESOLVED"}
         contract = contracts[0]
         if contract.symbol != identity["symbol"] or not contract.lastTradeDateOrContractMonth.startswith(identity["month"]):
             return {"quote_status": "CONTRACT_MISMATCH"}
+        schedule = {"contract": identity["contract"], "timezone": details[0].timeZoneId,
+                    "trading_hours": details[0].tradingHours, "observed_at": datetime.now(timezone.utc).isoformat()}
         ib.reqMarketDataType(1)
         ticker = ib.reqMktData(contract, "", False, False)
         prices = {}
@@ -76,8 +79,8 @@ def read_quote(identity):
         while time.monotonic() < deadline:
             ib.sleep(0.1)
             if 1 in prices and 2 in prices:
-                return normalized_quote(identity, ticker, prices[1], prices[2], datetime.now(timezone.utc).isoformat())
-        return {"quote_status": "LIVE_DATA_UNAVAILABLE"}
+                return {**normalized_quote(identity, ticker, prices[1], prices[2], datetime.now(timezone.utc).isoformat()), "contract_schedule": schedule}
+        return {"quote_status": "LIVE_DATA_UNAVAILABLE", "contract_schedule": schedule}
     except Exception:
         # Never expose connection/account details in a user-facing error.
         return {"quote_status": "TWS_UNAVAILABLE"}
@@ -117,6 +120,11 @@ def enrich_event(event):
             _pending.add(key)
             threading.Thread(target=_refresh, args=(identity,), daemon=True).start()
         quote = dict(quote)
+    schedule = quote.pop("contract_schedule", None)
+    if isinstance(schedule, dict) and schedule.get("contract") == identity["contract"]:
+        output["contract_schedule"] = schedule
+    else:
+        output.pop("contract_schedule", None)
     if quote.get("quote_status") == "LIVE":
         output.update(quote)
         direction = str(event.get("direction") or event.get("breakout_direction") or "").upper()

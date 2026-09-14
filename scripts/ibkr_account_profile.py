@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gzip
 import hashlib
 import html
 import json
@@ -33,6 +34,10 @@ if str(ROOT) not in sys.path:
 
 import alert_lifecycle as shared_alert_lifecycle
 import futures_live_quotes
+import futures_market_calendar
+import console_activity
+import console_market_calendar
+import console_presentation
 import alert_effectiveness as shared_alert_effectiveness
 import broker_control_tower as shared_control_tower
 import coberturas_engine as shared_coberturas_engine
@@ -1282,7 +1287,7 @@ def save_operator_events(events: list[dict[str, Any]]) -> None:
 
 def record_console_usage(event: str, view: str = "") -> dict[str, Any]:
     """Store anonymous local UI evidence; never account, order, or position data."""
-    allowed_events = {"PAGE_VIEW", "VIEW_CHANGE", "FOCUS_ON", "FOCUS_OFF"}
+    allowed_events = {"PAGE_VIEW", "VIEW_CHANGE", "FOCUS_ON", "FOCUS_OFF", "TASK_STARTED", "TASK_COMPLETED", "TASK_FAILED"}
     allowed_views = {"", "hoy", "cartera", "oportunidades", "historial", "configuracion", "guide"}
     event = str(event or "").upper()
     view = str(view or "").lower()
@@ -1291,8 +1296,12 @@ def record_console_usage(event: str, view: str = "") -> dict[str, Any]:
     payload = load_json_file(CONSOLE_USAGE_PATH)
     rows = [row for row in (payload.get("events") or []) if isinstance(row, dict)]
     recorded_at = now_iso()
+    last = rows[-1] if rows else {}
+    last_time = parse_iso_datetime(last.get("recorded_at"))
+    session_id = last.get("session_id") if last_time and datetime.now(timezone.utc) - last_time < timedelta(minutes=30) else None
+    session_id = session_id or uuid.uuid4().hex
     rows.append({
-        "event": event, "view": view, "recorded_at": recorded_at,
+        "event": event, "view": view, "recorded_at": recorded_at, "session_id": session_id,
         "session_date": datetime.now(timezone.utc).astimezone(ZoneInfo("America/Mexico_City")).date().isoformat(),
     })
     rows = rows[-2000:]
@@ -1301,12 +1310,12 @@ def record_console_usage(event: str, view: str = "") -> dict[str, Any]:
         for row in rows if row.get("session_date") or row.get("recorded_at")
     })
     saved = {
-        "version": "console_usage_validation_v1", "updated_at": now_iso(),
+        "version": "console_usage_validation_v2", "updated_at": now_iso(),
         "events": rows, "session_dates": session_dates,
         "execution_authorized": False, "not_order_instruction": True,
     }
     write_json_file(CONSOLE_USAGE_PATH, saved)
-    return {"ok": True, "event_count": len(rows), "session_count": len(session_dates)}
+    return {"ok": True, "event_count": len(rows), "session_count": len({row.get("session_id") for row in rows if row.get("session_id")})}
 
 
 def local_operator_alert_id(payload: dict[str, Any]) -> str:
@@ -1559,11 +1568,7 @@ def status_level(status: Any, ok: bool | None = None) -> str:
 
 
 def is_us_market_session_now() -> bool:
-    now = datetime.now(timezone.utc)
-    if now.weekday() >= 5:
-        return False
-    minute = now.hour * 60 + now.minute
-    return (13 * 60 + 30) <= minute <= (20 * 60)
+    return console_market_calendar.session(datetime.now(timezone.utc))["open"]
 
 
 def console_reports() -> dict[str, dict[str, Any]]:
@@ -1661,13 +1666,17 @@ def fetch_remote_json(path: str, timeout: float = REMOTE_READ_TIMEOUT_SECONDS, p
         url,
         headers={
             "Accept": "application/json",
+            "Accept-Encoding": "gzip",
             "X-Stock-Ultimus-Read-Token": token,
         },
         method="GET",
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", errors="replace")
+            response_bytes = response.read()
+            if str(response.headers.get("Content-Encoding") or "").lower() == "gzip":
+                response_bytes = gzip.decompress(response_bytes)
+            raw = response_bytes.decode("utf-8", errors="replace")
         data = json.loads(raw)
         result = {"ok": True, "error": "", "token_present": True, "url": url, "data": data if isinstance(data, dict) else {}}
         write_remote_cache(path, result)
@@ -1794,10 +1803,10 @@ def remote_console_endpoints() -> dict[str, str]:
         "rankings": "/gpt_v31_daily_rankings",
         "active_positions": "/v31_active_position_management",
         "monitor": "/v31_monitor_status",
-        "reviews": "/v31_manual_reviews?limit=250",
-        "learning": "/v31_manual_review_learning?limit=250",
-        "performance": "/v32_strategy_performance?limit=500",
-        "signal_events": "/v32_signal_events?limit=1000",
+        "reviews": "/v31_manual_reviews?limit=100",
+        "learning": "/v31_manual_review_learning?limit=100",
+        "performance": "/v32_strategy_performance?limit=200",
+        "signal_events": "/v32_signal_events?limit=100",
         "futures_daily": "/intraday_futures/report/daily?include_validation=false",
         "webhook_status": "/v32_tradingview_webhook_status",
     }
@@ -2460,7 +2469,7 @@ def render_console_health(
         elif operational.get("risk_review"):
             display_level = "amber"
             display_label = "Revisar riesgo"
-            friendly_detail = "Datos vigentes; existe una alerta alta de riesgo que requiere revisión manual."
+            friendly_detail = "Datos de cuenta vigentes; revisar riesgo. Cada estrategia indica la vigencia de sus precios y evaluación."
     return """
     <header class="app-header health-{level}">
       <div class="app-health">
@@ -2685,69 +2694,7 @@ def render_today_panel(active: dict[str, Any], snapshot: dict[str, Any], operato
     )
 
 
-FRIENDLY_OPERATOR_STATES = {
-    "WAIT_MARKET": "Esperando nuevas señales",
-    "WAIT_DATA": "Faltan datos",
-    "WAIT_NO_ELIGIBLE_STRUCTURE": "Esperar: ninguna estructura cumple",
-    "WAIT_ACCOUNT_CAPACITY": "Capacidad de cuenta insuficiente",
-    "WAIT_MARGIN_PREVIEW": "Margen IBKR pendiente",
-    "WAIT_CAPITAL_DATA": "Datos de capital pendientes",
-    "COVERED_CALL_OPEN": "Covered call abierto",
-    "SHORT_CALL_OPEN": "Call vendida abierta",
-    "SHORT_PUT_OPEN": "Put vendida abierta",
-    "READY_FOR_MANUAL_REVIEW": "Listo para revisión manual",
-    "ACTION_REQUIRED": "Atención requerida",
-    "REVIEW_REQUIRED": "Revisión necesaria",
-    "REVIEW_RISK": "Revisar riesgo",
-    "REVIEW_DEFENSIVE_EXIT": "Revisar defensa",
-    "RISK_REVIEW": "Revisión de riesgo",
-    "REVIEW_ASSIGNMENT": "Revisar posible asignación",
-    "REVIEW_CLOSE_OR_BUY_BACK": "Revisar cierre o recompra",
-    "REVIEW_ROLL": "Revisar rolleo",
-    "REFRESH_DATA": "Actualizar datos",
-    "ASSIGNMENT_REVIEW": "Revisar asignación",
-    "TAKE_PROFIT_REVIEW": "Revisar toma de ganancia",
-    "NO_ACTION_RECOMMENDED": "Mantener sin cambios",
-    "NO_POSITION": "Posición vencida; conciliar",
-    "FRESH": "Actualizados",
-    "STALE": "Desactualizados",
-    "READY_FOR_DECISION_REVIEW": "Listo para revisar decisiones",
-    "NO_NEW_RISK": "No aumentar riesgo",
-    "WATCH": "Vigilancia",
-    "MONITOR": "Monitoreo",
-    "BLOCKED": "Bloqueado",
-    "SELL_PUT": "Venta de put",
-    "SELL_COVERED_CALL": "Covered call",
-    "CASH_SECURED_PUT": "Put garantizada con efectivo",
-    "NAKED_PUT": "Venta de put",
-    "COVERED_CALL": "Covered call",
-    "LONG_CALL": "Call comprada",
-    "LONG_PUT": "Put comprada",
-    "MANAGE_COVERED_CALL": "Gestionar covered call abierto",
-    "MANAGE_EXISTING_AND_WAIT_NEW_ENTRY_DATA": "Gestionar la posición actual y esperar datos para una nueva entrada",
-    "FULLY_COVERED_CALL": "Covered call completo",
-    "PARTIAL_COVERED_CALL": "Covered call parcial",
-    "LONG_STOCK": "Acciones compradas",
-    "FUTURES_POSITION": "Posición de futuros",
-    "STK": "Acciones",
-    "FUT": "Futuro",
-    "OPT": "Opción",
-    "WATCH_ONLY": "Sólo vigilancia",
-    "ENTRY_COMPARISON_MODE": "Comparar alternativas de entrada",
-    "NO_SHARES": "Sin acciones RSP",
-    "ACUMULANDO EVIDENCIA": "Aprendizaje en curso",
-}
-
-
-def friendly_operator_state(value: Any, fallback: str = "Pendiente") -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return fallback
-    friendly = FRIENDLY_OPERATOR_STATES.get(raw.upper())
-    if friendly:
-        return friendly
-    label = raw.replace("_", " ").strip()
-    return label[:1].upper() + label[1:]
+from console_presentation import FRIENDLY_OPERATOR_STATES, friendly_operator_state
 
 
 def friendly_age(value: Any) -> str:
@@ -2764,7 +2711,7 @@ def friendly_age(value: Any) -> str:
     match = re.fullmatch(r"(\d+)d ago", label)
     if match:
         return "hace {} d".format(match.group(1))
-    return label
+    return "Sin hora confirmada" if label.lower() in {"unknown", "n/d", "none"} else label
 
 
 def rsp_current_wait_without_opportunity(rsp_payload: dict[str, Any]) -> bool:
@@ -2836,11 +2783,14 @@ def build_unified_pending_items(
         if not isinstance(item, dict):
             continue
         position_id = str(item.get("position_id") or "")
+        futures_structure = item.get("futures_structure") or {}
+        if futures_structure.get("primary_position_id") and str(futures_structure["primary_position_id"]) != position_id:
+            continue
         acknowledged = position_id in acknowledged_positions
         meta = position_action_queue_metadata(item, acknowledged)
         if meta.get("key") not in {"act", "review", "data"}:
             continue
-        ticker_key = str(item.get("ticker") or position_id or "Posición").upper()
+        ticker_key = console_presentation.position_anchor(item)
         previous = position_items.get(ticker_key)
         if previous is None or meta.get("score", 999) < previous[1].get("score", 999):
             position_items[ticker_key] = (item, meta)
@@ -2851,8 +2801,8 @@ def build_unified_pending_items(
             "level": "high" if meta.get("key") == "act" else "watch",
             "area": "Posiciones",
             "title": "{} — {}".format(ticker, meta.get("label") or friendly_operator_state(action)),
-            "detail": "{} Próximo control: {}".format(meta.get("why_now") or "Revisión manual requerida.", meta.get("checkpoint") or "hoy"),
-            "href": "#posiciones",
+            "detail": "{} Próximo control: {}".format(("Plan actual: " + meta["plan"] + ". " + meta.get("why_now", "")), meta.get("checkpoint") or "hoy"),
+            "href": "#" + console_presentation.position_anchor(item),
             "when": "Resolver ahora" if meta.get("key") == "act" else "Actualizar datos" if meta.get("key") == "data" else "Revisar hoy",
         })
 
@@ -2863,7 +2813,7 @@ def build_unified_pending_items(
         rsp_title = "Coberturas RSP necesita actualización"
         if "OPEN_RSP_OPTION_REQUIRES_MANAGEMENT" in rsp_blockers:
             rsp_title = "Gestionar covered call RSP abierto"
-            rsp_detail = str((rsp_payload.get("position_manager") or {}).get("primary_action") or "Monitorear prima, strike y vencimiento.")
+            rsp_detail = friendly_operator_state((rsp_payload.get("position_manager") or {}).get("primary_action"), "Monitorear prima, strike y vencimiento.")
         elif "RSP_FRESH_CHAIN_MISSING" in rsp_blockers:
             rsp_detail = "La lectura está guardada, pero falta una cadena IBKR RSP fresca de 7 a 14 DTE."
         elif "RSP_7_14_DTE_CANDIDATES_MISSING" in rsp_blockers:
@@ -2937,14 +2887,7 @@ def enrich_daily_task_brief(raw_item: dict[str, Any]) -> dict[str, Any]:
 
 
 def next_us_market_open(now: datetime | None = None) -> datetime:
-    now = now or datetime.now(timezone.utc)
-    ny = now.astimezone(ZoneInfo("America/New_York"))
-    candidate = ny.replace(hour=9, minute=30, second=0, microsecond=0)
-    if ny.weekday() >= 5 or ny >= candidate:
-        candidate += timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-    return candidate.astimezone(timezone.utc)
+    return console_market_calendar.next_open(now or datetime.now(timezone.utc))
 
 
 def cdmx_review_time(value: datetime) -> str:
@@ -2959,7 +2902,7 @@ def daily_task_timing(item: dict[str, Any], now: datetime | None = None) -> dict
     level = str(item.get("level") or "watch").lower()
     when = str(item.get("when") or "").lower()
     if level == "critical" or "ahora" in when or area == "Oportunidad":
-        label = "Actuar ahora"
+        label = "Revisar ahora"
         next_review = now + timedelta(minutes=15)
         review_reason = "Confirmar decisión o registrar que fue revisada"
     elif "actualizar datos" in when or area in {"Riesgo", "RSP"}:
@@ -3234,8 +3177,8 @@ def build_automation_cycle_status(
         "last_status": friendly_operator_state(effective),
         "last_attempt": friendly_age(last_attempt_at) if last_attempt_at else "Sin intento registrado",
         "last_attempt_status": "Completado" if last_attempt_ok is True else "No confirmado",
-        "next_run": next_run.strftime("%a %d %b · %H:%M CDMX"),
-        "schedule": "Días hábiles · cada hora de 07:35 a 13:35 CDMX",
+        "next_run": cdmx_review_time(next_run),
+        "schedule": "Actualización del sistema: lunes a viernes, de 07:35 a 13:35 CDMX. No indica que el mercado esté abierto.",
     }
 
 
@@ -3291,6 +3234,8 @@ def daily_task_view(items: list[dict[str, Any]], now: datetime | None = None) ->
         state = str(record.get("state") or "NEW").upper()
         if record.get("fingerprint") != fingerprint:
             state = "NEW"
+        if state == "DONE" and not console_presentation.reviewed_today(record.get("updated_at"), now):
+            state = "NEW"
         if state == "DONE":
             attended_count += 1
             continue
@@ -3308,22 +3253,24 @@ def daily_task_view(items: list[dict[str, Any]], now: datetime | None = None) ->
     return {"visible": visible, "postponed_count": postponed_count, "attended_count": attended_count, "total_count": len(items)}
 
 
-def record_daily_task_action(task_id: str, fingerprint: str, action: str, title: str = "") -> dict[str, Any]:
+def record_daily_task_action(task_id: str, fingerprint: str, action: str, title: str = "", postpone_minutes: int = 60) -> dict[str, Any]:
     task_id = str(task_id or "").strip()
     fingerprint = str(fingerprint or "").strip()
     action = str(action or "").strip().upper()
-    if not task_id.startswith("TASK-") or not fingerprint or action not in {"REVIEW", "POSTPONE", "DONE"}:
+    if not task_id.startswith("TASK-") or not fingerprint or action not in {"REVIEW", "POSTPONE", "DONE", "REOPEN"}:
         raise ValueError("Acción o identidad de tarea inválida.")
+    if postpone_minutes not in {5, 15, 60}:
+        raise ValueError("Plazo de revisión inválido.")
     journal = load_daily_task_journal()
     tasks = journal.get("tasks") if isinstance(journal.get("tasks"), dict) else {}
-    state = {"REVIEW": "REVIEWING", "POSTPONE": "POSTPONED", "DONE": "DONE"}[action]
+    state = {"REVIEW": "REVIEWING", "POSTPONE": "POSTPONED", "DONE": "DONE", "REOPEN": "NEW"}[action]
     record = {
         "task_id": task_id,
         "fingerprint": fingerprint,
         "title": str(title or "")[:180],
         "state": state,
         "updated_at": now_iso(),
-        "postponed_until": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat() if action == "POSTPONE" else None,
+        "postponed_until": (datetime.now(timezone.utc) + timedelta(minutes=postpone_minutes)).isoformat() if action == "POSTPONE" else None,
         "execution_authorized": False,
         "not_order_instruction": True,
     }
@@ -3390,19 +3337,21 @@ def render_command_center(
     ) if daily else "Ejecuta Apertura diaria al comenzar la jornada."
 
     def render_task(item: dict[str, str], index: int) -> str:
+        delay = 5 if item.get("area") == "Oportunidad" else 15 if item.get("level") in {"critical", "high"} else 60
         return (
             '<article class="operator-task task-{level} state-{task_state}"><span>{index}</span>'
             '<div class="daily-task-brief"><small>{area}</small><strong>{title}</strong>'
-            '<dl><div><dt>Por qué importa ahora</dt><dd>{why_now}</dd></div>'
+            '<details class="task-explanation"><summary>Motivo y próxima revisión</summary><dl><div><dt>Por qué importa ahora</dt><dd>{why_now}</dd></div>'
             '<div><dt>Recomendación</dt><dd>{recommendation}</dd></div>'
             '<div><dt>Si no la atiendes</dt><dd>{consequence}</dd></div>'
-            '<div><dt>Próxima revisión</dt><dd><b>{next_review}</b> · {review_reason}</dd></div></dl></div>'
+            '<div><dt>Próxima revisión</dt><dd><b>{next_review}</b> · {review_reason}</dd></div></dl></details></div>'
             '<div class="daily-task-actions"><em>{state_label}</em><a href="{href}">Abrir detalle</a>'
             '<form method="post" action="/daily-task-action"><input type="hidden" name="task_id" value="{task_id}">'
             '<input type="hidden" name="task_fingerprint" value="{task_fingerprint}"><input type="hidden" name="task_title" value="{title}">'
             '<button name="task_action" value="REVIEW" class="secondary">Revisar</button>'
-            '<button name="task_action" value="POSTPONE" class="secondary">Posponer 1 h</button>'
-            '<button name="task_action" value="DONE">Marcar atendido</button></form></div></article>'.format(
+            '<input type="hidden" name="postpone_minutes" value="{delay}"><button name="task_action" value="POSTPONE" class="secondary">Posponer {delay} min</button>'
+            '<button name="task_action" value="DONE">Revisado por hoy</button></form></div></article>'.format(
+                delay=delay,
                 level=html_escape(item.get("level") or "watch"),
                 href=html_escape(item.get("href") or "#hoy"),
                 index=index,
@@ -3442,8 +3391,8 @@ def render_command_center(
         operational_label = "Actualizando"
         operational_detail = "Un proceso está trabajando en segundo plano"
     elif health.get("stale_cache"):
-        operational_label = "Datos guardados"
-        operational_detail = "Actualizar antes de aumentar riesgo"
+        operational_label = "Evaluación remota pendiente"
+        operational_detail = "Cuenta local disponible; actualizar evaluación remota antes de una entrada"
     close_summary = daily_close_summary(task_view, risk_payload)
     opening_guide = guided_opening_summary(task_view, risk_payload, reports, health)
     if opening_guide.get("action_type") == "form":
@@ -3459,7 +3408,7 @@ def render_command_center(
     return """
     <section id="hoy" class="panel command-center command-{level}">
       <div class="command-head">
-        <div><p class="eyebrow">Decisión principal</p><h2>{title}</h2><p>{summary}</p></div>
+        <div><p class="eyebrow">Tu siguiente revisión</p><h2>{title}</h2><p>{summary}</p><a class="button-link primary-case-action" href="{primary_href}">{primary_cta}</a></div>
         <div class="opening-status"><span>Última apertura</span><strong>{opening}</strong><small>{opening_detail}</small></div>
       </div>
       <details class="daily-operations-summary"><summary>Estado de apertura y preparación</summary><div class="guided-opening">
@@ -3470,7 +3419,7 @@ def render_command_center(
       </div></details>
       <div class="command-facts">
         <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
-        <a href="#posiciones"><span>Posiciones por atender</span><strong>{reviews}</strong><small>{positions} posiciones abiertas</small></a>
+        <a href="#posiciones"><span>Posiciones por atender</span><strong>{reviews}</strong><small>{positions} instrumentos abiertos</small></a>
         <a href="#opportunity-center"><span>Entradas vigentes</span><strong data-live-ready-count>{ready_opportunities}</strong><small>{forming_opportunities} cerca de confirmación</small></a>
         <a href="#view-configuracion"><span>Estado operativo</span><strong>{operational_label}</strong><small>{operational_detail}</small></a>
         <div><span>Apertura y mercado</span><strong>{opening} · {market}</strong><small>{operator_state}</small></div>
@@ -3480,7 +3429,7 @@ def render_command_center(
         {tasks}
         {remaining_tasks}
       </div>
-      <div class="daily-close">
+      <details class="daily-close"><summary>Cierre y revisiones de hoy</summary>
         <div><p class="eyebrow">Cierre diario</p><h3>{close_status}</h3><small>Resumen automático del trabajo registrado hoy.</small></div>
         <div class="daily-close-facts">
           <span>Revisadas hoy<strong>{reviewed_today}</strong></span>
@@ -3488,12 +3437,14 @@ def render_command_center(
           <span>Riesgos altos/críticos abiertos<strong>{open_risks}</strong></span>
           <span>Pendientes visibles<strong>{visible_pending}</strong></span>
         </div>
-        <div class="daily-resume"><span>Retomar</span><strong>{resume_title}</strong><small>Próxima apertura estimada: {next_open}</small></div>
-      </div>
+        <div class="daily-resume"><span>Retomar</span><strong>{resume_title}</strong><small>Próxima sesión de acciones: {next_open}</small></div>
+      </details>
     </section>
     """.format(
         level=html_escape(level),
         title=html_escape(title),
+        primary_href=html_escape("#view-configuracion" if health.get("level") == "red" else pending[0]["href"] if pending else "#opportunity-center"),
+        primary_cta=html_escape("Revisar conexión" if health.get("level") == "red" else "Revisar " + pending[0]["title"].split(" — ")[0] if pending else "Ver estado de oportunidades"),
         summary=html_escape(summary),
         opening=html_escape(opening_label),
         opening_detail=html_escape(opening_detail),
@@ -3515,7 +3466,7 @@ def render_command_center(
         rsp_candidates=html_escape(rsp_payload.get("candidate_count") or 0),
         operational_label=html_escape(operational_label),
         operational_detail=html_escape(operational_detail),
-        market=html_escape("Abierto" if is_us_market_session_now() else "Cerrado"),
+        market=html_escape(console_market_calendar.session()["label"] + " · " + console_market_calendar.session()["reason"]),
         operator_state=html_escape(friendly_operator_state((operator_payload.get("data") or {}).get("status"))),
         tasks="".join(task_rows),
         remaining_tasks=remaining_tasks,
@@ -4383,7 +4334,7 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
             ),
             breakeven=html_escape(coberturas_plain(scenario.get("breakeven"))),
             probability=html_escape(coberturas_prob_label(probability)),
-            gamma_status=html_escape(coberturas_plain((scenario.get("gamma_alignment") or {}).get("status"))),
+            gamma_status=html_escape(friendly_operator_state((scenario.get("gamma_alignment") or {}).get("status"))),
         )
 
     recommendation = payload.get("strategy_recommendation") if isinstance(payload.get("strategy_recommendation"), dict) else {}
@@ -4406,8 +4357,8 @@ def render_coberturas_scenarios(payload: dict[str, Any], compact: bool = False) 
             if recommendation.get("status") == "WAIT_NO_ELIGIBLE_STRUCTURE"
             else "Sensibilidad de margen pendiente."
         )
-        rec_html += '<div class="notice"><b>Recomendacion:</b> {status}<br>{reason}<br><b>Margen:</b> {margin_note}</div>'.format(
-            status=html_escape(recommendation.get("status") or "pendiente"),
+        rec_html += '<div class="notice"><b>Recomendación:</b> {status}<br>{reason}<br><b>Margen:</b> {margin_note}</div>'.format(
+            status=html_escape(friendly_operator_state(recommendation.get("status"))),
             reason=html_escape(recommendation.get("reason") or ""),
             margin_note=html_escape(margin_note),
         )
@@ -4478,7 +4429,7 @@ def render_coberturas_operating_plan(payload: dict[str, Any], compact: bool = Fa
       <ul class="muted">{rules}</ul>
     """.format(
         status=coberturas_badge(manager.get("status") or "UNKNOWN"),
-        action=html_escape(manager.get("primary_action") or "Pendiente"),
+        action=html_escape(friendly_operator_state(manager.get("primary_action"))),
         managed_contract=html_escape("{} / {}".format(coberturas_plain(primary_metric.get("strike")), coberturas_plain(primary_metric.get("expiration")))),
         managed_premium=html_escape("{} / {}".format(coberturas_money(primary_metric.get("entry_price_per_share")), coberturas_money(primary_metric.get("current_mid")))),
         managed_capture=html_escape((str(primary_metric.get("premium_capture_pct")) + "%") if primary_metric.get("premium_capture_pct") is not None else "pendiente"),
@@ -4746,7 +4697,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
     }
     blocker_text = " ".join(blocker_messages.get(str(item), friendly_operator_state(item)) for item in blockers) if blockers else "Sin bloqueos de datos críticos."
     gamma_blob = coberturas_form_value(context, "gamma_blob") or coberturas_form_value(context, "gamma_notes")
-    managing_position = str(position.get("state") or "") in {"COVERED_CALL_OPEN", "SHORT_CALL_OPEN", "SHORT_PUT_OPEN"}
+    managing_position = str(position.get("state") or "") in {"COVERED_CALL_OPEN", "SHORT_CALL_OPEN", "SHORT_PUT_OPEN", "WITH_SHARES"}
     manager = payload.get("position_manager") if isinstance(payload.get("position_manager"), dict) else {}
     new_entry = payload.get("new_entry_lane") if isinstance(payload.get("new_entry_lane"), dict) else {}
     cycle_capacity = new_entry.get("cycle_capacity") if isinstance(new_entry.get("cycle_capacity"), dict) else {}
@@ -4784,9 +4735,9 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         position_state=html_escape(friendly_operator_state(position.get("state") or "UNKNOWN")),
         active_cycles=html_escape(cycle_capacity.get("active_cycles", 0)),
         entry_badge=coberturas_badge(new_entry_status),
-        entry_action=html_escape(new_entry.get("primary_action") or "Evaluación pendiente."),
+        entry_action=html_escape(friendly_operator_state(new_entry.get("primary_action"), "Evaluación pendiente.")),
         entry_strategy=html_escape(
-            entry_strategy_label
+            friendly_operator_state(entry_strategy_label)
             + (" · condicionada" if new_entry.get("strategy_role") == "CONDITIONAL_PREFERENCE" and new_entry.get("display_strategy") else "")
         ),
         remaining_slots=html_escape(cycle_capacity.get("remaining_risk_slots", 0)),
@@ -4872,7 +4823,7 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         <div><span>Lectura de niveles</span><strong>{context_status}</strong><small>{context_age}</small></div>
         <div><span>Cadena 7–14 DTE</span><strong>{chain_status}</strong><small>{chain_age}</small></div>
         <div><span>Seguimiento IBKR</span><strong>{sync_status}</strong><small>{sync_detail}</small></div>
-        <div><span>Fondos / poder de compra</span><strong>{available_funds} / {buying_power}</strong><small>cuenta retiro actualizada</small></div>
+        <div><span>Fondos / poder de compra</span><strong>{available_funds} / {buying_power}</strong><small>valores del reporte · {funds_age}; confirmar vigencia en retiro</small></div>
         <div><span>Cadena evaluada</span><strong>{rows_received} contratos</strong><small>{raw_quotes} cotizaciones ejecutables · {qualified} estructuras elegibles</small></div>
         <div><span>Historial de compuertas</span><strong>{observed_sessions} sesiones observadas</strong><small>{qualified_sessions} con entrada · {near_sessions} con candidato cercano</small></div>
       </div>
@@ -4923,7 +4874,8 @@ def render_coberturas_inline_panel(payload: dict[str, Any] | None = None) -> str
         spot=html_escape(payload.get("spot")),
         context_status=html_escape("Guardada" if context.get("available") else "Pendiente"),
         context_age=html_escape(context_age),
-        chain_status=html_escape("Actualizada" if ibkr.get("chain_has_rsp") else "Pendiente"),
+        chain_status=html_escape("Disponible; revisar vigencia" if ibkr.get("chain_has_rsp") else "Pendiente"),
+        funds_age=html_escape(friendly_age(payload.get("generated_at"))),
         chain_age=html_escape(chain_age),
         sync_status=html_escape("Automático" if (payload.get("broker_reconciliation") or {}).get("ok") else "Pendiente"),
         sync_detail=html_escape(friendly_operator_state((payload.get("broker_reconciliation") or {}).get("position_state") or "esperando refresco")),
@@ -5115,6 +5067,19 @@ def active_control_tower_account(active: dict[str, Any] | None = None) -> dict[s
         if (wanted_alias and alias == wanted_alias) or (wanted_scope and scope == wanted_scope):
             return account
     return {}
+
+
+def rsp_account_capacity() -> dict[str, Any]:
+    account = active_control_tower_account({"account_alias": CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS})
+    capacity = account.get("capacity") or {}
+    generated = account.get("generated_at")
+    stamp = parse_iso_datetime(generated)
+    current = bool(stamp and timedelta(0) <= datetime.now(timezone.utc) - stamp <= timedelta(minutes=30))
+    amount = console_float_or_none(capacity.get("available_funds"))
+    ready = account.get("refresh_status") == "READY" and current and amount is not None
+    return {"available_capacity": amount if ready else None, "account_alias": CONSOLE_COBERTURAS_RSP_ACCOUNT_ALIAS,
+            "currency": capacity.get("currency") or "USD", "generated_at": generated,
+            "capacity_source": "Fondos disponibles de IBKR" if ready else "Actualizar cuenta retiro"}
 
 
 def console_account_capacity(operator_payload: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -6033,6 +5998,7 @@ def build_futures_operational_rows(futures_alerts: list[dict[str, Any]], daily: 
             "quality": console_float_or_none(event.get("confirmation_quality_score") or event.get("score") or event.get("setup_validity_pct")),
             "confirmations": confirmations, "conflicts": conflicts, "why": str(why), "blocker": friendly_operator_state(blocker, "Sin bloqueo explícito"),
             "recommendation": recommendation, "latency": futures_latency_summary(event), "received_at": received_at,
+            "contract_session": futures_market_calendar.session(event.get("contract_schedule"))["label"],
             "mobile": event.get("mobile_notification") if isinstance(event.get("mobile_notification"), dict) else {},
             "reference_levels_provisional": event.get("reference_levels_provisional") is True,
             "lifecycle_state": lifecycle.get("lifecycle_state"), "ttl_minutes": lifecycle.get("ttl_minutes"),
@@ -6059,13 +6025,14 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
         "watch": int(daily.get("watch_only") or daily.get("watch") or 0),
         "discarded": int(daily.get("quarantined") or 0) + int(daily.get("risk_blocked") or 0),
     }
-    primary_html = '<div class="empty-state"><strong>Sin señal de futuros vigente</strong><span>El radar continúa monitoreando MNQ y MES.</span></div>'
+    primary_html = '<div class="empty-state"><strong>Sin señal de futuros vigente</strong><span>Sin señal utilizable en esta lectura. El horario de futuros depende del contrato; revisa la última recepción y la salud de TradingView antes de atribuirlo al mercado.</span></div>'
     if primary:
         rr_label = "N/D" if primary["rr"] is None else "{:.2f}R".format(primary["rr"])
         primary_html = """
         <article class="futures-primary futures-{stage_key}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
           <div class="futures-primary-head"><div><p class="eyebrow">Señal vigente</p><h3>{ticker} · {direction}</h3></div><b>{stage} · Vigencia máxima {ttl} min</b></div>
           <p class="futures-recommendation">{recommendation}</p>
+          <p class="futures-health-line">{contract_session}. El horario no confirma liquidez ni una entrada.</p>
           <div class="futures-levels">
             <span>Disparo<strong>{entry}</strong></span><span>Límite de entrada<strong>{max_entry}</strong></span><span>Stop<strong>{stop}</strong></span>
             <span>Target 1<strong>{tp1}</strong></span><span>Target 2<strong>{tp2}</strong></span><span>Riesgo/beneficio<strong>{rr}</strong></span>
@@ -6074,7 +6041,7 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
         </article>
         """.format(
             signal_key=html_escape(primary.get("signal_key") or ""), price_valid_until=html_escape(primary.get("price_valid_until") or ""), expires_at=html_escape(primary.get("expires_at") or ""), stage_key=html_escape(primary["stage_key"]), ticker=html_escape(primary["ticker"]), direction=html_escape(primary["direction"]), stage=html_escape(primary["stage"]),
-            recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
+            contract_session=html_escape(primary["contract_session"]), recommendation=html_escape(primary["recommendation"]), entry=html_escape(compact_contract_value(primary["entry"])),
             max_entry=html_escape(compact_contract_value(primary["max_entry"]) if primary["max_entry"] is not None else "No calculada; no perseguir precio"),
             stop=html_escape(compact_contract_value(primary["stop"])), tp1=html_escape(compact_contract_value(primary["tp1"])), tp2=html_escape(compact_contract_value(primary["tp2"])), rr=html_escape(rr_label),
             why=html_escape(primary["why"]), blocker=html_escape(primary["blocker"]), latency=html_escape(primary["latency"]["label"]), mobile=html_escape(primary["latency"]["mobile_status"]), ttl=html_escape(primary.get("ttl_minutes") or 0),
@@ -6082,8 +6049,8 @@ def render_intraday_futures_alerts(futures_alerts: list[dict[str, Any]], operato
         )
     body = """
       <div class="futures-funnel">
-        <div><span>1 · Detectadas</span><strong>{detected}</strong></div><div><span>2 · Aceptadas</span><strong>{accepted}</strong></div>
-        <div><span>3 · Confirmadas</span><strong>{confirmed}</strong></div><div><span>4 · Entrada lista</span><strong>{ready}</strong></div>
+        <div><span>Recibidas · reporte</span><strong>{detected}</strong></div><div><span>Aceptadas · reporte</span><strong>{accepted}</strong></div>
+        <div><span>Confirmadas · motor</span><strong>{confirmed}</strong></div><div><span>Listas · motor</span><strong>{ready}</strong></div>
         <div><span>Vigilancia</span><strong>{watch}</strong></div><div><span>Descartadas/bloqueadas</span><strong>{discarded}</strong></div>
       </div>{primary}
       <p class="futures-health-line">Salud TradingView disponible: {received}/{required} eventos aceptados/observados · motor diario procesó {processed}. Una señal confirmada todavía debe superar riesgo y cartera.</p>
@@ -6287,7 +6254,7 @@ def build_unified_opportunity_items(
         rsp_state = ("ready", "Entrada lista", 0)
     elif rsp_status == "WAIT_NO_ELIGIBLE_STRUCTURE" or rsp_current_wait_without_opportunity(rsp_payload):
         rsp_state = ("waiting", "Esperar", 2)
-    elif rsp_blockers:
+    elif rsp_blockers or rsp_status in {"WAIT_ACCOUNT_CAPACITY", "WAIT_MARGIN_PREVIEW", "WAIT_CAPITAL_DATA", "WAIT_ACCOUNT_CONTEXT"}:
         rsp_state = ("blocked", "Bloqueada", 3)
     else:
         rsp_state = ("forming", "Preparándose", 1)
@@ -6342,7 +6309,7 @@ def build_unified_opportunity_items(
             "invalidation": "No operar sin fecha confirmada, liquidez, IV relativa y riesgo definido",
             "target": f"{observations} observación(es) prospectiva(s) acumulada(s)",
             "quality": 0.0, "metric_label": "Evidencia",
-            "blocker": ", ".join(missing) if missing else "Validación histórica y prospectiva todavía incompleta",
+            "blocker": "; ".join(friendly_operator_state(value) for value in missing) if missing else "Validación histórica y prospectiva todavía incompleta",
             "freshness": friendly_age(premium_payload.get("generated_at")), "capital_required": None,
         })
     if isinstance(long_put, dict):
@@ -6359,11 +6326,16 @@ def build_unified_opportunity_items(
             "invalidation": "No operar sin margen real, liquidez suficiente y regla de gestión validada",
             "target": f"{expired} resultado(s) histórico(s) importado(s)",
             "quality": 0.0, "metric_label": "Evidencia",
-            "blocker": ", ".join(missing) if missing else "Muestra insuficiente para habilitar entradas",
+            "blocker": "; ".join(friendly_operator_state(value) for value in missing) if missing else "Muestra insuficiente para habilitar entradas",
             "freshness": friendly_age(premium_payload.get("generated_at")), "capital_required": None,
         })
 
+    rsp_capacity = rsp_account_capacity()
     for item in items:
+        scoped_capacity = rsp_capacity if item.get("type") == "rsp" else account_capacity
+        available_capacity = console_float_or_none(scoped_capacity.get("available_capacity"))
+        item["account_label"] = str(scoped_capacity.get("account_alias") or "Cuenta activa")
+        item["capacity_context"] = "Cuenta {} · {} · {}".format(item["account_label"], scoped_capacity.get("currency") or "USD", friendly_age(scoped_capacity.get("generated_at")))
         if item.get("research_only"):
             item["capital_label"] = "No aplica mientras sea investigación"
             item["capacity_after_label"] = "Sin impacto"
@@ -6387,6 +6359,9 @@ def build_unified_opportunity_items(
             if remaining < 0 and item["state"] == "ready":
                 item["state"], item["state_label"], item["rank"] = "blocked", "Bloqueada por capacidad", 3
                 item["action"] = "No entrar; falta capacidad financiera"
+        if item["type"] == "rsp" and item["state"] == "ready" and (available_capacity is None or required is None):
+            item["state"], item["state_label"], item["rank"] = "blocked", "Verificar capacidad", 3
+            item["action"] = "Actualizar la cuenta y confirmar capital requerido antes de evaluar la entrada"
         if global_risk_blocks:
             item["risk_impact"] = "Bloqueo global activo; resolver riesgo antes de una entrada nueva."
             if item["state"] == "ready":
@@ -6443,16 +6418,18 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
                 status="Viable por capacidad" if float(item.get("simulator_capital") or 0) <= float(item.get("simulator_capacity") or 0) else "Capacidad insuficiente",
             )
             if item.get("simulator_available") else
-            ('<div class="opportunity-research-gate"><strong>RESEARCH ONLY · no es entrada</strong><span>Este carril muestra avance y faltantes; no habilita operación, simulación ni orden.</span></div>' if item.get("research_only") else
+            ('<div class="opportunity-research-gate"><strong>Sólo investigación · no es entrada</strong><span>Este carril muestra avance y faltantes; no habilita operación, simulación ni orden.</span></div>' if item.get("research_only") else
              '<div class="opportunity-simulator simulator-unavailable"><strong>Simulador pendiente</strong><span>La entrada está lista, pero falta capital/margen requerido o una lectura vigente de IBKR.</span></div>' if item.get("state") == "ready" else '')
         )
+        if item.get("research_only"):
+            return '<article class="opportunity-card opportunity-research" data-opportunity-card data-opportunity-type="{}" data-opportunity-state="research"><small>{} · Sólo investigación</small><h3>{}</h3><p>{}</p><p><b>Avance:</b> {} · {}</p><p><b>Falta:</b> {}</p><a href="#premium-research">Ver investigación</a></article>'.format(*[html_escape(value) for value in (item["type"], item["type_label"], item["ticker"], item["action"], item["trigger"], item["target"], item["blocker"])])
         return """
-        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
+        <article class="opportunity-card opportunity-{state}" data-opportunity-card data-opportunity-type="{type}" data-opportunity-state="{state}" data-futures-expires-at="{expires_at}" data-price-valid-until="{price_valid_until}" data-futures-signal-key="{signal_key}">
           <div class="opportunity-card-head"><span>{type_label}</span><b>{state_label}</b></div>
           <div class="opportunity-identity"><strong>{ticker}</strong><small>{quality} · {freshness}</small></div>
-          <p>{recommendation}</p>
+          <p>{recommendation}</p><small class="capacity-context">{capacity_context}</small>
           <div class="opportunity-action"><span>Qué hacer ahora</span><strong>{action}</strong></div>
-          <div class="opportunity-facts">
+          <details class="opportunity-evidence" {evidence_open}><summary>Niveles, datos y capacidad</summary><div class="opportunity-facts">
             <span>Entrada / nivel<strong>{trigger}</strong></span>
             <span>Invalida / riesgo<strong>{invalidation}</strong></span>
             <span>Objetivo<strong>{target_value}</strong></span>
@@ -6464,10 +6441,12 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             <span>Capacidad después<strong>{capacity_after}</strong></span>
             <span>Impacto de riesgo<strong>{risk_impact}</strong></span>
           </div>
-          {simulator}
+          {simulator}</details>
           <a href="#{target}">Abrir detalle</a>
         </article>
         """.format(
+            evidence_open="open" if item.get("state") == "ready" else "",
+            capacity_context=html_escape(item.get("capacity_context") or "Cuenta por confirmar"),
             signal_key=html_escape(item.get("signal_key") or ""), price_valid_until=html_escape(item.get("price_valid_until") or ""), expires_at=html_escape(item.get("expires_at") or ""), state=html_escape(item["state"]),
             type=html_escape(item["type"]),
             type_label=html_escape(item["type_label"]),
@@ -6486,7 +6465,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
             capacity_after=html_escape(item.get("capacity_after_label") or "N/D"),
             risk_impact=html_escape(item.get("risk_impact") or "N/D"),
             simulator=simulator,
-            target=("canslim-radar" if item["type"] == "canslim" else
+            target=("canslim-" + re.sub(r"[^A-Za-z0-9-]", "-", item["ticker"]) if item["type"] == "canslim" else
                     "alertas" if item["type"] == "futures" else
                     "coberturas-rsp" if item["type"] == "rsp" else "premium-research"),
         )
@@ -6497,7 +6476,7 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
         <div><p class="eyebrow">Oportunidades vigentes</p><h2>Entrar, prepararse o esperar</h2></div>
         <p>Sólo futuros dentro de su ventana útil. Las señales caducadas pasan a Actividad automáticamente.</p>
       </div>
-      <div class="opportunity-status-strip">
+      <p class="muted">Resumen de todas las estrategias. El filtro inferior selecciona qué revisar.</p><div class="opportunity-status-strip">
         <div class="status-ready"><span>Entradas listas</span><strong>{ready}</strong></div>
         <div class="status-forming"><span>Preparándose</span><strong>{forming}</strong></div>
         <div class="status-waiting"><span>Esperar</span><strong>{waiting}</strong></div>
@@ -6512,8 +6491,15 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
         <button type="button" data-opportunity-filter="earnings">Earnings ({earnings})</button>
         <button type="button" data-opportunity-filter="long_put">Puts 120–150d ({long_put})</button>
       </div>
+      <div class="opportunity-filters" role="group" aria-label="Filtrar por estado">
+        <button type="button" data-opportunity-state-filter="all" aria-pressed="true">Todos los estados</button>
+        <button type="button" data-opportunity-state-filter="ready" aria-pressed="false">Entradas listas</button>
+        <button type="button" data-opportunity-state-filter="forming" aria-pressed="false">En seguimiento</button>
+        <button type="button" data-opportunity-state-filter="blocked" aria-pressed="false">Por resolver</button>
+        <button type="button" data-opportunity-state-filter="research" aria-pressed="false">Investigación</button>
+      </div>
       <div class="opportunity-grid">{cards}</div>
-      <div id="opportunity-filter-empty" class="empty-state" hidden><strong>Sin oportunidades en este filtro</strong><span>Esto puede ser una espera normal; revisa la frescura y los bloques detallados abajo.</span></div>
+      <div id="opportunity-filter-empty" class="empty-state" hidden><strong>Sin oportunidades en este filtro</strong><span>No hay entradas para esta selección. Consulta el estado de la estrategia debajo: distingue falta de señal de falta de datos. La siguiente actualización automática volverá a evaluarla.</span></div>
     </section>
     """.format(
         ready=counts["ready"], forming=counts["forming"], waiting=counts["waiting"], blocked=counts["blocked"], research=counts["research"],
@@ -6707,7 +6693,7 @@ def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
             for component in item["components"]
         )
         return """
-        <article class="canslim-card canslim-{stage_key}">
+        <article id="canslim-{anchor}" class="canslim-card canslim-{stage_key}">
           <div class="canslim-card-head">
             <div><strong>{rank}{ticker}</strong><small>Score {score:.0f}/100 · {rating} · datos {freshness}</small></div>
             <b>{stage}</b>
@@ -6734,8 +6720,9 @@ def render_canslim_radar_panel(operator_payload: dict[str, Any]) -> str:
           <div class="canslim-next"><span>Siguiente condición necesaria</span><strong>{next_event}</strong></div>
         </article>
         """.format(
+            anchor=html_escape(re.sub(r"[^A-Za-z0-9-]", "-", item["ticker"])),
             rank=html_escape("#{} · ".format(position) if position is not None else ""),
-            ticker=html_escape(item["ticker"]), score=item["score"], rating=html_escape(item["rating"]),
+            ticker=html_escape(item["ticker"]), score=item["score"], rating=html_escape(friendly_operator_state(item["rating"])),
             freshness=html_escape(item["freshness"]), stage_key=html_escape(item["stage_key"]), stage=html_escape(item["stage"]),
             components=component_html, coverage=item["coverage"], coverage_label=html_escape(item["coverage_label"]),
             trigger=html_escape(item["trigger"]), relative_strength=html_escape(item["relative_strength"]),
@@ -7186,6 +7173,8 @@ def friendly_position_reason(text: str) -> str:
         "Open futures exposure requires an explicit stop, target, session context, and daily-loss review.": "La posición de futuros requiere revisar stop, objetivo, contexto de sesión y pérdida diaria máxima.",
         "Position expiration is in the past.": "El contrato ya venció; confirma en IBKR que no siga abierto y concilia el historial.",
         "Short call is not covered by detected long shares.": "La call vendida no tiene acciones detectadas que la cubran; confirma la estructura en IBKR.",
+        "Covered call is near expiration with elevated delta; review covered roll only.": "La call cubierta está próxima al vencimiento y tiene delta elevada; revisar un rolleo que conserve la cobertura.",
+        "Detected ratio calendar spread across 2 expiries; review the combined net exposure, roll and exit plan, not each leg separately.": "Revisar la exposición conjunta de los dos vencimientos y su plan de salida; mantener las piernas como una sola estructura.",
         "Covered call is near expiration and near the strike; pin risk and called-away path need review.": "El covered call está próximo al vencimiento y cerca del strike; revisar asignación o rolleo.",
         "Detected calendar spread across 2 expiries; review the combined net exposure, roll and exit plan, not each leg separately.": "Se detectó un spread calendario entre dos vencimientos; revisa exposición, rolleo y salida como una sola estructura.",
     }
@@ -7581,7 +7570,7 @@ def render_position_alternatives(item: dict[str, Any]) -> str:
         {more}
       </div>
     """.format(
-        confidence=html_escape(recommendation.get("confidence") or "LOW"),
+        confidence=html_escape(friendly_operator_state(recommendation.get("confidence") or "LOW")),
         label=html_escape(recommendation.get("label") or primary.get("label") or "Mantener y monitorear"),
         status=html_escape(status_labels.get(str(recommendation.get("status") or primary.get("status") or ""), friendly_operator_state(recommendation.get("status") or primary.get("status")))),
         reason=html_escape(recommendation.get("reason") or primary.get("reason") or ""),
@@ -7609,11 +7598,12 @@ def render_position_management_card(
     stock_position = str(item.get("sec_type") or "").upper() in {"STK", "STOCK", "EQUITY"}
     strike_value = console_float_or_none(item.get("strike"))
     contract_bits = [
+        "Cuenta " + str(item.get("account_alias") or item.get("account_scope") or "por confirmar"),
         item.get("strategy"),
         item.get("sec_type"),
-        ("qty " + str(item.get("position_size"))) if item.get("position_size") is not None else "",
+        ("Cantidad " + compact_contract_value(item.get("position_size"))) if item.get("position_size") is not None else "",
         ("strike " + str(item.get("strike"))) if not stock_position and strike_value not in [None, 0.0] else "",
-        ("DTE " + str(item.get("dte"))) if item.get("dte") is not None else "",
+        (compact_contract_value(item.get("dte")) + " días al vencimiento") if item.get("dte") is not None else "",
     ]
     market_bits = [
         "trend=" + str(technical.get("trend") or "UNKNOWN"),
@@ -7622,7 +7612,7 @@ def render_position_management_card(
         "resistencia=" + str(technical.get("resistance") or "pendiente"),
         "gamma=" + ("OK" if technical.get("gamma_available") else "pendiente"),
     ]
-    primary_action = friendly_operator_state(item.get("management_action"))
+    primary_action = console_presentation.position_plan(item)
     queue_meta = queue_meta if isinstance(queue_meta, dict) else position_action_queue_metadata(item, bool(acknowledged_event))
     management_fingerprint = shared_position_management_journal.management_fingerprint(item)
     action_upper = str(item.get("management_action") or "").upper()
@@ -7676,13 +7666,14 @@ def render_position_management_card(
         recommended_at=html_escape(friendly_age(recommendation_match.get("recommended_at")) if recommendation_match.get("recommended_at") else "sin fecha de recomendación"),
     )
     if acknowledged_event:
-        review_control = '<div class="position-review-confirmed"><b>Revisión registrada</b><span>Volverá a pendientes sólo si cambia la posición o la recomendación.</span></div>'
+        review_control = '<div class="position-review-confirmed"><b>Revisión registrada</b><span>Volverá a pendientes en la próxima jornada o antes si cambia la posición o la recomendación.</span></div>'
     elif action_upper == "REFRESH_DATA":
         review_control = '<div class="position-data-required"><b>Esta pendiente requiere datos, no sólo confirmación.</b><span>Actualiza IBKR; si los datos quedan completos desaparecerá automáticamente.</span><a href="#position-refresh">Ir a actualizar datos</a></div>'
     else:
         review_control = """
         <form method="post" action="/position-management-event" class="position-review-control" data-busy="Registrando revisión" data-busy-detail="Marca esta lectura como revisada. No ejecuta órdenes.">
           <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="account_alias" value="{review_account}">
           <input type="hidden" name="ticker" value="{ticker}">
           <input type="hidden" name="strategy" value="{strategy}">
           <input type="hidden" name="recommended_action" value="{action}">
@@ -7693,6 +7684,7 @@ def render_position_management_card(
         </form>
         """.format(
             position_id=html_escape(item.get("position_id") or ""),
+        review_account=html_escape(item.get("account_alias") or ""),
             ticker=html_escape(item.get("ticker") or ""),
             strategy=html_escape(item.get("strategy") or ""),
             action=html_escape(item.get("management_action") or ""),
@@ -7742,7 +7734,7 @@ def render_position_management_card(
         </details>
         """.format(alternatives=render_position_alternatives(related_stock))
     return """
-    <details class="alert-card position-card" data-position-card data-priority="{priority_key}" data-ticker="{ticker_raw}">
+    <details id="{position_anchor}" class="alert-card position-card" data-position-card data-priority="{priority_key}" data-ticker="{ticker_raw}">
       <summary class="position-card-summary">
         <span class="position-card-identity"><strong>{ticker}</strong><small>{contract}</small></span>
         <span class="position-card-recommendation"><small>{priority_label} · Recomendación principal</small><b>{primary_action}</b><em>{reason}</em></span>
@@ -7773,6 +7765,7 @@ def render_position_management_card(
           <summary>Editar tesis y datos de entrada</summary>
         <form method="post" action="/position-context" class="alert-actions" data-busy="Guardando tesis de posicion" data-busy-detail="Actualiza contexto local para el motor. No ejecuta ordenes.">
           <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="account_alias" value="{review_account}">
           <input type="hidden" name="ticker" value="{ticker_raw}">
           <input type="hidden" name="strategy" value="{strategy_raw}">
           <label>Tesis / razon de entrada</label>
@@ -7791,6 +7784,7 @@ def render_position_management_card(
         </details>
         <form method="post" action="/position-management-event" class="alert-actions" data-busy="Registrando gestion de posicion" data-busy-detail="Guarda bitacora local. No ejecuta ordenes.">
           <input type="hidden" name="position_id" value="{position_id}">
+          <input type="hidden" name="account_alias" value="{review_account}">
           <input type="hidden" name="ticker" value="{ticker_raw}">
           <input type="hidden" name="strategy" value="{strategy_raw}">
           <input type="hidden" name="recommended_action" value="{recommended_action}">
@@ -7814,9 +7808,11 @@ def render_position_management_card(
       </div>
     </details>
     """.format(
+        position_anchor=console_presentation.position_anchor(item),
         ticker=html_escape(item.get("ticker") or "UNKNOWN"),
         ticker_raw=html_escape(item.get("ticker") or ""),
         position_id=html_escape(item.get("position_id") or ""),
+        review_account=html_escape(item.get("account_alias") or ""),
         strategy_raw=html_escape(item.get("strategy") or ""),
         recommended_action=html_escape(item.get("management_action") or ""),
         recommended_state=html_escape(item.get("exit_state") or ""),
@@ -7862,17 +7858,18 @@ def position_action_queue_metadata(item: dict[str, Any], acknowledged: bool = Fa
     dte = console_float_or_none(item.get("dte"))
     reason = friendly_position_reason(str((reasons or item.get("warnings") or item.get("blockers") or [""])[0]))
 
-    urgent_terms = ("RISK", "DEFENSIVE", "ASSIGNMENT", "REDUCE", "CLOSE", "EXIT")
-    data_terms = ("REFRESH", "WAIT_DATA", "MISSING_DATA")
+    urgent_actions = {"REVIEW_RISK", "REVIEW_DEFENSIVE_EXIT", "REVIEW_ASSIGNMENT", "REVIEW_CLOSE_OR_BUY_BACK", "RISK_REVIEW"}
+    urgent_states = {"DEFENSIVE_EXIT", "EARLY_ASSIGNMENT_RISK", "EXIT", "EXIT_FULL", "EXIT_OPTION", "EXIT_POSITION", "EXIT_REVIEW", "RISK_EXIT", "RISK_BLOCKED", "RISK_REVIEW"}
+    data_actions = {"REFRESH_DATA", "WAIT_DATA", "MISSING_DATA", "WAIT_MARKET_DATA", "WAIT_OPTION_CHAIN"}
     expired = dte is not None and dte < 0
     if acknowledged:
         key, label, rank = "completed", "Revisión completada", 4
     elif expired:
         key, label, rank = "data", "Conciliar con IBKR", 3
-    elif any(term in action for term in data_terms):
+    elif action in data_actions:
         key, label, rank = "data", "Actualizar datos", 3
-    elif any(term in action or term in exit_state for term in urgent_terms) or blockers:
-        key, label, rank = "act", "Actuar ahora", 0
+    elif action in urgent_actions or exit_state in urgent_states:
+        key, label, rank = "act", "Revisar ahora", 0
     elif action in {"NO_ACTION_RECOMMENDED", "MONITOR", "HOLD"} or exit_state in {"MONITOR", "LINKED_STRUCTURE_LEG"}:
         key, label, rank = "maintain", "Mantener", 2
     else:
@@ -7922,6 +7919,7 @@ def position_action_queue_metadata(item: dict[str, Any], acknowledged: bool = Fa
         "score": score,
         "checkpoint": checkpoint,
         "why_now": why_now,
+        "plan": console_presentation.position_plan(item),
         "change_trigger": "; ".join(triggers[:3]).capitalize() + ".",
         "warnings": warnings,
     }
@@ -8005,14 +8003,15 @@ def render_active_positions_panel(
           <div class="position-top-focus-next">
             <span>Resolver o revisar</span>
             <strong>{checkpoint}</strong>
-            <button type="button" data-position-focus="{ticker_raw}">Abrir esta posición</button>
+            <button type="button" data-position-focus="{position_anchor}">Abrir esta posición</button>
           </div>
         </div>
         """.format(
             priority=html_escape(top_meta.get("key") or "review"),
             ticker=html_escape(top_item.get("ticker") or "UNKNOWN"),
             ticker_raw=html_escape(top_item.get("ticker") or ""),
-            action=html_escape(friendly_operator_state(top_item.get("management_action"))),
+            position_anchor=console_presentation.position_anchor(top_item),
+            action=html_escape(console_presentation.position_plan(top_item)),
             why=html_escape(top_meta.get("why_now") or "Requiere revisión del operador."),
             checkpoint=html_escape(top_meta.get("checkpoint") or "Próxima apertura diaria"),
         )
@@ -8094,13 +8093,7 @@ def render_active_positions_panel(
     if positions_unconfirmed:
         next_text = "No se pudo confirmar la cartera: inicia sesión en TWS y refresca IBKR."
     else:
-        next_text = "Sin acción inmediata; mantener monitoreo." if not payload.get("manual_review_required") else "Hay posiciones que requieren revisión manual."
-    if summary.get("top_action"):
-        next_text = "{} Prioridad: {} — {}.".format(
-            next_text,
-            summary.get("top_ticker") or "N/D",
-            friendly_operator_state(summary.get("top_action")),
-        )
+        next_text = "Hay posiciones que requieren revisión manual." if any(queue_counts[k] for k in ("act", "review", "data")) else "Sin revisiones pendientes con esta lectura; mantener monitoreo."
     return """
     <section class="panel positions-panel">
       <div class="section-head">
@@ -8108,7 +8101,7 @@ def render_active_positions_panel(
         <p>{next_text}</p>
       </div>
       <div class="position-overview">
-        <div class="queue-count queue-act"><span>Actuar ahora</span><strong>{act_count}</strong><small>Riesgo inmediato o decisión sensible al tiempo</small></div>
+        <div class="queue-count queue-act"><span>Revisar ahora</span><strong>{act_count}</strong><small>Riesgo inmediato o decisión sensible al tiempo</small></div>
         <div class="queue-count queue-review"><span>Revisar hoy</span><strong>{today_count}</strong><small>requieren criterio humano</small></div>
         <div class="queue-count queue-maintain"><span>Mantener</span><strong>{maintain_count}</strong><small>sin cambio recomendado</small></div>
         <div class="queue-count queue-data"><span>Actualizar datos</span><strong>{data_count}</strong><small>{freshness} · {age}</small></div>
@@ -8122,7 +8115,7 @@ def render_active_positions_panel(
       </div>
       <div class="position-queue-filters" role="group" aria-label="Filtrar posiciones por acción">
         <button type="button" class="active" data-position-filter="all">Todas <span>{visible_count}</span></button>
-        <button type="button" data-position-filter="act">Actuar <span>{act_count}</span></button>
+        <button type="button" data-position-filter="act">Prioritarias <span>{act_count}</span></button>
         <button type="button" data-position-filter="review">Revisar <span>{today_count}</span></button>
         <button type="button" data-position-filter="maintain">Mantener <span>{maintain_count}</span></button>
         <button type="button" data-position-filter="data">Datos <span>{data_count}</span></button>
@@ -8730,9 +8723,9 @@ def render_portfolio_risk_panel(
             </article>
             """.format(
                 severity_class=html_escape(str(alert.get("severity") or "watch").lower()),
-                severity=html_escape(alert.get("severity") or "WATCH"),
+                severity=html_escape(friendly_operator_state(alert.get("severity") or "WATCH")),
                 account=html_escape(alert.get("account_alias") or alert.get("scope") or "SISTEMA"),
-                operational_status=html_escape(operational_status),
+                operational_status=html_escape(friendly_operator_state(operational_status)),
                 badge_class=html_escape(classification["badge_class"]),
                 decision_label=html_escape(classification["label"]),
                 title=html_escape(alert.get("title") or alert.get("rule") or "Alerta de riesgo"),
@@ -9446,81 +9439,128 @@ def build_trade_casefiles(position_payload: dict[str, Any]) -> list[dict[str, An
     outcomes = json_rows(OUTCOME_JOURNAL_PATH, ("outcomes",))
     events = load_operator_events()
     positions = [row for row in (position_payload.get("positions") or []) if isinstance(row, dict)]
-    tickers = {str(row.get("ticker") or "").upper() for row in decisions + outcomes + events + positions}
+    groups: dict[Any, dict[str, Any]] = {}
+    for kind, rows in (("decision", decisions), ("outcome", outcomes), ("event", events), ("position", positions)):
+        for index, row in enumerate(rows):
+            if not row.get("ticker"):
+                continue
+            identity = console_presentation.case_identity(row)
+            key = identity or (kind, index)
+            group = groups.setdefault(key, {})
+            previous = group.get(kind) or {}
+            if not previous or timestamp_sort_value(row.get("recorded_at") or row.get("generated_at")) >= timestamp_sort_value(previous.get("recorded_at") or previous.get("generated_at")):
+                group[kind] = row
+            group["identified"] = identity is not None
     casefiles = []
-    for ticker in sorted(ticker for ticker in tickers if ticker):
-        decision = next((row for row in reversed(decisions) if str(row.get("ticker") or "").upper() == ticker), {})
-        event = next((row for row in reversed(events) if str(row.get("ticker") or "").upper() == ticker), {})
-        outcome = next((row for row in reversed(outcomes) if str(row.get("ticker") or "").upper() == ticker), {})
-        current = [row for row in positions if str(row.get("ticker") or "").upper() == ticker]
+    for group in groups.values():
+        decision, outcome, event, current = (group.get(k) or {} for k in ("decision", "outcome", "event", "position"))
+        source = current or decision or outcome or event
         applied = str(event.get("action") or "").upper() == "MARK_IBKR_APPLIED"
-        outcome_state = str(outcome.get("status") or outcome.get("outcome") or "").upper()
-        if outcome and outcome_state not in {"", "PENDING", "OPEN", "NOT_EVALUATED"}:
-            phase, phase_label = "closed", "Resultado registrado"
-        elif current:
-            phase, phase_label = "open", "Posición detectada en IBKR"
+        if current:
+            phase, phase_label = "open", "Posición actual en IBKR"
+        elif outcome:
+            phase, phase_label = "closed", "Registro histórico de resultado"
         elif applied:
-            phase, phase_label = "executed", "Ejecución informada; esperando posición"
-        elif decision:
-            phase, phase_label = "decision", "Decisión registrada"
+            phase, phase_label = "executed", "Ejecución informada; por conciliar"
         else:
-            continue
-        linked = bool(decision and (current or applied or outcome))
+            phase, phase_label = "decision", "Decisión registrada"
+        linked = bool(group["identified"] and decision and (current or applied or outcome))
         casefiles.append({
-            "ticker": ticker, "phase": phase, "phase_label": phase_label,
-            "strategy": decision.get("strategy") or event.get("strategy") or outcome.get("strategy") or "Sin estrategia vinculada",
-            "decision": decision.get("final_state") or decision.get("decision") or "Sin recomendación vinculada",
+            "ticker": source["ticker"], "phase": phase, "phase_label": phase_label,
+            "account": source.get("account_alias") or source.get("account_scope") or "Cuenta por identificar",
+            "cycle": source.get("trade_id") or source.get("trade_cycle_id") or "Sin ciclo identificado",
+            "linkage_detail": ("Cuenta y ciclo coinciden con la evidencia vinculada." if linked else
+                "Falta identificar la cuenta del registro." if not (source.get("account_alias") or source.get("account_scope")) else
+                "Falta el identificador de operación o ciclo; el identificador de posición no lo sustituye." if not console_presentation.case_identity(source) else
+                "Cuenta y ciclo identificados; falta una recomendación o evidencia correspondiente. No asociar sólo por símbolo."),
+            "strategy": friendly_operator_state(source.get("strategy"), "Sin estrategia vinculada"),
+            "decision": friendly_operator_state(decision.get("final_state") or decision.get("decision"), "Sin recomendación vinculada"),
             "execution": "Detectada automáticamente por posición" if current else "Registrada por operador" if applied else "No detectada",
-            "management": friendly_operator_state(current[0].get("management_action")) if current else "No hay posición abierta",
-            "outcome": outcome.get("outcome") or outcome.get("status") or "Pendiente",
+            "management": console_presentation.position_plan(current) if current else "Registro histórico; no describe la posición actual",
+            "outcome": "Pendiente de cierre de esta posición" if current else friendly_operator_state(outcome.get("outcome") or outcome.get("status"), "Pendiente"),
             "linked": linked,
-            "updated_at": outcome.get("recorded_at") or event.get("recorded_at") or decision.get("recorded_at") or decision.get("generated_at"),
+            "updated_at": source.get("recorded_at") or source.get("generated_at") or position_payload.get("generated_at") if current else source.get("recorded_at") or source.get("generated_at"),
         })
     rank = {"open": 0, "executed": 1, "decision": 2, "closed": 3}
-    return sorted(casefiles, key=lambda row: (rank.get(row["phase"], 9), row["ticker"]))
+    return sorted(casefiles, key=lambda row: (rank.get(row["phase"], 9), -timestamp_sort_value(row.get("updated_at")), row["ticker"]))
 
 
 def render_trade_casefiles(position_payload: dict[str, Any]) -> str:
     files = build_trade_casefiles(position_payload)
     cards = []
-    for item in files[:12]:
+    for item in files:
         cards.append("""
-        <details class="trade-casefile case-{phase}">
-          <summary><strong>{ticker}</strong><span>{phase_label}</span><small>{strategy}</small></summary>
-          <div class="casefile-flow">
+        <details class="trade-casefile case-{phase}" data-casefile data-case-linked="{linked_value}" data-case-account="{account}" data-case-phase="{phase}" data-case-date="{updated_at}">
+          <summary><strong>{ticker}</strong><span>{phase_label}</span><small>{strategy} · {account}</small></summary>
+          <p>Ciclo: {cycle}</p><div class="casefile-flow">
             <span>1 · Decisión<strong>{decision}</strong></span>
             <span>2 · Ejecución<strong>{execution}</strong></span>
             <span>3 · Gestión<strong>{management}</strong></span>
             <span>4 · Resultado<strong>{outcome}</strong></span>
           </div>
-          <p>{linkage} · actualizado {updated}</p>
+          <p>{linkage} · actualizado {updated}</p><p>{linkage_detail}</p>
         </details>
         """.format(
             **{key: html_escape(value) for key, value in item.items() if key != "linked"},
+            linked_value="yes" if item["linked"] else "no",
             linkage="Expediente vinculado" if item["linked"] else "Vínculo todavía incompleto",
             updated=html_escape(friendly_age(item.get("updated_at"))),
         ))
     return """
     <section id="trade-casefiles" class="panel trade-casefiles">
-      <div class="section-head"><div><p class="eyebrow">Ciclo completo de operaciones</p><h2>De la recomendación al resultado</h2></div><p>La aparición de una posición en IBKR vincula automáticamente el ticker; los fills exactos requieren confirmación del broker.</p></div>
-      <div class="trade-casefile-list">{cards}</div>
+      <div class="section-head"><div><p class="eyebrow">Ciclo completo de operaciones</p><h2>De la recomendación al resultado</h2></div><p>Posiciones actuales y registros históricos separados. Sólo se vinculan operaciones con cuenta y ciclo identificados; coincidencia de ticker no confirma ejecución.</p></div>
+      <div class="casefile-controls">
+        <label>Activo o cuenta<input type="search" id="case-search" placeholder="Buscar ticker o cuenta"></label>
+        <label>Tipo<select id="case-phase"><option value="open" selected>Posiciones actuales</option><option value="all">Todos</option><option value="closed">Registros históricos</option><option value="decision">Decisiones</option><option value="executed">Ejecuciones por conciliar</option><option value="unlinked">Vínculos incompletos</option></select></label>
+        <label>Desde<input type="date" id="case-date"></label>
+      </div><p id="case-count" role="status"></p><div class="trade-casefile-list">{cards}</div>
     </section>
     """.format(cards="".join(cards) or '<div class="empty-state"><strong>Sin expedientes todavía</strong><span>Se crearán al registrar decisiones o detectar posiciones.</span></div>')
+
+
+def render_recent_activity(operator_payload: dict[str, Any] | None = None) -> str:
+    operator_payload = operator_payload if isinstance(operator_payload, dict) else {}
+    tasks = (load_daily_task_journal().get("tasks") or {}).values()
+    reviews = shared_position_management_journal.load_journal(POSITION_MANAGEMENT_JOURNAL_PATH).get("events") or []
+    alert_events = load_operator_events()
+    data = operator_payload.get("data") if isinstance(operator_payload.get("data"), dict) else {}
+    intraday = data.get("intraday_futures") if isinstance(data.get("intraday_futures"), dict) else {}
+    daily = intraday.get("daily_summary") if isinstance(intraday.get("daily_summary"), dict) else {}
+    futures_events = [item for item in (daily.get("recent_events") or []) if isinstance(item, dict)]
+    if isinstance(daily.get("latest_signal"), dict):
+        futures_events.append(daily["latest_signal"])
+    rows = console_activity.build_activity_rows(
+        list(tasks), list(reviews), alert_events,
+        load_json_file(RUNTIME / "stock_ultimus_console_remote_refresh_latest.json"), futures_events,
+        friendly_state=friendly_operator_state, lifecycle_state=shared_alert_lifecycle.alert_lifecycle_state,
+    )
+    rows.sort(key=lambda row: timestamp_sort_value(row["at"]), reverse=True)
+    body = "".join(
+        '<li data-activity-at="{}" data-activity-type="{}"><strong>{}</strong><span> {} · {}</span></li>'.format(
+            html_escape(row["at"]), html_escape(row["type"]), html_escape(row["title"]), html_escape(row["detail"]), html_escape(friendly_age(row["at"]))
+        )
+        for row in rows[:50]
+    )
+    return '''<section class="panel" id="recent-activity"><h2>Actividad reciente</h2>
+      <p>Tareas, posiciones, alertas, actualizaciones de datos y señales vencidas. No implica que se haya enviado una orden.</p>
+      <div class="casefile-controls"><label>Tipo<select id="activity-type"><option value="all">Todo</option><option value="task">Tareas</option><option value="position">Posiciones</option><option value="alert">Alertas</option><option value="data">Datos</option><option value="signal">Señales vencidas</option></select></label></div>
+      <button type="button" id="activity-since-last">Desde mi última visita</button><button type="button" id="activity-show-all">Mostrar todas</button>
+      <ol>{}</ol><p id="activity-empty" role="status" {}>Sin actividad para este período y tipo.</p></section>'''.format(body, "hidden" if rows else "")
 
 
 def render_usage_validation_panel() -> str:
     payload = load_json_file(CONSOLE_USAGE_PATH)
     events = [row for row in (payload.get("events") or []) if isinstance(row, dict)]
-    sessions = len(set(payload.get("session_dates") or []))
-    view_counts = {view: sum(row.get("event") == "VIEW_CHANGE" and row.get("view") == view for row in events) for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion")}
-    most_used = max(view_counts, key=view_counts.get) if events else "Sin muestra"
+    sessions = len({row.get("session_id") for row in events if row.get("session_id")})
+    completed = sum(row.get("event") == "TASK_COMPLETED" for row in events)
+    failed = sum(row.get("event") == "TASK_FAILED" for row in events)
     return """
-    <section class="panel usage-validation">
-      <div class="section-head"><div><p class="eyebrow">Validación de experiencia real</p><h2>{sessions}/5 sesiones observadas</h2><p>{guidance}</p></div><strong>{status}</strong></div>
-      <div class="control-facts"><div><span>Eventos locales</span><strong>{events}</strong></div><div><span>Vista más utilizada</span><strong>{most_used}</strong></div><div><span>Meta inicial</span><strong>5–10 sesiones</strong></div></div>
-      <p class="muted">Sólo registra vista, modo foco y hora en este Mac. No guarda cuentas, posiciones, precios ni órdenes.</p>
-    </section>
-    """.format(sessions=sessions, events=len(events), most_used=html_escape(most_used.title()), status="MUESTRA INICIAL" if sessions < 5 else "LISTA PARA REVISIÓN", guidance="Usa la consola normalmente; todavía no conviene eliminar secciones por uso." if sessions < 5 else "Ya existe muestra suficiente para revisar clics y simplificar otra vez.")
+    <details class="panel usage-validation"><summary>Validación de experiencia · {sessions} sesiones registradas</summary>
+      <p>Sesiones separadas por 30 minutos de inactividad. Las visitas históricas sin identificador no cuentan como sesiones completas.</p>
+      <p>Acciones confirmadas: {completed} · Errores: {failed}. Estos datos no demuestran comprensión ni validan por sí solos la experiencia.</p>
+      <p>La siguiente validación requiere observar tareas reales: identificar la prioridad, abrir el caso correcto y explicar el plan. No guarda cuentas, posiciones, precios ni órdenes.</p>
+    </details>
+    """.format(sessions=sessions, completed=completed, failed=failed)
 
 
 def render_premium_strategy_research_summary() -> str:
@@ -9543,7 +9583,7 @@ def render_premium_strategy_research_summary() -> str:
     <section id="premium-research" class="panel premium-research-summary">
       <div class="section-head">
         <div><p class="eyebrow">Nuevas estrategias en investigación</p><h2>Datos acumulados y faltantes</h2><p>Ninguna de estas estrategias puede generar una entrada operable.</p></div>
-        <strong>RESEARCH ONLY</strong>
+        <strong>Sólo investigación</strong>
       </div>
       <div class="history-scoreboard">
         <div><span>CANSLIM completos</span><strong>{canslim}</strong></div>
@@ -9556,7 +9596,7 @@ def render_premium_strategy_research_summary() -> str:
         <div class="history-strategy-card"><strong>Earnings CANSLIM</strong><span>{earnings_state}</span><small>{earnings_detail}</small></div>
         <div class="history-strategy-card"><strong>Put largo SPY/RSP</strong><span>{long_state}</span><small>{long_detail}</small></div>
       </div>
-      <p class="muted">Máximo permitido actualmente: PAPER_ELIGIBLE. Historial faltante no se interpreta como resultado cero.</p>
+      <p class="muted">Máximo permitido actualmente: evaluación simulada. Historial faltante no se interpreta como resultado cero.</p>
     </section>
     """.format(
         canslim=html_escape(summary.get("canslim_full_coverage") or 0),
@@ -9564,10 +9604,10 @@ def render_premium_strategy_research_summary() -> str:
         quotes=html_escape(summary.get("prospective_option_observations") or 0),
         liquid=html_escape(summary.get("liquid_long_dated_grid_cells") or 0),
         expired=html_escape(summary.get("expired_option_backfill_rows") or 0),
-        earnings_state=html_escape(earnings.get("data_state") or "SIN PRIMER DIAGNÓSTICO"),
+        earnings_state=html_escape(friendly_operator_state(earnings.get("data_state"), "Sin primer diagnóstico")),
         earnings_detail=html_escape(earnings_detail),
-        long_state=html_escape(long_dated.get("data_state") or "SIN PRIMER DIAGNÓSTICO"),
-        long_detail=html_escape(long_dated.get("next_action") or "Ejecutar primera captura IBKR."),
+        long_state=html_escape(friendly_operator_state(long_dated.get("data_state"), "Sin primer diagnóstico")),
+        long_detail=html_escape(friendly_operator_state(long_dated.get("next_action"), "Ejecutar primera captura IBKR.")),
     )
 
 
@@ -10449,7 +10489,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           body.focus-mode .automation-cycle,body.focus-mode .daily-routine,body.focus-mode .daily-close,body.focus-mode .remaining-priorities {{ display:none; }}
           body.focus-mode .operator-task ~ .operator-task {{ display:none; }}
           body.focus-mode .command-center {{ box-shadow:0 12px 34px rgba(15,95,80,.16); }}
-          .operator-nav a:hover,.operator-nav a:focus-visible {{ color:var(--accent-strong); background:#eaf6f2; outline:none; }}
+          .operator-nav a:hover,.operator-nav a:focus-visible {{ color:var(--accent-strong); background:#eaf6f2; }}
           .operator-nav a[aria-current="page"] {{ color:white; background:var(--accent-strong); }}
           .console-view {{ min-width:0; }}
           .console-view[hidden] {{ display:none; }}
@@ -10844,6 +10884,35 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
           @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+
+          [hidden] {{ display:none !important; }}
+          :focus-visible {{ outline:3px solid #2563eb; outline-offset:3px; }}
+          .primary-case-action {{ display:inline-block; margin-top:10px; padding:12px 18px; background:var(--accent); color:white; border-radius:8px; text-decoration:none; font-weight:750; }}
+          .task-explanation {{ margin-top:8px; }}
+          .task-explanation summary,.opportunity-evidence summary,.risk-overview>summary,.daily-close>summary {{ cursor:pointer; font-weight:650; padding:10px 0; }}
+          .risk-overview>summary {{ padding:14px; }}
+          .form-feedback {{ padding:12px; border-left:3px solid var(--accent); margin:10px 0; overflow-wrap:anywhere; }}
+          .casefile-controls {{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }}
+          .trade-casefile-list {{ max-height:70vh; overflow:auto; }}
+          .trade-casefile summary {{ flex-wrap:wrap; overflow-wrap:anywhere; }}
+          .capacity-context {{ display:block; color:var(--muted); margin-bottom:8px; }}
+          [data-position-card],[id^="canslim-"],.risk-overview {{ scroll-margin-top:85px; }}
+          @media (max-width:620px) {{
+            .operator-nav {{ display:flex; flex-wrap:nowrap; overflow-x:auto; padding:6px; top:0; gap:4px; }}
+            .operator-nav a {{ flex:0 0 auto; min-height:44px; display:flex; align-items:center; }}
+            .command-head {{ padding:12px; }}
+            .command-head h2 {{ font-size:1.35rem; }}
+            .command-head p {{ font-size:.95rem; }}
+            .opening-status {{ display:none; }}
+            .primary-case-action {{ display:block; text-align:center; }}
+            .command-facts {{ font-size:.85rem; }}
+            .daily-task-actions {{ flex-wrap:wrap; }}
+            .header-actions form:first-child {{ flex:0 1 auto; }}
+            .header-actions button {{ min-height:44px; }}
+            #recent-activity > button {{ min-height:44px; }}
+            .app-health-chips {{ display:none; }}
+            .header-actions>span,.header-actions small {{ display:none; }}
+          }}
         </style>
       </head>
       <body>
@@ -10856,6 +10925,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         <main>
           <h1 class="sr-only">Stock Ultimus Console</h1>
           {health}
+          {message}
+          <div id="console-feedback" role="status" aria-live="polite"></div>
           <nav class="operator-nav" aria-label="Navegación principal de la consola">
             <a href="#view-hoy" data-console-view-link="hoy">Hoy</a>
             <a href="#view-cartera" data-console-view-link="cartera">Cartera</a>
@@ -10870,13 +10941,12 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             {command_center}
             {automation_cycle}
             {daily_routine}
-            {message}
             {job_panel}
           </section>
 
           <section id="view-cartera" class="console-view" data-console-view="cartera">
             <div class="view-intro"><div><p class="eyebrow">Cartera</p><h2>Posiciones, riesgo y capacidad</h2></div><p>Busca un ticker, abre sólo la posición que quieras gestionar y revisa primero la recomendación principal.</p></div>
-            <div id="riesgo">{portfolio_risk}</div>
+            <details id="riesgo" class="panel risk-overview" {risk_expanded}><summary>Riesgo de cartera · {risk_brief}</summary>{portfolio_risk}</details>
             <div id="posiciones">{active_positions}</div>
             <details id="analisis-cartera" class="panel operator-workspace">
               <summary><span>Análisis avanzado de cartera<small>Escenarios, factores, estrés, rebalanceo y simulaciones.</small></span></summary>
@@ -10907,6 +10977,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
 
           <section id="view-historial" class="console-view" data-console-view="historial">
             <div class="view-intro"><div><p class="eyebrow">Actividad</p><h2>Decisiones, señales vencidas y aprendizaje</h2></div><p>Aquí vive lo ocurrido. Nada de esta sección se presenta como oportunidad vigente.</p></div>
+            {recent_activity}
             {history_learning_summary}
             {usage_validation}
             {trade_casefiles}
@@ -10976,312 +11047,16 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             </div>
           </details>
           </section>
-          <footer>Decision support solamente. Esta pantalla no autoriza ordenes ni ejecuciones automaticas.</footer>
+          <footer>Apoyo a decisiones. La consola no envía órdenes ni ejecuta operaciones.</footer>
         </main>
-        <script>
-          (() => {{
-            const views = Array.from(document.querySelectorAll("[data-console-view]"));
-            const viewLinks = Array.from(document.querySelectorAll("[data-console-view-link]"));
-            if (!views.length) return;
-            const targetViews = {{
-              hoy:"hoy", pendientes:"hoy",
-              riesgo:"cartera", posiciones:"cartera", cartera:"cartera", "analisis-cartera":"cartera",
-              "coberturas-rsp":"oportunidades", "opportunity-center":"oportunidades", alertas:"oportunidades", oportunidades:"oportunidades",
-              analisis:"historial", resultados:"historial", historial:"historial", "premium-research":"historial",
-              herramientas:"configuracion", configuracion:"configuracion"
-            }};
-            const savedView = (() => {{ try {{ return localStorage.getItem("stockUltimusConsoleView"); }} catch (_) {{ return null; }} }})();
-            const hashTarget = window.location.hash.replace(/^#(?:view-)?/, "");
-            const initialView = targetViews[hashTarget] || targetViews[savedView] || "hoy";
-            const showView = (name, remember = true) => {{
-              const selected = targetViews[name] || "hoy";
-              views.forEach((view) => {{ view.hidden = view.dataset.consoleView !== selected; }});
-              viewLinks.forEach((link) => {{
-                if (link.dataset.consoleViewLink === selected) link.setAttribute("aria-current", "page");
-                else link.removeAttribute("aria-current");
-              }});
-              if (remember) {{ try {{ localStorage.setItem("stockUltimusConsoleView", selected); }} catch (_) {{}} }}
-              if (remember) fetch("/usage-event", {{method:"POST", headers:{{"Content-Type":"application/x-www-form-urlencoded"}}, body:new URLSearchParams({{event:"VIEW_CHANGE", view:selected}}), keepalive:true}}).catch(() => {{}});
-            }};
-            showView(initialView, false);
-            window.addEventListener("hashchange", () => {{
-              const target = window.location.hash.replace(/^#(?:view-)?/, "");
-              showView(targetViews[target] || "hoy", false);
-            }});
-            viewLinks.forEach((link) => link.addEventListener("click", () => showView(link.dataset.consoleViewLink)));
-            const focusButton = document.querySelector("[data-focus-mode]");
-            const applyFocus = (enabled, record = false) => {{
-              document.body.classList.toggle("focus-mode", enabled);
-              if (focusButton) focusButton.textContent = enabled ? "Salir de foco" : "Modo foco";
-              try {{ localStorage.setItem("stockUltimusFocusMode", enabled ? "1" : "0"); }} catch (_) {{}}
-              if (record) fetch("/usage-event", {{method:"POST", headers:{{"Content-Type":"application/x-www-form-urlencoded"}}, body:new URLSearchParams({{event:enabled ? "FOCUS_ON" : "FOCUS_OFF", view:"hoy"}}), keepalive:true}}).catch(() => {{}});
-            }};
-            let focusEnabled = false;
-            try {{ focusEnabled = localStorage.getItem("stockUltimusFocusMode") === "1"; }} catch (_) {{}}
-            applyFocus(focusEnabled);
-            if (focusButton) focusButton.addEventListener("click", () => {{ focusEnabled = !focusEnabled; applyFocus(focusEnabled, true); showView("hoy"); }});
-            document.addEventListener("click", (event) => {{
-              const anchor = event.target.closest('a[href^="#"]');
-              if (!anchor) return;
-              const targetId = anchor.getAttribute("href").slice(1);
-              const selected = targetViews[targetId.replace(/^view-/, "")];
-              if (!selected) return;
-              showView(selected);
-              if (!targetId.startsWith("view-")) setTimeout(() => document.getElementById(targetId)?.scrollIntoView({{behavior:"smooth", block:"start"}}), 0);
-            }});
+        <script>{console_script}</script>
 
-            const search = document.getElementById("position-search");
-            const cards = Array.from(document.querySelectorAll("[data-position-card]"));
-            const empty = document.getElementById("position-search-empty");
-            const status = document.getElementById("position-search-status");
-            const positionFilters = Array.from(document.querySelectorAll("[data-position-filter]"));
-            let activePositionFilter = "all";
-            const applyPositionFilters = () => {{
-              const query = search.value.trim().toUpperCase();
-              let visible = 0;
-              cards.forEach((card) => {{
-                const matchesTicker = !query || (card.dataset.ticker || "").includes(query);
-                const matchesQueue = activePositionFilter === "all" || card.dataset.priority === activePositionFilter;
-                const matches = matchesTicker && matchesQueue;
-                card.hidden = !matches;
-                if (matches) visible += 1;
-              }});
-              if (empty) empty.hidden = visible !== 0;
-              if (status) status.textContent = query || activePositionFilter !== "all" ? `${{visible}} posición(es) en esta vista.` : "Selecciona una posición para ver su recomendación y alternativas.";
-              if (query && visible === 1) cards.find((card) => !card.hidden)?.setAttribute("open", "");
-            }};
-            if (search && cards.length) search.addEventListener("input", applyPositionFilters);
-            positionFilters.forEach((button) => button.addEventListener("click", () => {{
-              activePositionFilter = button.dataset.positionFilter || "all";
-              positionFilters.forEach((candidate) => candidate.classList.toggle("active", candidate === button));
-              applyPositionFilters();
-            }}));
-            document.querySelectorAll("[data-position-focus]").forEach((button) => button.addEventListener("click", () => {{
-              const ticker = button.dataset.positionFocus || "";
-              activePositionFilter = "all";
-              positionFilters.forEach((candidate) => candidate.classList.toggle("active", candidate.dataset.positionFilter === "all"));
-              if (search) search.value = ticker;
-              applyPositionFilters();
-              const card = cards.find((candidate) => !candidate.hidden);
-              if (card) {{ card.setAttribute("open", ""); card.scrollIntoView({{behavior:"smooth", block:"start"}}); }}
-            }}));
-
-            const opportunityFilters = Array.from(document.querySelectorAll("[data-opportunity-filter]"));
-            const opportunityCards = Array.from(document.querySelectorAll("[data-opportunity-card]"));
-            const opportunityEmpty = document.getElementById("opportunity-filter-empty");
-            const expireFutures = () => {{
-              document.querySelectorAll("[data-price-valid-until]").forEach((card) => {{
-                const deadline = Date.parse(card.dataset.priceValidUntil || "");
-                if (!Number.isFinite(deadline) || Date.now() < deadline) return;
-                if (!card.classList.contains("opportunity-ready") && !card.classList.contains("futures-ready")) return;
-                card.classList.replace("opportunity-ready", "opportunity-forming");
-                card.classList.replace("futures-ready", "futures-verify_price");
-                const badge = card.querySelector(".opportunity-card-head b, .futures-primary-head b");
-                const action = card.querySelector(".opportunity-action strong, .futures-recommendation");
-                if (badge) badge.textContent = "Verificar precio actual";
-                if (action) action.textContent = "Cotización fuera de vigencia; actualizar antes de entrar.";
-              }});
-              document.querySelectorAll("[data-futures-expires-at]").forEach((card) => {{
-                const deadline = Date.parse(card.dataset.futuresExpiresAt || "");
-                if (Number.isFinite(deadline) && Date.now() >= deadline) {{
-                  card.hidden = true;
-                  card.dataset.expired = "true";
-                }}
-              }});
-              const current = opportunityCards.filter((card) => card.dataset.expired !== "true");
-              ["ready", "forming", "waiting", "blocked", "research"].forEach((state) => {{
-                const count = current.filter((card) => card.classList.contains("opportunity-" + state)).length;
-                document.querySelectorAll(".opportunity-status-strip .status-" + state + " strong").forEach((node) => node.textContent = String(count));
-                if (state === "ready") document.querySelectorAll("[data-live-ready-count]").forEach((node) => node.textContent = String(count));
-              }});
-              opportunityFilters.forEach((button) => {{
-                const kind = button.dataset.opportunityFilter || "all";
-                const count = kind === "all" ? current.length : current.filter((card) => card.dataset.opportunityType === kind).length;
-                button.textContent = button.textContent.replace(/\(\d+\)/, "(" + count + ")");
-              }});
-            }};
-            expireFutures();
-            window.setInterval(expireFutures, 1000);
-            let quotesBusy = false;
-            const refreshFuturesPrices = async () => {{
-              const cards = Array.from(document.querySelectorAll("[data-futures-signal-key]")).filter((card) => card.dataset.futuresSignalKey && card.dataset.expired !== "true");
-              if (quotesBusy || document.hidden || !cards.length) return;
-              quotesBusy = true;
-              try {{
-                const response = await fetch("/futures-live-prices", {{signal: AbortSignal.timeout(8000)}});
-                if (!response.ok) return;
-                const payload = await response.json();
-                if (!Array.isArray(payload.items)) return;
-                cards.forEach((card) => {{
-                  const item = payload.items.find((item) => item.signal_key === card.dataset.futuresSignalKey);
-                  if (!item) {{ card.hidden = true; card.dataset.expired = "true"; return; }}
-                  const prefix = card.hasAttribute("data-opportunity-card") ? "opportunity-" : "futures-";
-                  Array.from(card.classList).filter((value) => value.startsWith(prefix) && ["ready", "forming", "verify_price", "blocked", "confirmed", "detected", "watch"].includes(value.slice(prefix.length))).forEach((value) => card.classList.remove(value));
-                  card.classList.add(prefix + item.state);
-                  card.dataset.priceValidUntil = item.price_valid_until || "";
-                  const badge = card.querySelector(".opportunity-card-head b, .futures-primary-head b");
-                  const action = card.querySelector(".opportunity-action strong, .futures-recommendation");
-                  if (badge) badge.textContent = item.state_label;
-                  if (action) action.textContent = item.action;
-                }});
-                expireFutures();
-              }} catch (_) {{ /* The existing 30-second expiry remains authoritative. */ }}
-              finally {{ quotesBusy = false; }}
-            }};
-            window.setInterval(refreshFuturesPrices, 5000);
-            refreshFuturesPrices();
-            opportunityFilters.forEach((button) => button.addEventListener("click", () => {{
-              const selected = button.dataset.opportunityFilter || "all";
-              let visible = 0;
-              opportunityFilters.forEach((item) => item.classList.toggle("active", item === button));
-              opportunityCards.forEach((card) => {{
-                const show = card.dataset.expired !== "true" && (selected === "all" || card.dataset.opportunityType === selected);
-                card.hidden = !show;
-                if (show) visible += 1;
-              }});
-              if (opportunityEmpty) opportunityEmpty.hidden = visible !== 0;
-            }}));
-
-            const money = new Intl.NumberFormat("en-US", {{style:"currency", currency:"USD"}});
-            document.querySelectorAll("[data-opportunity-simulator]").forEach((simulator) => {{
-              const input = simulator.querySelector("[data-simulator-quantity]");
-              if (!input) return;
-              const unitCapital = Number(simulator.dataset.unitCapital);
-              const capacity = Number(simulator.dataset.capacity);
-              const totalNode = simulator.querySelector("[data-simulator-total]");
-              const remainingNode = simulator.querySelector("[data-simulator-remaining]");
-              const useNode = simulator.querySelector("[data-simulator-use]");
-              const statusNode = simulator.querySelector("[data-simulator-status]");
-              const update = () => {{
-                const maximum = Math.max(1, Number(input.max) || 10);
-                const quantity = Math.min(maximum, Math.max(1, Math.floor(Number(input.value) || 1)));
-                input.value = String(quantity);
-                const total = unitCapital * quantity;
-                const remaining = capacity - total;
-                if (totalNode) totalNode.textContent = money.format(total);
-                if (remainingNode) remainingNode.textContent = money.format(Math.max(remaining, 0)) + (remaining < 0 ? " · insuficiente" : " · proyección");
-                if (useNode) useNode.textContent = capacity > 0 ? `${{((total / capacity) * 100).toFixed(2)}}%` : "N/D";
-                if (statusNode) statusNode.textContent = remaining < 0 ? "Capacidad insuficiente" : total / capacity > .25 ? "Viable; revisar tamaño" : "Viable por capacidad";
-                simulator.classList.toggle("simulator-risk", remaining < 0 || (capacity > 0 && total / capacity > .25));
-              }};
-              input.addEventListener("input", update);
-              input.addEventListener("change", update);
-              update();
-            }});
-          }})();
-
-          (() => {{
-            const overlay = document.getElementById("busy-overlay");
-            if (!overlay) return;
-            const title = overlay.querySelector("strong");
-            const detail = overlay.querySelector("span");
-            document.querySelectorAll("form").forEach((form) => {{
-              form.addEventListener("submit", (event) => {{
-                const submitter = event.submitter;
-                const actionValue = submitter && submitter.name === "action" ? submitter.value : "";
-                const reasonInput = form.querySelector('input[name="reason"]');
-                const fillPriceInput = form.querySelector('input[name="ibkr_fill_price"]');
-                const fillQuantityInput = form.querySelector('input[name="ibkr_fill_quantity"]');
-                const reasonRequired = ["REJECT_SETUP", "APPROVE_MANUAL_REVIEW", "JOURNAL_NOTE", "MARK_IBKR_APPLIED", "MARK_IBKR_NOT_APPLIED", "MARK_MISSED"].includes(actionValue);
-                if (reasonRequired && reasonInput && !reasonInput.value.trim()) {{
-                  event.preventDefault();
-                  reasonInput.setCustomValidity("Esta accion requiere nota/razon.");
-                  reasonInput.reportValidity();
-                  setTimeout(() => reasonInput.setCustomValidity(""), 1200);
-                  return;
-                }}
-                if (actionValue === "MARK_IBKR_APPLIED" && fillPriceInput && fillQuantityInput && (!fillPriceInput.value.trim() || !fillQuantityInput.value.trim())) {{
-                  event.preventDefault();
-                  const target = !fillPriceInput.value.trim() ? fillPriceInput : fillQuantityInput;
-                  target.setCustomValidity("IBKR aplicada requiere fill y cantidad para medir performance real.");
-                  target.reportValidity();
-                  setTimeout(() => target.setCustomValidity(""), 1600);
-                  return;
-                }}
-                if (actionValue && !form.querySelector('input[name="action"][type="hidden"]')) {{
-                  const hiddenAction = document.createElement("input");
-                  hiddenAction.type = "hidden";
-                  hiddenAction.name = "action";
-                  hiddenAction.value = actionValue;
-                  form.appendChild(hiddenAction);
-                }}
-                const manualStatus = submitter && submitter.name === "status" ? submitter.value : "";
-                const manualReason = submitter && submitter.dataset ? submitter.dataset.reason : "";
-                if (manualStatus && manualReason) {{
-                  const reason = form.querySelector('input[name="reason"]');
-                  if (reason) reason.value = manualReason;
-                }}
-                const label = form.dataset.busy || "Procesando accion local";
-                const backgroundSubmit = form.dataset.backgroundSubmit === "true";
-                title.textContent = label;
-                detail.textContent = form.dataset.busyDetail || "Solicitud enviada. Veras confirmacion o un panel RUNNING/DONE en unos segundos.";
-                overlay.hidden = false;
-                const buttons = Array.from(form.querySelectorAll("button"));
-                buttons.forEach((button) => {{
-                  button.dataset.originalText = button.dataset.originalText || button.textContent;
-                  button.disabled = true;
-                  button.textContent = "Trabajando...";
-                }});
-                if (backgroundSubmit) {{
-                  event.preventDefault();
-                  const statusTarget = form.dataset.statusTarget ? document.getElementById(form.dataset.statusTarget) : null;
-                  if (statusTarget) statusTarget.textContent = "Refresh RSP solicitado. Esperando confirmacion local...";
-                  fetch(form.action, {{
-                    method: (form.method || "post").toUpperCase(),
-                    body: new FormData(form),
-                    headers: {{ "Accept": "application/json" }}
-                  }})
-                    .then((response) => response.json())
-                    .then((payload) => {{
-                      const job = payload.job_id ? " Job: " + payload.job_id : "";
-                      const message = payload.message || (payload.ok ? "Proceso iniciado." : "No pude iniciar el proceso.");
-                      title.textContent = payload.already_running ? "El proceso ya está corriendo" : "Proceso iniciado";
-                      detail.textContent = message + job;
-                      if (statusTarget) statusTarget.textContent = message + job;
-                      if (payload.job_id && form.dataset.reloadOnDone === "true") {{
-                        const poll = () => fetch("/job-status?id=" + encodeURIComponent(payload.job_id), {{headers: {{"Accept": "application/json"}}}})
-                          .then((response) => response.json())
-                          .then((state) => {{
-                            const progress = state.progress || {{}};
-                            const progressText = progress.total ? ` ${{progress.completed || 0}}/${{progress.total}} · ${{progress.current || "finalizando"}}` : "";
-                            if (statusTarget) statusTarget.textContent = (state.label || "Actualización") + progressText;
-                            if (state.status === "DONE") {{
-                              if (statusTarget) statusTarget.textContent = "Actualización terminada. Recargando datos…";
-                              window.setTimeout(() => window.location.reload(), 450);
-                              return;
-                            }}
-                            if (state.status === "ERROR") {{
-                              title.textContent = "Actualización incompleta";
-                              detail.textContent = state.error || "Revisa el resultado del proceso.";
-                              if (statusTarget) statusTarget.textContent = "Actualización incompleta: " + (state.error || "fuente remota no disponible");
-                              return;
-                            }}
-                            window.setTimeout(poll, 900);
-                          }})
-                          .catch(() => window.setTimeout(poll, 1600));
-                        window.setTimeout(poll, 500);
-                      }}
-                    }})
-                    .catch((error) => {{
-                      title.textContent = "Refresh RSP no confirmado";
-                      detail.textContent = String(error || "Error local");
-                      if (statusTarget) statusTarget.textContent = "No pude confirmar el refresh RSP. Revisa la consola.";
-                    }})
-                    .finally(() => {{
-                      buttons.forEach((button) => {{
-                        button.disabled = false;
-                        button.textContent = button.dataset.originalText || "Enviar";
-                      }});
-                      setTimeout(() => {{ overlay.hidden = true; }}, 1200);
-                    }});
-                }}
-              }});
-            }});
-          }})();
-        </script>
       </body>
     </html>
     """.format(
+        console_script=(ROOT / "scripts" / "console_ui.js").read_text(),
+        risk_expanded="open" if (risk_payload.get("alert_counts") or {}).get("critical") else "",
+        risk_brief=html_escape("{} críticas · {} altas · {} en vigilancia".format(*[(risk_payload.get("alert_counts") or {}).get(k, 0) for k in ("critical", "high", "watch")])),
         context=render_console_context(active, snapshot, operator_payload),
         configuration_overview=render_configuration_overview(profiles, active, snapshot, operator_payload, reports),
         health=render_console_health(active, snapshot, operator_payload, reports),
@@ -11302,6 +11077,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         portfolio_whatif=render_portfolio_whatif_panel(profiles, active),
         portfolio_operations=render_portfolio_operations_panel(),
         decision_outcomes=render_decision_outcome_panel(),
+        recent_activity=render_recent_activity(operator_payload),
         history_learning_summary=render_history_learning_summary(),
         usage_validation=render_usage_validation_panel(),
         trade_casefiles=render_trade_casefiles(position_payload),
@@ -11310,7 +11086,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         executive_report=render_executive_report_panel(),
         preventive_maintenance=render_preventive_maintenance_panel(),
         diagnostic=render_diagnostic_panel(active, reports),
-        message=('<div class="notice">' + html_escape(message) + "</div>") if message else "",
+        message=('<div class="notice console-message" role="status">' + html_escape(message) + "</div>") if message else "",
         refresh_meta=refresh_meta,
         job_panel=job_panel,
         profile_cards=render_profile_cards(profiles, active),
@@ -11961,15 +11737,23 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                         (params.get("task_fingerprint") or [""])[0],
                         (params.get("task_action") or [""])[0],
                         (params.get("task_title") or [""])[0],
+                        int((params.get("postpone_minutes") or ["60"])[0]),
                     )
                     messages = {
                         "REVIEWING": "Prioridad marcada en revisión; seguirá visible.",
-                        "POSTPONED": "Prioridad pospuesta una hora; reaparecerá automáticamente.",
-                        "DONE": "Prioridad marcada atendida; reaparecerá si cambia la recomendación.",
+                        "POSTPONED": "Revisión pospuesta hasta " + cdmx_review_time(parse_iso_datetime(record.get("postponed_until")) or datetime.now(timezone.utc)) + ". Su riesgo sigue vigente.",
+                        "DONE": "Revisado por hoy. Reaparecerá mañana o si cambia la recomendación; el riesgo sigue vigente.",
                     }
-                    self.send_html(messages.get(record.get("state"), "Estado de prioridad actualizado."))
+                    message = messages.get(record.get("state"), "Tarea pendiente de revisión nuevamente.")
+                    if "application/json" in self.headers.get("Accept", ""):
+                        self.send_json({"ok": True, "message": message, "state": record["state"]})
+                    else:
+                        self.send_html(message)
                 except Exception as exc:
-                    self.send_html("No pude actualizar la prioridad: {}".format(str(exc)[:160]), status=400)
+                    if "application/json" in self.headers.get("Accept", ""):
+                        self.send_json({"ok": False, "message": "No pude actualizar la prioridad: " + str(exc)[:160]}, status=400)
+                    else:
+                        self.send_html("No pude actualizar la prioridad: {}".format(str(exc)[:160]), status=400)
             elif self.path == "/manual-review-event":
                 status_value = (params.get("status") or ["REVIEWING"])[0]
                 reason = (params.get("reason") or [""])[0].strip()
@@ -11998,7 +11782,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     else "No pude registrar revision V31: {}".format(result.get("error") or result.get("text") or "unknown")
                 )
                 if result.get("ok"):
-                    fetch_remote_json("/v31_manual_reviews?limit=250", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
+                    fetch_remote_json("/v31_manual_reviews?limit=100", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
                     fetch_remote_json("/gpt_v31_daily_rankings", timeout=REMOTE_VERIFY_TIMEOUT_SECONDS, prefer_cache=False)
                 self.send_html(message, result={
                     "command": "POST /v31_manual_review_inbox/record",
@@ -12022,6 +11806,7 @@ class AccountProfileWebHandler(BaseHTTPRequestHandler):
                     shared_position_management_journal.record_event(
                         {
                             "position_id": (params.get("position_id") or [""])[0],
+                            "account_alias": (params.get("account_alias") or [""])[0],
                             "ticker": ticker_label,
                             "strategy": (params.get("strategy") or [""])[0],
                             "recommended_action": (params.get("recommended_action") or [""])[0],

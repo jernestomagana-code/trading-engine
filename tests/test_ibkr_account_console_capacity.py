@@ -1,5 +1,6 @@
 import importlib.util
 import concurrent.futures
+import gzip
 import json
 import sys
 import tempfile
@@ -1073,7 +1074,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Posiciones por atender", html)
         self.assertIn("Estado operativo", html)
         self.assertIn("Apertura y mercado", html)
-        self.assertIn("2 posiciones abiertas", html)
+        self.assertIn("2 instrumentos abiertos", html)
         self.assertIn("Por qué importa ahora", html)
         self.assertIn("Recomendación", html)
         self.assertIn("Si no la atiendes", html)
@@ -1082,7 +1083,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         self.assertIn("Próxima revisión", html)
         self.assertIn("Cierre diario", html)
         self.assertIn("Riesgos altos/críticos abiertos", html)
-        self.assertIn("Próxima apertura estimada", html)
+        self.assertIn("Próxima sesión de acciones", html)
         self.assertIn("Apertura guiada", html)
         self.assertIn("1 · Actualizar primero", html)
         self.assertIn("2 · Retomar", html)
@@ -1093,7 +1094,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
         urgent = account_console.daily_task_timing({"level": "critical", "area": "Riesgo", "when": "Resolver ahora"}, now)
         before_entry = account_console.daily_task_timing({"level": "high", "area": "Riesgo", "when": "Revisar hoy"}, now)
         waiting = account_console.daily_task_timing({"level": "watch", "area": "Sistema", "when": "Esperar"}, now)
-        self.assertEqual(urgent["timing_label"], "Actuar ahora")
+        self.assertEqual(urgent["timing_label"], "Revisar ahora")
         self.assertIn("08:15 CDMX", urgent["next_review_label"])
         self.assertEqual(before_entry["timing_label"], "Antes de abrir posición")
         self.assertEqual(before_entry["next_review_label"], "Antes de la próxima entrada")
@@ -1345,6 +1346,30 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
                 self.assertEqual(result["live_error"], "CACHE_FIRST_CONSOLE_RENDER")
             finally:
                 account_console.REMOTE_CACHE_PATH = original_path
+
+    def test_remote_json_requests_and_decodes_gzip(self):
+        payload = gzip.compress(json.dumps({"status": "OK"}).encode("utf-8"))
+
+        class Response:
+            headers = {"Content-Encoding": "gzip"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return payload
+
+        with patch.object(account_console, "read_access_token", return_value="test-token"), \
+             patch.object(account_console, "public_base_url", return_value="https://example.test"), \
+             patch.object(account_console, "write_remote_cache"), \
+             patch.object(account_console.urllib.request, "urlopen", return_value=Response()) as request:
+            result = account_console.fetch_remote_json("/health")
+
+        self.assertEqual(result["data"]["status"], "OK")
+        self.assertEqual(request.call_args.args[0].get_header("Accept-encoding"), "gzip")
 
     def test_stale_remote_positions_do_not_resurrect_closed_local_position(self):
         snapshot = {"available": True, "data": {"positions": []}}

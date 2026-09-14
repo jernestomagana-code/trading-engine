@@ -38,10 +38,10 @@ class LiveQuotesTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node required to check browser syntax")
     def test_console_main_javascript_parses(self):
         source = (Path(__file__).resolve().parents[1] / "scripts/ibkr_account_profile.py").read_text()
-        scripts = re.findall(r"<script>(.*?)</script>", source, re.S)
+        scripts = [(Path(__file__).resolve().parents[1] / "scripts/console_ui.js").read_text()]
         self.assertTrue(scripts)
         for script in scripts:
             if "const views =" not in script:
                 continue
-            result = subprocess.run([shutil.which("node"), "--check"], input=script.replace("{{", "{").replace("}}", "}"), text=True, capture_output=True)
+            result = subprocess.run([shutil.which("node"), "--check"], input=script, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
