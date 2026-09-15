@@ -3370,15 +3370,15 @@ def render_command_center(
         )
 
     task_rows = []
-    for index, item in enumerate(pending[:3], start=1):
+    for index, item in enumerate(pending[:1], start=1):
         task_rows.append(render_task(item, index))
     if not task_rows:
         task_rows.append('<div class="empty-state"><strong>Sin pendientes prioritarios</strong><span>La consola continuará monitoreando.</span></div>')
     remaining_tasks = ""
-    if len(pending) > 3:
+    if len(pending) > 1:
         remaining_tasks = '<details class="remaining-priorities"><summary>Ver los otros {} pendientes</summary>{}</details>'.format(
-            len(pending) - 3,
-            "".join(render_task(item, index) for index, item in enumerate(pending[3:], start=4)),
+            len(pending) - 1,
+            "".join(render_task(item, index) for index, item in enumerate(pending[1:], start=2)),
         )
 
     risk_counts = risk_payload.get("alert_counts") if isinstance(risk_payload.get("alert_counts"), dict) else {}
@@ -3420,12 +3420,12 @@ def render_command_center(
       <div class="command-facts">
         <a href="#riesgo"><span>Riesgo de cartera</span><strong>{risk_label}</strong><small>{critical} crítica(s) · {high} alta(s) · {watch} vigilancia</small></a>
         <a href="#posiciones"><span>Posiciones por atender</span><strong>{reviews}</strong><small>{positions} instrumentos abiertos</small></a>
-        <a href="#opportunity-center"><span>Entradas vigentes</span><strong data-live-ready-count>{ready_opportunities}</strong><small>{forming_opportunities} cerca de confirmación</small></a>
+        <a href="#actionable-entries"><span>Entradas que decidir</span><strong data-live-ready-count>{ready_opportunities}</strong><small>{forming_opportunities} siguen en seguimiento</small></a>
         <a href="#view-configuracion"><span>Estado operativo</span><strong>{operational_label}</strong><small>{operational_detail}</small></a>
         <div><span>Apertura y mercado</span><strong>{opening} · {market}</strong><small>{operator_state}</small></div>
       </div>
       <div id="pendientes" class="pending-queue">
-        <div class="queue-head"><h3>Qué requiere tu decisión</h3><span>Máximo tres prioridades: riesgo, posiciones y después entradas.</span></div>
+        <div class="queue-head"><h3>Haz esto ahora</h3><span>Una prioridad. El resto permanece oculto hasta terminarla.</span></div>
         {tasks}
         {remaining_tasks}
       </div>
@@ -3443,8 +3443,8 @@ def render_command_center(
     """.format(
         level=html_escape(level),
         title=html_escape(title),
-        primary_href=html_escape("#view-configuracion" if health.get("level") == "red" else pending[0]["href"] if pending else "#opportunity-center"),
-        primary_cta=html_escape("Revisar conexión" if health.get("level") == "red" else "Revisar " + pending[0]["title"].split(" — ")[0] if pending else "Ver estado de oportunidades"),
+        primary_href=html_escape("#view-configuracion" if health.get("level") == "red" else pending[0]["href"] if pending else "#actionable-entries"),
+        primary_cta=html_escape("Revisar conexión" if health.get("level") == "red" else "Revisar " + pending[0]["title"].split(" — ")[0] if pending else "Confirmar que no hay decisiones nuevas"),
         summary=html_escape(summary),
         opening=html_escape(opening_label),
         opening_detail=html_escape(opening_detail),
@@ -6473,10 +6473,10 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
     return """
     <section id="opportunity-center" class="panel opportunity-center">
       <div class="section-head">
-        <div><p class="eyebrow">Oportunidades vigentes</p><h2>Entrar, prepararse o esperar</h2></div>
-        <p>Sólo futuros dentro de su ventana útil. Las señales caducadas pasan a Actividad automáticamente.</p>
+        <div><p class="eyebrow">Radar de seguimiento</p><h2>Qué falta para convertirse en una decisión</h2></div>
+        <p>Esta lista prepara la próxima decisión; sólo una entrada lista pasa automáticamente a Decisiones.</p>
       </div>
-      <p class="muted">Resumen de todas las estrategias. El filtro inferior selecciona qué revisar.</p><div class="opportunity-status-strip">
+      <p class="muted">Revisa la condición pendiente y la vigencia. No interpretes una preselección como una entrada.</p><div class="opportunity-status-strip">
         <div class="status-ready"><span>Entradas listas</span><strong>{ready}</strong></div>
         <div class="status-forming"><span>Preparándose</span><strong>{forming}</strong></div>
         <div class="status-waiting"><span>Esperar</span><strong>{waiting}</strong></div>
@@ -8042,7 +8042,7 @@ def render_active_positions_panel(
         key: sum(1 for meta, _, _ in queue_rows if meta.get("key") == key)
         for key in ("act", "review", "maintain", "data", "completed")
     }
-    top_queue_row = next((row for row in queue_rows if row[0].get("key") != "completed"), None)
+    top_queue_row = next((row for row in queue_rows if row[0].get("key") in {"act", "review", "data"}), None)
     if top_queue_row:
         top_meta, top_item, _ = top_queue_row
         top_focus = """
@@ -8075,7 +8075,7 @@ def render_active_positions_panel(
         </div>
         """
     if positions:
-        pending_cards = "".join(
+        decision_cards = "".join(
             render_position_management_card(
                 item,
                 acknowledged_event,
@@ -8085,7 +8085,19 @@ def render_active_positions_panel(
                 position_recommendation_match(item, operator_payload, rsp_payload),
             )
             for meta, item, acknowledged_event in queue_rows
-            if meta.get("key") != "completed"
+            if meta.get("key") in {"act", "review", "data"}
+        )
+        maintain_cards = "".join(
+            render_position_management_card(
+                item,
+                acknowledged_event,
+                fully_covered_stock_by_ticker.get(str(item.get("ticker") or "").upper())
+                if str(item.get("strategy") or "").upper() == "COVERED_CALL" else None,
+                meta,
+                position_recommendation_match(item, operator_payload, rsp_payload),
+            )
+            for meta, item, acknowledged_event in queue_rows
+            if meta.get("key") == "maintain"
         )
         completed_cards = "".join(
             render_position_management_card(
@@ -8099,7 +8111,11 @@ def render_active_positions_panel(
             for meta, item, acknowledged_event in queue_rows
             if meta.get("key") == "completed"
         )
-        cards = pending_cards or '<div class="empty-state"><strong>Todo revisado</strong><span>No hay decisiones pendientes con la lectura actual.</span></div>'
+        cards = decision_cards or '<div class="empty-state"><strong>Sin posiciones que requieran una decisión</strong><span>Las posiciones estables continúan monitoreadas automáticamente.</span></div>'
+        if maintain_cards:
+            cards += '<details class="position-completed"><summary>Posiciones sin acción recomendada ({})</summary><div class="position-list">{}</div></details>'.format(
+                queue_counts["maintain"], maintain_cards
+            )
         if completed_cards:
             cards += '<details class="position-completed"><summary>Revisiones completadas ({})</summary><div class="position-list">{}</div></details>'.format(
                 queue_counts["completed"], completed_cards
@@ -8164,13 +8180,6 @@ def render_active_positions_panel(
         <label for="position-search">Buscar una posición</label>
         <input id="position-search" type="search" placeholder="Escribe un ticker, por ejemplo NFLX" autocomplete="off">
         <small id="position-search-status">Selecciona una posición para ver su recomendación y alternativas.</small>
-      </div>
-      <div class="position-queue-filters" role="group" aria-label="Filtrar posiciones por acción">
-        <button type="button" class="active" data-position-filter="all">Todas <span>{visible_count}</span></button>
-        <button type="button" data-position-filter="act">Prioritarias <span>{act_count}</span></button>
-        <button type="button" data-position-filter="review">Revisar <span>{today_count}</span></button>
-        <button type="button" data-position-filter="maintain">Mantener <span>{maintain_count}</span></button>
-        <button type="button" data-position-filter="data">Datos <span>{data_count}</span></button>
       </div>
       <div class="position-list" id="position-list">{cards}</div>
       <div id="position-search-empty" class="empty-state" hidden><strong>No encontré ese ticker</strong><span>Prueba con otro símbolo o actualiza IBKR.</span></div>
@@ -11027,24 +11036,24 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <section id="view-seguimiento" class="console-view" data-console-view="seguimiento">
             <div class="view-intro"><div><p class="eyebrow">Seguimiento</p><h2>Qué estamos buscando</h2></div><p>Ideas todavía no accionables, señales en formación y análisis para preparar la próxima decisión.</p></div>
             {opportunity_center}
-            {canslim_radar}
-            <details id="alertas" class="panel operator-workspace secondary-workspace" open>
-              <summary><span>Monitor de futuros<small>Señales en formación y actividad técnica; una entrada lista aparecerá también en Decisiones.</small></span></summary>
-              <div class="workspace-body">{alerts}</div>
-            </details>
-            {coberturas}
-            <details id="analisis-cartera" class="panel operator-workspace">
-              <summary><span>Análisis avanzado<small>Escenarios de cartera, factores, estrés, rebalanceo y simulaciones.</small></span></summary>
+            <details id="seguimiento-detalle" class="panel operator-workspace">
+              <summary><span>Abrir análisis por estrategia<small>CANSLIM, futuros, RSP y escenarios avanzados. Úsalo sólo para investigar una idea concreta.</small></span></summary>
               <div class="workspace-body">
-              <details id="cartera" class="operator-subsection">
-                <summary>Cartera, riesgo y escenarios avanzados</summary>
-                {control_tower}
-                {portfolio_stress}
-                {portfolio_factors}
-                {portfolio_rebalance}
-                {portfolio_whatif}
-                {portfolio_operations}
-              </details>
+                {canslim_radar}
+                <details id="alertas" class="operator-subsection">
+                  <summary>Monitor de futuros</summary>
+                  {alerts}
+                </details>
+                {coberturas}
+                <details id="analisis-cartera" class="operator-subsection">
+                  <summary>Análisis avanzado de cartera</summary>
+                  {control_tower}
+                  {portfolio_stress}
+                  {portfolio_factors}
+                  {portfolio_rebalance}
+                  {portfolio_whatif}
+                  {portfolio_operations}
+                </details>
               </div>
             </details>
           </section>
