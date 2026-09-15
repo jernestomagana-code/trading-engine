@@ -152,7 +152,8 @@ class ConsoleAuditRegressions(unittest.TestCase):
         if isinstance(page, bytes):
             page = page.decode("utf-8")
         self.assertIn('#recent-activity > button { min-height:44px; }', page)
-        self.assertEqual(page.count('data-console-view-link="cartera"'), 1)
+        self.assertEqual(page.count('data-console-view-link="decisiones"'), 1)
+        self.assertNotIn('data-console-view-link="cartera"', page)
 
     def test_research_summary_hides_internal_state_codes(self):
         payload = {

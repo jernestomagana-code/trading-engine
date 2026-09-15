@@ -6508,6 +6508,58 @@ def render_unified_opportunity_center(operator_payload: dict[str, Any], rsp_payl
     )
 
 
+def render_actionable_entry_panel(operator_payload: dict[str, Any], rsp_payload: dict[str, Any]) -> str:
+    """Show only new entries that need an investor decision now."""
+    items = [
+        item for item in build_unified_opportunity_items(operator_payload, rsp_payload)
+        if item.get("state") in {"ready", "blocked"} and not item.get("research_only")
+    ]
+    if not items:
+        body = """
+        <div class="empty-state decision-entry-empty">
+          <strong>No hay una entrada nueva que decidir ahora</strong>
+          <span>La cartera sigue primero. Las ideas que aún están formándose permanecen en Seguimiento y volverán aquí automáticamente cuando estén listas.</span>
+          <a class="inline-link" href="#view-seguimiento">Ver qué estamos buscando</a>
+        </div>
+        """
+    else:
+        rows = []
+        for item in items:
+            target = (
+                "canslim-" + re.sub(r"[^A-Za-z0-9-]", "-", str(item.get("ticker") or ""))
+                if item.get("type") == "canslim" else
+                "alertas" if item.get("type") == "futures" else
+                "coberturas-rsp"
+            )
+            rows.append("""
+            <article class="decision-entry decision-entry-{state}">
+              <div><small>{type_label}</small><h3>{ticker} · {state_label}</h3></div>
+              <p><strong>Qué hacer:</strong> {action}</p>
+              <p><strong>Nivel:</strong> {trigger} · <strong>Riesgo:</strong> {invalidation}</p>
+              <a class="inline-link" href="#{target}">Revisar evidencia</a>
+            </article>
+            """.format(
+                state=html_escape(item.get("state") or "blocked"),
+                type_label=html_escape(item.get("type_label") or "Entrada"),
+                ticker=html_escape(item.get("ticker") or "UNKNOWN"),
+                state_label=html_escape(item.get("state_label") or "Requiere revisión"),
+                action=html_escape(item.get("action") or "Revisar antes de decidir"),
+                trigger=html_escape(item.get("trigger") or "Pendiente"),
+                invalidation=html_escape(item.get("invalidation") or "Pendiente"),
+                target=html_escape(target),
+            ))
+        body = '<div class="decision-entry-list">{}</div>'.format("".join(rows))
+    return """
+    <section id="actionable-entries" class="panel actionable-entries">
+      <div class="section-head">
+        <div><p class="eyebrow">Capital nuevo</p><h2>Entradas que requieren tu decisión</h2></div>
+        <p>Aquí sólo aparece lo que está listo o un bloqueo que debes resolver. Preparación e investigación viven en Seguimiento.</p>
+      </div>
+      {body}
+    </section>
+    """.format(body=body)
+
+
 def build_canslim_operational_rows(
     operator_payload: dict[str, Any],
     candidates_payload: dict[str, Any] | None = None,
@@ -10184,6 +10236,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
     coberturas = render_coberturas_inline_panel(rsp_payload)
     canslim_radar = render_canslim_radar_panel(operator_payload)
     opportunity_center = render_unified_opportunity_center(operator_payload, rsp_payload)
+    actionable_entries = render_actionable_entry_panel(operator_payload, rsp_payload)
     v31_console_support = render_support_bundle(
         "Estado Ejecutivo y Revision Manual V31",
         render_v31_executive_panel(v31_payloads),
@@ -10496,6 +10549,20 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           .view-intro {{ display:flex; justify-content:space-between; gap:18px; align-items:end; margin:4px 0 12px; padding:4px 2px; }}
           .view-intro h2,.view-intro p {{ margin:0; }}
           .view-intro p {{ color:var(--muted); max-width:620px; }}
+          .investor-flow {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:0 0 16px; }}
+          .investor-flow > div {{ display:grid; grid-template-columns:32px minmax(0,1fr); gap:9px; align-items:center; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:#fff; }}
+          .investor-flow b {{ display:grid; place-items:center; width:30px; height:30px; border-radius:999px; background:var(--accent-strong); color:#fff; }}
+          .investor-flow strong,.investor-flow small {{ display:block; }}
+          .investor-flow small {{ margin-top:2px; color:var(--muted); line-height:1.25; }}
+          .decision-divider {{ margin:20px 0 10px; padding:0 2px; }}
+          .decision-divider h2,.decision-divider p {{ margin:0; }}
+          .decision-divider p {{ margin-top:4px; color:var(--muted); }}
+          .decision-entry-list {{ display:grid; gap:10px; margin-top:14px; }}
+          .decision-entry {{ border:1px solid var(--line); border-left:6px solid #16a34a; border-radius:10px; padding:14px; background:#fff; }}
+          .decision-entry-blocked {{ border-left-color:var(--risk); background:#fff8f5; }}
+          .decision-entry h3,.decision-entry p {{ margin:4px 0; }}
+          .decision-entry small {{ color:var(--muted); font-weight:850; text-transform:uppercase; }}
+          .decision-entry-empty {{ margin-top:14px; border:1px solid #b9d8cb; background:#f4fbf7; }}
           .operator-workspace {{ padding:0; overflow:hidden; margin-top:18px; background:#fbfcfe; }}
           .operator-workspace > summary {{ cursor:pointer; list-style:none; display:flex; justify-content:space-between; gap:18px; align-items:center; padding:17px 20px; }}
           .operator-workspace > summary::-webkit-details-marker {{ display:none; }}
@@ -10883,7 +10950,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           @media (max-width:620px) {{ .canslim-decision-brief,.opportunity-facts,.opportunity-viability,.simulator-results {{ grid-template-columns:1fr; }} .opportunity-status-strip {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .opportunity-status-strip > div {{ border-bottom:1px solid var(--line); }} .opportunity-status-strip > div:nth-child(even) {{ border-right:0; }} .opportunity-status-strip > div:last-child {{ grid-column:1/-1; border-bottom:0; }} }}
           @media (max-width:900px) {{ .app-header {{ grid-template-columns:1fr; }} .app-health-chips {{ justify-content:flex-start; }} .control-strip,.coberturas-grid {{ grid-template-columns:1fr; }} .thinking-now {{ border-left:0; padding-left:0; border-top:1px solid var(--line); padding-top:10px; }} .operator-next {{ grid-template-columns:minmax(0,1fr); }} .top-quick-actions form {{ width:100%; }} .top-quick-actions span {{ flex:1 1 150px; min-width:0; }} }}
           @media (max-width:820px) {{ main {{ padding:10px 8px 44px; }} h1 {{ font-size:2.35rem; }} .app-header {{ padding:12px; }} .header-actions {{ flex-wrap:wrap; }} .header-actions form:first-child {{ flex:1 1 100%; }} .header-actions form:first-child button {{ width:100%; }} .header-more > div {{ left:auto; right:0; }} .command-head {{ grid-template-columns:1fr; padding:16px; }} .opening-status {{ border-left:0; border-top:1px solid var(--line); padding:12px 0 0; }} .command-facts,.position-overview {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .command-facts > div:nth-child(2),.position-overview > div:nth-child(2) {{ border-right:0; }} .command-facts > div:nth-child(-n+2),.position-overview > div:nth-child(-n+2) {{ border-bottom:1px solid var(--line); }} .pending-queue {{ padding:14px; }} .queue-head {{ display:block; }} .queue-head span {{ display:block; margin-top:4px; }} .operator-task {{ grid-template-columns:28px minmax(0,1fr); }} .operator-task > b {{ grid-column:2; }} .rsp-status-line {{ display:block; }} .rsp-status-line span {{ display:block; text-align:left; margin-top:5px; }} .position-detail-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .hero-panel {{ grid-template-columns:1fr; }} .context-grid {{ grid-template-columns:1fr; }} .control-facts,.history-scoreboard {{ grid-template-columns:1fr; }} .history-strategy-grid {{ grid-template-columns:1fr; }} .setup-step {{ grid-template-columns:32px minmax(0,1fr) auto; align-items:start; }} .setup-action {{ grid-column:2/-1; justify-self:start; }} .installation-final {{ display:block; }} .installation-final em {{ display:block; text-align:left; margin-top:9px; }} .alert-checklist {{ grid-template-columns:1fr; }} .scenario-grid,.opportunity-grid {{ grid-template-columns:1fr; }} .card {{ align-items:flex-start; flex-direction:column; }} .actions {{ justify-content:flex-start; }} .operator-nav {{ top:4px; margin-bottom:10px; gap:2px; }} .operator-nav a {{ padding:8px; }} .operator-workspace > summary {{ align-items:flex-start; padding:14px; }} .workspace-body {{ padding:0 10px 10px; }} }}
-          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b,.futures-primary-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
+          @media (max-width:620px) {{ .operator-nav {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); overflow:visible; }} .operator-nav a {{ min-width:0; padding:8px 4px; text-align:center; }} .section-head,.view-intro {{ display:block; }} .section-head p,.view-intro p {{ margin-top:5px; }} .investor-flow {{ grid-template-columns:1fr; }} .alert-actions .fill-grid {{ grid-template-columns:1fr; }} .position-explorer-tools {{ grid-template-columns:1fr; }} .position-explorer-tools small {{ grid-column:1; }} .position-card-summary,.futures-event {{ grid-template-columns:1fr; gap:7px; }} .position-card-open {{ justify-self:start; }} .position-decision-brief {{ grid-template-columns:1fr; }} .position-recommendation {{ padding:9px; border-left-width:4px; }} .position-recommendation > div,.position-structure-title,.position-alternative > div {{ display:grid; grid-template-columns:minmax(0,1fr); gap:3px; }} .position-structure {{ padding:8px; }} .position-structure-grid,.position-profile-grid,.canslim-facts,.futures-decision-grid {{ grid-template-columns:minmax(0,1fr); }} .canslim-funnel,.futures-funnel {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-funnel > div,.futures-funnel > div {{ border-bottom:1px solid var(--line); }} .canslim-components {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .canslim-card-head,.futures-primary-head {{ display:block; }} .canslim-card-head > b {{ display:inline-block; margin-top:8px; }} .canslim-next {{ grid-template-columns:1fr; }} .futures-levels {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .expiry-choice-grid {{ grid-template-columns:minmax(0,1fr); }} .position-structure-leg {{ padding:8px; }} .position-comparison th,.position-comparison td {{ padding:5px; }} }}
 
           [hidden] {{ display:none !important; }}
           :focus-visible {{ outline:3px solid #2563eb; outline-offset:3px; }}
@@ -10929,8 +10996,8 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
           <div id="console-feedback" role="status" aria-live="polite"></div>
           <nav class="operator-nav" aria-label="Navegación principal de la consola">
             <a href="#view-hoy" data-console-view-link="hoy">Hoy</a>
-            <a href="#view-cartera" data-console-view-link="cartera">Cartera</a>
-            <a href="#view-oportunidades" data-console-view-link="oportunidades">Oportunidades</a>
+            <a href="#view-decisiones" data-console-view-link="decisiones">Decisiones</a>
+            <a href="#view-seguimiento" data-console-view-link="seguimiento">Seguimiento</a>
             <a href="#view-historial" data-console-view-link="historial">Actividad</a>
             <a href="#view-configuracion" data-console-view-link="configuracion">Más</a>
             <a href="/guide">Ayuda</a>
@@ -10944,12 +11011,30 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
             {job_panel}
           </section>
 
-          <section id="view-cartera" class="console-view" data-console-view="cartera">
-            <div class="view-intro"><div><p class="eyebrow">Cartera</p><h2>Posiciones, riesgo y capacidad</h2></div><p>Busca un ticker, abre sólo la posición que quieras gestionar y revisa primero la recomendación principal.</p></div>
+          <section id="view-decisiones" class="console-view" data-console-view="decisiones">
+            <div class="view-intro"><div><p class="eyebrow">Centro de decisiones</p><h2>Qué hacer con tu dinero ahora</h2></div><p>Una sola pantalla para proteger posiciones existentes y decidir si una entrada nueva merece capital.</p></div>
+            <div class="investor-flow" aria-label="Orden recomendado para decidir">
+              <div><b>1</b><span><strong>Proteger</strong><small>Resolver riesgos y posiciones abiertas.</small></span></div>
+              <div><b>2</b><span><strong>Evaluar</strong><small>Revisar sólo entradas realmente vigentes.</small></span></div>
+              <div><b>3</b><span><strong>Esperar</strong><small>Si no está lista, vuelve a Seguimiento.</small></span></div>
+            </div>
             <details id="riesgo" class="panel risk-overview" {risk_expanded}><summary>Riesgo de cartera · {risk_brief}</summary>{portfolio_risk}</details>
             <div id="posiciones">{active_positions}</div>
+            <div class="decision-divider"><h2>Entradas nuevas</h2><p>Se muestran después de la cartera porque una entrada sólo importa si primero hay capacidad y riesgo disponible.</p></div>
+            {actionable_entries}
+          </section>
+
+          <section id="view-seguimiento" class="console-view" data-console-view="seguimiento">
+            <div class="view-intro"><div><p class="eyebrow">Seguimiento</p><h2>Qué estamos buscando</h2></div><p>Ideas todavía no accionables, señales en formación y análisis para preparar la próxima decisión.</p></div>
+            {opportunity_center}
+            {canslim_radar}
+            <details id="alertas" class="panel operator-workspace secondary-workspace" open>
+              <summary><span>Monitor de futuros<small>Señales en formación y actividad técnica; una entrada lista aparecerá también en Decisiones.</small></span></summary>
+              <div class="workspace-body">{alerts}</div>
+            </details>
+            {coberturas}
             <details id="analisis-cartera" class="panel operator-workspace">
-              <summary><span>Análisis avanzado de cartera<small>Escenarios, factores, estrés, rebalanceo y simulaciones.</small></span></summary>
+              <summary><span>Análisis avanzado<small>Escenarios de cartera, factores, estrés, rebalanceo y simulaciones.</small></span></summary>
               <div class="workspace-body">
               <details id="cartera" class="operator-subsection">
                 <summary>Cartera, riesgo y escenarios avanzados</summary>
@@ -10962,17 +11047,6 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
               </details>
               </div>
             </details>
-          </section>
-
-          <section id="view-oportunidades" class="console-view" data-console-view="oportunidades">
-            <div class="view-intro"><div><p class="eyebrow">Oportunidades</p><h2>Entradas vigentes por estrategia</h2></div><p>Los futuros duran minutos; CANSLIM y prima tienen horizontes propios. No se confunden señales caducadas con entradas.</p></div>
-            {opportunity_center}
-            {canslim_radar}
-            <details id="alertas" class="panel operator-workspace secondary-workspace" open>
-              <summary><span>Monitor de futuros<small>Señales vigentes arriba; actividad y descartes permanecen plegados.</small></span></summary>
-              <div class="workspace-body">{alerts}</div>
-            </details>
-            {coberturas}
           </section>
 
           <section id="view-historial" class="console-view" data-console-view="historial">
@@ -11099,6 +11173,7 @@ def render_web_page(message: str = "", result: dict[str, Any] | None = None, job
         v31_learning=render_v31_learning_panel(v31_payloads),
         canslim_radar=canslim_radar,
         opportunity_center=opportunity_center,
+        actionable_entries=actionable_entries,
         coberturas=coberturas,
         v31_console_support=v31_console_support,
         question_support=question_support,

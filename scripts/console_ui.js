@@ -9,7 +9,9 @@
             };
             window.ultimusRecordUsage = recordUsage;
             const resolveView = (target) => {
-              const element = document.getElementById(target) || document.getElementById("view-" + target);
+              const legacyViews = {cartera: "decisiones", oportunidades: "decisiones"};
+              const normalizedTarget = legacyViews[target] || target;
+              const element = document.getElementById(normalizedTarget) || document.getElementById("view-" + normalizedTarget);
               return element?.closest("[data-console-view]")?.dataset.consoleView || "hoy";
             };
             let currentView = "";

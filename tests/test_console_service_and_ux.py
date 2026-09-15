@@ -408,9 +408,12 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         source = CONSOLE_SOURCE.read_text() + (ROOT / "scripts" / "console_ui.js").read_text()
 
         self.assertIn('class="operator-nav"', source)
-        for view in ("hoy", "cartera", "oportunidades", "historial", "configuracion"):
+        for view in ("hoy", "decisiones", "seguimiento", "historial", "configuracion"):
             self.assertIn(f'data-console-view-link="{view}"', source)
             self.assertIn(f'data-console-view="{view}"', source)
+        self.assertIn('legacyViews = {cartera: "decisiones", oportunidades: "decisiones"}', source)
+        self.assertIn('Qué hacer con tu dinero ahora', source)
+        self.assertIn('Qué estamos buscando', source)
         self.assertIn('id="analisis" class="panel operator-workspace"', source)
         self.assertIn('Detalle e informes técnicos', source)
         self.assertIn('{history_learning_summary}', source)
@@ -423,6 +426,7 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertIn('href="/guide">Ayuda</a>', source)
         self.assertIn('class="panel command-center command-{level}"', source)
         self.assertIn('Qué requiere tu decisión', source)
+
         self.assertIn('id="position-search"', source)
         self.assertIn('data-position-card', source)
         self.assertIn('Primera decisión de cartera', source)
@@ -447,6 +451,27 @@ class ConsoleServiceAndUxTests(unittest.TestCase):
         self.assertLess(risk_index, positions_index)
         self.assertLess(positions_index, rsp_index)
         self.assertNotIn("{coberturas}", source[tools_index:source.index("</details>", tools_index)])
+
+    def test_decision_entry_panel_excludes_forming_and_research_ideas(self):
+        items = [
+            {"state": "forming", "ticker": "WAIT", "research_only": False},
+            {"state": "research", "ticker": "STUDY", "research_only": True},
+        ]
+        with patch.object(console, "build_unified_opportunity_items", return_value=items):
+            rendered = console.render_actionable_entry_panel({}, {})
+        self.assertIn("No hay una entrada nueva que decidir ahora", rendered)
+        self.assertNotIn(">WAIT<", rendered)
+        self.assertNotIn(">STUDY<", rendered)
+
+    def test_decision_entry_panel_keeps_ready_and_blocked_entries(self):
+        items = [
+            {"state": "ready", "ticker": "READY", "type": "futures", "type_label": "Futuros", "state_label": "Lista", "action": "Evaluar", "trigger": "100", "invalidation": "95"},
+            {"state": "blocked", "ticker": "BLOCK", "type": "rsp", "type_label": "RSP", "state_label": "Bloqueada", "action": "Resolver riesgo", "trigger": "10", "invalidation": "8"},
+        ]
+        with patch.object(console, "build_unified_opportunity_items", return_value=items):
+            rendered = console.render_actionable_entry_panel({}, {})
+        self.assertIn("READY · Lista", rendered)
+        self.assertIn("BLOCK · Bloqueada", rendered)
 
     def test_futures_history_explains_mobile_filter_and_quarantine(self):
         operator = {
