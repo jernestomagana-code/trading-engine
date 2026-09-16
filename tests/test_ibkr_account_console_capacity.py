@@ -1070,7 +1070,7 @@ class IbkrAccountConsoleCapacityTests(unittest.TestCase):
             {"ibkr": {"chain_has_rsp": True}, "blockers": [], "candidate_count": 2},
         )
         self.assertIn("Riesgo de cartera", html)
-        self.assertIn("Entradas vigentes", html)
+        self.assertIn("Entradas que decidir", html)
         self.assertIn("Posiciones por atender", html)
         self.assertIn("Estado operativo", html)
         self.assertIn("Apertura y mercado", html)
