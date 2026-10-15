@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -845,7 +845,7 @@ class PositionManagementTests(unittest.TestCase):
                 [{
                     "ticker": "MNQ",
                     "sec_type": "FUT",
-                    "expiration": "20260918",
+                    "expiration": (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y%m%d"),
                     "position_size": -1,
                     "market_value": -58666,
                 }],
@@ -865,8 +865,8 @@ class PositionManagementTests(unittest.TestCase):
         payload = position_management.build_active_position_management(
             self.snapshot(
                 [
-                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": "20260918", "position_size": -1, "market_price": 30000},
-                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": "20261218", "position_size": 1, "market_price": 30100},
+                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y%m%d"), "position_size": -1, "market_price": 30000},
+                    {"ticker": "MNQ", "sec_type": "FUT", "expiration": (datetime.now(timezone.utc) + timedelta(days=120)).strftime("%Y%m%d"), "position_size": 1, "market_price": 30100},
                 ],
                 {"MNQ": {"ticker": "MNQ", "trend": "NEUTRAL", "price": 30000}},
             ),
