@@ -54,6 +54,7 @@ DEFAULT_REMOTE_CACHE_PATH = Path("runtime/stock_ultimus_console_remote_cache.jso
 MAX_EVENTS = 20000
 DEFAULT_COVERAGE_PATH = tradingview_alert_coverage.DEFAULT_COVERAGE_PATH
 DEFAULT_EXTRA_COVERAGE_PATHS = [
+    Path("config/tradingview_position_alert_coverage_v1.json"),
     Path("config/tradingview_options_underlying_alert_coverage_v1.json"),
     Path("config/tradingview_chris_ia_alert_coverage_v1.json"),
 ]
