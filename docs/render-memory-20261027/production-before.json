@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-10-27T20:05:59.333768+00:00",
+  "status": 200,
+  "elapsed_seconds": 0.299,
+  "headers": {
+    "Date": "Tue, 27 Oct 2026 20:05:59 GMT",
+    "Rndr-Id": "3979f560-b1a6-4818"
+  },
+  "health_scope": "LOCAL_LIVENESS_ONLY",
+  "payload_bytes": 1989,
+  "total_recent_signals_loaded": 0,
+  "memory": null,
+  "operational_state": "ATTENTION"
+}

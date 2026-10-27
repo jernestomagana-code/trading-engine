@@ -31,6 +31,27 @@ class RenderResponsivenessTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["health_scope"], "LOCAL_LIVENESS_ONLY")
 
+    def test_liveness_never_parses_business_histories_or_runs_readiness(self):
+        with (
+            patch.object(main, "load_signals_from_file", side_effect=AssertionError("history loaded")),
+            patch.object(main.shared_tradingview_signal_ledger, "load_signal_events", side_effect=AssertionError("ledger loaded")),
+            patch.object(main.shared_tradingview_operational_health, "build_alert_health", side_effect=AssertionError("readiness calculated")),
+        ):
+            payload = main.health()
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["signal_history_inspected"])
+        self.assertIsNone(payload["last_signal"])
+        self.assertEqual(payload["operational_visible_health"]["state"], "NOT_EVALUATED_ON_LIVENESS")
+        self.assertIn("process_peak_rss_bytes", payload["memory"])
+
+    def test_liveness_response_is_bounded_even_with_many_large_symbol_labels(self):
+        import json
+        with patch.object(main, "trade_store", {str(i) + "X" * 1000: {} for i in range(10000)}):
+            payload = main.health()
+        self.assertEqual(len(payload["tickers_in_memory"]), 50)
+        self.assertTrue(payload["tickers_in_memory_truncated"])
+        self.assertLess(len(json.dumps(payload)), 8192)
+
     def test_production_table_reads_are_cached(self):
         response = Mock(status_code=200)
         response.json.return_value = [

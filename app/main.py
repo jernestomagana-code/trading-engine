@@ -5364,22 +5364,22 @@ def health():
     # Render uses this endpoint as a liveness probe.  It must never wait on
     # Supabase or another external dependency; detailed remote diagnostics are
     # available through the authenticated operational-health endpoints.
-    signals = load_signals_from_file()[-100:]
+    # Liveness must remain independent of ledger size and strategy readiness.
+    # Rich TradingView checks remain on the authenticated operational routes.
+    from runtime_liveness import memory_usage
+    from itertools import islice
     try:
-        tv_health = shared_tradingview_operational_health.build_alert_health(
-            Path("runtime"),
-            market_closed_ok=True,
-            events_override=shared_tradingview_signal_ledger.load_signal_events(limit=20000),
-        )
-        tradingview_visible_health = tv_health.get("visible_health") or {}
-    except Exception as exc:
-        tradingview_visible_health = {
-            "state": "UNAVAILABLE",
-            "tv": "TV_HEALTH_UNAVAILABLE",
-            "ibkr": "IBKR_UNKNOWN",
-            "paper_loop": "PAPER_LOOP_UNKNOWN",
-            "blockers": [str(exc)[:120]],
-        }
+        known_tickers = [str(key)[:32] for key in islice(trade_store, 50)]
+    except RuntimeError:
+        known_tickers = []
+    tradingview_visible_health = {
+        "state": "NOT_EVALUATED_ON_LIVENESS",
+        "tv": "NOT_EVALUATED",
+        "ibkr": "NOT_EVALUATED",
+        "paper_loop": "NOT_EVALUATED",
+        "blockers": [],
+        "scope": "USE_AUTHENTICATED_OPERATIONAL_HEALTH_FOR_READINESS",
+    }
 
     return {
         "status": "ok",
@@ -5398,9 +5398,12 @@ def health():
         ),
         "options_underlying_compact_payload_supported": True,
         "admin_debug_token_configured": bool(ADMIN_DEBUG_TOKEN),
-        "total_recent_signals_loaded": len(signals),
-        "tickers_in_memory": list(trade_store.keys()),
-        "last_signal": signals[-1] if signals else None,
+        "total_recent_signals_loaded": 0,
+        "signal_history_inspected": False,
+        "memory": memory_usage(),
+        "tickers_in_memory": known_tickers,
+        "tickers_in_memory_truncated": len(trade_store) > len(known_tickers),
+        "last_signal": None,
         "expiration_minutes": EXPIRATION_MINUTES,
         "market_clock": {
             "market_timezone": "America/New_York",

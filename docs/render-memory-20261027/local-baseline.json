@@ -1,0 +1,13 @@
+{
+  "variant": "baseline",
+  "fixture_events": 20000,
+  "fixture_signals": 10000,
+  "ledger_bytes": 25117781,
+  "signal_bytes": 10690001,
+  "elapsed_seconds": 0.3446,
+  "python_peak_allocated_bytes": 68632583,
+  "python_retained_allocated_bytes": 62307,
+  "payload_bytes": 2583,
+  "status": "ok",
+  "production_calls": 0
+}

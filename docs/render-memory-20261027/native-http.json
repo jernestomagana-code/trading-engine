@@ -1,0 +1,17 @@
+{
+  "checked_at": "2026-10-27T20:14:08.024981+00:00",
+  "python": "3.11.15",
+  "native_http_status": 200,
+  "private_route_without_token_status": 401,
+  "memory_fields": [
+    "container_current_bytes",
+    "container_limit_bytes",
+    "container_utilization_pct",
+    "process_peak_rss_bytes",
+    "process_rss_bytes",
+    "scope",
+    "unavailable_values_are_null"
+  ],
+  "local_only": true,
+  "production_calls": 0
+}
