@@ -1,0 +1,13 @@
+{
+  "variant": "patched",
+  "fixture_events": 20000,
+  "fixture_signals": 10000,
+  "ledger_bytes": 25117781,
+  "signal_bytes": 10690001,
+  "elapsed_seconds": 0.0016,
+  "python_peak_allocated_bytes": 20174,
+  "python_retained_allocated_bytes": 19938,
+  "payload_bytes": 1436,
+  "status": "ok",
+  "production_calls": 0
+}
