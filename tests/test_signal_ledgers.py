@@ -36,6 +36,32 @@ class SignalLedgerTests(unittest.TestCase):
         self.assertTrue(status["renewal_required"])
         self.assertEqual(status["alerts"][0]["expires_on"], "2026-10-23")
 
+    def test_compact_ledger_loads_recent_events_without_full_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.json"
+            events = [
+                {"event_id": "older", "payload": "x" * 70000},
+                {"event_id": "recent", "payload": "México\n" * 18000},
+                {"event_id": "newest"},
+            ]
+            tradingview_signal_ledger._write_events(path, events)
+            with patch.object(tradingview_signal_ledger, "_read_events", side_effect=AssertionError):
+                for limit in (1, 2, 3, 5):
+                    with self.subTest(limit=limit):
+                        self.assertEqual(
+                            tradingview_signal_ledger.load_signal_events(path, limit),
+                            events[-limit:],
+                        )
+
+    def test_legacy_ledger_keeps_dict_rows_and_applies_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.json"
+            events = [{"event_id": "old"}, None, {"event_id": "new"}]
+            for payload in (events, {"events": events}):
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload, indent=2))
+                    self.assertEqual(tradingview_signal_ledger.load_signal_events(path, 1), events[-1:])
+
     def test_absolute_runtime_ledger_uses_neighbor_remote_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             runtime = Path(tmp)
