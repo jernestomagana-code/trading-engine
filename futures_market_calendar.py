@@ -19,6 +19,8 @@ def session(schedule, now=None):
         zone_name = schedule['timezone']
         if zone_name not in {'America/Chicago', 'US/Central', 'America/New_York', 'US/Eastern', 'UTC'}:
             return unknown
+        # Broker aliases are not installed in every Linux tzdata distribution.
+        zone_name = {"US/Central": "America/Chicago", "US/Eastern": "America/New_York"}.get(zone_name, zone_name)
         zone = ZoneInfo(zone_name)
         local = current.astimezone(zone)
         intervals, closed_days = [], set()
