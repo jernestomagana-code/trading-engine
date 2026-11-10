@@ -10,6 +10,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import tradingview_alert_coverage
@@ -108,7 +109,23 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
 
 def _write_events(path: Path, events: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(events[-MAX_EVENTS:], indent=2, sort_keys=True, default=str) + "\n")
+    # Encode one event at a time instead of materializing the entire ledger.
+    # Publish only the completed JSON so concurrent readers see a valid file.
+    start = max(0, len(events) - MAX_EVENTS)
+    temporary = None
+    try:
+        with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write("[\n")
+            for index in range(start, len(events)):
+                if index > start:
+                    handle.write(",\n")
+                handle.write(json.dumps(events[index], default=str, separators=(",", ":")))
+            handle.write("\n]\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _read_webhook_status(path: Path) -> dict[str, Any]:
