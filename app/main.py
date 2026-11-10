@@ -21902,7 +21902,7 @@ async def gpt_v29_trade_decision(ticker: str):
 _V31_DECISION_VERSION = "v31_canonical_decision_engine"
 _V31_RULESET_VERSION = "v31.1_manual_review_risk_profile_outcomes"
 _V31_SNAPSHOT_VERSION = "v30_options_executable_contract"
-_V31_OUTCOME_EVALUATION_VERSION = "v31_pending_outcome_auto_eval_v1"
+_V31_OUTCOME_EVALUATION_VERSION = "verified_paper_markout_v2"
 _V31_RISK_PROFILE_PRESETS = {
     "conservative": {
         "profile_name": "conservative_manual_review",
@@ -22887,7 +22887,17 @@ def _v31_entry_ready_signal_seed(decision):
         "parameter_review_blockers": parameter_review.get("blockers") or [],
         "exit_regime_guidance": exit_guidance,
         "exit_regime_guidance_state": exit_guidance.get("regime_exit_guidance_state"),
+        "cashflows_dollars": decision.get("cashflows_dollars"),
+        "round_trip_commission": decision.get("round_trip_commission"),
+        "risk_basis_dollars": decision.get("risk_basis_dollars"),
+        "legs": decision.get("legs") or contract.get("legs"),
+        "cashflows_dollars": decision.get("cashflows_dollars"),
+        "round_trip_commission": decision.get("round_trip_commission"),
+        "risk_basis_dollars": decision.get("risk_basis_dollars"),
+        "legs": decision.get("legs") or contract.get("legs"),
         "selected_contract": {
+            **{key: contract.get(key) for key in ("right", "contract_con_id", "con_id", "conId", "currency", "multiplier", "quote_timestamp", "quote_received_at", "observation_ref", "capture_id")},
+            **{key: contract.get(key) for key in ("right", "contract_con_id", "con_id", "conId", "currency", "multiplier", "quote_timestamp", "quote_received_at", "observation_ref", "capture_id")},
             "strike": contract.get("strike"),
             "expiration": contract.get("expiration"),
             "dte": contract.get("dte"),
@@ -27113,78 +27123,8 @@ def _v31_match_current_outcome_row(outcome, rows):
 
 
 def _v31_evaluate_pending_outcome(outcome, master, checkpoint="EOD"):
-    outcome = dict(outcome or {})
-    if str(outcome.get("outcome_tracking_version") or "") != "v31_entry_ready_signal_outcome_v1":
-        return {"status": "SKIPPED", "reason": "NOT_V31_ENTRY_READY_OUTCOME", "outcome": outcome}
-    if str(outcome.get("outcome") or "").upper() != "PENDING":
-        return {"status": "SKIPPED", "reason": "OUTCOME_NOT_PENDING", "outcome": outcome}
-
-    contract = outcome.get("selected_contract") if isinstance(outcome.get("selected_contract"), dict) else {}
-    entry_mid = _v31_outcome_mid(contract)
-    if entry_mid is None or entry_mid <= 0:
-        return {"status": "NOT_EVALUATED", "reason": "ENTRY_MID_MISSING", "outcome": outcome}
-
-    current_row = _v31_match_current_outcome_row(outcome, (master or {}).get("rows") or [])
-    if not current_row:
-        return {"status": "NOT_EVALUATED", "reason": "CURRENT_OPTION_ROW_MISSING", "outcome": outcome}
-
-    current_mid = _v31_outcome_mid(current_row)
-    if current_mid is None or current_mid <= 0:
-        return {"status": "NOT_EVALUATED", "reason": "CURRENT_MID_MISSING", "outcome": outcome}
-
-    pnl_r = round((entry_mid - current_mid) / entry_mid, 4)
-    observed_mfe_r = round(max(pnl_r, 0.0), 4)
-    observed_mae_r = round(min(pnl_r, 0.0), 4)
-    existing_mfe = _v29_safe_float(outcome.get("mfe_r"), None)
-    existing_mae = _v29_safe_float(outcome.get("mae_r"), None)
-    updated_mfe = observed_mfe_r if existing_mfe is None else max(existing_mfe, observed_mfe_r)
-    updated_mae = observed_mae_r if existing_mae is None else min(existing_mae, observed_mae_r)
-    evaluation = {
-        "outcome_evaluation_version": _V31_OUTCOME_EVALUATION_VERSION,
-        "checkpoint": str(checkpoint or "EOD").upper(),
-        "evaluated_at": _v29_now(),
-        "entry_mid": entry_mid,
-        "current_mid": current_mid,
-        "current_paper_pnl_r": pnl_r,
-        "observed_mfe_r": observed_mfe_r,
-        "observed_mae_r": observed_mae_r,
-        "current_underlying_price": _v31_current_underlying_price(current_row),
-        "current_contract_metrics": {
-            "bid": current_row.get("bid"),
-            "ask": current_row.get("ask"),
-            "mid": current_mid,
-            "spread": current_row.get("spread"),
-            "spread_pct": current_row.get("spread_pct"),
-            "delta": current_row.get("delta"),
-            "iv": current_row.get("iv") or current_row.get("implied_volatility"),
-            "dte": current_row.get("dte"),
-            "volume": current_row.get("volume"),
-            "open_interest": current_row.get("open_interest"),
-            "data_quality": current_row.get("data_quality"),
-            "option_market_data_source": current_row.get("option_market_data_source") or current_row.get("market_data_source"),
-        },
-        "paper_outcome": True,
-        "not_order_instruction": True,
-        "execution_authorized": False,
-    }
-    evaluations = list(outcome.get("auto_evaluations") or [])
-    evaluations.append(evaluation)
-    outcome.update({
-        "outcome": "PENDING",
-        "paper_outcome": True,
-        "outcome_auto_evaluation_status": "EVALUATED",
-        "latest_auto_evaluation": evaluation,
-        "auto_evaluations": evaluations[-20:],
-        "current_paper_pnl_r": pnl_r,
-        "mfe_r": round(updated_mfe, 4),
-        "mae_r": round(updated_mae, 4),
-        "current_contract_metrics": evaluation["current_contract_metrics"],
-        "evaluated_at": evaluation["evaluated_at"],
-        "outcome_engine_version": _V31_OUTCOME_EVALUATION_VERSION,
-        "not_order_instruction": True,
-        "execution_authorized": False,
-    })
-    return {"status": "EVALUATED", "outcome": outcome, "evaluation": evaluation}
+    from verified_outcome_evaluator import evaluate
+    return evaluate(outcome or {}, (master or {}).get("rows") or [], checkpoint)
 
 
 def _v31_auto_evaluate_pending_outcomes(limit=100, checkpoint="EOD", dry_run=False):
@@ -27249,6 +27189,12 @@ def _v31_manual_review_as_outcome(review):
         "data_lineage": review.get("data_lineage") or decision.get("data_lineage") or [],
         "paper_outcome": True,
         "selected_contract": contract,
+        "entry_ready_at": review.get("entry_ready_at") or decision.get("decision_generated_at") or review.get("recorded_at"),
+        "cashflows_dollars": review.get("cashflows_dollars", decision.get("cashflows_dollars")),
+        "round_trip_commission": review.get("round_trip_commission", decision.get("round_trip_commission")),
+        "risk_basis_dollars": review.get("risk_basis_dollars", decision.get("risk_basis_dollars")),
+        "legs": review.get("legs") or decision.get("legs"),
+        "auto_evaluations": review.get("manual_review_auto_evaluations") or [],
         "not_order_instruction": True,
         "execution_authorized": False,
     }

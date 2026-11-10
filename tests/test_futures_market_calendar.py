@@ -44,3 +44,14 @@ class FuturesCalendarTests(unittest.TestCase):
         quote={'quote_status':'LIVE','bid':100,'ask':101,'contract_schedule':{'contract':'MESU2026'}}
         with patch.dict(quotes._cache,{'MNQ1!|MNQU2026':(quotes.time.monotonic(),quote)},clear=True):
             self.assertNotIn('contract_schedule',quotes.enrich_event(event))
+
+    def test_broker_alias_uses_portable_iana_zone(self):
+        real_zone = calendar.ZoneInfo
+        def canonical_only(name):
+            if name.startswith('US/'):
+                raise KeyError(name)
+            return real_zone(name)
+        stamp='2026-09-09T02:00:00+00:00'
+        with patch.object(calendar,'ZoneInfo',side_effect=canonical_only):
+            result=calendar.session(self.schedule(stamp,'20260908:1700-20260909:1600'),datetime.fromisoformat(stamp))
+        self.assertEqual(result['state'],'OPEN')

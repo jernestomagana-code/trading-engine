@@ -323,6 +323,15 @@ class V29V30ContractGatingTests(unittest.TestCase):
         self.assertFalse(decision["manual_review_ready"])
 
 
+def _verified_capture_fixture(record, current, checkpoint):
+    contract = (record.get("decision") or {}).get("selected_contract") or record["selected_contract"]
+    record.update(entry_ready_at="2026-06-22T14:00:30Z", round_trip_commission=0, risk_basis_dollars=100)
+    fields = dict(contract_con_id=123, right="P", currency="USD", multiplier=100)
+    contract.update(fields, bid=1.2, ask=1.3, quote_timestamp="2026-06-22T14:00:00Z", capture_id="entry-fixture")
+    day = "23" if checkpoint == "PLUS_1D" else "22"
+    current.update(fields, quote_timestamp=f"2026-06-{day}T19:59:00Z", capture_id="exit-fixture")
+
+
 class V31CanonicalDecisionTests(unittest.TestCase):
     def test_cloud_market_calendar_treats_juneteenth_2026_as_closed(self):
         juneteenth = datetime(2026, 6, 19, 10, 30, tzinfo=ZoneInfo("America/New_York"))
@@ -3069,15 +3078,17 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         }
         master = _master_snapshot([current_row])
 
+        _verified_capture_fixture(pending, current_row, "PLUS_1D")
+        master = _master_snapshot([current_row])
         result = main._v31_evaluate_pending_outcome(pending, master, checkpoint="PLUS_1D")
 
         self.assertEqual(result["status"], "EVALUATED")
         outcome = result["outcome"]
         self.assertEqual(outcome["outcome"], "PENDING")
-        self.assertEqual(outcome["outcome_engine_version"], "v31_pending_outcome_auto_eval_v1")
+        self.assertEqual(outcome["outcome_engine_version"], "verified_paper_markout_v2")
         self.assertEqual(outcome["current_paper_pnl_r"], 0.4)
-        self.assertEqual(outcome["mfe_r"], 0.4)
-        self.assertEqual(outcome["mae_r"], 0.0)
+        self.assertNotIn("mfe_r", outcome)
+        self.assertNotIn("mae_r", outcome)
         self.assertEqual(outcome["latest_auto_evaluation"]["checkpoint"], "PLUS_1D")
         self.assertTrue(outcome["not_order_instruction"])
         self.assertFalse(outcome["execution_authorized"])
@@ -3109,6 +3120,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "spread_pct": 13.33,
             "delta": -0.12,
         }
+        _verified_capture_fixture(pending, current_row, "EOD")
         master = _master_snapshot([current_row])
 
         with patch.object(main, "_durable_supabase_fetch", return_value=[pending]), \
@@ -3178,7 +3190,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertTrue(readiness["read_auth"]["critical_endpoints_protected"])
         self.assertEqual(readiness["risk_profile"]["profile_version"], "v31_risk_profile_v1")
         self.assertEqual(readiness["outcome_tracking"]["version"], "v31_entry_ready_signal_outcome_v1")
-        self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_version"], "v31_pending_outcome_auto_eval_v1")
+        self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_version"], "verified_paper_markout_v2")
         self.assertEqual(readiness["outcome_tracking"]["auto_evaluation_endpoint"], "/v31_evaluate_pending_outcomes")
         self.assertTrue(readiness["token_rotation"]["required_for_hygiene"])
 
@@ -4027,6 +4039,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "underlying_price": 725.0,
         }
 
+        _verified_capture_fixture(review, current_row, "PLUS_1D")
         result = main._v31_evaluate_manual_review(review, _master_snapshot([current_row]), checkpoint="PLUS_1D")
 
         self.assertEqual(result["status"], "EVALUATED")
@@ -4071,6 +4084,7 @@ class V31CanonicalDecisionTests(unittest.TestCase):
             "mid": 1.75,
         }
 
+        _verified_capture_fixture(review, current_row, "EOD")
         with patch.object(main, "_v31_load_manual_reviews", return_value=[review]), \
                 patch.object(main, "_v29_discover_master_snapshot", return_value=_master_snapshot([current_row])), \
                 patch.object(main, "_v31_save_manual_reviews", return_value=True) as save_reviews, \
