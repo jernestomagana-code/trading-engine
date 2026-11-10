@@ -43,3 +43,19 @@ class VerifiedEvaluatorTests(unittest.TestCase):
         self.out['legs']=[dict(self.entry,side='SELL',quantity=1),second]
         r=evaluate(self.out,[self.row,dict(second,bid=.2,ask=.3,quote_timestamp=self.row['quote_timestamp'],capture_id='close2')],'EOD',self.now)
         self.assertEqual(r['evaluation']['net_pnl'],48)
+    def test_covered_call_requires_stock_cashflows_and_values_both_legs(self):
+        stock=dict(sec_type='STK',contract_con_id=456,currency='USD',bid=699,ask=700,side='BUY',quantity=100,quote_timestamp=self.entry['quote_timestamp'],capture_id='stock-entry')
+        call=dict(self.entry,right='C',side='SELL',quantity=1)
+        current_call=dict(self.row,right='C')
+        current_stock=dict(stock,bid=701,ask=702,quote_timestamp=self.row['quote_timestamp'],capture_id='stock-exit')
+        self.out.update(strategy='COVERED_CALL',legs=[stock,call])
+        missing=evaluate(self.out,[current_call,current_stock],'EOD',self.now)
+        self.assertEqual(missing['reason'],'STOCK_CASHFLOW_EVIDENCE_REQUIRED')
+        self.out['cashflows_dollars']=25
+        result=evaluate(self.out,[current_call,current_stock],'EOD',self.now)
+        self.assertEqual(result['evaluation']['net_pnl'],213)
+    def test_missing_or_synthetic_leg_cannot_create_condor_result(self):
+        self.out.update(strategy='IRON_CONDOR',legs=[dict(self.entry,side='SELL',quantity=1)])
+        self.assertEqual(self.run_eval()['reason'],'COMPLETE_STRATEGY_LEGS_REQUIRED')
+        self.out.update(strategy='NAKED_PUT',legs=[dict(self.entry,side='SELL',quantity=1,synthetic=True)])
+        self.assertEqual(self.run_eval()['reason'],'SYNTHETIC_ENTRY_CAPTURE')

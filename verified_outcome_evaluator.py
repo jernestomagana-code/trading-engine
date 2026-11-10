@@ -21,6 +21,8 @@ def instant(value):
 
 
 def number(value):
+    if isinstance(value, bool):
+        return None
     try:
         result = float(value)
         return result if math.isfinite(result) else None
@@ -29,6 +31,8 @@ def number(value):
 
 
 def identity(row):
+    if not isinstance(row, dict):
+        return None
     if str(row.get('sec_type') or row.get('secType') or '').upper() == 'STK':
         con_id = row.get('contract_con_id') or row.get('con_id') or row.get('conId')
         if con_id and row.get('currency'):
@@ -94,6 +98,8 @@ def evaluate(outcome, rows, checkpoint='EOD', now=None):
     if entry >= due:
         return fail('ENTRY_AFTER_CHECKPOINT')
     contract = outcome.get('selected_contract') or {}
+    if not isinstance(contract, dict):
+        return fail('INVALID_CONTRACT_RECORD')
     legs = outcome.get('legs') or contract.get('legs')
     if not legs:
         # A covered call includes stock, and spreads require every leg.
@@ -101,7 +107,7 @@ def evaluate(outcome, rows, checkpoint='EOD', now=None):
         if not side:
             return fail('COMPLETE_STRATEGY_LEGS_REQUIRED')
         legs = [dict(contract, side=side, quantity=outcome.get('quantity', 1))]
-    if not isinstance(legs, list) or not legs:
+    if not isinstance(legs, list) or not legs or not all(isinstance(leg, dict) for leg in legs):
         return fail('COMPLETE_STRATEGY_LEGS_REQUIRED')
     required_count = {'IRON_CONDOR':4, 'IRON_FLY':4, 'BULL_PUT_SPREAD':2,
                       'BEAR_CALL_SPREAD':2, 'COVERED_CALL':2}.get(str(outcome.get('strategy')).upper())
@@ -135,6 +141,8 @@ def evaluate(outcome, rows, checkpoint='EOD', now=None):
         entry_price = entry_quote[1] if side == 'BUY' else entry_quote[0]
         exit_price = quotes(current)[0] if side == 'BUY' else quotes(current)[1]
         pnl = (exit_price-entry_price)*(1 if side == 'BUY' else -1)*qty*key[4]
+        if side == 'SELL' and entry_price <= 0:
+            return fail('ENTRY_SELL_BID_NOT_EXECUTABLE')
         gross += pnl
         measurements.append(dict(contract_identity=list(key), side=side, quantity=qty,
             entry_price=entry_price, exit_price=exit_price, gross_pnl=pnl,
@@ -149,14 +157,17 @@ def evaluate(outcome, rows, checkpoint='EOD', now=None):
     if fees is None or fees < 0:
         return fail('ROUND_TRIP_COMMISSION_MISSING')
     risk = number(outcome.get('risk_basis_dollars'))
-    net = round(gross-fees, 6)
+    cashflows = number(outcome.get('cashflows_dollars'))
+    if any(m['contract_identity'][2]=='STK' for m in measurements) and cashflows is None:
+        return fail('STOCK_CASHFLOW_EVIDENCE_REQUIRED')
+    net = round(gross-fees+(cashflows or 0), 6)
     key = hashlib.sha256(json.dumps([outcome.get('outcome_id') or outcome.get('id'),checkpoint,due.isoformat(),measurements,fees],sort_keys=True).encode()).hexdigest()
     previous = [e for e in outcome.get('auto_evaluations',[]) if e.get('outcome_evaluation_version') == VERSION]
     if any(e.get('checkpoint') == checkpoint for e in previous):
         return fail('CHECKPOINT_ALREADY_EVALUATED', 'SKIPPED')
     ev = dict(outcome_evaluation_version=VERSION, evaluation_id=key, checkpoint=checkpoint,
         checkpoint_at=due.isoformat(), evaluated_at=now.isoformat(), legs=measurements,
-        gross_pnl=round(gross,6), round_trip_commission=fees, net_pnl=net,
+        gross_pnl=round(gross,6), round_trip_commission=fees, cashflows_dollars=cashflows or 0, net_pnl=net,
         current_paper_pnl_r=round(net/risk,6) if risk and risk>0 else None,
         risk_basis_dollars=risk if risk and risk>0 else None,
         currency=measurements[0]['contract_identity'][5], paper_outcome=True,
