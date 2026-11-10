@@ -128,6 +128,46 @@ def _write_events(path: Path, events: list[dict[str, Any]]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _read_event_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    """Read the compact ledger written by _write_events, starting at EOF."""
+    try:
+        with path.open("rb") as handle:
+            # The writer puts each complete event on its own line without
+            # indentation. Older JSON arrays and object wrappers use the
+            # compatibility reader below.
+            if handle.read(3) != b"[\n{":
+                return _read_events(path)[-limit:]
+            handle.seek(-3, 2)
+            end = handle.tell()
+            if handle.read(3) != b"\n]\n":
+                return _read_events(path)[-limit:]
+
+            newest_first = []
+            fragments = []
+            while end > 2:
+                start = max(2, end - 64 * 1024)
+                handle.seek(start)
+                lines = handle.read(end - start).split(b"\n")
+                for index in range(len(lines) - 1, -1, -1):
+                    fragments.append(lines[index])
+                    if index == 0 and start > 2:
+                        break
+                    line = b"".join(reversed(fragments))
+                    fragments.clear()
+                    event = json.loads(line.removesuffix(b","))
+                    if not isinstance(event, dict):
+                        return _read_events(path)[-limit:]
+                    newest_first.append(event)
+                    if len(newest_first) == limit:
+                        return newest_first[::-1]
+                end = start
+            return newest_first[::-1]
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError, RecursionError):
+        return _read_events(path)[-limit:]
+
+
 def _read_webhook_status(path: Path) -> dict[str, Any]:
     try:
         if path.exists():
@@ -416,9 +456,9 @@ def load_signal_events(path: str | Path | None = None, limit: int = 1000) -> lis
     except Exception:
         limit = 1000
     target = Path(path) if path is not None else DEFAULT_LEDGER_PATH
-    events = _read_events(target)
+    events = _read_event_tail(target, limit)
     if events:
-        return events[-limit:]
+        return events
     if target.name != DEFAULT_LEDGER_PATH.name:
         return []
     try:
