@@ -4,8 +4,15 @@
   "status": "ACTIVE_MANUAL_SETUP",
   "endpoint": "/technical_snapshot",
   "webhook_url_template": "https://trading-engine-p097.onrender.com/technical_snapshot",
-  "timeframes": ["15", "D"],
-  "symbols": ["QQQ", "SPY", "VIX"],
+  "timeframes": [
+    "15",
+    "D"
+  ],
+  "symbols": [
+    "QQQ",
+    "SPY",
+    "VIX"
+  ],
   "production_active_alerts": [
     {
       "symbol": "QQQ",
@@ -47,7 +54,11 @@
     "quarantine_lookback_minutes": 180,
     "missing_core_alert_behavior": "WAIT_UNDERLYING_CONFIRMATION",
     "missing_snapshot_behavior": "OPTIONS_UNDERLYING_COVERAGE_DEGRADED",
-    "approved_symbols": ["QQQ", "SPY", "VIX"],
+    "approved_symbols": [
+      "QQQ",
+      "SPY",
+      "VIX"
+    ],
     "expansion_policy": "SPY, QQQ, and VIX are the TradingView confirmation layer. Single-name large-cap and CANSLIM opportunities should come from the backend dynamic underlying universe, IBKR option-chain budget, and scoring first; add new TradingView single-name alerts only after a documented coverage gap is proven."
   },
   "required_plot_names": [
@@ -273,6 +284,29 @@
       "required": true,
       "alert_role": "VOLATILITY_RISK",
       "freshness_minutes": 1440
+    },
+    {
+      "alert_name": "VIX_REGIME_SNAPSHOT_D",
+      "event": "REGIME_SNAPSHOT",
+      "event_code": "VIX_REGIME_SNAPSHOT_D",
+      "symbol": "VIX",
+      "timeframe": "D",
+      "strategy_context": "OPTIONS_UNDERLYING_CONFIRMATION",
+      "condition_hint": "Daily confirmed VIX neutral heartbeat",
+      "breakout_direction": "NEUTRAL",
+      "session_state": "REGULAR",
+      "vwap_position": "UNKNOWN",
+      "invalidation": "VIX_REELEVATED",
+      "rsi_state": "VOLATILITY_NORMALIZING",
+      "rsi_divergence": "NONE",
+      "trend_state": "RISK_ON",
+      "market_regime": "OBSERVE",
+      "underlying_signal": "REGIME_SNAPSHOT",
+      "volatility_state": "NEUTRAL",
+      "confirmation_bias": "NEUTRAL",
+      "required": false,
+      "alert_role": "HEARTBEAT_SNAPSHOT",
+      "freshness_minutes": 4320
     }
   ],
   "manual_review_required": true,
