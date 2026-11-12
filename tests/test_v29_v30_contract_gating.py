@@ -1,5 +1,7 @@
 import unittest
 import importlib.util
+import json
+import tempfile
 import asyncio
 import sys
 import types
@@ -333,6 +335,20 @@ def _verified_capture_fixture(record, current, checkpoint):
 
 
 class V31CanonicalDecisionTests(unittest.TestCase):
+    def test_production_batch_reads_only_snapshot_files_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            snapshot = runtime / "v28_master_snapshot.json"
+            snapshot.write_text(json.dumps({"options_rows": [{"ticker": "QQQ", "strategy": "NAKED_PUT"}]}))
+            (runtime / "v32_signal_events.json").write_text("[]")
+            (runtime / "stock_ultimus_audit_log.json").write_text("[]")
+            with patch.object(main, "_V29_RUNTIME_DIR", runtime), \
+                    patch.object(main, "DEPLOYMENT_ENV", "production"), \
+                    patch.object(main, "_v29_load_json_file", wraps=main._v29_load_json_file) as reads:
+                decisions = main._v31_all_decisions(["QQQ", "SPY"])
+            self.assertEqual([d["ticker"] for d in decisions], ["QQQ", "SPY"])
+            self.assertEqual([call.args[0] for call in reads.call_args_list], [snapshot])
+
     def test_cloud_market_calendar_treats_juneteenth_2026_as_closed(self):
         juneteenth = datetime(2026, 6, 19, 10, 30, tzinfo=ZoneInfo("America/New_York"))
         regular_day = datetime(2026, 6, 22, 10, 30, tzinfo=ZoneInfo("America/New_York"))

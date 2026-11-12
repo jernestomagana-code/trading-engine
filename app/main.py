@@ -20709,7 +20709,9 @@ def _v29_discover_master_snapshot(_allow_durable_restore=True):
         if p.exists():
             candidates.append(p)
 
-    if _V29_RUNTIME_DIR.exists():
+    # Render ingests through known snapshot paths. Scanning every runtime
+    # JSON also decodes audit and signal history, which are not snapshots.
+    if DEPLOYMENT_ENV != "production" and _V29_RUNTIME_DIR.exists():
         for p in _V29_RUNTIME_DIR.glob("*.json"):
             if p not in candidates:
                 candidates.append(p)
@@ -21420,9 +21422,10 @@ def _v29_market_state(master):
     }
 
 
-def _v29_decide_ticker(ticker):
+def _v29_decide_ticker(ticker, *, master=None):
     ticker = _v29_safe_upper(ticker)
-    master = _v29_discover_master_snapshot()
+    if master is None:
+        master = _v29_discover_master_snapshot()
     rows = master["rows"]
     technical = master["technical"]
     market = _v29_market_state(master)
@@ -22676,8 +22679,9 @@ def _v31_apply_event_assignment_gate(decision):
     return decision
 
 
-def _v31_broker_check_for_decision(decision):
-    master = _v29_discover_master_snapshot()
+def _v31_broker_check_for_decision(decision, *, master=None):
+    if master is None:
+        master = _v29_discover_master_snapshot()
     snapshot = master.get("data") if isinstance(master.get("data"), dict) else {}
     return shared_broker_check.broker_check_for_ticker(
         snapshot,
@@ -22697,8 +22701,8 @@ def _v31_broker_check_freshness(broker):
     )
 
 
-def _v31_apply_broker_check_gate(decision):
-    broker = _v31_broker_check_for_decision(decision)
+def _v31_apply_broker_check_gate(decision, *, master=None):
+    broker = _v31_broker_check_for_decision(decision, master=master)
     if isinstance(broker, dict):
         decision["broker_check"] = broker
     else:
@@ -27443,8 +27447,10 @@ def _v31_production_readiness_payload():
     }
 
 
-def _v31_canonical_decision(ticker):
-    d = _v29_decide_ticker(ticker)
+def _v31_canonical_decision(ticker, *, master=None):
+    if master is None:
+        master = _v29_discover_master_snapshot()
+    d = _v29_decide_ticker(ticker, master=master)
     state = _v31_normalize_state(d.get("final_state"))
     blockers = _v31_blockers_from_v29(d)
     main_blocker = _v31_main_blocker(state, blockers)
@@ -27504,7 +27510,7 @@ def _v31_canonical_decision(ticker):
     }
     decision = _v31_apply_event_assignment_gate(decision)
     decision = _v31_apply_risk_profile_gate(decision)
-    decision = _v31_apply_broker_check_gate(decision)
+    decision = _v31_apply_broker_check_gate(decision, master=master)
     decision = _v31_finalize_decision_support_contract(decision)
     decision = shared_source_attribution.apply_source_attribution(decision, d)
     decision = shared_evidence_quality.apply_evidence_quality(decision)
@@ -27533,9 +27539,10 @@ def _v31_canonical_decision(ticker):
     return shared_evidence_quality.apply_evidence_quality(decision)
 
 
-def _v31_dynamic_decision_tickers():
+def _v31_dynamic_decision_tickers(*, master=None):
     ordered = list(_V29_DEFAULT_TICKERS)
-    master = _v29_discover_master_snapshot()
+    if master is None:
+        master = _v29_discover_master_snapshot()
     data = master.get("data") if isinstance(master.get("data"), dict) else {}
     technical = data.get("technical_snapshot") if isinstance(data.get("technical_snapshot"), dict) else {}
     option_rows = data.get("options_rows") if isinstance(data.get("options_rows"), list) else []
@@ -27572,10 +27579,12 @@ def _v31_dynamic_decision_tickers():
     return ordered[:14]
 
 
-def _v31_all_decisions(tickers=None):
+def _v31_all_decisions(tickers=None, *, master=None):
+    if master is None:
+        master = _v29_discover_master_snapshot()
     if not tickers:
-        tickers = _v31_dynamic_decision_tickers()
-    return [_v31_canonical_decision(t) for t in tickers]
+        tickers = _v31_dynamic_decision_tickers(master=master)
+    return [_v31_canonical_decision(t, master=master) for t in tickers]
 
 
 def _v31_account_context_from_master(master):
@@ -27706,7 +27715,7 @@ def _v31_system_status_payload(tickers=None):
     broker_check_summary = master_data.get("broker_check_summary") if isinstance(master_data.get("broker_check_summary"), dict) else {}
     account_context = _v31_account_context_from_master(master)
     active_position_management = _v31_active_position_management_payload(master)
-    decisions = _v31_all_decisions(tickers)
+    decisions = _v31_all_decisions(tickers, master=master)
     states = [
         "ENTRY_READY",
         "MANUAL_REVIEW",
