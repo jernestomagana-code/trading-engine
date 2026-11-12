@@ -75,6 +75,10 @@ import position_management as shared_position_management
 app = FastAPI(title="Super Engine Bolsa", version="8.0.0")
 if hasattr(app, "add_middleware"):
     app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
+    if os.getenv("RENDER", "").lower() == "true":
+        from render_cycle_memory import RenderCycleMemoryMiddleware
+
+        app.add_middleware(RenderCycleMemoryMiddleware)
 
 LEGACY_OFFICIAL_FLOW = "/intraday_futures/*"
 LEGACY_DECISION_SUPPORT_NOTE = (
