@@ -19979,10 +19979,10 @@ def _v28_safe_load(path):
     except Exception:
         return None
 
-def _v28_write_master(payload: dict):
+def _v28_write_master(payload: dict, *, restored_received_at: str | None = None):
     payload = dict(payload or {})
     payload["engine"] = "V28_AUTO_PUBLISHER_TRADE_COMMAND"
-    payload["received_at"] = _v28_now()
+    payload["received_at"] = restored_received_at or _v28_now()
 
     options_rows = payload.get("options_rows")
     if options_rows is None:
@@ -28863,16 +28863,19 @@ def _v31_parse_timestamp(value):
         return None
 
 
-def _v31_snapshot_age_minutes(snapshot, durable_row=None):
+def _v31_durable_snapshot_timestamp(snapshot, durable_row=None):
     durable_row = durable_row or {}
-    timestamp = (
+    return (
         snapshot.get("received_at")
         or snapshot.get("generated_at")
         or durable_row.get("received_at")
         or durable_row.get("updated_at")
     )
-    parsed = _v31_parse_timestamp(timestamp)
-    if parsed is None:
+
+
+def _v31_snapshot_age_minutes(snapshot, durable_row=None):
+    parsed = _v31_parse_timestamp(_v31_durable_snapshot_timestamp(snapshot, durable_row))
+    if parsed is None or parsed > datetime.now(timezone.utc):
         return None
     return round((datetime.now(timezone.utc) - parsed).total_seconds() / 60, 2)
 
@@ -29066,7 +29069,10 @@ def _v31_restore_durable_snapshot(force=False):
         _V31_DURABLE_RESTORE_STATE = state
         return dict(state)
 
-    restored = _v28_write_master(_v31_canonical_durable_payload(snapshot))
+    restored = _v28_write_master(
+        _v31_canonical_durable_payload(snapshot),
+        restored_received_at=_v31_durable_snapshot_timestamp(snapshot, row),
+    )
     state.update({
         "restored": True,
         "status": "RESTORED",

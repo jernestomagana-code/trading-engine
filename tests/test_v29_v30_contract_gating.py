@@ -3405,6 +3405,33 @@ class V31CanonicalDecisionTests(unittest.TestCase):
         self.assertEqual(result["rows_found"], 1)
         write_master.assert_called_once()
 
+    def test_v31_restore_preserves_original_clock_and_stale_status(self):
+        received = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        snapshot = {
+            "received_at": received,
+            "options_rows": [{"ticker": "QQQ", "strike": 700}],
+            "technical_snapshot": {"QQQ": {"score": 80}},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            master = Path(tmp) / "master.json"
+            alias = Path(tmp) / "alias.json"
+            with patch.object(main, "supabase_enabled", return_value=True), patch.object(
+                main, "supabase_fetch_single_row", return_value={"snapshot": snapshot}
+            ), patch.object(main, "_V28_MASTER_FILE", master), patch.object(
+                main, "_V28_ALIAS_V25_FILE", alias
+            ):
+                result = main._v31_restore_durable_snapshot(force=True)
+                self.assertTrue(result["restored_for_read_only"])
+                self.assertEqual(result["received_at"], received)
+                for path in (master, alias):
+                    restored = json.loads(path.read_text())
+                    self.assertEqual(restored["received_at"], received)
+                    status = main._v31_snapshot_freshness({"path": str(path), "data": restored})
+                    self.assertEqual(status["status"], "STALE")
+                ingested = main._v28_write_master(snapshot)
+                self.assertNotEqual(ingested["received_at"], received)
+
     def test_v31_restore_rejects_stale_durable_snapshot(self):
         snapshot = {
             "source": "SUPABASE_TEST",
